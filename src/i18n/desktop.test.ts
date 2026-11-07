@@ -30,6 +30,7 @@ describe("desktop locale glue", () => {
   });
 
   it("follows the operating system when the preference is system", async () => {
+    localStorage.setItem("oleafly.locale", "system");
     const { initializeDesktopI18n } = await import("./desktop");
     const { currentLocale } = await import("./index");
     await initializeDesktopI18n();

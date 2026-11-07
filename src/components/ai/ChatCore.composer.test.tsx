@@ -826,9 +826,7 @@ function pickEffort(rendered: RenderResult, name: string | RegExp) {
   fireEvent.click(rendered.getByRole("menuitemradio", { name }));
 }
 
-function webToggle(rendered: RenderResult) {
-  return rendered.getByRole("button", { name: enAi.web.ariaLabel });
-}
+
 
 function usageButton(rendered: RenderResult) {
   return rendered.getByRole("button", { name: enAi.header.usageAriaLabel });
@@ -1286,20 +1284,13 @@ describe("ChatCore composer, drafts and attachments", () => {
     );
   });
 
-  it("marks the web button when the model needs a search key to search", async () => {
-    mocks.agentWebSearchReady.mockResolvedValue(false);
+  it("offers web tools without a per-chat switch", async () => {
     const rendered = await renderChat();
-    const web = rendered.getByTestId("ai-web-toggle");
-    expect(web).not.toHaveAttribute("data-needs-key");
-
-    fireEvent.click(web);
-
-    await waitFor(() => expect(web).toHaveAttribute("data-needs-key", "true"));
-    expect(mocks.agentWebSearchReady).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
-      expect.anything(),
-    );
+    expect(rendered.queryByTestId("ai-web-toggle")).toBeNull();
+    sendFromComposer("Check the journal website");
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+    expect(mocks.runs[0].options.web).toEqual({ search: true, fetch: true });
+    await completeRun(0, "Checked.");
   });
 
   it("lets the message box measure the chat panel it sits in", async () => {
@@ -1423,21 +1414,18 @@ describe("ChatCore effort, web and usage", () => {
     expect(rendered.queryByTestId("ai-effort-selector")).toBeNull();
   });
 
-  it("remembers effort and web for each chat", async () => {
+  it("remembers effort across chats while web remains available", async () => {
     configureModel({ id: EFFORT_MODEL });
     const rendered = await renderChat();
     pickEffort(rendered, enAi.effort.levels.high);
-    fireEvent.click(webToggle(rendered));
     expect(useChatsStore.getState().byId("chat-1")).toMatchObject({
       effort: "high",
-      web: { search: true, fetch: true },
     });
 
     fireEvent.click(rendered.getByRole("button", { name: enAi.header.newChat }));
     expect(rendered.getByTestId("ai-effort-selector")).toHaveAccessibleName(
       effortLabel(enAi.effort.auto),
     );
-    expect(webToggle(rendered)).toHaveAttribute("aria-pressed", "false");
 
     pickEffort(rendered, enAi.effort.levels.medium);
     expect(rendered.getByTestId("ai-effort-selector")).toHaveAccessibleName(
@@ -1446,18 +1434,17 @@ describe("ChatCore effort, web and usage", () => {
     sendFromComposer("Start a new topic");
     await waitFor(() => expect(mocks.runs).toHaveLength(1));
     expect(mocks.runs[0].options.effort).toBe("medium");
-    expect(mocks.runs[0].options.web).toBeUndefined();
+    expect(mocks.runs[0].options.web).toEqual({ search: true, fetch: true });
     const created = useChatsStore.getState().activeId as string;
     expect(created).not.toBe("chat-1");
     expect(useChatsStore.getState().byId(created)?.effort).toBe("medium");
-    expect(useChatsStore.getState().byId(created)).not.toHaveProperty("web");
+    expect(useChatsStore.getState().byId(created)?.web).toEqual({ search: true, fetch: true });
     await completeRun(0, "Started.");
 
     act(() => mocks.historyProps?.onOpen(useChatsStore.getState().byId("chat-1") as StoredChat));
     expect(rendered.getByTestId("ai-effort-selector")).toHaveAccessibleName(
       effortLabel(enAi.effort.levels.high),
     );
-    expect(webToggle(rendered)).toHaveAttribute("aria-pressed", "true");
     sendFromComposer("Back to the first topic");
     await waitFor(() => expect(mocks.runs).toHaveLength(2));
     expect(mocks.runs[1].options.effort).toBe("high");
@@ -1482,19 +1469,28 @@ describe("ChatCore effort, web and usage", () => {
     expect(mocks.runs[0].options.web).toEqual({ search: true, fetch: true });
     const sweep = useChatsStore.getState().activeId as string;
     expect(sweep).not.toBe("chat-1");
-    expect(useChatsStore.getState().byId(sweep)?.web).toEqual({ search: true, fetch: true });
     await completeRun(0, "Swept.");
-    expect(webToggle(rendered)).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(rendered.getByRole("button", { name: enAi.header.newChat }));
-    expect(webToggle(rendered)).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(rendered.getByTitle(enAi.suggestions.recompile));
     await waitFor(() => expect(mocks.runs).toHaveLength(2));
-    expect(mocks.runs[1].options.web).toBeUndefined();
+    expect(mocks.runs[1].options.web).toEqual({ search: true, fetch: true });
     const recompile = useChatsStore.getState().activeId as string;
     expect(recompile).not.toBe(sweep);
-    expect(useChatsStore.getState().byId(recompile)).not.toHaveProperty("web");
+    expect(useChatsStore.getState().byId(recompile)?.web).toEqual({ search: true, fetch: true });
     await completeRun(1, "Compiled.");
+  });
+
+  it("updates quick-start labels when switching between Chinese and English", async () => {
+    const { applyLocale } = await import("@/i18n");
+    const { default: zh } = await import("@/i18n/locales/zh-Hans/ai.json", { with: { type: "json" } });
+    const rendered = await renderChat();
+    expect(rendered.getByTitle(enAi.suggestions.recompile)).toBeInTheDocument();
+    await act(async () => applyLocale("zh-Hans"));
+    expect(rendered.getByTitle(zh.suggestions.recompile)).toBeInTheDocument();
+    expect(rendered.queryByTitle(enAi.suggestions.recompile)).toBeNull();
+    await act(async () => applyLocale("en"));
+    expect(rendered.getByTitle(enAi.suggestions.recompile)).toBeInTheDocument();
   });
 
   it("turns web on in the open empty chat a literature quick start runs in", async () => {
@@ -1512,33 +1508,7 @@ describe("ChatCore effort, web and usage", () => {
     await waitFor(() => expect(mocks.runs).toHaveLength(1));
     expect(mocks.runs[0].options.web).toEqual({ search: true, fetch: true });
     expect(useChatsStore.getState().activeId).toBe("chat-1");
-    expect(useChatsStore.getState().byId("chat-1")?.web).toEqual({ search: true, fetch: true });
     await completeRun(0, "Swept.");
-  });
-
-  it("sends web tools only when the toggle is on", async () => {
-    const rendered = await renderChat();
-    expect(webToggle(rendered)).toHaveAttribute("aria-pressed", "false");
-    sendFromComposer("No web yet");
-    await waitFor(() => expect(mocks.runs).toHaveLength(1));
-    expect(mocks.runs[0].options.web).toBeUndefined();
-    expect(webToggle(rendered)).toBeDisabled();
-    await completeRun(0, "Answered.");
-
-    fireEvent.click(webToggle(rendered));
-    expect(webToggle(rendered)).toHaveAttribute("aria-pressed", "true");
-    sendFromComposer("Search the web");
-    await waitFor(() => expect(mocks.runs).toHaveLength(2));
-    expect(mocks.runs[1].options.web).toEqual({ search: true, fetch: true });
-    await completeRun(1, "Searched.");
-
-    fireEvent.click(webToggle(rendered));
-    expect(webToggle(rendered)).toHaveAttribute("aria-pressed", "false");
-    expect(useChatsStore.getState().byId("chat-1")).not.toHaveProperty("web");
-    sendFromComposer("Offline again");
-    await waitFor(() => expect(mocks.runs).toHaveLength(3));
-    expect(mocks.runs[2].options.web).toBeUndefined();
-    await completeRun(2, "Offline.");
   });
 
   it("shows context use in the composer ring and the last run in the popover", async () => {

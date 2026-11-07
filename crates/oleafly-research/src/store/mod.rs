@@ -870,7 +870,11 @@ impl TaskStore {
                 carry_from: task
                     .isolation
                     .as_ref()
-                    .map(|isolation| isolation.execution_root.clone()),
+                    .map(|isolation| isolation.execution_root.clone())
+                    .or_else(|| match &task.pending_start {
+                        Some(PendingStart::Fresh { carry_from }) => carry_from.clone(),
+                        _ => None,
+                    }),
             },
         };
         let fresh = mode == RetryMode::Fresh;

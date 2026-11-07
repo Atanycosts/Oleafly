@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { EffortLevel } from "@oleafly/ai-core";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -20,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { AgentLogo } from "@/components/ai/acp/AgentLogo";
+import { EffortSelector } from "@/components/ai/composer/EffortSelector";
 import { ProviderLogo } from "@/components/ai/ProviderLogo";
 import {
   defaultBrief,
@@ -46,7 +48,7 @@ export interface ResearchTaskStarter {
   id: string;
   label: () => string;
   title: () => string;
-  prompt: string;
+  prompt: () => string;
   skillIds: string[];
   brief?: Partial<ResearchBrief>;
 }
@@ -58,48 +60,42 @@ export const RESEARCH_TASK_STARTERS: ResearchTaskStarter[] = [
     id: "literature-review",
     label: () => i18n.t(($) => $.researchTools.tasks.starter.literatureReview.label),
     title: () => i18n.t(($) => $.researchTools.tasks.starter.literatureReview.title),
-    prompt:
-      "Find the most relevant work on this question. Summarize what each source contributes, record stable citation identifiers, and call out gaps or disagreements. Do not invent references.",
+    prompt: () => i18n.t(($) => $.researchTools.tasks.starter.literatureReview.prompt),
     skillIds: ["literature-review"],
   },
   {
     id: "evidence-audit",
     label: () => i18n.t(($) => $.researchTools.tasks.starter.evidenceAudit.label),
     title: () => i18n.t(($) => $.researchTools.tasks.starter.evidenceAudit.title),
-    prompt:
-      "Check the manuscript's factual claims against its cited sources. List unsupported, overstated, or mismatched claims and suggest precise corrections.",
+    prompt: () => i18n.t(($) => $.researchTools.tasks.starter.evidenceAudit.prompt),
     skillIds: ["oleafly-verify-claims"],
   },
   {
     id: "analysis",
     label: () => i18n.t(($) => $.researchTools.tasks.starter.analysis.label),
     title: () => i18n.t(($) => $.researchTools.tasks.starter.analysis.title),
-    prompt:
-      "Inspect the available data and analysis files, run the requested analysis in the isolated workspace, and save the code and outputs needed to reproduce it. Do not change source data.",
+    prompt: () => i18n.t(($) => $.researchTools.tasks.starter.analysis.prompt),
     skillIds: ["statistical-analysis"],
   },
   {
     id: "manuscript-revision",
     label: () => i18n.t(($) => $.researchTools.tasks.starter.manuscriptRevision.label),
     title: () => i18n.t(($) => $.researchTools.tasks.starter.manuscriptRevision.title),
-    prompt:
-      "Revise the manuscript for clarity and accuracy while preserving its claims, citations, structure, and author voice. Keep every change in the isolated workspace for review.",
+    prompt: () => i18n.t(($) => $.researchTools.tasks.starter.manuscriptRevision.prompt),
     skillIds: ["scientific-writing"],
   },
   {
     id: "reviewer-response",
     label: () => i18n.t(($) => $.researchTools.tasks.starter.reviewerResponse.label),
     title: () => i18n.t(($) => $.researchTools.tasks.starter.reviewerResponse.title),
-    prompt:
-      "Draft a point-by-point response using the reviewer comments and manuscript. Separate proposed manuscript edits from the response letter, and flag requests that need an author decision.",
+    prompt: () => i18n.t(($) => $.researchTools.tasks.starter.reviewerResponse.prompt),
     skillIds: ["oleafly-response-letter"],
   },
   {
     id: "experiment-loop",
     label: () => i18n.t(($) => $.researchTools.tasks.starter.experimentLoop.label),
     title: () => i18n.t(($) => $.researchTools.tasks.starter.experimentLoop.title),
-    prompt:
-      "Improve the main metric with a series of small, recorded experiments. Measure a baseline first, change one thing per run, and keep only changes that help.",
+    prompt: () => i18n.t(($) => $.researchTools.tasks.starter.experimentLoop.prompt),
     skillIds: ["oleafly-experiment-loop"],
     brief: { reviewPlanFirst: true },
   },
@@ -185,7 +181,7 @@ function TaskComposerDraft({
   onCreate,
   onSave,
 }: Readonly<TaskComposerProps>) {
-  const { t } = useTranslation(["common", "researchTools"]);
+  const { t } = useTranslation(["common", "researchTools", "ai"]);
   const draftId = composerDraftKey(projectId, editingTask?.id ?? null);
   const saveDraft = useResearchTasksStore((state) => state.saveComposerDraft);
   const clearDraft = useResearchTasksStore((state) => state.clearComposerDraft);
@@ -276,7 +272,7 @@ function TaskComposerDraft({
       return;
     }
     setTitle(starter.title());
-    setPrompt(starter.prompt);
+    setPrompt(starter.prompt());
     setSkillIds(starter.skillIds);
     if (starter.brief) {
       const previous: Record<string, unknown> = {};
@@ -291,7 +287,7 @@ function TaskComposerDraft({
     const known = RESEARCH_TASK_STARTERS.some((candidate) => candidate.id === nextStarterId);
     const current = RESEARCH_TASK_STARTERS.find((candidate) => candidate.id === starterId);
     const typed = title.trim() !== "" || prompt.trim() !== "";
-    const edited = current ? title !== current.title() || prompt !== current.prompt : typed;
+    const edited = current ? title !== current.title() || prompt !== current.prompt() : typed;
     if (known && typed && edited) {
       setPendingStarter(nextStarterId);
       return;
@@ -372,6 +368,8 @@ function TaskComposerDraft({
     Boolean(prompt.trim()) &&
     Boolean(chosenAgent) &&
     chosenAgent?.available !== false &&
+    (brief.reasoningEffort === null ||
+      chosenAgent?.effortChoices?.includes(brief.reasoningEffort) === true) &&
     Object.keys(briefErrors(brief)).length === 0 &&
     startError(runAfter) === undefined &&
     !computeProblem &&
@@ -511,7 +509,16 @@ function TaskComposerDraft({
             <Select
               value={agentKey}
               disabled={busy || agents.length === 0}
-              onValueChange={setAgentKey}
+              onValueChange={(nextKey) => {
+                setAgentKey(nextKey);
+                const nextAgent = agents.find((candidate) => selectedAgentKey(candidate) === nextKey);
+                if (
+                  brief.reasoningEffort !== null &&
+                  !nextAgent?.effortChoices?.includes(brief.reasoningEffort)
+                ) {
+                  changeBrief({ ...brief, reasoningEffort: null });
+                }
+              }}
             >
               <SelectTrigger
                 id="research-task-agent"
@@ -548,6 +555,24 @@ function TaskComposerDraft({
                 ))}
               </SelectContent>
             </Select>
+            {chosenAgent?.effortChoices?.length ? (
+              <div className="flex min-h-8 items-center justify-between gap-3">
+                <span className="text-xs text-muted-foreground">{t(($) => $.ai.effort.label)}</span>
+                <EffortSelector
+                  choices={chosenAgent.effortChoices}
+                  value={brief.reasoningEffort ?? undefined}
+                  onChange={(next: EffortLevel | undefined) =>
+                    changeBrief({ ...brief, reasoningEffort: next ?? null })
+                  }
+                />
+              </div>
+            ) : null}
+            {brief.reasoningEffort !== null &&
+            !chosenAgent?.effortChoices?.includes(brief.reasoningEffort) ? (
+              <p role="alert" className="text-xs text-destructive">
+                {t(($) => $.researchTools.tasks.composer.unsupportedEffort)}
+              </p>
+            ) : null}
             {agents.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 {t(($) => $.researchTools.tasks.composer.configureAgent)}

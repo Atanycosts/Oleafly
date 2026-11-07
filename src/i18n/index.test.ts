@@ -37,14 +37,19 @@ describe("i18n runtime", () => {
   });
 
   it("switches live, notifies subscribers, and keeps English as the fallback", async () => {
-    const { initializeI18n, applyLocale, onLocaleApplied, i18n } = await import("./index");
+    const { initializeI18n, applyLocale, currentLocale, onLocaleApplied, i18n } = await import("./index");
     await initializeI18n({ preference: "en", systemLocale: async () => null, missingKeyMode: "warn" });
     const seen: string[] = [];
+    const rendered: string[] = [];
+    i18n.on("languageChanged", () => rendered.push(currentLocale()));
     const stop = onLocaleApplied((locale) => seen.push(locale));
     await applyLocale("zh-Hans");
     expect(seen).toEqual(["zh-Hans"]);
+    expect(rendered).toEqual(["zh-Hans"]);
     expect(i18n.t(($) => $.native.menu.edit)).toBe("编辑");
     expect(i18n.getFixedT("en", "native")(($) => $.native.menu.edit)).toBe("Edit");
+    await applyLocale("en");
+    expect(rendered).toEqual(["zh-Hans", "en"]);
     stop();
   });
 
@@ -57,11 +62,11 @@ describe("i18n runtime", () => {
 
   it("round-trips the cached preference", async () => {
     const { cachePreference, readCachedPreference } = await import("./index");
-    expect(readCachedPreference()).toBe("system");
+    expect(readCachedPreference()).toBe("zh-Hans");
     cachePreference("zh-Hans");
     expect(readCachedPreference()).toBe("zh-Hans");
     localStorage.setItem("oleafly.locale", "nope");
-    expect(readCachedPreference()).toBe("system");
+    expect(readCachedPreference()).toBe("zh-Hans");
   });
 
   it("loads a lazy English namespace on demand, once, and ignores unknown names", async () => {

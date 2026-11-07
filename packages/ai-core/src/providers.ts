@@ -133,7 +133,7 @@ export const PROVIDERS: AIProvider[] = [
   },
   {
     id: "ollama",
-    name: "Ollama (local)",
+    name: "Ollama",
     blurb: "Runs models on your machine. No key needed - install Ollama and pull a model.",
     signupUrl: "https://ollama.com/download",
     isHost: true,

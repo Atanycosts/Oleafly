@@ -194,6 +194,7 @@
       "agentLabel": "Agent và mô hình",
       "noAgents": "Không có agent nào",
       "chooseAgent": "Chọn một agent và mô hình",
+      "unsupportedEffort": "Mô hình này không còn hỗ trợ mức suy luận đã lưu. Hãy chọn Tự động hoặc một mức khác được hỗ trợ.",
       "configureAgent": "Cấu hình một agent trong cài đặt trợ lý trước khi tạo tác vụ.",
       "dependencies": "Chờ các tác vụ này",
       "dependencyStatus": "({{status}})",

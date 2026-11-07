@@ -124,10 +124,72 @@ async fn a_remote_server_answers_json_and_event_stream_responses() {
             call.header("authorization"),
             Some("Bearer remote-token-123")
         );
+        assert!(call.params.get("_meta").is_none());
         let first = &received[0];
         assert_eq!(first.method, "initialize");
         assert!(first.header("mcp-session-id").is_none());
         hub.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn task_mcp_tools_send_task_correlation_metadata() {
+    for (server_name, expects_meta) in [
+        ("research-file-workbench", true),
+        ("fixture-impostor", false),
+    ] {
+        let fixture = mcp_fixture::start_named(Mode::Json, server_name);
+        let server = remote("papers", &fixture.url(), &[]);
+        let (hub, warnings) = McpHub::connect(
+            &[server],
+            &policy(false, true, false),
+            &McpSelection::All,
+            &[],
+            &token(),
+        )
+        .await;
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let task_meta = json!({
+            "com.oleafly/research-task": {
+                "system": "oleafly",
+                "project_id": "project-1",
+                "task_id": "task-1",
+                "generation": 4,
+            }
+        });
+        let tools = Arc::new(hub).as_task_tools(task_meta.clone());
+        let echo = tools
+            .iter()
+            .find(|tool| tool.schema.name.contains("echo"))
+            .unwrap();
+        assert!(echo.read_only_hint);
+        assert!(
+            !tools
+                .iter()
+                .find(|tool| tool.schema.name.contains("write_note"))
+                .unwrap()
+                .read_only_hint
+        );
+        (echo.call)(json!({"text": "task read"})).await.unwrap();
+        if expects_meta {
+            let read = tools
+                .iter()
+                .find(|tool| tool.schema.name.contains("read_objects"))
+                .unwrap();
+            (read.call)(json!({"project_id": "workbench-project"}))
+                .await
+                .unwrap();
+        }
+        let calls = fixture
+            .received()
+            .into_iter()
+            .filter(|request| request.method == "tools/call")
+            .collect::<Vec<_>>();
+        assert!(calls[0].params.get("_meta").is_none());
+        assert_eq!(
+            calls.get(1).and_then(|call| call.params.get("_meta")),
+            expects_meta.then_some(&task_meta)
+        );
     }
 }
 

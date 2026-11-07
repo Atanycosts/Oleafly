@@ -29,6 +29,7 @@ export function briefFixture(patch: Partial<ResearchBrief> = {}): ResearchBrief 
     reviewPlanFirst: false,
     permissions: { network: false, commands: "allow", desktopApps: false },
     budget: { wallClockMinutes: 120, usdCap: null, maxRuns: null, runTimeoutMinutes: 60 },
+    reasoningEffort: null,
     profile: "analysis",
     compute: { executor: "local", target: null, resources: null },
     ...patch,

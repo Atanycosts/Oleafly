@@ -461,7 +461,14 @@
   },
   "skillGroups": {
     "shelf": "领域技能库",
-    "user": "你的技能"
+    "user": "你的技能",
+    "research": "研究",
+    "authoring": "写作",
+    "figures": "图表",
+    "review": "审阅",
+    "submission": "投稿",
+    "communication": "报告",
+    "tooling": "工具"
   },
   "tagged": {
     "compileFailed": "标记编译失败。请检查引擎并重试。",
@@ -588,5 +595,167 @@
     "failed": "图片转 Typst 失败：{{detail}}",
     "copied": "已复制 Typst 源码",
     "notInserted": "当前文件已更改，因此未插入 Typst。请复制后粘贴到你想要的位置。"
+  },
+  "bundledSkills": {
+    "citation-management": {
+      "name": "引用管理",
+      "description": "查找论文、核实引用元数据，生成 BibTeX 或 Hayagriva 参考文献。"
+    },
+    "desktop-apps": {
+      "name": "电脑操作",
+      "description": "在授权的桌面应用和网站中操作，完成工具接口无法直接处理的工作。"
+    },
+    "experimental-design": {
+      "name": "实验设计",
+      "description": "在采集数据前规划对照、随机化、分组和重复，避免混杂因素。"
+    },
+    "exploratory-data-analysis": {
+      "name": "探索性数据分析",
+      "description": "检查本地科学数据的结构、缺失值、异常值和潜在泄漏，形成分析记录。"
+    },
+    "hypothesis-generation": {
+      "name": "研究假设",
+      "description": "将观察结果转为可检验的假设、竞争解释、预测和测量方案。"
+    },
+    "import-refine": {
+      "name": "导入文档整理",
+      "description": "整理从 Word、Markdown 或 PDF 导入的项目，修复结构、公式和引用。"
+    },
+    "literature-review": {
+      "name": "文献综述",
+      "description": "检索多个学术数据库，综合研究证据，撰写带核实引用的综述。"
+    },
+    "oleafly-cli": {
+      "name": "Oleafly 命令行",
+      "description": "通过命令行编译项目、诊断构建问题、查看结构、导出和管理引用。"
+    },
+    "oleafly-data-analysis": {
+      "name": "数据分析",
+      "description": "使用项目数据和现有脚本计算结果，并将图表和数值接入论文。"
+    },
+    "oleafly-development": {
+      "name": "软件开发",
+      "description": "在当前项目中实现、调试、重构或审查代码，复用既有接口并验证行为。"
+    },
+    "oleafly-experiment-loop": {
+      "name": "实验迭代",
+      "description": "使用现有运行工具开展对比或复现实验，记录结果并根据研究目标决定后续工作。"
+    },
+    "oleafly-figure-prep": {
+      "name": "论文图表制作",
+      "description": "制作和排版论文图表、示意图及多面板图，处理尺寸、图注和交叉引用。"
+    },
+    "oleafly-latex-build": {
+      "name": "编译与修复",
+      "description": "诊断 LaTeX 或 Typst 的编译、字体、引用和排版问题，并修复构建。"
+    },
+    "oleafly-literature-sweep": {
+      "name": "文献检索整理",
+      "description": "检索并阅读相关论文，核实引用、去重并形成带来源的阅读清单。"
+    },
+    "oleafly-manuscript-scaffold": {
+      "name": "论文结构搭建",
+      "description": "按照目标期刊或会议要求创建论文结构、章节和参考文献。"
+    },
+    "oleafly-pre-submission": {
+      "name": "投稿前检查",
+      "description": "检查投稿格式、匿名要求、页数、引用和源文件包。"
+    },
+    "oleafly-related-work": {
+      "name": "相关工作写作",
+      "description": "按主题组织已有研究，使用项目中已核实的引用撰写和修订相关工作。"
+    },
+    "oleafly-research-loop": {
+      "name": "研究写作协调",
+      "description": "协调跨阶段研究写作，规划项目工作并选择所需的专业技能。"
+    },
+    "oleafly-response-letter": {
+      "name": "审稿回复",
+      "description": "逐条对应审稿意见和已完成修改，撰写回复信或修订说明。"
+    },
+    "oleafly-review-manuscript": {
+      "name": "稿件审阅",
+      "description": "审阅论文的方法、论据、统计、图表和引用，给出定位明确的修改建议。"
+    },
+    "oleafly-slides-and-posters": {
+      "name": "报告与海报",
+      "description": "将论文整理为演讲幻灯片或会议海报，并按展示时长与尺寸排版。"
+    },
+    "oleafly-verify-claims": {
+      "name": "论断与引用核查",
+      "description": "逐项核对论断和引用来源，标明支持程度及缺失或夸大的依据。"
+    },
+    "openresearch": {
+      "name": "OpenResearch 实验",
+      "description": "通过 orx 检索文献、开展实验并把运行记录和结果接入论文。"
+    },
+    "paper-lookup": {
+      "name": "论文查找",
+      "description": "查询论文、预印本、引用、DOI 和开放获取全文，并保留检索来源。"
+    },
+    "pdf-to-latex": {
+      "name": "PDF 转 LaTeX",
+      "description": "将 PDF 重建为可编辑的 LaTeX 项目，逐节核对结构、公式、图表和引用。"
+    },
+    "peer-review": {
+      "name": "同行评审",
+      "description": "评估研究方法、证据、可复现性和报告完整性，形成有依据的评审意见。"
+    },
+    "pptx-posters": {
+      "name": "PowerPoint 科研海报",
+      "description": "用已确认的内容制作可编辑科研海报，检查打印尺寸、可读性和文件结构。"
+    },
+    "research-grants": {
+      "name": "科研基金申请",
+      "description": "按资助机构要求撰写研究计划、预算、创新点和影响说明。"
+    },
+    "research-lookup": {
+      "name": "研究证据检索",
+      "description": "检索并核对论文和背景证据，为研究或论文准备带来源的资料。"
+    },
+    "scholar-evaluation": {
+      "name": "学术作品评估",
+      "description": "依据可追溯材料评估学术作品，给出定性改进建议。"
+    },
+    "scientific-brainstorming": {
+      "name": "科研构思",
+      "description": "提出并比较研究方向，明确假设、已有证据、分歧和验证路径。"
+    },
+    "scientific-critical-thinking": {
+      "name": "科学批判性思考",
+      "description": "检查研究结论和证据质量，识别偏倚、混杂因素及设计缺陷。"
+    },
+    "scientific-schematics": {
+      "name": "科学示意图",
+      "description": "制作研究架构、流程、生物通路和系统示意图。"
+    },
+    "scientific-slides": {
+      "name": "科研演讲幻灯片",
+      "description": "为学术报告、答辩和研讨会组织幻灯片、叙事和时间安排。"
+    },
+    "scientific-visualization": {
+      "name": "科学数据可视化",
+      "description": "制作清晰、准确且便于阅读的科学图表，呈现不确定性并检查配色和导出。"
+    },
+    "scientific-writing": {
+      "name": "科学写作",
+      "description": "撰写和修订论文或研究报告，保持结论、数据、引用和披露一致。"
+    },
+    "statistical-analysis": {
+      "name": "统计分析",
+      "description": "选择统计方法，检查假设，计算效应量和置信区间并报告结果。"
+    },
+    "statistical-power": {
+      "name": "样本量与功效",
+      "description": "规划样本量、统计功效或可检出的最小效应，支持研究设计。"
+    },
+    "template-generate": {
+      "name": "可复用模板",
+      "description": "把现有文档整理成可再次使用的模板，保留布局和必要支持文件。"
+    },
+    "venue-templates": {
+      "name": "期刊与会议模板",
+      "description": "选择和应用投稿模板，核对目标期刊或会议的格式要求。"
+    }
   }
 }

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { ComponentType } from "react";
 import { i18n } from "@/i18n";
+import { skillDisplayText } from "@/lib/skill-groups";
 import { McpBrandIcon } from "./McpBrandIcon";
 
 export interface ComposerCommandActions {
@@ -36,12 +37,12 @@ export interface ComposerCommand {
 }
 
 export function createSkillCommands(
-  skills: readonly { id: string; name: string; description: string }[],
+  skills: readonly { id: string; name: string; description: string; source?: string }[],
 ): ComposerCommand[] {
   return skills.map((skill) => ({
     id: `skill:${skill.id}`,
-    label: skill.name,
-    description: skill.description,
+    label: skillDisplayText(skill).name,
+    description: skillDisplayText(skill).description,
     icon: Sparkles,
     kind: "insert" as const,
     insertText: `/${skill.id} `,

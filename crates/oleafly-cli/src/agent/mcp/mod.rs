@@ -81,6 +81,7 @@ struct Server {
     name: String,
     connection: Connection,
     matcher: Option<AhoCorasick>,
+    is_research_file_workbench: bool,
 }
 
 pub struct McpHub {
@@ -362,7 +363,7 @@ async fn connect_one(
     server: &McpServer,
     values: Option<&AhoCorasick>,
     placement: Placement<'_>,
-) -> Result<(Connection, Vec<Value>), String> {
+) -> Result<(Connection, Vec<Value>, bool), String> {
     let started = match &server.transport {
         McpTransport::Stdio { command, args, env } => stdio::StdioConnection::spawn_in(
             command,
@@ -383,6 +384,10 @@ async fn connect_one(
         let initialized = connection
             .request("initialize", initialize_params(), CONNECT_TIMEOUT)
             .await?;
+        let is_research_file_workbench = initialized
+            .pointer("/serverInfo/name")
+            .and_then(Value::as_str)
+            == Some("research-file-workbench");
         if let (Connection::Http(http), Some(version)) =
             (&connection, initialized["protocolVersion"].as_str())
         {
@@ -411,10 +416,12 @@ async fn connect_one(
             }
         }
         tools.truncate(MAX_TOOLS_PER_SERVER);
-        Ok::<_, String>(tools)
+        Ok::<_, String>((tools, is_research_file_workbench))
     };
     match tokio::time::timeout(CONNECT_TIMEOUT, setup).await {
-        Ok(Ok(tools)) => Ok((connection, tools)),
+        Ok(Ok((tools, is_research_file_workbench))) => {
+            Ok((connection, tools, is_research_file_workbench))
+        }
         Ok(Err(error)) => {
             connection.close().await;
             Err(bounded(&redact_with(&error, values), MAX_ERROR_CHARS))
@@ -607,7 +614,32 @@ impl McpHub {
         };
         for (server, values, result) in results {
             match result {
-                Ok((connection, tools)) => {
+                Ok((connection, tools, is_research_file_workbench)) => {
+                    let is_research_file_workbench = is_research_file_workbench
+                        && tools.iter().any(|tool| {
+                            let properties = tool.pointer("/inputSchema/properties");
+                            let required = tool.pointer("/inputSchema/required");
+                            tool["name"] == "read_objects"
+                                && properties.is_some_and(|properties| {
+                                    properties.as_object().is_some_and(|properties| {
+                                        properties
+                                            .get("project_id")
+                                            .and_then(|property| property["type"].as_str())
+                                            == Some("string")
+                                            && properties.contains_key("region")
+                                            && properties.contains_key("cursor")
+                                    })
+                                })
+                                && required.is_some_and(|required| {
+                                    required
+                                        .as_array()
+                                        .is_some_and(|items| items == &[json!("project_id")])
+                                })
+                                && tool
+                                    .pointer("/annotations/readOnlyHint")
+                                    .and_then(Value::as_bool)
+                                    == Some(true)
+                        });
                     hub.add_tools(
                         server,
                         tools,
@@ -619,6 +651,7 @@ impl McpHub {
                         name: server.name.clone(),
                         connection,
                         matcher: values,
+                        is_research_file_workbench,
                     });
                 }
                 Err(reason) => warnings.push(format!(
@@ -670,6 +703,17 @@ impl McpHub {
         arguments: Value,
         cancel: &CancellationToken,
     ) -> Result<Value, String> {
+        self.call_raw_with_meta(agent_name, arguments, cancel, None)
+            .await
+    }
+
+    async fn call_raw_with_meta(
+        &self,
+        agent_name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+        meta: Option<Value>,
+    ) -> Result<Value, String> {
         let tool = self
             .tools
             .iter()
@@ -685,11 +729,13 @@ impl McpHub {
         } else {
             json!({})
         };
-        let call = server.connection.request(
-            "tools/call",
-            json!({"name": tool.tool, "arguments": arguments}),
-            CALL_TIMEOUT,
-        );
+        let mut params = json!({"name": tool.tool, "arguments": arguments});
+        if let Some(meta) = meta {
+            params["_meta"] = meta;
+        }
+        let call = server
+            .connection
+            .request("tools/call", params, CALL_TIMEOUT);
         let result = tokio::select! {
             result = call => result,
             _ = cancel.cancelled() => return Err("The run was stopped.".into()),
@@ -716,20 +762,35 @@ impl McpHub {
         result_text(&self.call_raw(agent_name, arguments, cancel).await?)
     }
 
-    pub fn as_task_tools(self: &Arc<Self>) -> Vec<oleafly_research::builtin::TaskMcpTool> {
+    pub fn as_task_tools(
+        self: &Arc<Self>,
+        task_meta: Value,
+    ) -> Vec<oleafly_research::builtin::TaskMcpTool> {
         self.tools
             .iter()
             .map(|tool| {
                 let hub = self.clone();
                 let name = tool.agent_name.clone();
+                let carries_workbench_correlation = tool.tool == "read_objects"
+                    && self.servers.iter().any(|server| {
+                        server.name == tool.server && server.is_research_file_workbench
+                    });
+                let task_meta = task_meta.clone();
                 oleafly_research::builtin::TaskMcpTool {
                     schema: tool.schema.clone(),
+                    read_only_hint: tool.read_only_hint,
                     call: Arc::new(move |arguments| {
                         let hub = hub.clone();
                         let name = name.clone();
+                        let task_meta = task_meta.clone();
                         Box::pin(async move {
-                            hub.call_raw(&name, arguments, &CancellationToken::new())
-                                .await
+                            hub.call_raw_with_meta(
+                                &name,
+                                arguments,
+                                &CancellationToken::new(),
+                                carries_workbench_correlation.then_some(task_meta),
+                            )
+                            .await
                         })
                     }),
                 }

@@ -1078,7 +1078,8 @@
       "medium": "Middels",
       "high": "Høy",
       "xhigh": "Ekstra høy",
-      "max": "Maks"
+      "max": "Maks",
+      "ultra": "Ultra"
     }
   },
   "web": {

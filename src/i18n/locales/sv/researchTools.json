@@ -195,6 +195,7 @@
       "agentLabel": "Agent och modell",
       "noAgents": "Inga agenter tillgängliga",
       "chooseAgent": "Välj en agent och en modell",
+      "unsupportedEffort": "Den här modellen stöder inte längre den sparade resonemangsnivån. Välj Automatiskt eller en annan nivå som stöds.",
       "configureAgent": "Konfigurera en agent i assistentens inställningar innan du skapar en uppgift.",
       "dependencies": "Vänta på de här uppgifterna",
       "dependencyStatus": "({{status}})",

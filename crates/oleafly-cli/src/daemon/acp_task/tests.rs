@@ -491,6 +491,37 @@ async fn an_interrupted_turn_resumes_with_a_continuation_prompt() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_acp_session_keeps_the_task_prompt_when_resume_context_exists() {
+    let setup = setup(CommandPolicy::Allow);
+    let launcher = fixture_launcher(&setup, Vec::new());
+    let (_state, adapter) = adapter(&setup, launcher);
+    let resume = ResumeContext {
+        reason: ResumeReason::Retry,
+        handoff: "Continue from the retained notes.".into(),
+        plan: String::new(),
+        ledger_tail: String::new(),
+        previous_native_session_id: None,
+    };
+    let (events, _) = sink();
+    adapter
+        .run(
+            context(&setup, Some(handoff(&setup, false)), Some(resume)),
+            CancellationToken::new(),
+            events,
+        )
+        .await
+        .unwrap();
+    let prompt = logged(&setup)
+        .into_iter()
+        .find(|line| line.starts_with("prompt "))
+        .unwrap();
+    assert!(prompt.contains("Complete this research task in the isolated workspace"));
+    assert!(prompt.contains("<workbench-workflow>"));
+    assert!(prompt.contains("Task: Survey Survey the field"));
+    assert!(prompt.contains("Continue from the retained notes."));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ask_first_permissions_wait_for_the_shared_approval_queue() {
     let setup = setup(CommandPolicy::Ask);
     let launcher = fixture_launcher(&setup, vec![("FIXTURE_ASK", "1".into())]);

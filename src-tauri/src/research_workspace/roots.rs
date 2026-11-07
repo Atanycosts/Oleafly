@@ -143,6 +143,8 @@ fn empty_workspace(project_id: &str) -> ResearchWorkspace {
         version: WORKSPACE_VERSION,
         primary_project_id: project_id.to_string(),
         roots: Vec::new(),
+        journal_project_id: None,
+        journal_research: None,
         updated_at_ms: now_ms(),
     }
 }
@@ -335,6 +337,41 @@ fn new_root_id() -> String {
 pub fn get_workspace(project_id: &str) -> Result<ResearchWorkspace, String> {
     let path = workspace_path(project_id)?;
     read_workspace_from(&path, project_id)
+}
+
+pub(crate) fn set_journal_project(
+    project_id: &str,
+    journal_project_id: String,
+) -> Result<ResearchWorkspace, String> {
+    let _guard = mutation_lock()
+        .lock()
+        .map_err(|_| "research workspace lock is unavailable".to_string())?;
+    let path = workspace_path(project_id)?;
+    let mut workspace = read_workspace_from(&path, project_id)?;
+    workspace.journal_project_id = Some(journal_project_id);
+    workspace.updated_at_ms = now_ms();
+    write_workspace_to(&path, &workspace)?;
+    Ok(workspace)
+}
+
+pub(crate) fn set_journal_research_task(
+    project_id: &str,
+    task_id: String,
+    world_version_id: String,
+    check_id: Option<String>,
+) -> Result<(), String> {
+    let _guard = mutation_lock()
+        .lock()
+        .map_err(|_| "research workspace lock is unavailable".to_string())?;
+    let path = workspace_path(project_id)?;
+    let mut workspace = read_workspace_from(&path, project_id)?;
+    workspace.journal_research = Some(super::model::JournalResearchLink {
+        task_id,
+        world_version_id,
+        check_id,
+    });
+    workspace.updated_at_ms = now_ms();
+    write_workspace_to(&path, &workspace)
 }
 
 pub fn add_root(request: AddResearchRootRequest) -> Result<ResearchWorkspace, String> {

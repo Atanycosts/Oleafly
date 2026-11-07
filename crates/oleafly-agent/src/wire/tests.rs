@@ -1362,6 +1362,35 @@ fn chat_providers_get_their_own_reasoning_field() {
 }
 
 #[test]
+fn custom_openai_compatible_chat_models_send_the_selected_effort() {
+    let custom = Resolved {
+        provider_id: "xiaobai-best".into(),
+        model_id: "gpt-6.1-sol".into(),
+        wire: Wire::OpenAiChat {
+            base_url: "https://xiaobai.best/v1".into(),
+            reasoning_content: false,
+        },
+        caps: ModelCaps::from_metadata_json(&json!({
+            "reasoning": true,
+            "reasoningOptions": [{"type":"effort","values":["low","medium","high","xhigh","max","ultra"]}]
+        })),
+        ..openai()
+    };
+    assert_eq!(
+        openai_body(&custom, &with_effort(Effort::Max)).unwrap()["reasoning_effort"],
+        "max"
+    );
+    assert_eq!(
+        openai_body(&custom, &with_effort(Effort::Ultra)).unwrap()["reasoning_effort"],
+        "ultra"
+    );
+    assert!(openai_body(&custom, &CompletionRequest::prompt("s", "u"))
+        .unwrap()
+        .get("reasoning_effort")
+        .is_none());
+}
+
+#[test]
 fn openrouter_without_summaries_excludes_reasoning() {
     let body = openai_body(
         &chat("openrouter", "x/y", ModelCaps::default()),

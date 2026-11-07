@@ -102,7 +102,7 @@
       "confirm": "在这台电脑上允许"
     },
     "desktopApps": {
-      "title": "Computer Use",
+      "title": "电脑操作",
       "action": "{{agent}} 想要{{action}}。",
       "steps": "{{agent}} 想要在桌面应用中执行以下步骤：",
       "moreSteps": "未显示且不会运行的步骤：{{count}}",
@@ -144,7 +144,7 @@
       "title": "允许控制桌面？",
       "message": "代理将能够使用以下内容：",
       "confirm": "允许",
-      "enabled": "Computer Use",
+      "enabled": "电脑操作",
       "app": "应用：{{identity}}（{{name}}）",
       "more": "还有 {{count}} 个",
       "site": "网站：{{origin}}",

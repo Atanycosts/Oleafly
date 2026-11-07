@@ -195,6 +195,7 @@
       "agentLabel": "Ajan ve model",
       "noAgents": "Kullanılabilir ajan yok",
       "chooseAgent": "Bir ajan ve model seçin",
+      "unsupportedEffort": "Bu model artık kaydedilen akıl yürütme düzeyini desteklemiyor. Otomatik'i veya desteklenen başka bir düzeyi seçin.",
       "configureAgent": "Görev oluşturmadan önce asistan ayarlarından bir ajan yapılandırın.",
       "dependencies": "Bu görevleri bekle",
       "dependencyStatus": "({{status}})",

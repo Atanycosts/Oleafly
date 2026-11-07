@@ -351,13 +351,20 @@ impl UsageSink for RecordingUsage {
 struct FixtureHost {
     usage: Arc<Mutex<UsageRecord>>,
     provider_url: String,
+    caps: oleafly_agent::ModelCaps,
     bridge: Arc<LoopbackBridge>,
     preparations: Mutex<Vec<TaskRunContext>>,
     bridge_gate: Option<Arc<tokio::sync::Semaphore>>,
     bridge_started: tokio::sync::Notify,
+    mcp_tools: Vec<TaskMcpTool>,
 }
 
 impl TaskHost for FixtureHost {
+    fn task_mcp_tools(&self, _context: &TaskRunContext) -> TaskRuntimeFuture<Vec<TaskMcpTool>> {
+        let tools = self.mcp_tools.clone();
+        Box::pin(async move { Ok(tools) })
+    }
+
     fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
         assert!(context.skill_ids.is_empty());
         Ok(String::new())
@@ -370,6 +377,7 @@ impl TaskHost for FixtureHost {
     fn provider(&self, context: TaskRunContext) -> TaskRuntimeFuture<TaskProvider> {
         let usage = self.usage.clone();
         let base_url = self.provider_url.clone();
+        let caps = self.caps.clone();
         Box::pin(async move {
             Ok(TaskProvider {
                 client: reqwest::Client::builder().no_proxy().build().unwrap(),
@@ -382,7 +390,7 @@ impl TaskHost for FixtureHost {
                         base_url,
                         reasoning_content: true,
                     },
-                    caps: oleafly_agent::ModelCaps::default(),
+                    caps,
                 },
                 usage: Box::new(RecordingUsage(usage)),
             })
@@ -492,10 +500,12 @@ async fn fixture_host(_root: &Path, url: String) -> Arc<FixtureHost> {
     Arc::new(FixtureHost {
         usage: Arc::new(Mutex::new(UsageRecord::default())),
         provider_url: url,
+        caps: oleafly_agent::ModelCaps::default(),
         bridge: LoopbackBridge::start().await,
         preparations: Mutex::new(Vec::new()),
         bridge_gate: None,
         bridge_started: tokio::sync::Notify::new(),
+        mcp_tools: Vec::new(),
     })
 }
 
@@ -837,6 +847,56 @@ fn tool_description(request: &Value, name: &str) -> String {
         .and_then(|tool| tool["function"]["description"].as_str())
         .unwrap_or_default()
         .to_owned()
+}
+
+#[tokio::test]
+async fn commands_off_allows_read_only_mcp_but_does_not_invoke_write_tools() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Scripted::start(script(|_, step| {
+        if step == 0 {
+            tool_delta(vec![("mcp_read", json!({})), ("mcp_write", json!({}))])
+        } else {
+            text_reply("Read completed; write denied.")
+        }
+    }))
+    .await;
+    let mut host = fixture_host(root.path(), provider.url.clone()).await;
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    Arc::get_mut(&mut host).unwrap().mcp_tools = [("mcp_read", true), ("mcp_write", false)]
+        .into_iter()
+        .map(|(name, read_only_hint)| {
+            let calls = calls.clone();
+            TaskMcpTool {
+                schema: ToolSchema {
+                    name: name.into(),
+                    description: name.into(),
+                    input_schema: json!({"type": "object"}),
+                },
+                read_only_hint,
+                call: Arc::new(move |_| {
+                    lock(&calls).push(name);
+                    Box::pin(async { Ok(json!({"content": "retained evidence"})) })
+                }),
+            }
+        })
+        .collect();
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut context = context(root.path());
+    context.brief.permissions.commands = crate::model::CommandPolicy::Off;
+    within(adapter.run(context, CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+
+    assert_eq!(*lock(&calls), ["mcp_read"]);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    let outputs = tool_outputs(&requests[1]);
+    assert!(outputs
+        .iter()
+        .any(|output| output.contains("retained evidence")));
+    assert!(outputs
+        .iter()
+        .any(|output| output.contains(crate::approvals::COMMANDS_OFF)));
 }
 
 fn running_task(tasks_root: &Path, executor: &str) -> ResearchTask {
@@ -1206,6 +1266,16 @@ async fn run_with_helper(root: &Path) -> Vec<Value> {
 async fn spawned_readers_can_only_write_inside_the_record() {
     let root = tempfile::tempdir().unwrap();
     let requests = run_with_helper(root.path()).await;
+    for helper in [false, true] {
+        let request = requests
+            .iter()
+            .find(|request| is_helper(request) == helper)
+            .unwrap();
+        assert!(request["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains(oleafly_agent::WORKFLOW_RULES));
+    }
     let workspace = root.path().join("workspace");
     assert_eq!(
         std::fs::read_to_string(workspace.join("main.tex")).unwrap(),
@@ -1235,6 +1305,85 @@ async fn spawned_readers_can_only_write_inside_the_record() {
         spawned["wrote"],
         json!([format!("{HELPER_RECORD}/notes/x.md")])
     );
+}
+
+#[tokio::test]
+async fn spawned_readers_use_the_task_reasoning_effort() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let provider = Scripted::start(helper_script()).await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut task = context(&workspace);
+    task.agent_id = "xai".into();
+    task.model_id = "grok-4.5".into();
+    task.brief.reasoning_effort = Some(oleafly_agent::Effort::High);
+    task.allowed_paths = vec!["main.tex".into(), "research".into()];
+    task.record_dir = HELPER_RECORD.into();
+
+    within(adapter.run(task, CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+
+    let requests = provider.requests();
+    assert!(requests.len() >= 3);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request["reasoning_effort"] == "high"),
+        "{requests:?}"
+    );
+}
+
+#[tokio::test]
+async fn gateway_effort_reaches_parent_and_spawned_reader_requests() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let provider = Scripted::start(helper_script()).await;
+    let mut host = fixture_host(root.path(), provider.url.clone()).await;
+    Arc::get_mut(&mut host).unwrap().caps = oleafly_agent::ModelCaps::from_metadata_json(&json!({
+        "reasoning": true,
+        "reasoningOptions": [{"type": "effort", "values": ["low", "max", "ultra"]}]
+    }));
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut task = context(&workspace);
+    task.agent_id = "gateway".into();
+    task.model_id = "auto/gpt-6.1-sol".into();
+    task.brief.reasoning_effort = Some(oleafly_agent::Effort::Ultra);
+    task.allowed_paths = vec!["main.tex".into(), "research".into()];
+    task.record_dir = HELPER_RECORD.into();
+
+    within(adapter.run(task, CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+
+    let requests = provider.requests();
+    assert!(requests.len() >= 3);
+    assert!(requests
+        .iter()
+        .all(|request| request["reasoning_effort"] == "ultra"));
+}
+
+#[tokio::test]
+async fn unsupported_reasoning_effort_fails_before_requesting_a_completion() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Scripted::start(script(|_, _| text_reply("unused"))).await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut task = context(root.path());
+    task.agent_id = "xai".into();
+    task.model_id = "grok-4.5".into();
+    task.brief.reasoning_effort = Some(oleafly_agent::Effort::Max);
+
+    let error = adapter
+        .run(task, CancellationToken::new(), event_log().1)
+        .await
+        .unwrap_err();
+
+    assert!(error.contains("no longer supported"), "{error}");
+    assert!(provider.requests().is_empty());
 }
 
 #[tokio::test]
@@ -1382,7 +1531,7 @@ async fn a_time_budget_stop_wraps_up_and_goes_to_review() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
-            text_reply("Updated the handoff and wrote the report.")
+            text_reply("Updated the handoff.")
         }
     }))
     .await;
@@ -1418,7 +1567,7 @@ async fn a_time_budget_stop_wraps_up_and_goes_to_review() {
     assert_eq!(finished.stop_reason, Some(StopReason::BudgetTime));
     assert_eq!(
         finished.result.as_ref().unwrap().summary,
-        "Updated the handoff and wrote the report."
+        "Updated the handoff."
     );
     let requests = provider.requests();
     let (wrap_ups, working): (Vec<&Value>, Vec<&Value>) = requests

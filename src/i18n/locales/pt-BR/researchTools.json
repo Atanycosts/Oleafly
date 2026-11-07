@@ -196,6 +196,7 @@
       "agentLabel": "Agente e modelo",
       "noAgents": "Nenhum agente disponível",
       "chooseAgent": "Escolha um agente e um modelo",
+      "unsupportedEffort": "Este modelo não oferece mais suporte ao nível de raciocínio salvo. Escolha Automático ou outro nível compatível.",
       "configureAgent": "Configure um agente nas configurações do assistente antes de criar uma tarefa.",
       "dependencies": "Aguardar estas tarefas",
       "dependencyStatus": "({{status}})",

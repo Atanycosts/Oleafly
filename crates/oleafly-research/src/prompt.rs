@@ -5,8 +5,9 @@ use crate::runs::RunSummary;
 
 pub fn task_prompt(context: &TaskRunContext, skills: &str) -> String {
     let mut prompt = format!(
-        "Complete this research task in the isolated workspace. Work only on the requested deliverable. Use relative file paths. Allowed paths: {}. Linked research roots are read-only. Summarize the result and remaining limitations when finished. Changes will be reviewed before applying them to the project.{}",
+        "Complete this research task in the isolated workspace. Work only on the requested deliverable. Use relative file paths. Allowed paths: {}. Linked research roots are read-only. Summarize the result and remaining limitations when finished. Changes will be reviewed before applying them to the project.\n\n{}{}",
         context.allowed_paths.join(", "),
+        oleafly_agent::WORKFLOW_RULES,
         skills
     );
     if !context.record_dir.is_empty() {
@@ -59,7 +60,7 @@ pub fn brief_block(brief: &ResearchBrief, record_dir: &str) -> String {
         .iter()
         .all(|criterion| criterion.trim().is_empty())
     {
-        lines.push("- None given. Propose checkable criteria in plan.md.".to_owned());
+        lines.push("- None given. Check the requested outcome; include criteria in plan.md when a plan is needed.".to_owned());
     } else {
         lines.extend(
             brief
@@ -94,11 +95,19 @@ pub fn brief_block(brief: &ResearchBrief, record_dir: &str) -> String {
         "Budget: {} minutes of active time, {cost}, {runs}, each run stops after {} minutes.",
         budget.wall_clock_minutes, budget.run_timeout_minutes
     ));
+    lines.push(format!(
+        "Reasoning effort: {}.",
+        brief
+            .reasoning_effort
+            .map(oleafly_agent::Effort::as_str)
+            .unwrap_or("provider default")
+    ));
     let commands = match brief.permissions.commands {
         CommandPolicy::Allow => "allowed",
         CommandPolicy::Ask => "allowed after the user approves each one",
         CommandPolicy::Off => "not allowed",
     };
+    lines.push("Use the available web search and page-reading tools when the task needs online sources. The subprocess network setting does not switch off those tools.".into());
     let network = if brief.permissions.network {
         "on"
     } else {
@@ -108,7 +117,7 @@ pub fn brief_block(brief: &ResearchBrief, record_dir: &str) -> String {
         "Commands: {commands}. Network for commands: {network}."
     ));
     lines.push(format!(
-        "Record: {record_dir}/ holds brief.md, plan.md, ledger.tsv, hypotheses.md, sources.md, handoff.md and report.md. Update ledger.tsv and handoff.md after every result."
+        "Record: {record_dir}/ holds brief.md and handoff.md. Keep the current goal, progress, verification and next action in handoff.md at meaningful checkpoints and before stopping. Use one plan.md for substantial work. Record experiment results with ledger_append when running experiments; create hypotheses.md, sources.md or report.md only when the deliverable needs them. Reuse existing records instead of creating per-turn copies."
     ));
     lines.push("</research-brief>".to_owned());
     lines.join("\n")
@@ -121,7 +130,7 @@ pub fn resume_message(resume: &ResumeContext, record_dir: &str) -> String {
         ResumeReason::Handoff => "the task moved to a new owner",
     };
     format!(
-        "You are resuming this task in the same workspace ({reason}). Read {record_dir}/handoff.md, plan.md and ledger.tsv before you act.\n\nHandoff:\n{}\n\nPlan:\n{}\n\nLast ledger rows:\n{}",
+        "You are resuming this task in the same workspace ({reason}). Use the retained context below and {record_dir}/handoff.md. Read plan.md and ledger.tsv if they exist and are needed; an empty plan or ledger can mean this task did not need one.\n\nHandoff:\n{}\n\nPlan:\n{}\n\nLast ledger rows:\n{}",
         none_or(&resume.handoff, "(empty)"),
         none_or(&resume.plan, "(empty)"),
         none_or(&resume.ledger_tail, "(none)")
@@ -171,7 +180,7 @@ pub fn wake_up_message(finished: &[RunSummary]) -> String {
 
 pub fn wrap_up_message(record_dir: &str) -> String {
     format!(
-        "The time budget ended. Update {record_dir}/handoff.md and write {record_dir}/report.md now. Do not start runs."
+        "The time budget ended. Update {record_dir}/handoff.md. Write {record_dir}/report.md only if the requested deliverable needs a report. Do not start runs."
     )
 }
 
@@ -220,7 +229,7 @@ mod tests {
         assert!(!block.contains("- \n"));
         let default = brief_block(&ResearchBrief::default(), "research/x");
         assert!(!default.contains("Main metric"));
-        assert!(default.contains("- None given. Propose checkable criteria in plan.md."));
+        assert!(default.contains("include criteria in plan.md when a plan is needed"));
         assert!(default.contains("no cost limit, no run limit"));
     }
 
@@ -241,6 +250,7 @@ mod tests {
             ..TaskRunContext::default()
         };
         let prompt = task_prompt(&context, "");
+        assert!(prompt.contains(oleafly_agent::WORKFLOW_RULES));
         assert!(prompt.contains("- Collect papers: Found 12 papers Record: research/collect-cd34/"));
         assert!(prompt.contains("First write research/tune-ab12/plan.md"));
         assert!(prompt.ends_with("Task: Tune\nTune the model."));

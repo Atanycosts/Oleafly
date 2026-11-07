@@ -46,10 +46,7 @@ pub fn record_slug(title: &str, task_id: &str) -> String {
     format!("{slug}-{suffix}")
 }
 
-const HYPOTHESES_TEMPLATE: &str = "# Hypotheses\n\nOne line per idea: what you expect, why, and its status (queued, testing, kept, dropped).\n";
-const SOURCES_TEMPLATE: &str =
-    "# Sources\n\nEvery source you rely on, with what you read and a page anchor such as [p. 4].\n";
-const HANDOFF_TEMPLATE: &str = "# Handoff\n\nWhat was done, what is running, what comes next. Rewrite this after every result.\n";
+const HANDOFF_TEMPLATE: &str = "# Handoff\n\nCurrent goal, progress, verification, unfinished work and next action. Update at meaningful checkpoints and before stopping.\n";
 
 fn open_record(execution_root: &Path, slug: &str) -> Result<TaskFiles, String> {
     TaskFiles::open(execution_root, &[record_dir(slug)])
@@ -58,14 +55,7 @@ fn open_record(execution_root: &Path, slug: &str) -> Result<TaskFiles, String> {
 pub fn init_record(execution_root: &Path, slug: &str, brief_md: &str) -> Result<(), String> {
     let files = open_record(execution_root, slug)?;
     let dir = record_dir(slug);
-    let header = format!("{LEDGER_HEADER}\n");
-    for (name, content) in [
-        ("brief.md", brief_md),
-        ("ledger.tsv", header.as_str()),
-        ("hypotheses.md", HYPOTHESES_TEMPLATE),
-        ("sources.md", SOURCES_TEMPLATE),
-        ("handoff.md", HANDOFF_TEMPLATE),
-    ] {
+    for (name, content) in [("brief.md", brief_md), ("handoff.md", HANDOFF_TEMPLATE)] {
         let path = format!("{dir}/{name}");
         if !files.exists(&path)? {
             files.write(&path, content)?;
@@ -103,6 +93,9 @@ pub fn render_brief_markdown(title: &str, prompt: &str, brief: &ResearchBrief) -
             "\n## Main metric\n\n{} ({better} is better)\n",
             metric.name
         ));
+    }
+    if let Some(effort) = brief.reasoning_effort {
+        out.push_str(&format!("\n## Reasoning effort\n\n{}\n", effort.as_str()));
     }
     out
 }
@@ -301,14 +294,15 @@ mod tests {
     }
 
     #[test]
-    fn init_record_writes_templates_once_and_keeps_existing_files() {
+    fn init_record_creates_only_recovery_files_and_keeps_existing_records() {
         let root = workspace();
         init_record(root.path(), "study-ab12", "# Brief\n").unwrap();
-        let ledger =
-            std::fs::read_to_string(root.path().join("research/study-ab12/ledger.tsv")).unwrap();
-        assert!(ledger.starts_with(LEDGER_HEADER));
         let handoff = root.path().join("research/study-ab12/handoff.md");
         std::fs::write(&handoff, "next: r003").unwrap();
+        let ledger = root.path().join("research/study-ab12/ledger.tsv");
+        assert!(!ledger.exists());
+        assert_eq!(ledger_tail(root.path(), "study-ab12", 5), "");
+        std::fs::write(&ledger, format!("{LEDGER_HEADER}\nr001\n")).unwrap();
         init_record(root.path(), "study-ab12", "# Changed brief\n").unwrap();
         assert_eq!(std::fs::read_to_string(&handoff).unwrap(), "next: r003");
         assert_eq!(
@@ -316,6 +310,15 @@ mod tests {
             "# Brief\n"
         );
         assert!(!root.path().join("research/study-ab12/plan.md").exists());
+        assert!(!root
+            .path()
+            .join("research/study-ab12/hypotheses.md")
+            .exists());
+        assert!(!root.path().join("research/study-ab12/sources.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(&ledger).unwrap(),
+            format!("{LEDGER_HEADER}\nr001\n")
+        );
     }
 
     #[cfg(unix)]

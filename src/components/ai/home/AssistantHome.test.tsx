@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { SkillEntry } from "@/lib/skills";
 import type { StoredChat } from "@/store/chats";
+import { applyLocale } from "@/i18n";
 import { AssistantHome } from "./AssistantHome";
 import { AgentPickerRow } from "./AgentPickerRow";
 import { RecentChats } from "./RecentChats";
@@ -47,6 +48,19 @@ function chat(id: string, overrides: Partial<StoredChat> = {}): StoredChat {
 }
 
 describe("AssistantHome", () => {
+  it("switches skill categories and bundled descriptions between English and Chinese", async () => {
+    const skills = [skill("paper-lookup"), skill("peer-review", { phase: "review" })];
+    render(<AssistantHome skills={skills} onPickSkill={vi.fn()} />);
+    expect(screen.getByTestId("assistant-home-tab-research")).toHaveTextContent("Research");
+    await act(() => applyLocale("zh-Hans"));
+    expect(screen.getByTestId("assistant-home-tab-research")).toHaveTextContent("研究");
+    expect(screen.getByTestId("assistant-home-card-paper-lookup")).toHaveTextContent("论文查找");
+    expect(screen.getByTestId("assistant-home-card-paper-lookup")).not.toHaveTextContent("What paper-lookup does.");
+    await act(() => applyLocale("en"));
+    expect(screen.getByTestId("assistant-home-tab-research")).toHaveTextContent("Research");
+    expect(screen.getByTestId("assistant-home-card-paper-lookup")).toHaveTextContent("What paper-lookup does.");
+  });
+
   it("groups skills into category tabs and runs the picked skill", () => {
     const onPickSkill = vi.fn();
     render(

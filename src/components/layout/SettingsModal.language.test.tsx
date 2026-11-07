@@ -40,11 +40,15 @@ describe("Settings language picker", () => {
   });
 
   it("re-renders in the active language without a reload", async () => {
+    useSettingsStore.setState({ harper: true, grammarDialect: "american" });
     render(<SettingsModal />);
+    expect(screen.getByTestId("settings-row-grammar-dialect")).toHaveTextContent("English (United States)");
     await applyLocale("zh-Hans");
     expect(await screen.findByText(zhHansSettings.language.label)).toBeInTheDocument();
+    expect(screen.getByTestId("settings-row-grammar-dialect")).toHaveTextContent("英语 (美国)");
     await applyLocale("en");
     expect(await screen.findByText(enSettings.language.label)).toBeInTheDocument();
+    expect(screen.getByTestId("settings-row-grammar-dialect")).toHaveTextContent("English (United States)");
   });
 
   it("says grammar checking is paused for a non-English dictionary", () => {

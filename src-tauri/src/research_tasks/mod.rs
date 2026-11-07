@@ -1,7 +1,7 @@
 mod apply;
 pub(crate) mod host;
 pub(crate) mod pdf_text;
-mod preview;
+pub(crate) mod preview;
 #[cfg(test)]
 #[path = "tests/scheduler.rs"]
 mod scheduler_tests;

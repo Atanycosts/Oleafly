@@ -681,5 +681,19 @@ mod tests {
         write_skill(pack.path(), "bundled", "Bundled");
         let skills = CliSkills::from_app(data.path(), Some(pack.path().to_path_buf()), None);
         assert_eq!(skills.load("p", "bundled").unwrap()["name"], "Bundled");
+
+        let pack =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/resources/skills");
+        let skills = CliSkills::from_app(data.path(), Some(pack), None);
+        let loaded = skills.load("p", "oleafly-development").unwrap();
+        assert_eq!(loaded["name"], "oleafly-development");
+        let prompt = skill_prompt(
+            &skills,
+            None,
+            &["oleafly-development".into()],
+            SkillAudience::Task,
+        )
+        .unwrap();
+        assert!(prompt.contains(loaded["instructions"].as_str().unwrap()));
     }
 }

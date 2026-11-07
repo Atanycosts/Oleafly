@@ -204,8 +204,6 @@ struct AppWeb {
     client: oleafly_agent::tools::web::WebClient,
 }
 
-const MAX_WEB_TEXT: usize = 48 * 1024;
-
 #[async_trait::async_trait]
 impl WebTools for AppWeb {
     async fn fetch(&self, url: &str) -> Result<serde_json::Value, String> {
@@ -216,13 +214,12 @@ impl WebTools for AppWeb {
         let page = oleafly_agent::tools::web::web_fetch(&self.client, url, &options)
             .await
             .map_err(|error| error.to_string())?;
-        let truncated = page.truncated || page.markdown.len() > MAX_WEB_TEXT;
         Ok(json!({
             "url": page.url,
             "title": page.title,
             "contentType": page.content_type,
-            "text": bounded(&page.markdown, MAX_WEB_TEXT),
-            "truncated": truncated,
+            "text": page.markdown,
+            "truncated": page.truncated,
         }))
     }
 
@@ -291,6 +288,7 @@ impl TaskHost for NativeTaskHost {
     ) -> TaskRuntimeFuture<Arc<dyn TaskBridge>> {
         let app = self.app.clone();
         Box::pin(async move {
+            crate::journal_workbench::prepare_research_context(&app, &context).await?;
             let desktop_apps = context.desktop_apps;
             let task_id = context.task_id.clone();
             let generation = context.execution_generation;
@@ -362,8 +360,16 @@ impl TaskHost for NativeTaskHost {
         self.web.clone()
     }
 
-    fn task_mcp_tools(&self, _context: &TaskRunContext) -> TaskRuntimeFuture<Vec<TaskMcpTool>> {
-        Box::pin(async {
+    fn task_mcp_tools(&self, context: &TaskRunContext) -> TaskRuntimeFuture<Vec<TaskMcpTool>> {
+        let task_meta = json!({
+            "com.oleafly/research-task": {
+                "system": "oleafly",
+                "project_id": context.project_id,
+                "task_id": context.task_id,
+                "generation": context.execution_generation,
+            }
+        });
+        Box::pin(async move {
             let names = tokio::task::spawn_blocking(task_mcp_server_names)
                 .await
                 .unwrap_or_default();
@@ -372,21 +378,25 @@ impl TaskHost for NativeTaskHost {
                 .into_iter()
                 .flat_map(|server| {
                     let server_name = server.name;
+                    let task_meta = task_meta.clone();
                     server.tools.into_iter().map(move |tool| {
                         let server = server_name.clone();
                         let handle = tool.tool_handle.clone();
+                        let task_meta = Some(task_meta.clone());
                         TaskMcpTool {
                             schema: oleafly_agent::ToolSchema {
                                 name: tool.name,
                                 description: tool.description.unwrap_or_default(),
                                 input_schema: tool.input_schema,
                             },
+                            read_only_hint: tool.read_only_hint,
                             call: Arc::new(move |arguments| {
                                 let server = server.clone();
                                 let handle = handle.clone();
+                                let task_meta = task_meta.clone();
                                 Box::pin(async move {
                                     crate::mcp::client::call_enabled_server_tool(
-                                        &server, &handle, arguments,
+                                        &server, &handle, arguments, task_meta,
                                     )
                                     .await
                                 })

@@ -8,7 +8,7 @@ import { i18n } from "@/i18n";
 import { describeError } from "@/lib/app-error";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatDateTime, formatNumber } from "@/lib/intl";
-import { matchesSkillSearch } from "@/lib/skill-groups";
+import { matchesSkillSearch, skillDisplayText } from "@/lib/skill-groups";
 import { SKILLS_QUERY_KEY } from "@/lib/skills";
 import { cn } from "@/lib/utils";
 import {
@@ -24,7 +24,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 
 function entryLine(entry: SkillCatalogEntry): string {
-  const parts = [entry.description, entry.license];
+  const parts = [skillDisplayText(entry).description, entry.license];
   if (entry.bytes > 0) parts.push(formatBytes(entry.bytes));
   return parts.join(" · ");
 }
@@ -155,7 +155,7 @@ function filterShelf(
   const matches = entries.filter(
     (entry) =>
       (active === null || entry.domain === active) &&
-      matchesSkillSearch(search, [entry.name, entry.id, entry.description, entry.domain]),
+      matchesSkillSearch(search, [entry.name, entry.id, entry.description, skillDisplayText(entry).name, skillDisplayText(entry).description, entry.domain]),
   );
   return { entries, domains, active, matches };
 }
@@ -181,7 +181,7 @@ function ShelfRow({
     >
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium">{entry.name}</span>
+          <span className="text-sm font-medium">{skillDisplayText(entry).name}</span>
           {entry.domain ? (
             <Badge variant="muted" size="sm">
               {entry.domain}

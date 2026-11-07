@@ -188,6 +188,7 @@ pub fn effort_from_arg(arg: EffortArg) -> Option<Effort> {
         EffortArg::High => Some(Effort::High),
         EffortArg::Xhigh => Some(Effort::Xhigh),
         EffortArg::Max => Some(Effort::Max),
+        EffortArg::Ultra => Some(Effort::Ultra),
     }
 }
 

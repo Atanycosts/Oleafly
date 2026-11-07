@@ -1235,7 +1235,7 @@ pub fn carry_over_record(from_root: &Path, to_root: &Path, slug: &str) -> Result
             total = total.saturating_add(metadata.len());
             if copied >= MAX_RECORD_FILES || total > MAX_RECORD_BYTES {
                 return Err(
-                    "The research record is too large to carry over. Start over without it.".into(),
+                    "The research record is too large to carry over. Remove excess files from the existing record, then retry Fresh.".into(),
                 );
             }
             let destination = to_root.join(inside);

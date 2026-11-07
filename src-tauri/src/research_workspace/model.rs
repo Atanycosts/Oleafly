@@ -35,7 +35,20 @@ pub struct ResearchWorkspace {
     pub version: u8,
     pub primary_project_id: String,
     pub roots: Vec<LinkedResearchRoot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_research: Option<JournalResearchLink>,
     pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalResearchLink {
+    pub task_id: String,
+    pub world_version_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

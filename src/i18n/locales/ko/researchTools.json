@@ -194,6 +194,7 @@
       "agentLabel": "에이전트와 모델",
       "noAgents": "쓸 수 있는 에이전트가 없습니다",
       "chooseAgent": "에이전트와 모델을 고르세요",
+      "unsupportedEffort": "이 모델은 저장된 추론 수준을 더 이상 지원하지 않습니다. 자동 또는 다른 지원 수준을 선택하세요.",
       "configureAgent": "작업을 만들기 전에 어시스턴트 설정에서 에이전트를 구성하세요.",
       "dependencies": "이 작업들을 기다리기",
       "dependencyStatus": "({{status}})",

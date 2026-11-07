@@ -765,16 +765,17 @@ export interface ChatsLoadResult {
 }
 export interface ModelMetadata {
     name: string;
+    metadataSource?: "provider";
     contextWindow?: number;
     outputLimit?: number;
-    inputModalities: string[];
-    outputModalities: string[];
-    toolCall: boolean;
-    reasoning: boolean;
+    inputModalities?: string[];
+    outputModalities?: string[];
+    toolCall?: boolean;
+    reasoning?: boolean;
     reasoningOptions?: ReasoningOption[];
-    attachment: boolean;
-    structuredOutput: boolean;
-    status: ModelStatus;
+    attachment?: boolean;
+    structuredOutput?: boolean;
+    status?: ModelStatus;
     releaseDate?: string;
     lastUpdated?: string;
     cost?: ModelCost;

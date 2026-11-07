@@ -326,9 +326,25 @@ fn app_facts(task: &ResearchTask) -> Result<(TaskGrant, PathBuf), String> {
                 .collect()
         })
         .unwrap_or_default();
-    let model_metadata = crate::ai_model_metadata::snapshot()
-        .lookup(&task.agent_id, &task.model_id)
-        .and_then(|entry| serde_json::to_value(entry).ok());
+    let snapshot = crate::ai_model_metadata::snapshot();
+    let model_metadata = if task.runtime_id == "builtin" {
+        let config = crate::config::read_config()?;
+        let stored_metadata = config
+            .ai_provider_models
+            .get(&task.agent_id)
+            .and_then(|models| models.iter().find(|model| model.id == task.model_id))
+            .and_then(|model| model.metadata.as_ref());
+        crate::ai_model_metadata::model_metadata_for(
+            &snapshot,
+            stored_metadata,
+            &task.agent_id,
+            &task.model_id,
+        )
+    } else {
+        snapshot
+            .lookup(&task.agent_id, &task.model_id)
+            .and_then(|entry| serde_json::to_value(entry).ok())
+    };
     let pack = crate::skills_pack::cached_pack_root();
     let disabled_skills =
         crate::skills::list_with(&data_root, pack.as_deref(), Some(&task.project_id))

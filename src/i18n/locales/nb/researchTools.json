@@ -195,6 +195,7 @@
       "agentLabel": "Agent og modell",
       "noAgents": "Ingen agenter er tilgjengelige",
       "chooseAgent": "Velg en agent og en modell",
+      "unsupportedEffort": "Denne modellen støtter ikke lenger det lagrede resonneringsnivået. Velg Automatisk eller et annet støttet nivå.",
       "configureAgent": "Sett opp en agent i assistentinnstillingene før du lager en oppgave.",
       "dependencies": "Vent på disse oppgavene",
       "dependencyStatus": "({{status}})",

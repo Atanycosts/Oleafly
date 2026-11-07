@@ -516,6 +516,12 @@ steps with `--max-steps` (up to 200) and the time with `--timeout`.
 `web_search` needs a Brave, Tavily or Serper key in Oleafly's settings. A
 provider that searches the web itself uses its own search instead.
 
+Sandboxed commands use the same runtime discovery as research tasks: project
+Python environments, supported runtimes on the launching process's PATH and
+known runtime installations. The sandbox builds its own PATH from those
+runtimes. In a review run, the original project's environment is readable
+while writes stay in the review workspace and temporary home.
+
 Where the sandbox doesn't work, commands run as you. They run only with
 `--apply`, or in a review run with `--unsandboxed-commands`, and never in a
 run that only reads. A warning before the run starts says which applies.

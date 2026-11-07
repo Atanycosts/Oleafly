@@ -74,7 +74,7 @@ describe("mergeFetchedModels", () => {
       { id: "c", name: "C" },
     ]);
     expect(merged).toEqual([
-      { id: "a", name: "a", enabled: false, source: "builtin" },
+      { id: "a", name: "A renamed", enabled: false, source: "builtin" },
       { id: "c", name: "C", enabled: true, source: "fetched" },
     ]);
   });
@@ -93,7 +93,7 @@ describe("mergeFetchedModels", () => {
       { id: "c", name: "C", trust: "blocked", blockedReason: "Its thinking output breaks the loop." },
     ]);
     expect(merged).toEqual([
-      { id: "a", name: "a", enabled: false, source: "builtin", trust: "verified", metadata: meta },
+      { id: "a", name: "A", enabled: false, source: "builtin", trust: "verified", metadata: meta },
       { id: "b", name: "B", enabled: true, source: "fetched", trust: "untested" },
       {
         id: "c",
@@ -125,6 +125,33 @@ describe("mergeFetchedModels", () => {
     const merged = mergeFetchedModels([previous], [{ id: "a", name: "A" }]);
     expect(merged[0].trust).toBe("verified");
     expect(merged[0].metadata).toBe(meta);
+  });
+
+  it("replaces provider capabilities on refresh and clears them when no longer advertised", () => {
+    const previous: StoredModel = {
+      ...stored("route", true, "fetched"),
+      metadata: { name: "Route", metadataSource: "provider", toolCall: true, contextWindow: 900000 },
+    };
+    const [updated] = mergeFetchedModels([previous], [{
+      id: "route",
+      name: "New route",
+      trust: "untested",
+      metadata: { name: "New route", metadataSource: "provider", contextWindow: 100000 },
+    }]);
+    expect(updated.metadata).toEqual({ name: "New route", metadataSource: "provider", contextWindow: 100000 });
+    expect(updated.name).toBe("New route");
+    expect(modelIsChatOnly(updated)).toBe(false);
+    expect(mergeFetchedModels([updated], [{ id: "route", name: "Route" }])[0].metadata).toBeUndefined();
+  });
+
+  it("refreshes fetched route labels while preserving a custom model name", () => {
+    const fetched: StoredModel = { ...stored("route", true, "fetched"), name: "Old route" };
+    const custom: StoredModel = { ...stored("custom", true, "custom"), name: "My model" };
+    const result = mergeFetchedModels([fetched, custom], [
+      { id: "route", name: "New route" },
+      { id: "custom", name: "Provider name" },
+    ]);
+    expect(result.map((model) => model.name)).toEqual(["New route", "My model"]);
   });
 
   it("keeps the previous list when the provider returns nothing readable", () => {

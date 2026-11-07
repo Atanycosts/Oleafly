@@ -132,6 +132,7 @@ pub trait WebTools: Send + Sync {
 #[derive(Clone)]
 pub struct TaskMcpTool {
     pub schema: ToolSchema,
+    pub read_only_hint: bool,
     pub call: Arc<dyn Fn(Value) -> TaskRuntimeFuture<Value> + Send + Sync>,
 }
 
@@ -296,15 +297,17 @@ impl ToolScope {
                 SPAWN_AGENT => spawn_child(self.clone(), &args, &token).await,
                 name if self.mcp.contains_key(name) => {
                     let tool = &self.mcp[name];
-                    gate(
-                        &self.binding.services,
-                        &self.binding.gate_context(),
-                        ApprovalKind::Mcp,
-                        &format!("Use {name}"),
-                        &args.to_string(),
-                        &token,
-                    )
-                    .await?;
+                    if !tool.read_only_hint {
+                        gate(
+                            &self.binding.services,
+                            &self.binding.gate_context(),
+                            ApprovalKind::Mcp,
+                            &format!("Use {name}"),
+                            &args.to_string(),
+                            &token,
+                        )
+                        .await?;
+                    }
                     (tool.call)(args).await
                 }
                 name => match call_task_tool(name, args.clone(), &self.binding).await {
@@ -367,7 +370,8 @@ async fn spawn_child(
     let names: BTreeSet<String> = tools.iter().map(|tool| tool.name.clone()).collect();
     let mut request = CompletionRequest::prompt(
         format!(
-            "You help a research task with one job. Work only with the tools you have. You may read the project; write only inside {record}/. Finish with a short summary of what you found and which files you wrote."
+            "You help a research task with one job. Work only with the tools you have. You may read the project; write only inside {record}/. Finish with a short summary of what you found and which files you wrote.\n\n{}",
+            oleafly_agent::WORKFLOW_RULES
         ),
         if paths.is_empty() {
             brief
@@ -376,6 +380,7 @@ async fn spawn_child(
         },
     );
     request.tools = tools;
+    request.effort = scope.binding.brief.reasoning_effort;
     let runner_scope = scope.clone();
     let runner_writable = writable.clone();
     let runner_wrote = wrote.clone();
@@ -636,6 +641,21 @@ impl BuiltinTaskAdapter {
             resolved,
             usage,
         } = self.host.provider(context.clone()).await?;
+        if let Some(effort) = brief.reasoning_effort {
+            if !oleafly_agent::effort_choices(
+                &resolved.provider_id,
+                &resolved.model_id,
+                &resolved.caps,
+            )
+            .contains(&effort)
+            {
+                return Err(format!(
+                    "The selected reasoning effort ({}) is no longer supported by {}. Choose Auto or another supported level.",
+                    effort.as_str(),
+                    resolved.model_id
+                ));
+            }
+        }
         let usage: Arc<dyn UsageSink> = Arc::from(usage);
         let binding = TaskBinding {
             task_id: context.task_id.clone(),
@@ -719,6 +739,7 @@ impl BuiltinTaskAdapter {
         });
         let mut template = CompletionRequest::prompt(task_prompt(&context, &skills), String::new());
         template.tools = tools;
+        template.effort = brief.reasoning_effort;
         let suspend = self.services.suspends.token(&context.task_id);
         let restored = self.restored_conversation(&context, &resolved, &events);
         let summary = restored

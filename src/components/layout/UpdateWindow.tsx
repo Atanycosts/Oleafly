@@ -5,7 +5,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { UpdateDialog, type UpdatePhase } from "@/components/layout/UpdateDialog";
 import { loadReleaseNotesRenderer, openableReleaseLink } from "@/components/layout/ReleaseNotes";
-import { findUpdate, installUpdate } from "@/lib/updater";
+import { findUpdate, installUpdate, localWorkbenchBuild } from "@/lib/updater";
 import { tauriReleasePageFetcher, useReleaseHistory } from "@/lib/release-history";
 import { decodeAppError, describeError } from "@/lib/app-error";
 import { logError } from "@/lib/log";
@@ -25,7 +25,7 @@ function releasePageFor(version: string | undefined): string {
 // path closes silently when there is nothing to install.
 export function UpdateWindow() {
   const manual = new URLSearchParams(window.location.search).get("manual") === "1";
-  const [phase, setPhase] = useState<UpdatePhase>("checking");
+  const [phase, setPhase] = useState<UpdatePhase>(localWorkbenchBuild ? "localBuild" : "checking");
   const [update, setUpdate] = useState<Update | null>(null);
   const [percent, setPercent] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
@@ -62,6 +62,7 @@ export function UpdateWindow() {
   }, [phase]);
 
   const runCheck = useCallback(async () => {
+    if (localWorkbenchBuild) return;
     const run = ++checkRunRef.current;
     const stale = () => run !== checkRunRef.current;
     setPhase("checking");

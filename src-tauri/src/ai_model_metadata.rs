@@ -36,6 +36,7 @@ pub enum BillingMode {
     Api,
     Subscription,
     Local,
+    Unknown,
 }
 
 impl BillingMode {
@@ -44,6 +45,7 @@ impl BillingMode {
             BillingMode::Api => "api",
             BillingMode::Subscription => "subscription",
             BillingMode::Local => "local",
+            BillingMode::Unknown => "unknown",
         }
     }
 }
@@ -69,8 +71,10 @@ fn is_plan_endpoint(provider_id: &str, base_url: &str) -> bool {
 }
 
 pub fn classify_billing(provider_id: &str, base_url: &str) -> BillingMode {
-    if provider_id == "ollama" || is_loopback_url(base_url) {
+    if provider_id == "ollama" {
         BillingMode::Local
+    } else if is_loopback_url(base_url) {
+        BillingMode::Unknown
     } else if is_plan_endpoint(provider_id, base_url) {
         BillingMode::Subscription
     } else {
@@ -144,6 +148,46 @@ impl MetadataSnapshot {
         model_id
             .strip_prefix("models/")
             .and_then(|stripped| models.get(stripped))
+    }
+
+    pub fn lookup_for_provider(&self, provider_id: &str, model_id: &str) -> Option<&ModelMetadata> {
+        if oleafly_agent::provider::catalog_entry(provider_id).is_some() {
+            return self.lookup(provider_id, model_id);
+        }
+
+        if let Some(metadata) = self.lookup(provider_id, model_id) {
+            return Some(metadata);
+        }
+        if let Some(metadata) = self
+            .providers
+            .get(provider_id)
+            .and_then(|models| models.get(&model_id.to_ascii_lowercase()))
+        {
+            return Some(metadata);
+        }
+
+        if let Some((namespace, bare_id)) = model_id.rsplit_once('/') {
+            let source = if namespace == "models" {
+                "google"
+            } else {
+                namespace
+            };
+            if let Some(metadata) = self.providers.get(source).and_then(|models| {
+                models
+                    .get(bare_id)
+                    .or_else(|| models.get(&bare_id.to_ascii_lowercase()))
+            }) {
+                return Some(metadata);
+            }
+        }
+
+        let normalized = model_id.to_ascii_lowercase();
+        let mut matches = self
+            .providers
+            .values()
+            .filter_map(|models| models.get(model_id).or_else(|| models.get(&normalized)));
+        let found = matches.next()?;
+        matches.next().is_none().then_some(found)
     }
 }
 
@@ -422,16 +466,41 @@ pub(crate) fn model_caps(
     provider_id: &str,
     model_id: &str,
 ) -> oleafly_agent::ModelCaps {
-    if let Some(entry) = snapshot
-        .lookup(provider_id, model_id)
-        .and_then(|metadata| serde_json::to_value(metadata).ok())
+    model_metadata_for(snapshot, stored, provider_id, model_id)
+        .as_ref()
+        .map(oleafly_agent::ModelCaps::from_metadata_json)
+        .unwrap_or_default()
+}
+
+pub(crate) fn model_metadata_for(
+    snapshot: &MetadataSnapshot,
+    stored: Option<&serde_json::Value>,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<serde_json::Value> {
+    let stored_entry = stored.filter(|entry| entry.is_object());
+    if stored_entry.and_then(|entry| entry.get("metadataSource"))
+        == Some(&serde_json::Value::String("provider".into()))
     {
-        return oleafly_agent::ModelCaps::from_metadata_json(&entry);
+        return stored_entry.cloned();
     }
-    match stored {
-        Some(entry) if entry.is_object() => oleafly_agent::ModelCaps::from_metadata_json(entry),
-        _ => oleafly_agent::ModelCaps::default(),
+    let metadata = if oleafly_agent::provider::catalog_entry(provider_id).is_none() {
+        snapshot.lookup_for_provider(provider_id, model_id)
+    } else {
+        snapshot.lookup(provider_id, model_id)
+    };
+    if let Some(mut entry) = metadata.and_then(|metadata| serde_json::to_value(metadata).ok()) {
+        if oleafly_agent::provider::catalog_entry(provider_id).is_none()
+            && snapshot.lookup(provider_id, model_id).is_none()
+            && snapshot
+                .lookup(provider_id, &model_id.to_ascii_lowercase())
+                .is_none()
+        {
+            entry.as_object_mut().unwrap().remove("cost");
+        }
+        return Some(entry);
     }
+    stored_entry.cloned()
 }
 
 #[cfg(test)]
@@ -524,11 +593,11 @@ mod tests {
         );
         assert_eq!(
             classify_billing("custom", "http://127.0.0.1:8080/v1"),
-            BillingMode::Local
+            BillingMode::Unknown
         );
         assert_eq!(
             classify_billing("custom", "http://localhost:11434"),
-            BillingMode::Local
+            BillingMode::Unknown
         );
         assert_eq!(
             classify_billing("openai", "https://api.openai.com/v1"),
@@ -925,5 +994,147 @@ mod tests {
             model_caps(&MetadataSnapshot::default(), None, "ollama", "llama3.2"),
             oleafly_agent::ModelCaps::default()
         );
+    }
+
+    #[test]
+    fn custom_provider_models_inherit_matching_catalog_metadata() {
+        let source = serde_json::json!({
+            "schemaVersion": 1,
+            "source": "models.dev",
+            "generatedAt": "2026-10-01T00:00:00.000Z",
+            "providers": {
+                "openai": {
+                    "gpt-6.1-sol": {
+                        "name": "GPT-6.1 Sol",
+                        "reasoning": true,
+                        "reasoningOptions": [{"type":"effort","values":["low","medium","high","xhigh","max"]}]
+                    }
+                }
+            }
+        });
+        let snapshot = parse_snapshot(&source.to_string()).unwrap();
+
+        let custom = model_caps(&snapshot, None, "xiaobai-best", "gpt-6.1-sol");
+        assert_eq!(
+            custom.reasoning.efforts,
+            Some(vec![
+                oleafly_agent::Effort::Low,
+                oleafly_agent::Effort::Medium,
+                oleafly_agent::Effort::High,
+                oleafly_agent::Effort::Xhigh,
+                oleafly_agent::Effort::Max,
+            ])
+        );
+        assert_eq!(
+            model_caps(&snapshot, None, "openai", "gpt-6.1-sol"),
+            oleafly_agent::ModelCaps::default()
+        );
+        let stored = serde_json::json!({
+            "reasoning": true,
+            "reasoningOptions": [{"type":"effort","values":["low","high"]}]
+        });
+        assert_eq!(
+            model_caps(&snapshot, Some(&stored), "xiaobai-best", "gpt-6.1-sol")
+                .reasoning
+                .efforts,
+            Some(vec![
+                oleafly_agent::Effort::Low,
+                oleafly_agent::Effort::High
+            ])
+        );
+        assert!(snapshot
+            .lookup_for_provider("xiaobai-best", "gpt-6.1-sol-enterprise")
+            .is_none());
+        assert!(snapshot
+            .lookup_for_provider("openai", "gpt-6.1-sol")
+            .is_none());
+    }
+
+    #[test]
+    fn custom_model_metadata_uses_provider_override_then_exact_catalog_ids() {
+        let source = serde_json::json!({
+            "schemaVersion": 1,
+            "source": "models.dev",
+            "generatedAt": "2026-10-01T00:00:00.000Z",
+            "providers": {
+                "anthropic": {
+                    "claude-opus-5-5": {"name":"Claude Opus", "reasoning":true}
+                },
+                "openai": {
+                    "gpt-6.1-sol": {"name":"GPT 6.1", "reasoning":true}
+                },
+                "xiaobai-best": {
+                    "gpt-6.1-sol": {"name":"Gateway override", "reasoning":false}
+                }
+            }
+        });
+        let snapshot = parse_snapshot(&source.to_string()).unwrap();
+
+        assert_eq!(
+            snapshot
+                .lookup_for_provider("xiaobai-best", "gpt-6.1-sol")
+                .unwrap()
+                .name,
+            "Gateway override"
+        );
+        assert_eq!(
+            snapshot
+                .lookup_for_provider("xiaobai-best", "openai/gpt-6.1-sol")
+                .unwrap()
+                .name,
+            "GPT 6.1"
+        );
+        assert_eq!(
+            snapshot
+                .lookup_for_provider("xiaobai-best", "claude-opus-5-5")
+                .unwrap()
+                .name,
+            "Claude Opus"
+        );
+    }
+
+    #[test]
+    fn current_catalog_metadata_precedes_its_saved_model_copy() {
+        let snapshot = bundled_snapshot();
+        let stored = serde_json::json!({"name":"Gateway GPT", "reasoning":false});
+        let metadata =
+            model_metadata_for(&snapshot, Some(&stored), "xiaobai-best", "gpt-6.1-sol").unwrap();
+        assert_eq!(metadata["name"], "GPT-6.1 Sol");
+        assert_eq!(metadata["reasoning"], true);
+    }
+
+    #[test]
+    fn provider_metadata_precedes_catalog_without_filling_missing_capabilities() {
+        let snapshot = bundled_snapshot();
+        let stored = serde_json::json!({
+            "name": "Gateway route",
+            "metadataSource": "provider",
+            "contextWindow": 922000,
+            "reasoningOptions": [{"type":"effort","values":["low","max","ultra"]}]
+        });
+        let metadata =
+            model_metadata_for(&snapshot, Some(&stored), "xiaobai-best", "gpt-6.1-sol").unwrap();
+        assert_eq!(metadata, stored);
+        assert!(metadata.get("toolCall").is_none());
+        let caps = model_caps(&snapshot, Some(&stored), "xiaobai-best", "gpt-6.1-sol");
+        assert_eq!(caps.context_window, Some(922000));
+        assert_eq!(
+            caps.reasoning.efforts,
+            Some(vec![
+                oleafly_agent::Effort::Low,
+                oleafly_agent::Effort::Max,
+                oleafly_agent::Effort::Ultra,
+            ])
+        );
+    }
+
+    #[test]
+    fn custom_provider_catalog_fallback_does_not_inherit_another_providers_price() {
+        let snapshot = bundled_snapshot();
+        let metadata = model_metadata_for(&snapshot, None, "gateway", "gpt-4o").unwrap();
+        assert_eq!(metadata["name"], "GPT-4o");
+        assert!(metadata.get("cost").is_none());
+        let official = model_metadata_for(&snapshot, None, "openai", "gpt-4o").unwrap();
+        assert!(official.get("cost").is_some());
     }
 }

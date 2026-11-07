@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FlaskConical, Settings2 } from "lucide-react";
+import { effortChoicesFor } from "@oleafly/ai-core";
 import { SidebarPanelHeader } from "@/components/layout/SidebarSection";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -58,7 +59,10 @@ export function ResearchWorkspacePanel() {
     const state = deriveProviderState(config);
     return configuredModelGroups(
       { keys: state.keysMap, customProviders: state.customProviders, providerModels: state.providerModelsMap },
-      { keep: { providerId: state.provider, modelId: state.model } },
+      {
+        keep: { providerId: state.provider, modelId: state.model },
+        toModel: (_providerId, model) => ({ id: model.id, name: model.name, metadata: model.metadata }),
+      },
     );
   }, [config]);
   const targets = useAgentTargets(projectId, groups);
@@ -66,6 +70,14 @@ export function ResearchWorkspacePanel() {
     runtimeId: target.runtime === "built-in" ? "builtin" : "acp",
     agentId: target.agentId ?? target.providerId ?? "",
     modelId: target.modelId ?? "",
+    effortChoices: target.runtime === "built-in" && target.providerId && target.modelId
+      ? effortChoicesFor(
+        target.providerId,
+        target.modelId,
+        groups.find((group) => group.id === target.providerId)?.models
+          .find((model) => model.id === target.modelId)?.metadata,
+      )
+      : [],
     label: target.label,
     agentName: target.runtime === "built-in"
       ? groups.find((group) => group.id === target.providerId)?.name

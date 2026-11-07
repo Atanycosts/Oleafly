@@ -194,6 +194,7 @@
       "agentLabel": "代理與模型",
       "noAgents": "沒有可用的代理",
       "chooseAgent": "選擇代理與模型",
+      "unsupportedEffort": "此模型已不再支援已儲存的推理強度。請選擇「自動」或其他支援的檔位。",
       "configureAgent": "建立任務前，請先在助理設定中設定代理。",
       "dependencies": "等待這些任務完成",
       "dependencyStatus": "（{{status}}）",

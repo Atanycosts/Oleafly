@@ -7,6 +7,7 @@ import type { ModelMessage, ToolSet } from "@/lib/chat-types";
 import type { AppConfig, ModelProbe, StoredModel } from "@/lib/tauri";
 import type { ChatMessage, StoredChat } from "@/store/chats";
 import enAi from "@/i18n/locales/en/ai.json" with { type: "json" };
+import workflowRules from "../../../crates/oleafly-agent/src/workflow.md?raw";
 
 interface HarnessOptions {
   system: string;
@@ -2205,6 +2206,7 @@ describe("ChatCore agent turns", () => {
     await waitFor(() => expect(mocks.runs).toHaveLength(1));
 
     expect(mocks.runs[0].options.system).toContain(posture);
+    expect(mocks.runs[0].options.system).toContain(workflowRules);
     await act(async () => finishRun(0, "Ready"));
   });
 
@@ -2469,7 +2471,7 @@ describe("ChatCore agent turns", () => {
     await act(async () => finishRun(0, "Ready"));
   });
 
-  it("groups the skill catalog by phase and states the workflow rules", async () => {
+  it("groups skill metadata by phase without loading the instructions", async () => {
     mocks.skillEntries.push(
       skillEntry({
         id: "oleafly-research-loop",
@@ -2499,9 +2501,8 @@ describe("ChatCore agent turns", () => {
     const system = mocks.runs[0].options.system;
     expect(system).toContain("Research workflow map");
     expect(system.indexOf("## research")).toBeLessThan(system.indexOf("## authoring"));
-    expect(system).toContain(
-      'call load_skill with "oleafly-research-loop" first and follow the handoffs it names',
-    );
+    expect(system).toContain('"id":"oleafly-research-loop"');
+    expect(system).not.toContain("Plan the work, then hand off.");
     expect(mocks.runs[0].options.tools).toHaveProperty("read_skill_file");
     await act(async () => finishRun(0, "Ready"));
   });
@@ -2516,7 +2517,7 @@ describe("ChatCore agent turns", () => {
     expect(system).toContain("Never invent a reference");
     expect(system).toContain("Every \\cite key must resolve to an entry in the project bibliography");
     expect(system).toContain("research/sources/");
-    expect(system).toContain("Compile after each section you write");
+    expect(system).toContain("Compile after changes that affect the document build");
     await act(async () => finishRun(0, "Ready"));
 
     act(() => {

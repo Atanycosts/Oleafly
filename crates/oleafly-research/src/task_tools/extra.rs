@@ -233,11 +233,11 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
             &["brief"],
         ),
     ];
-    if brief.permissions.network && has_web {
+    if has_web {
         tools.push(tool(
             "web_fetch",
-            "Read a public web page as Markdown.",
-            json!({"url": {"type": "string", "maxLength": 2000}}),
+            "Read a public web page as Markdown. Optionally retain the returned page in a task workspace file for source review.",
+            json!({"url": {"type": "string", "maxLength": 2000}, "save_path": {"type": "string"}}),
             &["url"],
         ));
         tools.push(tool(
@@ -847,11 +847,43 @@ pub async fn call_task_tool(
         "literature_search" => literature(binding, &args).await,
         "read_paper" => paper(binding, &args).await,
         "web_fetch" | "web_search" => {
-            let web = binding.host.web().filter(|_| binding.brief.permissions.network);
+            let web = binding.host.web();
             match web {
                 None => Err("Web access is off for this task.".into()),
                 Some(web) if name == "web_fetch" => match required(&args, "url") {
-                    Ok(url) => web.fetch(url).await,
+                    Ok(url) => match web.fetch(url).await {
+                        Ok(mut page) => {
+                            let saved = if let Some(path) = args.get("save_path").and_then(Value::as_str) {
+                                binding.files().and_then(|files| {
+                                    let text = page.get("text").and_then(Value::as_str)
+                                        .ok_or("The web reader did not return source text.")?;
+                                    let captured = format!(
+                                        "Source URL: {}\nCaptured at: {}\nTruncated: {}\n\n{}",
+                                        page.get("url").and_then(Value::as_str).unwrap_or(url),
+                                        iso_utc(now_ms()), page["truncated"], text,
+                                    );
+                                    files.write(path, &captured)?;
+                                    page["savedPath"] = json!(path);
+                                    Ok(())
+                                })
+                            } else {
+                                Ok(())
+                            };
+                            saved.map(|()| {
+                                if let Some(text) = page.get("text").and_then(Value::as_str) {
+                                    let shortened = text.len() > super::MAX_OUTPUT_BYTES;
+                                    let excerpt = super::bounded(text, super::MAX_OUTPUT_BYTES);
+                                    page["text"] = json!(excerpt);
+                                    page["textTruncated"] = json!(shortened);
+                                    if shortened {
+                                        page["note"] = json!("This response contains an excerpt. Use save_path, then read_file with nextOffset to read the retained page in full.");
+                                    }
+                                }
+                                page
+                            })
+                        }
+                        Err(error) => Err(error),
+                    },
                     Err(error) => Err(error),
                 },
                 Some(web) => match required(&args, "query") {
@@ -917,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn web_tools_appear_only_with_network_permission() {
+    fn web_tools_are_independent_of_subprocess_network_permission() {
         let mut brief = ResearchBrief::default();
         let names = |brief: &ResearchBrief, web: bool| {
             task_tool_schemas(brief, web)
@@ -925,7 +957,7 @@ mod tests {
                 .map(|tool| tool.name)
                 .collect::<Vec<_>>()
         };
-        assert!(!names(&brief, true).contains(&"web_fetch".to_owned()));
+        assert!(names(&brief, true).contains(&"web_fetch".to_owned()));
         brief.permissions.network = true;
         assert!(names(&brief, true).contains(&"web_fetch".to_owned()));
         assert!(!names(&brief, false).contains(&"web_search".to_owned()));

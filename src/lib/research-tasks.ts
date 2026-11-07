@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { EffortLevel } from "@oleafly/ai-core";
 import type { ProjectStateChanged } from "@/lib/tauri";
 
 export type ResearchTaskStatus =
@@ -72,6 +73,7 @@ export interface ResearchBrief {
   reviewPlanFirst: boolean;
   permissions: { network: boolean; commands: CommandPolicy; desktopApps: boolean };
   budget: TaskBudget;
+  reasoningEffort: EffortLevel | null;
   profile: RunProfile;
   compute: { executor: string; target: string | null; resources: ComputeResources | null };
 }
@@ -142,6 +144,7 @@ export function defaultBrief(goal = ""): ResearchBrief {
     reviewPlanFirst: false,
     permissions: { network: false, commands: "allow", desktopApps: false },
     budget: { wallClockMinutes: 120, usdCap: null, maxRuns: null, runTimeoutMinutes: 60 },
+    reasoningEffort: null,
     profile: "analysis",
     compute: { executor: "local", target: null, resources: null },
   };
@@ -276,6 +279,7 @@ export function normalizeTask(raw: RawTask): ResearchTask {
     ...raw,
     brief: {
       ...brief,
+      reasoningEffort: raw.brief?.reasoningEffort ?? null,
       permissions: { ...defaultBrief().permissions, ...raw.brief?.permissions },
       budget: { ...defaultBrief().budget, ...raw.brief?.budget },
       compute: { ...defaultBrief().compute, ...raw.brief?.compute },

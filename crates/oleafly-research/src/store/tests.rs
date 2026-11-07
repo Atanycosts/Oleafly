@@ -931,6 +931,28 @@ fn a_task_created_without_a_brief_gets_the_defaults() {
 }
 
 #[test]
+fn a_task_retains_its_selected_reasoning_effort() {
+    let (_temp, store) = store();
+    let brief = ResearchBrief {
+        reasoning_effort: Some(oleafly_agent::Effort::High),
+        ..ResearchBrief::default()
+    };
+    let mut next = draft("paper", "Reasoning effort");
+    next.brief = Some(brief);
+
+    let task = store.create(next).unwrap();
+
+    assert_eq!(
+        task.brief.reasoning_effort,
+        Some(oleafly_agent::Effort::High)
+    );
+    assert_eq!(
+        store.require(&task.id).unwrap().brief.reasoning_effort,
+        Some(oleafly_agent::Effort::High)
+    );
+}
+
+#[test]
 fn brief_limits_are_enforced() {
     let (_temp, store) = store();
     let with = |change: &dyn Fn(&mut ResearchBrief)| {

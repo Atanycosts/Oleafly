@@ -139,6 +139,7 @@ pub struct ResearchBrief {
     pub review_plan_first: bool,
     pub permissions: TaskPermissions,
     pub budget: TaskBudget,
+    pub reasoning_effort: Option<oleafly_agent::Effort>,
     pub profile: RunProfile,
     pub compute: ComputeTarget,
 }

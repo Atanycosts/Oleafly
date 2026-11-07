@@ -196,6 +196,7 @@
       "agentLabel": "Agente e modello",
       "noAgents": "Nessun agente disponibile",
       "chooseAgent": "Scegli un agente e un modello",
+      "unsupportedEffort": "Questo modello non supporta più il livello di ragionamento salvato. Scegli Automatico o un altro livello supportato.",
       "configureAgent": "Configura un agente nelle impostazioni dell'assistente prima di creare un'attività.",
       "dependencies": "Aspetta queste attività",
       "dependencyStatus": "({{status}})",

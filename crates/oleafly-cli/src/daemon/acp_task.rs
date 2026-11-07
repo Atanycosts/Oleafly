@@ -1104,7 +1104,11 @@ impl DaemonAcpAdapter {
             (true, resume) => {
                 continuation_prompt(resume.as_ref(), &context.record_dir, interrupted_before)
             }
-            (false, Some(resume)) => resume_message(resume, &context.record_dir),
+            (false, Some(resume)) => format!(
+                "{}\n\n{}",
+                task_prompt(context, skills),
+                resume_message(resume, &context.record_dir)
+            ),
             (false, None) => task_prompt(context, skills),
         };
         let (step, withdraw) = self.suspend_tokens(&context.task_id);

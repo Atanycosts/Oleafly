@@ -1885,12 +1885,18 @@ fn resolve_for_run(
     let resolved = resolve_with(&cfg, provider_override)?;
     let registry = crate::ai_model_registry::current_registry();
     let snapshot = crate::ai_model_metadata::snapshot();
+    let stored_metadata = cfg
+        .ai_provider_models
+        .get(&resolved.provider_id)
+        .and_then(|models| models.iter().find(|model| model.id == resolved.model_id))
+        .and_then(|model| model.metadata.as_ref());
     match crate::ai_model_registry::run_refusal(
         &registry,
         &resolved.provider_id,
         &resolved.model_id,
         &cfg.ai_model_probes,
         &snapshot,
+        stored_metadata,
         has_tools,
     ) {
         Some(refusal) => Err(refusal),

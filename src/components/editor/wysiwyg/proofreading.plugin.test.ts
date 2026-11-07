@@ -5,6 +5,8 @@ import { StarterKit } from "@tiptap/starter-kit";
 import { RawBlock } from "@oleafly/wysiwyg";
 import type { ProofreadingDiagnostic, ProofreadingResult } from "@oleafly/editor";
 import en from "@/i18n/locales/en/editor.json" with { type: "json" };
+import zh from "@/i18n/locales/zh-Hans/editor.json" with { type: "json" };
+import { applyLocale } from "@/i18n";
 import { useDictionary } from "@/lib/dictionary";
 import { useFilesStore } from "@/store/files";
 import { useProofreadingStore } from "@/store/proofreading";
@@ -125,15 +127,39 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   setVisualProofreadingIssueListener(null);
   editor?.destroy();
   editor = null;
   document.body.replaceChildren();
   vi.useRealTimers();
+  await applyLocale("en");
 });
 
 describe("Visual proofreading requests", () => {
+  it("updates existing spelling labels on a language switch", async () => {
+    client.words = ["Speling"];
+    mount("<p>Speling matters.</p>");
+    await settle();
+    useProofreadingStore.setState({
+      visual: {
+        ...useProofreadingStore.getState().visual,
+        phase: "ready",
+        identity: requests()[0].identity,
+        diagnostics: diagnosticsFor("Speling matters."),
+      },
+    });
+    await applyLocale("zh-Hans");
+    expect(findings()[0].getAttribute("aria-label")).toBe(
+      zh.visual.findingLabel.replace("{{message}}", zh.package.spellcheck.notInDictionary.replace("{{word}}", "Speling")),
+    );
+    expect(client.proofreadDocument).toHaveBeenCalledTimes(1);
+    await applyLocale("en");
+    expect(findings()[0].getAttribute("title")).toBe(
+      en.package.spellcheck.notInDictionary.replace("{{word}}", "Speling"),
+    );
+  });
+
   it("sends the visible prose with the ignored words and paints the findings", async () => {
     useDictionary.setState({ global: ["oleafly"], ignored: { project: ["teh"] } });
     client.words = ["Speling"];

@@ -1,5 +1,5 @@
 import { lazy } from "react";
-import { FlaskConical, Folder, GitBranch, Plug, Search, SearchCode, ShieldCheck } from "lucide-react";
+import { BookOpenCheck, FlaskConical, Folder, GitBranch, Plug, Search, SearchCode, ShieldCheck } from "lucide-react";
 import { registerRailTab } from "@oleafly/registry";
 import { i18n } from "@/i18n";
 import { useGitStatusStore } from "@/store/git-status";
@@ -35,7 +35,19 @@ const ResearchWorkspacePanel = lazy(() =>
   import("@/components/research/ResearchWorkspacePanel").then((module) => ({ default: module.ResearchWorkspacePanel })),
 );
 
+const JournalChecksPanel = lazy(() =>
+  import("@/components/research/JournalChecksPanel").then((module) => ({ default: module.JournalChecksPanel })),
+);
+
 export function registerRailTabs() {
+  registerRailTab({
+    id: "journal",
+    label: () => i18n.t(($) => $.researchTools.journal.title),
+    icon: BookOpenCheck,
+    section: "review",
+    order: 45,
+    panel: JournalChecksPanel,
+  });
   registerRailTab({
     id: "research",
     label: () => i18n.t(($) => $.shell.rail.research),

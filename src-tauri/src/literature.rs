@@ -93,6 +93,7 @@ impl LiteratureSource for AppAlphaXiv {
             &self.server,
             "discover_papers",
             json!({"query": query.query}),
+            None,
         )
         .await?;
         if result["isError"].as_bool() == Some(true) {

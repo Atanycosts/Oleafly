@@ -18,7 +18,12 @@ export function seedProviderModels(providerId: string): StoredModel[] {
 }
 
 function withFetchedFacts(prev: StoredModel, fetched: FetchedModel): StoredModel {
-  const next: StoredModel = { ...prev, name: prev.name || fetched.name };
+  const next: StoredModel = {
+    ...prev,
+    name: prev.source === "fetched" || !prev.name || prev.name === prev.id
+      ? fetched.name || prev.id
+      : prev.name,
+  };
   if (fetched.trust) {
     next.trust = fetched.trust;
     if (fetched.trust === "blocked" && fetched.blockedReason) {
@@ -28,6 +33,7 @@ function withFetchedFacts(prev: StoredModel, fetched: FetchedModel): StoredModel
     }
   }
   if (fetched.metadata) next.metadata = fetched.metadata;
+  else if (prev.metadata?.metadataSource === "provider") delete next.metadata;
   return next;
 }
 

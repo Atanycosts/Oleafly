@@ -4,7 +4,7 @@ use crate::caps::{BudgetRange, ModelCaps};
 use crate::complete::CompletionRequest;
 use crate::effort::{google_budget_model, openai_reasoning_id, Effort};
 use crate::message::{ContentPart, Message, Role};
-use crate::provider::Resolved;
+use crate::provider::{catalog_entry, Resolved};
 
 pub(crate) const STREAMING_MAX_TOKENS_CAP: u32 = 64_000;
 pub(crate) const BLOCKING_MAX_TOKENS_CAP: u32 = 16_000;
@@ -167,6 +167,9 @@ pub(crate) fn chat_reasoning_fields(
             }
         }
         "deepseek" => deepseek_thinking(req, effort),
+        provider_id if catalog_entry(provider_id).is_none() => effort
+            .map(|effort| vec![("reasoning_effort", json!(effort.as_str()))])
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -207,7 +210,7 @@ fn deepseek_reasoning_effort(requested: Effort) -> &'static str {
     match requested {
         Effort::Off | Effort::Minimal | Effort::Low => "low",
         Effort::Medium | Effort::High | Effort::Xhigh => "high",
-        Effort::Max => "max",
+        Effort::Max | Effort::Ultra => "max",
     }
 }
 
@@ -239,7 +242,7 @@ pub(crate) fn google_thinking_budget(effort: Effort, budget: Option<BudgetRange>
         Effort::Off => 0,
         Effort::Minimal | Effort::Low => 1_024u32.max(min.unwrap_or(0)),
         Effort::Medium => 8_192,
-        Effort::High | Effort::Xhigh | Effort::Max => max.unwrap_or(24_576),
+        Effort::High | Effort::Xhigh | Effort::Max | Effort::Ultra => max.unwrap_or(24_576),
     };
     let floored = min.map_or(raw, |min| raw.max(min));
     max.map_or(floored, |max| floored.min(max))

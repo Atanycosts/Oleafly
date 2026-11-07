@@ -23,6 +23,12 @@ fn workspace_metadata_round_trips() {
     let workspace = ResearchWorkspace {
         version: 1,
         primary_project_id: "project-one".into(),
+        journal_project_id: Some("project-manuscript".into()),
+        journal_research: Some(super::model::JournalResearchLink {
+            task_id: "task-journal".into(),
+            world_version_id: "world-source".into(),
+            check_id: Some("check-manuscript".into()),
+        }),
         roots: vec![LinkedResearchRoot {
             id: "root-a".into(),
             canonical_path: temp.path().to_string_lossy().into_owned(),
@@ -219,6 +225,8 @@ fn resolver_rejects_symlink_traversal_and_task_writes() {
     let workspace = ResearchWorkspace {
         version: 1,
         primary_project_id: project_id.into(),
+        journal_project_id: None,
+        journal_research: None,
         roots: vec![LinkedResearchRoot {
             id: "root-a".into(),
             canonical_path: linked
@@ -278,6 +286,8 @@ fn removing_metadata_never_removes_source_files() {
     let workspace = ResearchWorkspace {
         version: 1,
         primary_project_id: "project-one".into(),
+        journal_project_id: Some("project-manuscript".into()),
+        journal_research: None,
         roots: vec![LinkedResearchRoot {
             id: "root-a".into(),
             canonical_path: linked.to_string_lossy().into_owned(),

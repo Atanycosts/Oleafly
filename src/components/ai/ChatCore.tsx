@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import workflowRules from "../../../crates/oleafly-agent/src/workflow.md?raw";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/i18n";
 import { confirmAction } from "@/store/confirm-dialog";
@@ -82,7 +83,7 @@ import {
 } from "@/components/ai/turns/open-built-in-turns";
 import { presetPrompt, RESEARCH_PRESET_PROMPTS } from "@/lib/research-presets";
 import { TurnChangesCard } from "@/components/ai/turns/TurnChangesCard";
-import { agentProbeModel, agentWebSearchReady, approvalsList, approvalsSet, gitHeadOid, gitLog, gitShow, gitStatus, readFileContent, type AppConfig, type CustomProvider, type GitFileChange, type McpAgentServer, type ModelProbe, type Persona, type EngineFeature, type StoredModel, type ToolDecision } from "@/lib/tauri";
+import { agentProbeModel, approvalsList, approvalsSet, gitHeadOid, gitLog, gitShow, gitStatus, readFileContent, type AppConfig, type CustomProvider, type GitFileChange, type McpAgentServer, type ModelProbe, type Persona, type EngineFeature, type StoredModel, type ToolDecision } from "@/lib/tauri";
 import { checkProjectBudget } from "@/lib/ai-budget";
 import { listOllamaModels } from "@/lib/ollama";
 import type { AiToolsetContribution } from "@oleafly/registry";
@@ -126,7 +127,6 @@ import {
 } from "@/components/ai/composer/ChatComposer";
 import type { DraftAttachment, StoredAttachmentRef } from "@/components/ai/composer/types";
 import { EffortSelector } from "@/components/ai/composer/EffortSelector";
-import { WebToggle } from "@/components/ai/composer/WebToggle";
 import { UsageMeter } from "@/components/ai/usage/UsageMeter";
 import {
   builtinUsageExtras,
@@ -161,12 +161,9 @@ import {
 } from "@/lib/chat-markers";
 import {
   resolveRunEffort,
-  runWebTools,
-  WEB_DEFAULT_SUGGESTIONS,
   WEB_ON,
-  isWebOn,
-  type WebSetting,
 } from "@/lib/chat-settings";
+import { skillDisplayText } from "@/lib/skill-groups";
 import {
   builtinComposerId,
   draftAttachments,
@@ -885,7 +882,6 @@ export function ChatCore() {
   const setSettingsOpen = useSettingsStore((s) => s.setSettingsOpen);
   const setSettingsInitialSection = useSettingsStore((s) => s.setSettingsInitialSection);
   const setSettingsScrollTarget = useSettingsStore((s) => s.setSettingsScrollTarget);
-  const settingsOpen = useSettingsStore((s) => s.settingsOpen);
   const approvalModes = useApprovalModeStore((s) => s.modes);
   const loadApprovalMode = useApprovalModeStore((s) => s.load);
   const setApprovalMode = useApprovalModeStore((s) => s.setMode);
@@ -1102,7 +1098,6 @@ export function ChatCore() {
   const [pendingApproval, setPendingApproval] = useState<RegisteredApproval | null>(null);
   const [newChatSettings, setNewChatSettings] = useState<{
     effort?: EffortLevel;
-    web?: WebSetting;
   }>({});
   const newChatSettingsRef = useRef(newChatSettings);
   newChatSettingsRef.current = newChatSettings;
@@ -1266,8 +1261,8 @@ export function ChatCore() {
             items: availableSkills.map((skill) => ({
               id: `skill:${skill.id}`,
               icon: Sparkles,
-              label: skill.name,
-              description: skill.description,
+              label: skillDisplayText(skill).name,
+              description: skillDisplayText(skill).description,
               prompt: `/${skill.id} `,
             })),
           },
@@ -1934,7 +1929,6 @@ export function ChatCore() {
     options?: {
       approvedPlan?: boolean;
       replay?: { attachments: readonly DraftAttachment[]; commit?: () => Promise<void> | void };
-      web?: boolean;
     },
   ) => {
     const { provider, model, providerModelsMap, providerReady, activeProviderName } = pickedModelRef.current;
@@ -2370,14 +2364,12 @@ export function ChatCore() {
       if (!chatId && projectId) {
         const created = cs.create(projectId, currentHead, {
           effort: newChatSettingsRef.current.effort,
-          web: options?.web ? WEB_ON : newChatSettingsRef.current.web,
+          web: WEB_ON,
         });
         chatId = created.id;
         if (sendComposerId === builtinComposerId(projectId)) {
           useComposerDrafts.getState().moveDraft(sendComposerId, builtinComposerId(projectId, created.id));
         }
-      } else if (chatId && options?.web) {
-        cs.setChatSettings(chatId, { web: WEB_ON });
       }
       runChatId = chatId;
       updateChatRun(runHandle, { chatId });
@@ -2517,8 +2509,7 @@ Research rules:
 - Never invent a reference, a bibliography entry, an author list, or a DOI. If you cannot verify a source, say so plainly.
 - ${citationRule(documentEngine.capabilities.formatting_profile)}
 - Verify a DOI with verify_citation before you rely on it.
-- Keep sources under research/sources/, notes under research/notes/, the reading list at research/reading-list.md, claims at research/claims.md, and reviews under review/. That is the layout the research skills read and write.
-- Compile after each section you write, and fix what breaks before you move on.
+- Reuse the project's research files. When the task needs new ones, the skills use research/sources/, research/notes/, research/reading-list.md, research/claims.md and review/.
 - Never delete a file the user wrote without asking first.
 - When the user asks for a review, report your findings and leave the files alone unless they ask you to edit.
 `;
@@ -2528,28 +2519,16 @@ The current project is "${projectName}" (ID: ${projectId}). Main document: ${mai
 
 Voice and style:
 - Talk like a warm, encouraging human collaborator, not a manual. Be concise but personable, and let a little personality show.
-- Never use em dashes. Use commas, periods, or parentheses instead. Keep punctuation simple.
-- When a request is ambiguous or you are about to make a meaningful judgement call (structure, wording, layout, scope), ask a short clarifying question before diving in rather than guessing.
 - Explain what you did in plain, friendly language. Skip jargon unless the user is clearly technical.
 - It is fine to be brief when the task is small. Match the user's energy.
 
-Agentic workflow (required for multi-step tasks):
-1. For multi-step work, call update_todos with a short plan (pending items), set one to in_progress, complete as you go.
-2. Use the live workspace context below; refresh with tools (project_map, read_file, compile) when you need certainty.
-3. Prefer replace_in_file for small fixes; write_file overwrites the entire file.
-4. read_file supports offset and limit. Large files may be truncated, so read another slice if needed.
-5. After structural or multi-file edits: compile, then verify_pdf_pages (vision) or get_pdf_text (text-only).
-6. Use set_main_doc only when the user asks to change the project entry point. Treat file deletion as destructive.
-7. Use remember_note for durable project conventions the user would want kept across chats; forget_note to remove.
-8. For independent parallel work (surveying several papers, reviewing separate sections, checking unrelated claims), delegate with spawn_agent: one focused agent per task, complete self-contained instructions, then wait_agent (prefer long waits over polling) and close_agent when done. Task names are canonical paths under /root. Do the work yourself when steps depend on each other; spawning agents increases usage quickly.
-9. Use run_command for shell work the dedicated tools do not cover (git status, build scripts, listing outputs). It runs in the project directory. Prefer the dedicated file and compile tools when they fit.
-
-Workflow for "fix errors" requests:
-1. Use live compile errors if present, or compile first.
-2. Apply fixes (prefer replace_in_file).
-3. compile again until success is true with empty errors.
-4. verify_pdf_pages or get_pdf_text when layout/content must look right.
-Do not stop until the task is genuinely complete, then explain what you did in a friendly, human way.
+Project tools:
+- Use the workspace context below and read relevant files as needed. read_file accepts offset and limit for large files.
+- replace_in_file makes targeted edits; write_file replaces the whole file. Use set_main_doc only when the user requests a different entry point.
+- Compile after changes that affect the document build. Inspect rendered pages when layout or visual content needs checking. For a build error, use the diagnostics to find the cause, fix it and compile again.
+- run_command runs in the project directory. spawn_agent can handle independent work; collect its result with wait_agent and release it with close_agent.
+- update_todos replaces the current checklist. remember_note stores durable project conventions across chats; forget_note removes them.
+${workflowRules}
 ${researchRulesBlock}${figureBlock}
 ${workspaceCtx}
 ${sandboxedCustom}`;
@@ -2602,7 +2581,7 @@ ${sandboxedCustom}`;
       runChat ? runChat.effort : newChatSettingsRef.current.effort,
       effortChoicesFor(provider, model, runMetadata),
     );
-    const runWeb = runWebTools(runChat ? runChat.web : newChatSettingsRef.current.web);
+    const runWeb = WEB_ON;
     let queuedAccepted = false;
     const acknowledgeQueued = () => {
       if (queuedAccepted || !queued || !runChatId) return;
@@ -3389,21 +3368,12 @@ ${sandboxedCustom}`;
     }
   }, [activeChatId, projectName]);
 
-  const homeQuickStarts = useMemo(
-    () =>
-      availableSuggestions(chatSuggestions(), skillsQuery.data).map((suggestion) => ({
-        id: suggestion.id,
-        label: suggestion.label,
-        icon: suggestion.icon,
-        onSelect: () =>
-          void send(
-            suggestion.send,
-            undefined,
-            WEB_DEFAULT_SUGGESTIONS.has(suggestion.id) ? { web: true } : undefined,
-          ),
-      })),
-    [skillsQuery.data, send],
-  );
+  const homeQuickStarts = availableSuggestions(chatSuggestions(), skillsQuery.data).map((suggestion) => ({
+    id: suggestion.id,
+    label: suggestion.label,
+    icon: suggestion.icon,
+    onSelect: () => void send(suggestion.send),
+  }));
 
   const revisePlan = useCallback(() => {
     requestAnimationFrame(() => composerRef.current?.focus());
@@ -3697,33 +3667,10 @@ ${sandboxedCustom}`;
         })}`;
   const effortChoices = effortChoicesFor(provider, model, activeStoredModel?.metadata);
   const selectedEffort = activeChat ? activeChat.effort : newChatSettings.effort;
-  const selectedWeb = activeChat ? activeChat.web : newChatSettings.web;
   const changeEffort = (next: EffortLevel | undefined) => {
     if (activeChat) useChatsStore.getState().setChatSettings(activeChat.id, { effort: next ?? null });
     else setNewChatSettings((current) => ({ ...current, effort: next }));
   };
-  const changeWeb = (on: boolean) => {
-    const next = on ? WEB_ON : undefined;
-    if (activeChat) useChatsStore.getState().setChatSettings(activeChat.id, { web: next ?? null });
-    else setNewChatSettings((current) => ({ ...current, web: next }));
-  };
-  const webOn = isWebOn(selectedWeb);
-  const [webSearchReady, setWebSearchReady] = useState(true);
-  useEffect(() => {
-    if (!webOn || !model || settingsOpen) return;
-    let current = true;
-    void Promise.resolve()
-      .then(() => agentWebSearchReady(provider, model, projectId))
-      .then((ready) => {
-        if (current) setWebSearchReady(ready);
-      })
-      .catch(() => {
-        if (current) setWebSearchReady(true);
-      });
-    return () => {
-      current = false;
-    };
-  }, [webOn, provider, model, projectId, settingsOpen]);
   const activeModelVision = modelSupportsVision(
     provider,
     model,
@@ -4550,12 +4497,6 @@ ${sandboxedCustom}`;
                       </button>
                     </Tooltip>
                   )}
-                  <WebToggle
-                    on={webOn}
-                    needsKey={!webSearchReady}
-                    onChange={changeWeb}
-                    disabled={approvalModeLocked}
-                  />
                 </>
               }
               trailingControls={

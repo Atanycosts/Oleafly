@@ -223,7 +223,7 @@ describe("BriefFields", () => {
     expect(last(onBrief).budget.maxRuns).toBeNull();
   });
 
-  it("picks the command rule, network access and plan review", async () => {
+  it("picks the command rule, command network access and plan review", async () => {
     const onBrief = vi.fn();
     render(<Harness onBrief={onBrief} />);
     openBrief();

@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::caps::{ModelCaps, ReasoningCaps};
-use crate::provider::Resolved;
+use crate::provider::{catalog_entry, Resolved};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -14,10 +14,11 @@ pub enum Effort {
     High,
     Xhigh,
     Max,
+    Ultra,
 }
 
 impl Effort {
-    pub const ALL: [Effort; 7] = [
+    pub const ALL: [Effort; 8] = [
         Effort::Off,
         Effort::Minimal,
         Effort::Low,
@@ -25,6 +26,7 @@ impl Effort {
         Effort::High,
         Effort::Xhigh,
         Effort::Max,
+        Effort::Ultra,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -36,6 +38,7 @@ impl Effort {
             Effort::High => "high",
             Effort::Xhigh => "xhigh",
             Effort::Max => "max",
+            Effort::Ultra => "ultra",
         }
     }
 
@@ -136,6 +139,9 @@ pub fn effort_choices(provider_id: &str, model_id: &str, caps: &ModelCaps) -> Ve
         "openrouter" => (all, reasoning.efforts.clone().unwrap_or_default()),
         "ollama" => (all, ollama_base(&id, reasoning)),
         "deepseek" => deepseek_levels(&id, reasoning),
+        _ if catalog_entry(provider_id).is_none() => {
+            (all, reasoning.efforts.clone().unwrap_or_default())
+        }
         _ => (Vec::new(), Vec::new()),
     };
     let mut choices: Vec<Effort> = base
@@ -170,6 +176,7 @@ fn openai_base(id: &str, reasoning: &ReasoningCaps) -> Vec<Effort> {
     match &reasoning.efforts {
         Some(efforts) => efforts.clone(),
         None if reasoning.flag == Some(false) => Vec::new(),
+        None if id == "gpt-6.1-sol" => vec![Low, Medium, High, Xhigh, Max],
         None if openai_reasoning_id(id) => vec![Low, Medium, High],
         None => Vec::new(),
     }

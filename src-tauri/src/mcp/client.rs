@@ -749,6 +749,8 @@ pub struct McpServerTool {
     pub description: Option<String>,
     #[serde(skip_serializing)]
     pub input_schema: serde_json::Value,
+    #[serde(skip_serializing)]
+    pub read_only_hint: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -757,6 +759,8 @@ pub struct McpAgentTool {
     pub tool_handle: String,
     pub description: Option<String>,
     pub input_schema: serde_json::Value,
+    #[serde(skip_serializing)]
+    pub read_only_hint: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -890,6 +894,7 @@ fn redact_server_tool_metadata(
                     name: "[tool metadata hidden]".into(),
                     description: None,
                     input_schema: serde_json::json!({"type": "object"}),
+                    read_only_hint: false,
                 })
                 .collect();
         }
@@ -902,6 +907,7 @@ fn redact_server_tool_metadata(
                 .description
                 .map(|description| redact_with_matcher(&description, matcher.as_ref())),
             input_schema: tool.input_schema,
+            read_only_hint: tool.read_only_hint,
         })
         .collect()
 }
@@ -1054,6 +1060,7 @@ fn build_agent_tool_catalog(
             .map(|tool| McpAgentTool {
                 name: agent_tool_name(&server.name, &tool.name),
                 tool_handle: tool.name,
+                read_only_hint: tool.read_only_hint,
                 description: tool
                     .description
                     .map(|description| redact_with_matcher(&description, matcher.as_ref())),
@@ -1513,7 +1520,7 @@ async fn connect_stdio_server_with_probe_timeout(
     let mut probe = StdioTransport::spawn(command, args, environment).await?;
     let discovery = tokio::time::timeout(probe_timeout, discover_server(&mut probe)).await;
     match discovery {
-        Ok(Ok(true)) => {
+        Ok(Ok((true, _))) => {
             let result = list_tools(&mut probe, 2, true).await;
             probe.shutdown().await;
             result
@@ -1522,7 +1529,7 @@ async fn connect_stdio_server_with_probe_timeout(
             probe.shutdown().await;
             Err(error)
         }
-        Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {
+        Ok(Ok((false, _))) | Ok(Err(_)) | Err(_) => {
             probe.shutdown().await;
             let mut transport = StdioTransport::spawn(command, args, environment).await?;
             let result = connect_legacy_and_list_tools(&mut transport).await;
@@ -1546,6 +1553,7 @@ where
         server,
         tool_handle,
         arguments,
+        None,
         authorize,
         tokio::time::Instant::now() + AGENT_TOOL_TIMEOUT,
     )
@@ -1556,6 +1564,7 @@ async fn connect_server_and_call_until<F>(
     server: McpServerConfig,
     tool_handle: &str,
     arguments: serde_json::Value,
+    task_meta: Option<serde_json::Value>,
     authorize: F,
     execution_deadline: tokio::time::Instant,
 ) -> Result<serde_json::Value, McpConnectionError>
@@ -1570,6 +1579,7 @@ where
                 &env,
                 tool_handle,
                 arguments,
+                task_meta,
                 authorize,
                 MODERN_STDIO_PROBE_TIMEOUT,
                 execution_deadline,
@@ -1580,7 +1590,7 @@ where
             let mut transport = RemoteTransport::new_for_tool_call(&url, &headers)?;
             let result = tokio::time::timeout_at(
                 execution_deadline,
-                connect_and_call_tool(&mut transport, tool_handle, arguments, authorize),
+                connect_and_call_tool(&mut transport, tool_handle, arguments, task_meta, authorize),
             )
             .await
             .unwrap_or(Err(McpConnectionError::ToolTimeout));
@@ -1609,6 +1619,7 @@ where
         environment,
         tool_handle,
         arguments,
+        None,
         authorize,
         probe_timeout,
         tokio::time::Instant::now() + AGENT_TOOL_TIMEOUT,
@@ -1623,6 +1634,7 @@ async fn connect_stdio_server_and_call_until<F>(
     environment: &std::collections::BTreeMap<String, String>,
     tool_handle: &str,
     arguments: serde_json::Value,
+    task_meta: Option<serde_json::Value>,
     authorize: F,
     probe_timeout: Duration,
     execution_deadline: tokio::time::Instant,
@@ -1638,10 +1650,20 @@ where
     );
     let discovery = tokio::time::timeout_at(probe_deadline, discover_server(&mut probe)).await;
     match discovery {
-        Ok(Ok(true)) => {
+        Ok(Ok((true, server_name))) => {
+            let task_meta =
+                task_meta.filter(|_| server_name.as_deref() == Some("research-file-workbench"));
             let result = tokio::time::timeout_at(
                 execution_deadline,
-                list_authorize_and_call(&mut probe, 2, true, tool_handle, arguments, authorize),
+                list_authorize_and_call(
+                    &mut probe,
+                    2,
+                    true,
+                    tool_handle,
+                    arguments,
+                    task_meta,
+                    authorize,
+                ),
             )
             .await
             .unwrap_or(Err(McpConnectionError::ToolTimeout));
@@ -1652,16 +1674,26 @@ where
             probe.shutdown().await;
             Err(error)
         }
-        Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {
+        Ok(Ok((false, _))) | Ok(Err(_)) | Err(_) => {
             probe.shutdown().await;
             if tokio::time::Instant::now() >= execution_deadline {
                 return Err(McpConnectionError::ToolTimeout);
             }
             let mut transport = StdioTransport::spawn(command, args, environment).await?;
             let result = tokio::time::timeout_at(execution_deadline, async {
-                initialize_legacy(&mut transport).await?;
-                list_authorize_and_call(&mut transport, 3, false, tool_handle, arguments, authorize)
-                    .await
+                let server_name = initialize_legacy(&mut transport).await?;
+                let task_meta =
+                    task_meta.filter(|_| server_name.as_deref() == Some("research-file-workbench"));
+                list_authorize_and_call(
+                    &mut transport,
+                    3,
+                    false,
+                    tool_handle,
+                    arguments,
+                    task_meta,
+                    authorize,
+                )
+                .await
             })
             .await
             .unwrap_or(Err(McpConnectionError::ToolTimeout));
@@ -1678,7 +1710,7 @@ where
     T: McpClientTransport,
 {
     transport.set_protocol_version(Some(MODERN_PROTOCOL_VERSION))?;
-    let modern = discover_server(transport).await?;
+    let (modern, _) = discover_server(transport).await?;
     if modern {
         return list_tools(transport, 2, true).await;
     }
@@ -1696,7 +1728,7 @@ where
     list_tools(transport, 3, false).await
 }
 
-async fn initialize_legacy<T>(transport: &mut T) -> Result<(), McpConnectionError>
+async fn initialize_legacy<T>(transport: &mut T) -> Result<Option<String>, McpConnectionError>
 where
     T: McpClientTransport,
 {
@@ -1722,6 +1754,10 @@ where
         )));
     }
     transport.set_protocol_version(Some(protocol_version))?;
+    let server_name = result
+        .pointer("/serverInfo/name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     let initialized = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
@@ -1731,13 +1767,14 @@ where
             "notifications/initialized returned an unexpected response",
         ));
     }
-    Ok(())
+    Ok(server_name)
 }
 
 async fn connect_and_call_tool<T, F>(
     transport: &mut T,
     tool_handle: &str,
     arguments: serde_json::Value,
+    task_meta: Option<serde_json::Value>,
     authorize: F,
 ) -> Result<serde_json::Value, McpConnectionError>
 where
@@ -1745,13 +1782,34 @@ where
     F: FnOnce() -> Result<(), McpConnectionError>,
 {
     transport.set_protocol_version(Some(MODERN_PROTOCOL_VERSION))?;
-    if discover_server(transport).await? {
-        return list_authorize_and_call(transport, 2, true, tool_handle, arguments, authorize)
-            .await;
+    let (modern, server_name) = discover_server(transport).await?;
+    if modern {
+        let task_meta =
+            task_meta.filter(|_| server_name.as_deref() == Some("research-file-workbench"));
+        return list_authorize_and_call(
+            transport,
+            2,
+            true,
+            tool_handle,
+            arguments,
+            task_meta,
+            authorize,
+        )
+        .await;
     }
     transport.set_protocol_version(None)?;
-    initialize_legacy(transport).await?;
-    list_authorize_and_call(transport, 3, false, tool_handle, arguments, authorize).await
+    let server_name = initialize_legacy(transport).await?;
+    let task_meta = task_meta.filter(|_| server_name.as_deref() == Some("research-file-workbench"));
+    list_authorize_and_call(
+        transport,
+        3,
+        false,
+        tool_handle,
+        arguments,
+        task_meta,
+        authorize,
+    )
+    .await
 }
 
 async fn list_authorize_and_call<T, F>(
@@ -1760,6 +1818,7 @@ async fn list_authorize_and_call<T, F>(
     modern: bool,
     tool_handle: &str,
     arguments: serde_json::Value,
+    task_meta: Option<serde_json::Value>,
     authorize: F,
 ) -> Result<serde_json::Value, McpConnectionError>
 where
@@ -1783,6 +1842,7 @@ where
         AGENT_TOOL_CALL_ID,
         tool_handle,
         arguments,
+        task_meta.filter(|_| tool_handle == "read_objects"),
         modern,
         headers,
     )
@@ -1794,13 +1854,14 @@ async fn call_tool<T>(
     id: u64,
     tool_handle: &str,
     arguments: serde_json::Value,
+    task_meta: Option<serde_json::Value>,
     modern: bool,
     headers: std::collections::BTreeMap<String, String>,
 ) -> Result<serde_json::Value, McpConnectionError>
 where
     T: McpClientTransport,
 {
-    let request = tool_call_request(id, tool_handle, arguments, modern);
+    let request = tool_call_request(id, tool_handle, arguments, task_meta, modern);
     let response = required_response(
         transport.send_with_headers(request, headers).await?,
         "tools/call",
@@ -1812,6 +1873,7 @@ fn tool_call_request(
     id: u64,
     tool_handle: &str,
     arguments: serde_json::Value,
+    task_meta: Option<serde_json::Value>,
     modern: bool,
 ) -> serde_json::Value {
     let mut params = serde_json::json!({
@@ -1820,6 +1882,14 @@ fn tool_call_request(
     });
     if modern {
         params["_meta"] = modern_request_metadata();
+    }
+    if let Some(task_meta) = task_meta {
+        if modern {
+            params["_meta"]["com.oleafly/research-task"] =
+                task_meta["com.oleafly/research-task"].clone();
+        } else {
+            params["_meta"] = task_meta;
+        }
     }
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -1846,7 +1916,7 @@ fn tool_call_result(
     Ok(result.clone())
 }
 
-async fn discover_server<T>(transport: &mut T) -> Result<bool, McpConnectionError>
+async fn discover_server<T>(transport: &mut T) -> Result<(bool, Option<String>), McpConnectionError>
 where
     T: McpClientTransport,
 {
@@ -1858,7 +1928,7 @@ where
     });
     let response = match transport.send(request).await {
         Ok(Some(response)) => response,
-        Ok(None) => return Ok(false),
+        Ok(None) => return Ok((false, None)),
         Err(McpConnectionError::RemoteStatus {
             status,
             method,
@@ -1871,7 +1941,7 @@ where
                 return Err(error);
             }
             if [400, 404, 405].contains(&status) {
-                return Ok(false);
+                return Ok((false, None));
             }
             return Err(McpConnectionError::RemoteStatus {
                 status,
@@ -1886,7 +1956,7 @@ where
             return Err(error);
         }
         if error.is_object() {
-            return Ok(false);
+            return Ok((false, None));
         }
     }
     let result = rpc_result(&response, 1, "server/discover").map_err(|error| match error {
@@ -1916,7 +1986,13 @@ where
             versions.join(", ")
         )));
     }
-    Ok(true)
+    Ok((
+        true,
+        result
+            .pointer("/_meta/io.modelcontextprotocol~1serverInfo/name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    ))
 }
 
 fn modern_request_metadata() -> serde_json::Value {
@@ -2275,6 +2351,7 @@ where
                 name: name.to_string(),
                 description,
                 input_schema,
+                read_only_hint: tool["annotations"]["readOnlyHint"].as_bool() == Some(true),
             });
         }
         cursor = match result.get("nextCursor") {
@@ -3148,6 +3225,7 @@ pub async fn mcp_agent_tool_call<R: tauri::Runtime>(
         server.clone(),
         &tool_handle,
         arguments,
+        None,
         || {
             ensure_agent_tool_binding(
                 state.inner(),
@@ -3646,15 +3724,22 @@ pub(crate) async fn call_enabled_server_tool(
     server_name: &str,
     tool: &str,
     arguments: serde_json::Value,
+    task_meta: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let name = server_name.to_owned();
     let server =
         read_config_off_runtime(move || load_enabled_server(&AppConfigRepository, &name)).await?;
     let deadline = tokio::time::Instant::now() + AGENT_TOOL_TIMEOUT;
-    let result =
-        connect_server_and_call_until(server.clone(), tool, arguments, || Ok(()), deadline)
-            .await
-            .map_err(|error| redact_server_values(&server, error.to_string()))?;
+    let result = connect_server_and_call_until(
+        server.clone(),
+        tool,
+        arguments,
+        task_meta,
+        || Ok(()),
+        deadline,
+    )
+    .await
+    .map_err(|error| redact_server_values(&server, error.to_string()))?;
     let matcher = server_value_matcher(&server)
         .map_err(|_| "MCP tool result could not be returned safely.".to_string())?;
     Ok(redact_json_value(result, matcher.as_ref()))
@@ -3690,6 +3775,7 @@ pub(crate) async fn call_stdio_tool(
         env,
         tool,
         arguments,
+        None,
         || Ok(()),
         MODERN_STDIO_PROBE_TIMEOUT,
         tokio::time::Instant::now() + timeout,
@@ -4188,6 +4274,7 @@ mod tests {
         _server: McpServerConfig,
     ) -> Result<Vec<McpServerTool>, McpConnectionError> {
         Ok(vec![McpServerTool {
+            read_only_hint: false,
             name: "search".into(),
             description: None,
             input_schema: serde_json::json!({"type": "object"}),
@@ -4398,6 +4485,7 @@ mod tests {
         env.insert("MCP_SECRET".into(), "private-token".into());
         let tools = vec![
             McpServerTool {
+                read_only_hint: true,
                 name: "zeta".into(),
                 description: Some("Uses private-token internally".into()),
                 input_schema: serde_json::json!({
@@ -4408,6 +4496,7 @@ mod tests {
                 }),
             },
             McpServerTool {
+                read_only_hint: false,
                 name: "alpha".into(),
                 description: None,
                 input_schema: serde_json::json!({
@@ -4423,6 +4512,7 @@ mod tests {
                 }),
             },
             McpServerTool {
+                read_only_hint: false,
                 name: "private-token-tool".into(),
                 description: None,
                 input_schema: serde_json::json!({"type": "object"}),
@@ -4436,6 +4526,8 @@ mod tests {
         assert_eq!(servers[0].tools.len(), 2);
         assert_eq!(servers[0].tools[0].tool_handle, "alpha");
         assert_eq!(servers[0].tools[1].tool_handle, "zeta");
+        assert!(!servers[0].tools[0].read_only_hint);
+        assert!(servers[0].tools[1].read_only_hint);
         assert!(servers[0].tools[0]
             .input_schema
             .pointer("/properties/context/properties/query/x-mcp-header")
@@ -4484,6 +4576,7 @@ mod tests {
                 let tools = (0..24)
                     .rev()
                     .map(|tool_index| McpServerTool {
+                        read_only_hint: false,
                         name: format!("tool-{tool_index:02}"),
                         description: None,
                         input_schema: serde_json::json!({"type": "object"}),
@@ -5234,6 +5327,7 @@ mod tests {
             &mut transport,
             "search",
             serde_json::json!({"query": "rust"}),
+            None,
             || {
                 authorized = true;
                 Ok(())
@@ -5291,9 +5385,11 @@ mod tests {
         };
 
         let result =
-            connect_and_call_tool(&mut transport, "fetch", serde_json::json!({}), || Ok(()))
-                .await
-                .unwrap();
+            connect_and_call_tool(&mut transport, "fetch", serde_json::json!({}), None, || {
+                Ok(())
+            })
+            .await
+            .unwrap();
 
         assert_eq!(result["content"][0]["text"], "legacy result");
         assert_eq!(
@@ -5311,6 +5407,84 @@ mod tests {
             ]
         );
         assert!(transport.sent[4]["params"].get("_meta").is_none());
+    }
+
+    #[tokio::test]
+    async fn native_task_metadata_only_reaches_workbench_content_reads() {
+        let task_meta = serde_json::json!({
+            "com.oleafly/research-task": {
+                "system": "oleafly", "project_id": "project-1",
+                "task_id": "task-1", "generation": 4
+            }
+        });
+        for modern in [false, true] {
+            for (server_name, tool_name, expects_meta) in [
+                ("research-file-workbench", "read_objects", true),
+                ("research-file-workbench", "saved_read", false),
+                ("another-server", "read_objects", false),
+            ] {
+                let discovery = if modern {
+                    serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": {
+                            "resultType": "complete", "supportedVersions": [MODERN_PROTOCOL_VERSION],
+                            "_meta": {"io.modelcontextprotocol/serverInfo": {"name": server_name}}
+                        }
+                    })
+                } else {
+                    serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1,
+                        "error": {"code": -32601, "message": "Method not found"}
+                    })
+                };
+                let mut replies = VecDeque::from([Ok(Some(discovery))]);
+                if !modern {
+                    replies.push_back(Ok(Some(serde_json::json!({
+                        "jsonrpc": "2.0", "id": 2,
+                        "result": {
+                            "protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
+                            "serverInfo": {"name": server_name, "version": "1"}
+                        }
+                    }))));
+                    replies.push_back(Ok(None));
+                }
+                replies.push_back(Ok(Some(serde_json::json!({
+                    "jsonrpc": "2.0", "id": if modern { 2 } else { 3 },
+                    "result": {"resultType": "complete", "tools": [{"name": tool_name, "inputSchema": {"type": "object"}}]}
+                }))));
+                replies.push_back(Ok(Some(serde_json::json!({
+                    "jsonrpc": "2.0", "id": AGENT_TOOL_CALL_ID,
+                    "result": {"resultType": "complete", "content": [{"type": "text", "text": "retained result"}]}
+                }))));
+                let mut transport = FakeTransport {
+                    replies,
+                    sent: Vec::new(),
+                };
+                connect_and_call_tool(
+                    &mut transport,
+                    tool_name,
+                    serde_json::json!({}),
+                    Some(task_meta.clone()),
+                    || Ok(()),
+                )
+                .await
+                .unwrap();
+                let params = &transport.sent.last().unwrap()["params"];
+                assert_eq!(
+                    params.pointer("/_meta/com.oleafly~1research-task"),
+                    expects_meta.then_some(&task_meta["com.oleafly/research-task"]),
+                    "{server_name}/{tool_name}, modern={modern}"
+                );
+                if modern {
+                    assert_eq!(
+                        params["_meta"]["io.modelcontextprotocol/protocolVersion"],
+                        MODERN_PROTOCOL_VERSION
+                    );
+                } else if !expects_meta {
+                    assert!(params.get("_meta").is_none());
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -5338,11 +5512,17 @@ mod tests {
             sent: Vec::new(),
         };
 
-        let error = connect_and_call_tool(&mut transport, "search", serde_json::json!({}), || {
-            Err(protocol_error(
-                "MCP server 'papers' was disabled before the tool call",
-            ))
-        })
+        let error = connect_and_call_tool(
+            &mut transport,
+            "search",
+            serde_json::json!({}),
+            None,
+            || {
+                Err(protocol_error(
+                    "MCP server 'papers' was disabled before the tool call",
+                ))
+            },
+        )
         .await
         .unwrap_err();
 
@@ -5379,6 +5559,7 @@ mod tests {
             &mut transport,
             "removed_tool",
             serde_json::json!({}),
+            None,
             || Ok(()),
         )
         .await
@@ -5423,6 +5604,7 @@ mod tests {
                 AGENT_TOOL_CALL_ID,
                 "search",
                 serde_json::json!({}),
+                None,
                 true,
                 BTreeMap::new(),
             )
@@ -5438,11 +5620,13 @@ mod tests {
         let result = validate_with(&stdio_server("search-server"), |_| async {
             Ok(vec![
                 McpServerTool {
+                    read_only_hint: false,
                     name: "search".into(),
                     description: Some("Search papers".into()),
                     input_schema: serde_json::json!({"type": "object"}),
                 },
                 McpServerTool {
+                    read_only_hint: false,
                     name: "fetch".into(),
                     description: None,
                     input_schema: serde_json::json!({"type": "object"}),
@@ -5465,6 +5649,7 @@ mod tests {
 
         let result = validate_with(&server, |_| async {
             Ok(vec![McpServerTool {
+                read_only_hint: false,
                 name: "disabled_search".into(),
                 description: None,
                 input_schema: serde_json::json!({"type": "object"}),
@@ -5569,7 +5754,7 @@ mod tests {
                     "jsonrpc": "2.0",
                     "id": 3,
                     "result": {
-                        "tools": [{"name": "search", "description": "Search papers", "inputSchema": {"type": "object"}}],
+                        "tools": [{"name": "search", "description": "Search papers", "inputSchema": {"type": "object"}, "annotations": {"readOnlyHint": true}}],
                         "nextCursor": "page-2"
                     }
                 }))),
@@ -5586,6 +5771,8 @@ mod tests {
 
         let tools = connect_and_list_tools(&mut transport).await.unwrap();
 
+        assert!(tools[0].read_only_hint);
+        assert!(!tools[1].read_only_hint);
         assert_eq!(
             tools
                 .iter()
@@ -6844,6 +7031,7 @@ mod tests {
             server,
             "publish",
             serde_json::json!({}),
+            None,
             || Ok(()),
             deadline,
         )
@@ -7321,6 +7509,7 @@ mod tests {
                     })
                     .unwrap();
                 Ok(vec![McpServerTool {
+                    read_only_hint: false,
                     name: "search".into(),
                     description: None,
                     input_schema: serde_json::json!({"type": "object"}),
@@ -7370,6 +7559,7 @@ mod tests {
                     })
                     .unwrap();
                 Ok(vec![McpServerTool {
+                    read_only_hint: false,
                     name: "search".into(),
                     description: None,
                     input_schema: serde_json::json!({"type": "object"}),

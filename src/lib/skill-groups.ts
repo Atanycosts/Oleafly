@@ -13,16 +13,6 @@ export const SKILL_PHASE_ORDER = [
 
 export type SkillPhase = (typeof SKILL_PHASE_ORDER)[number];
 
-export const SKILL_PHASE_LABELS: Record<string, string> = {
-  research: "Research",
-  authoring: "Authoring",
-  figures: "Figures",
-  review: "Review",
-  submission: "Submission",
-  communication: "Communication",
-  tooling: "Tooling",
-};
-
 export interface SkillGroup {
   key: string;
   label: string;
@@ -38,7 +28,7 @@ export function groupSkills(skills: readonly SkillEntry[]): SkillGroup[] {
       shelf.push(skill);
       continue;
     }
-    if (skill.phase && SKILL_PHASE_LABELS[skill.phase]) {
+    if (skill.phase && SKILL_PHASE_ORDER.includes(skill.phase as SkillPhase)) {
       const list = byPhase.get(skill.phase) ?? [];
       list.push(skill);
       byPhase.set(skill.phase, list);
@@ -51,7 +41,8 @@ export function groupSkills(skills: readonly SkillEntry[]): SkillGroup[] {
   for (const phase of SKILL_PHASE_ORDER) {
     const list = byPhase.get(phase);
     if (list && list.length > 0) {
-      groups.push({ key: phase, label: SKILL_PHASE_LABELS[phase], skills: byName(list) });
+      const labels = i18n.t(($) => $.core.skillGroups, { returnObjects: true });
+      groups.push({ key: phase, label: labels[phase], skills: byName(list) });
     }
   }
   if (yours.length > 0) groups.push({
@@ -65,6 +56,17 @@ export function groupSkills(skills: readonly SkillEntry[]): SkillGroup[] {
       skills: byName(shelf),
     });
   return groups;
+}
+
+export function skillDisplayText(skill: {
+  id: string;
+  name: string;
+  description: string;
+  source?: string;
+}): { name: string; description: string } {
+  if (skill.source === "user" || i18n.resolvedLanguage === "en") return skill;
+  const catalog = i18n.t(($) => $.core.bundledSkills, { returnObjects: true });
+  return Object.hasOwn(catalog, skill.id) ? catalog[skill.id as keyof typeof catalog] : skill;
 }
 
 export function matchesSkillSearch(

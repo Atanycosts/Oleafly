@@ -418,6 +418,46 @@ async fn the_provider_ignores_environment_keys() {
     assert!(!error.contains("sk-from-the-environment"));
 }
 
+#[tokio::test]
+async fn a_handoff_without_gateway_pricing_does_not_reuse_catalog_prices() {
+    let fixture = Fixture::new();
+    let mut grant = fixture.grant(&[TRUST_RESEARCH_TASKS]);
+    grant.model_metadata = Some(json!({"limit": {"context": 200000}}));
+    let task = fixture.handed_off(grant);
+    std::fs::write(
+        fixture.data.path().join("config.json"),
+        r#"{"ai_custom_providers":[{"id":"gateway","name":"Gateway","baseURL":"http://127.0.0.1:3425/v1","keyOptional":true}]}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(fixture.data.path().join("catalogs")).unwrap();
+    std::fs::write(
+        fixture.data.path().join("catalogs/model-metadata.json"),
+        r#"{"providers":{"gateway":{"auto/gpt-6.1-sol":{"cost":{"input":3,"output":15}}}}}"#,
+    )
+    .unwrap();
+    let provider = fixture
+        .task_host()
+        .provider(TaskRunContext {
+            task_id: task.clone(),
+            project_id: "paper".into(),
+            agent_id: "gateway".into(),
+            model_id: "auto/gpt-6.1-sol".into(),
+            ..TaskRunContext::default()
+        })
+        .await
+        .unwrap();
+    provider.usage.observe(&AgentEvent::usage(Usage {
+        input: 1_000,
+        output: 100,
+        ..Usage::default()
+    }));
+    provider.usage.finish("completed");
+
+    let events = usage_spool::read_since(fixture.data.path(), &task, 0).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].cost_usd, None);
+}
+
 #[test]
 fn task_mcp_servers_are_listed_in_acp_shape() {
     let fixture = Fixture::new();

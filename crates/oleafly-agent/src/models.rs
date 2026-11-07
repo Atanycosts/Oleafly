@@ -10,10 +10,12 @@ use crate::provider::{Resolved, Wire};
 const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_MODEL_BODY_BYTES: usize = 8 * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 pub(crate) fn models_url(resolved: &Resolved) -> String {
@@ -42,7 +44,11 @@ pub(crate) fn parse_models(wire: &Wire, body: &Value) -> Result<Vec<ModelInfo>> 
                             .and_then(|d| d.as_str())
                             .unwrap_or(&id)
                             .to_string();
-                        Some(ModelInfo { id, name })
+                        Some(ModelInfo {
+                            id,
+                            name,
+                            metadata: None,
+                        })
                     })
                     .collect::<Vec<_>>()
             }),
@@ -52,11 +58,65 @@ pub(crate) fn parse_models(wire: &Wire, body: &Value) -> Result<Vec<ModelInfo>> 
                 .filter_map(|entry| {
                     let id = entry.get("id").and_then(|i| i.as_str())?.to_string();
                     let name = entry
-                        .get("name")
-                        .and_then(|n| n.as_str())
+                        .get("magpie_label")
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.is_empty())
+                        .or_else(|| entry.get("display_name").and_then(Value::as_str))
+                        .or_else(|| entry.get("name").and_then(Value::as_str))
                         .unwrap_or(&id)
                         .to_string();
-                    Some(ModelInfo { id, name })
+                    let mut metadata = serde_json::Map::new();
+                    for (source, target) in [
+                        ("context_length", "contextWindow"),
+                        ("max_output_tokens", "outputLimit"),
+                    ] {
+                        if let Some(value) = entry.get(source).and_then(Value::as_u64) {
+                            metadata.insert(target.into(), value.into());
+                        }
+                    }
+                    if let Some(modalities) = entry.get("modalities").and_then(Value::as_object) {
+                        for (source, target) in
+                            [("input", "inputModalities"), ("output", "outputModalities")]
+                        {
+                            if let Some(values) = modalities.get(source).and_then(Value::as_array) {
+                                if values.iter().all(Value::is_string) {
+                                    metadata.insert(target.into(), values.clone().into());
+                                }
+                            }
+                        }
+                    }
+                    if let Some(tool_call) = entry.get("tool_call").and_then(Value::as_bool) {
+                        metadata.insert("toolCall".into(), tool_call.into());
+                    }
+                    if let Some(reasoning) = entry.get("reasoning").and_then(Value::as_bool) {
+                        metadata.insert("reasoning".into(), reasoning.into());
+                    }
+                    let levels: Vec<_> = entry
+                        .get("reasoning_levels")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .filter(|level| crate::effort::Effort::parse(level).is_some())
+                        .collect();
+                    if !levels.is_empty() {
+                        if !metadata.contains_key("reasoning") {
+                            metadata.insert(
+                                "reasoning".into(),
+                                levels.iter().any(|level| *level != "none").into(),
+                            );
+                        }
+                        metadata.insert(
+                            "reasoningOptions".into(),
+                            serde_json::json!([{ "type": "effort", "values": levels }]),
+                        );
+                    }
+                    let metadata = (!metadata.is_empty()).then(|| {
+                        metadata.insert("name".into(), name.clone().into());
+                        metadata.insert("metadataSource".into(), "provider".into());
+                        Value::Object(metadata)
+                    });
+                    Some(ModelInfo { id, name, metadata })
                 })
                 .collect::<Vec<_>>()
         }),
@@ -161,13 +221,62 @@ mod tests {
             vec![
                 ModelInfo {
                     id: "gpt-4o".into(),
-                    name: "gpt-4o".into()
+                    name: "gpt-4o".into(),
+                    metadata: None,
                 },
                 ModelInfo {
                     id: "glm-5.2".into(),
-                    name: "GLM-5.2".into()
+                    name: "GLM-5.2".into(),
+                    metadata: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn gateway_listing_keeps_declared_capabilities_without_inventing_missing_ones() {
+        let wire = Wire::OpenAiChat {
+            base_url: "http://127.0.0.1:3425/v1".into(),
+            reasoning_content: false,
+        };
+        let models = parse_models(
+            &wire,
+            &json!({"data": [
+                {
+                    "id": "auto/gpt-6.1-sol", "display_name": "GPT-6.1 Sol",
+                    "magpie_label": "GPT-6.1 Sol - routing group",
+                    "context_length": 922000, "max_output_tokens": 128000,
+                    "modalities": {"input": ["text", "image"]}, "tool_call": true,
+                    "reasoning": true,
+                    "reasoning_levels": ["low", "medium", "high", "xhigh", "max", "ultra", "future"]
+                },
+                {"id": "partial", "context_length": 100000},
+                {"id": "no-reasoning", "reasoning": false, "reasoning_levels": []}
+            ]}),
+        )
+        .unwrap();
+        assert_eq!(models[0].name, "GPT-6.1 Sol - routing group");
+        assert_eq!(
+            models[0].metadata,
+            Some(json!({
+                "name": "GPT-6.1 Sol - routing group", "metadataSource": "provider",
+                "contextWindow": 922000, "outputLimit": 128000,
+                "inputModalities": ["text", "image"], "toolCall": true,
+                "reasoning": true,
+                "reasoningOptions": [{"type": "effort", "values": ["low", "medium", "high", "xhigh", "max", "ultra"]}]
+            }))
+        );
+        assert_eq!(
+            models[1].metadata,
+            Some(json!({
+                "name": "partial", "metadataSource": "provider", "contextWindow": 100000
+            }))
+        );
+        assert_eq!(
+            models[2].metadata,
+            Some(json!({
+                "name": "no-reasoning", "metadataSource": "provider", "reasoning": false
+            }))
         );
     }
 
@@ -187,11 +296,13 @@ mod tests {
             vec![
                 ModelInfo {
                     id: "gemini-3.5-flash-lite".into(),
-                    name: "Gemini 3.5 Flash-Lite".into()
+                    name: "Gemini 3.5 Flash-Lite".into(),
+                    metadata: None,
                 },
                 ModelInfo {
                     id: "gemini-3.6-flash".into(),
-                    name: "gemini-3.6-flash".into()
+                    name: "gemini-3.6-flash".into(),
+                    metadata: None,
                 },
             ]
         );

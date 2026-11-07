@@ -195,6 +195,7 @@
       "agentLabel": "Agent og model",
       "noAgents": "Ingen agenter tilgængelige",
       "chooseAgent": "Vælg en agent og en model",
+      "unsupportedEffort": "Denne model understøtter ikke længere det gemte ræsonneringsniveau. Vælg Automatisk eller et andet understøttet niveau.",
       "configureAgent": "Konfigurer en agent i assistentens indstillinger, før du opretter en opgave.",
       "dependencies": "Vent på disse opgaver",
       "dependencyStatus": "({{status}})",

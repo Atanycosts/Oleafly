@@ -305,7 +305,8 @@
   "effort": {
     "auto": "Effort choice that leaves the decision to the model's own default",
     "levels": {
-      "xhigh": "Effort level between High and Max"
+      "xhigh": "Effort level between High and Max",
+      "ultra": "Effort level above Max"
     }
   },
   "web": {

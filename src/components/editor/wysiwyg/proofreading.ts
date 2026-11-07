@@ -40,7 +40,7 @@ import { useFilesStore } from "@/store/files";
 import { proofreadingPresentationDiagnostics, storePresentationDiagnostics } from "@/store/proofreading";
 import { useSettingsStore } from "@/store/settings";
 import { currentDictionaryLocale } from "@/lib/proofreading/effective-locale";
-import { i18n } from "@/i18n";
+import { i18n, onLocaleApplied } from "@/i18n";
 import { isWysiwygActive } from "./controller";
 
 export interface VisualProofreadingIssue
@@ -866,6 +866,7 @@ export const VisualProofreading = Extension.create({
             "oleafly:proofreading-presentation-changed",
             onPresentationChanged,
           );
+          const stopLocale = onLocaleApplied(onPresentationChanged);
           schedule(0);
           return {
             update(view, previousState) {
@@ -892,6 +893,7 @@ export const VisualProofreading = Extension.create({
               }
             },
           destroy() {
+            stopLocale();
             destroyed = true;
             requestGeneration++;
             cachedExtraction = null;

@@ -194,6 +194,7 @@
       "agentLabel": "エージェントとモデル",
       "noAgents": "利用できるエージェントがありません",
       "chooseAgent": "エージェントとモデルを選択",
+      "unsupportedEffort": "このモデルは保存された推論レベルをサポートしなくなりました。「自動」または別の対応レベルを選択してください。",
       "configureAgent": "タスクを作成する前に、アシスタントの設定でエージェントを設定してください。",
       "dependencies": "これらのタスクの完了を待つ",
       "dependencyStatus": "（{{status}}）",

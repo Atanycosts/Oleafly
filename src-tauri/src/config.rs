@@ -229,7 +229,7 @@ fn default_research_minutes() -> u32 {
 }
 
 fn default_ui_locale() -> String {
-    "system".into()
+    "zh-Hans".into()
 }
 
 fn default_mcp_port() -> u16 {
@@ -1200,7 +1200,9 @@ mod tests {
         assert!(!config.research_command_network);
         assert_eq!(config.research_time_budget_minutes, 120);
         assert!(config.research_task_mcp_servers.is_empty());
+        assert_eq!(config.ui_locale, "zh-Hans");
         let defaults = AppConfig::default();
+        assert_eq!(defaults.ui_locale, "zh-Hans");
         assert_eq!(
             (
                 defaults.research_keep_awake,

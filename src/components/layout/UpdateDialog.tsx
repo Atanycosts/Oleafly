@@ -19,7 +19,7 @@ import { Spinner } from "@/components/ui/spinner";
 
 export type UpdateHistoryView = ReleaseHistoryView;
 
-export type UpdatePhase = "checking" | "available" | "upToDate" | "downloading" | "error";
+export type UpdatePhase = "checking" | "available" | "upToDate" | "downloading" | "error" | "localBuild";
 
 export interface UpdateDialogProps {
   phase: UpdatePhase;
@@ -66,6 +66,7 @@ export function UpdateDialog({
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const heading = (() => {
+    if (phase === "localBuild") return t(($) => $.shell.updateWindow.localBuild);
     if (phase === "checking") return t(($) => $.shell.updateWindow.checking);
     if (phase === "upToDate") return t(($) => $.shell.updateWindow.upToDate);
     if (hasUpdate) return t(($) => $.shell.updateWindow.available);
@@ -73,7 +74,8 @@ export function UpdateDialog({
   })();
 
   const subtitle = (() => {
-    if (phase === "upToDate") {
+    if (phase === "upToDate" || phase === "localBuild") {
+      if (phase === "localBuild") return installedVersion;
       return installedVersion
         ? t(($) => $.shell.updateWindow.upToDateVersion, { version: installedVersion })
         : t(($) => $.shell.updateWindow.upToDateGeneric);
@@ -155,7 +157,7 @@ export function UpdateDialog({
         </div>
       );
     }
-    if (phase === "upToDate") {
+    if (phase === "upToDate" || phase === "localBuild") {
       return (
         <div className="flex items-center justify-end">
           <Button variant="secondary" size="sm" onClick={onClose}>
@@ -263,6 +265,7 @@ export function UpdateDialog({
             {phase === "upToDate" && (
               <CheckCircle2 aria-hidden="true" className={cn("size-12", PRIMARY_TEXT)} strokeWidth={1.5} />
             )}
+            {phase === "localBuild" && <p className="max-w-sm text-sm text-muted-foreground">{t(($) => $.shell.updateWindow.localBuildHelp)}</p>}
             {phase === "error" && <div className="w-full max-w-md text-left">{errorBlock}</div>}
           </div>
         )}

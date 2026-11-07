@@ -1118,7 +1118,8 @@
       "medium": "Średni",
       "high": "Wysoki",
       "xhigh": "Bardzo wysoki",
-      "max": "Maksymalny"
+      "max": "Maksymalny",
+      "ultra": "Ultra"
     }
   },
   "web": {

@@ -622,6 +622,70 @@ impl crate::builtin::TaskHost for NoModelHost {
     }
 }
 
+struct RetainedWebHost;
+
+#[async_trait::async_trait]
+impl crate::builtin::WebTools for RetainedWebHost {
+    async fn fetch(&self, url: &str) -> Result<serde_json::Value, String> {
+        Ok(json!({"url": url, "text": "Use two columns for review.\n".repeat(3000), "truncated": false}))
+    }
+
+    async fn search(&self, _query: &str) -> Result<serde_json::Value, String> {
+        Err("No search provider in this test.".into())
+    }
+}
+
+impl crate::builtin::TaskHost for RetainedWebHost {
+    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+        NoModelHost.skills(context)
+    }
+    fn skill_read_paths(&self, context: &TaskRunContext) -> Vec<std::path::PathBuf> {
+        NoModelHost.skill_read_paths(context)
+    }
+    fn provider(&self, context: TaskRunContext) -> TaskRuntimeFuture<crate::builtin::TaskProvider> {
+        NoModelHost.provider(context)
+    }
+    fn bridge(
+        &self,
+        context: TaskRunContext,
+        binding: Option<TaskBinding>,
+    ) -> TaskRuntimeFuture<Arc<dyn crate::builtin::TaskBridge>> {
+        NoModelHost.bridge(context, binding)
+    }
+    fn web(&self) -> Option<Arc<dyn crate::builtin::WebTools>> {
+        Some(Arc::new(RetainedWebHost))
+    }
+}
+
+#[tokio::test]
+async fn web_pages_are_retained_for_review_without_enabling_subprocess_network() {
+    let mut fixture = tool_task(ResearchBrief::default());
+    fixture.binding.host = Arc::new(RetainedWebHost);
+    let saved = fixture
+        .call(
+            "web_fetch",
+            json!({"url": "https://example.org/authors", "save_path": "research/guide.txt"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved["savedPath"], "research/guide.txt");
+    let captured =
+        std::fs::read_to_string(fixture.binding.execution_root.join("research/guide.txt")).unwrap();
+    assert!(captured.contains("https://example.org/authors"));
+    assert!(captured.contains("Use two columns for review."));
+    assert_eq!(captured.matches("Use two columns for review.").count(), 3000);
+    assert!(saved["text"].as_str().unwrap().contains("[output truncated]"));
+    assert_eq!(saved["textTruncated"], true);
+    assert!(captured.contains("Truncated: false"));
+    assert!(fixture
+        .call(
+            "web_fetch",
+            json!({"url": "https://example.org/authors", "save_path": "../outside.txt"})
+        )
+        .await
+        .is_err());
+}
+
 struct ToolTask {
     temp: tempfile::TempDir,
     store: TaskStore,
@@ -760,6 +824,13 @@ impl ToolTask {
 #[tokio::test]
 async fn ledger_append_fills_the_command_and_metrics_from_the_run() {
     let fixture = tool_task(ResearchBrief::default());
+    crate::record::init_record(
+        &fixture.binding.execution_root,
+        &fixture.task.record_slug,
+        "# Brief\n",
+    )
+    .unwrap();
+    assert!(!fixture.record_file("ledger.tsv").exists());
     fixture.add_run(
         "r001",
         "python train.py --dropout 0.3",

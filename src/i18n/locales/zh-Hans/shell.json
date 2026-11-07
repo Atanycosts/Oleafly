@@ -1243,7 +1243,9 @@
     "upToDateGeneric": "你正在使用最新版本的 Oleafly。",
     "upToDateHeadline": "已是最新版本！",
     "upToDateVersion": "Oleafly v{{version}} 已是最新版本。",
-    "viewRelease": "查看发布说明"
+    "viewRelease": "查看发布说明",
+    "localBuild": "本地 Workbench 版本",
+    "localBuildHelp": "此应用包含本地 Workbench 整合功能，请从本地项目更新。官方 Oleafly 发布包不包含这些改动。"
   },
   "windowControls": {
     "group": "窗口控制",

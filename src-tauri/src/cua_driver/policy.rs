@@ -1173,6 +1173,7 @@ mod tests {
         let tools = vec![
             McpServerTool {
                 name: "get_window_state".into(),
+                read_only_hint: true,
                 description: Some(
                     "Returns the window tree and a screenshot. Use it after acting.".into(),
                 ),
@@ -1180,11 +1181,13 @@ mod tests {
             },
             McpServerTool {
                 name: "health_report".into(),
+                read_only_hint: true,
                 description: Some("Internal.".into()),
                 input_schema: json!({"type":"object"}),
             },
             McpServerTool {
                 name: "kill_app".into(),
+                read_only_hint: false,
                 description: None,
                 input_schema: json!({"type":"object"}),
             },

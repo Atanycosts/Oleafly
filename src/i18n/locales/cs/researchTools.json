@@ -197,6 +197,7 @@
       "agentLabel": "Agent a model",
       "noAgents": "Žádní dostupní agenti",
       "chooseAgent": "Vyberte agenta a model",
+      "unsupportedEffort": "Tento model už nepodporuje uloženou úroveň uvažování. Vyberte Automaticky nebo jinou podporovanou úroveň.",
       "configureAgent": "Před vytvořením úlohy nastavte agenta v nastavení asistenta.",
       "dependencies": "Počkat na tyto úlohy",
       "dependencyStatus": "({{status}})",

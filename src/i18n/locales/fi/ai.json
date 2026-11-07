@@ -1078,7 +1078,8 @@
       "medium": "Keskitaso",
       "high": "Korkea",
       "xhigh": "Erittäin korkea",
-      "max": "Maksimi"
+      "max": "Maksimi",
+      "ultra": "Ultra"
     }
   },
   "web": {
