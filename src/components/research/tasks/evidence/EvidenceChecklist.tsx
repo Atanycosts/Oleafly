@@ -55,6 +55,8 @@ export function evidenceItemText(item: EvidenceItem): string {
       });
     case "bib.lookupFailed":
       return i18n.t(($) => $.researchTools.evidence.items.bibLookupFailed, { key: p.key ?? "" });
+    case "numbers.notChecked":
+      return i18n.t(($) => $.researchTools.evidence.items.numbersNotChecked, { reason: p.reason ?? "" });
     case "numbers.mismatch":
       return i18n.t(($) => $.researchTools.evidence.items.numbersMismatch, {
         value: p.value ?? "",

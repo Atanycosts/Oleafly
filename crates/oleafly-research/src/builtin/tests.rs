@@ -243,10 +243,26 @@ impl LoopbackBridge {
         let observed = calls.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let router = Router::new().route("/mcp", post(move |Json(request): Json<Value>| {
-            lock(&observed).push(request);
-            async { Json(json!({"content":[{"type":"text","text":"scoped research evidence"}],"isError":false})) }
-        }));
+        let router = Router::new().route(
+            "/mcp",
+            post(move |Json(request): Json<Value>| {
+                lock(&observed).push(request.clone());
+                async move {
+                    let (text, failed) = match (
+                        request["name"].as_str(),
+                        request["arguments"]["id"].as_str(),
+                    ) {
+                        (Some("load_skill"), Some("enabled-skill")) => (
+                            json!({"instructions":"Use the recorded source ranges."}).to_string(),
+                            false,
+                        ),
+                        (Some("load_skill"), _) => ("This skill is disabled.".into(), true),
+                        _ => ("scoped research evidence".into(), false),
+                    };
+                    Json(json!({"content":[{"type":"text","text":text}],"isError":failed}))
+                }
+            }),
+        );
         let cancel = CancellationToken::new();
         let stopped = cancel.clone();
         let server = tokio::spawn(async move {
@@ -365,9 +381,9 @@ impl TaskHost for FixtureHost {
         Box::pin(async move { Ok(tools) })
     }
 
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+    fn skills(&self, context: &TaskRunContext) -> Result<crate::observations::TaskSkills, String> {
         assert!(context.skill_ids.is_empty());
-        Ok(String::new())
+        Ok(Default::default())
     }
 
     fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<PathBuf> {
@@ -421,6 +437,7 @@ enum ProviderBehavior {
     Reject,
     Wait,
     RepeatTool,
+    Skills,
 }
 
 struct ProviderFixture {
@@ -459,6 +476,13 @@ impl ProviderFixture {
                     return Response::builder().header("content-type","text/event-stream").body(Body::from_stream(stream)).unwrap();
                 }
                 let delta = match (behavior, step) {
+                    (ProviderBehavior::Skills, 0) => tool_delta(vec![
+                        ("load_skill", json!({"id":"enabled-skill"})),
+                        ("load_skill", json!({"id":"disabled-skill"})),
+                        ("read_file", json!({"path":"main.tex","offset":0,"limit":4})),
+                        ("run_command", json!({"command":"echo forbidden"})),
+                    ]),
+                    (ProviderBehavior::Skills, _) => json!({"content":"Reviewed skill outcomes."}),
                     (ProviderBehavior::RepeatTool, _) => tool_delta(vec![("list_files", json!({}))]),
                     (_, 0) => tool_delta(vec![
                         ("write_file",json!({"path":"analysis/result.md","content":"Isolated manuscript revision"})),
@@ -580,6 +604,82 @@ async fn builtin_adapter_edits_isolated_files_and_records_native_usage() {
     }
     assert!(lock(&events).iter().any(|event| matches!(event,TaskRuntimeEvent::Reasoning{text} if text=="Checked the scoped evidence.")));
     assert_eq!(usage_row(&host), ("completed".into(), Some(30), Some(6)));
+    let recorded = lock(&events);
+    let runtime = recorded
+        .iter()
+        .find_map(|event| match event {
+            TaskRuntimeEvent::Observation {
+                observation: TaskObservation::Runtime { tools, .. },
+            } => Some(tools),
+            _ => None,
+        })
+        .unwrap();
+    let provided: BTreeSet<_> = runtime.iter().map(|tool| tool.name.as_str()).collect();
+    let requests = lock(&provider.requests);
+    let offered: BTreeSet<_> = requests[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(provided, offered);
+    assert!(recorded.iter().any(|event| matches!(event,
+        TaskRuntimeEvent::Observation { observation: TaskObservation::ToolExecution { name, status, .. } }
+        if name == "write_file" && status == "done"
+    )));
+    assert!(recorded.iter().any(|event| matches!(event,
+        TaskRuntimeEvent::Observation { observation: TaskObservation::ToolExecution { name, status, .. } }
+        if name == "write_file" && status == "error"
+    )));
+}
+
+#[tokio::test]
+async fn observations_distinguish_loaded_disabled_and_unavailable_capabilities() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("main.tex"), "source evidence").unwrap();
+    let provider = ProviderFixture::start(ProviderBehavior::Skills).await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut context = context(root.path());
+    context.allowed_paths = vec!["main.tex".into()];
+    context.brief.permissions.commands = crate::model::CommandPolicy::Off;
+    let (events, sink) = event_log();
+    adapter
+        .run(context, CancellationToken::new(), sink)
+        .await
+        .unwrap();
+    let events = lock(&events);
+    let executions: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            TaskRuntimeEvent::Observation {
+                observation: value @ TaskObservation::ToolExecution { .. },
+            } => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(executions.len(), 4);
+    assert!(executions.iter().any(|event| matches!(event,
+        TaskObservation::ToolExecution { skill_id: Some(id), skill_instructions_sha256: Some(hash), status, .. }
+        if id == "enabled-skill" && status == "done" && *hash == content_hash(b"Use the recorded source ranges.")
+    )));
+    assert!(executions.iter().any(|event| matches!(event,
+        TaskObservation::ToolExecution { skill_id: Some(id), skill_instructions_sha256: None, status, .. }
+        if id == "disabled-skill" && status == "error"
+    )));
+    assert!(executions.iter().any(|event| matches!(event,
+        TaskObservation::ToolExecution { source: Some(source), .. }
+        if source.path == "main.tex" && source.file_sha256 == content_hash(b"source evidence")
+            && source.offset == 0 && source.end_offset == 4 && source.truncated
+    )));
+    assert!(executions.iter().any(|event| matches!(event,
+        TaskObservation::ToolExecution { name, status, .. } if name == "run_command" && status == "error"
+    )));
+    assert!(events.iter().any(|event| matches!(event,
+        TaskRuntimeEvent::Observation { observation: TaskObservation::Runtime { unavailable, tools, .. } }
+        if unavailable.contains(&"commands:disabled".into()) && unavailable.contains(&"desktop_apps:disabled".into())
+            && !tools.iter().any(|tool| tool.name == "desktop_apps")
+    )));
 }
 
 #[tokio::test]
@@ -661,7 +761,7 @@ struct CountingHost {
 }
 
 impl TaskHost for CountingHost {
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+    fn skills(&self, context: &TaskRunContext) -> Result<crate::observations::TaskSkills, String> {
         self.inner.skills(context)
     }
 
@@ -1010,6 +1110,10 @@ async fn the_agent_is_woken_when_a_run_finishes_after_its_turn() {
     let result = within(run).await.unwrap().unwrap();
 
     assert_eq!(result.summary, "Recorded r001 in the ledger.");
+    assert_eq!(
+        (result.input_tokens, result.output_tokens),
+        (Some(30), Some(6))
+    );
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
     assert!(!requests[1]["messages"].to_string().contains("finished:"));

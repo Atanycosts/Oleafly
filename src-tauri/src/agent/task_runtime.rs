@@ -12,6 +12,7 @@ use oleafly_research::builtin::{
 use oleafly_research::host::ConnectorSecrets;
 use oleafly_research::literature::paper::PdfTextExtractor;
 use oleafly_research::literature::{LiteratureClient, LiteratureSource};
+use oleafly_research::observations::{content_hash, InjectedSkill, TaskSkills};
 use oleafly_research::prompt::task_prompt;
 use oleafly_research::scheduler::TaskServices;
 use oleafly_research::task_tools::extra::TaskBinding;
@@ -169,30 +170,45 @@ fn cli_skill_section(record: &crate::skills::SkillRecord) -> String {
     section
 }
 
-fn skill_prompt_in(
+fn task_skills_in(
     root: &Path,
     pack: Option<&Path>,
     context: &TaskRunContext,
-) -> Result<String, String> {
+) -> Result<TaskSkills, String> {
     let mut prompt = String::new();
+    let mut injected = Vec::new();
     for skill in selected_skills(root, pack, context)? {
-        prompt.push_str(&skill_section(&skill, SkillAudience::Task));
+        let section = skill_section(&skill, SkillAudience::Task);
+        injected.push(InjectedSkill {
+            id: skill.id.clone(),
+            section_sha256: content_hash(section.as_bytes()),
+        });
+        prompt.push_str(&section);
         if prompt.len() > MAX_SKILL_BYTES {
             return Err(
                 "The selected skills exceed this task's context limit. Select fewer skills.".into(),
             );
         }
     }
-    Ok(prompt)
+    Ok(TaskSkills { prompt, injected })
 }
 
-fn skill_prompt(app: &tauri::AppHandle, context: &TaskRunContext) -> Result<String, String> {
+#[cfg(test)]
+fn skill_prompt_in(
+    root: &Path,
+    pack: Option<&Path>,
+    context: &TaskRunContext,
+) -> Result<String, String> {
+    task_skills_in(root, pack, context).map(|skills| skills.prompt)
+}
+
+fn skill_prompt(app: &tauri::AppHandle, context: &TaskRunContext) -> Result<TaskSkills, String> {
     if context.skill_ids.is_empty() {
-        return Ok(String::new());
+        return Ok(TaskSkills::default());
     }
     let root = crate::paths::oleafly_root()?;
     let pack = crate::skills_pack::pack_root(app);
-    skill_prompt_in(&root, pack.as_deref(), context)
+    task_skills_in(&root, pack.as_deref(), context)
 }
 
 struct NativeTaskHost {
@@ -243,7 +259,7 @@ fn task_mcp_server_names() -> Vec<String> {
 }
 
 impl TaskHost for NativeTaskHost {
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+    fn skills(&self, context: &TaskRunContext) -> Result<TaskSkills, String> {
         skill_prompt(&self.app, context)
     }
 
@@ -431,6 +447,9 @@ struct NativeUsage(super::usage::NativeUsageGuard);
 
 impl UsageSink for NativeUsage {
     fn observe(&self, event: &oleafly_agent::AgentEvent) {
+        if matches!(event, oleafly_agent::AgentEvent::StepStart { step: 0 }) {
+            self.0.begin_task_turn();
+        }
         self.0.observe(event);
     }
 
@@ -612,7 +631,7 @@ impl AcpTaskAdapter {
             return Err("The task was cancelled.".into());
         }
         let files = TaskFiles::open(Path::new(&context.execution_root), &context.allowed_paths)?;
-        let skills = self.host.skills(&context)?;
+        let skills = self.host.skills(&context)?.prompt;
         let (mut options, generation) = acp_task_start(&self.runtime, &context, files.root.clone());
         let mut bridge_context = context.clone();
         bridge_context.execution_root = files.root.to_string_lossy().into_owned();

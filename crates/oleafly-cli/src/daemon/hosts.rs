@@ -728,14 +728,16 @@ impl DaemonTaskHost {
 }
 
 impl TaskHost for DaemonTaskHost {
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+    fn skills(
+        &self,
+        context: &TaskRunContext,
+    ) -> Result<oleafly_research::observations::TaskSkills, String> {
         if context.skill_ids.is_empty() {
-            return Ok(String::new());
+            return Ok(Default::default());
         }
         let grant = self.grant(&context.task_id)?;
-        skill_prompt(
+        crate::agent::tools::skills::task_skills(
             &self.skills(&grant),
-            Some(&context.project_id),
             &context.skill_ids,
             SkillAudience::Task,
         )

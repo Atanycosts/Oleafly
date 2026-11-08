@@ -1873,8 +1873,11 @@ mod handoff {
     struct NullTaskHost;
 
     impl crate::builtin::TaskHost for NullTaskHost {
-        fn skills(&self, _context: &TaskRunContext) -> Result<String, String> {
-            Ok(String::new())
+        fn skills(
+            &self,
+            _context: &TaskRunContext,
+        ) -> Result<crate::observations::TaskSkills, String> {
+            Ok(Default::default())
         }
 
         fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<PathBuf> {
@@ -3483,8 +3486,11 @@ mod approvals {
     }
 
     impl TaskHost for ScriptedHost {
-        fn skills(&self, _context: &TaskRunContext) -> Result<String, String> {
-            Ok(String::new())
+        fn skills(
+            &self,
+            _context: &TaskRunContext,
+        ) -> Result<crate::observations::TaskSkills, String> {
+            Ok(Default::default())
         }
 
         fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<PathBuf> {

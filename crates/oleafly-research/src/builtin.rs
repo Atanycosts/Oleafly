@@ -23,6 +23,7 @@ use crate::model::{
     ApprovalKind, SuspendState, TaskPhase, TaskRunContext, TaskRuntimeEvent, TaskRuntimeOutcome,
     ToolPhase,
 };
+use crate::observations::{content_hash, ProvidedTool, ReadSource, TaskObservation, TaskSkills};
 use crate::prompt::{resume_message, task_prompt, wake_up_message, wrap_up_message};
 use crate::runs::{RunSummary, WAIT_MAX};
 use crate::scheduler::{TaskEventSink, TaskRuntimeAdapter, TaskRuntimeFuture, TaskServices};
@@ -146,7 +147,7 @@ fn shared_literature() -> Arc<LiteratureClient> {
 }
 
 pub trait TaskHost: Send + Sync {
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String>;
+    fn skills(&self, context: &TaskRunContext) -> Result<TaskSkills, String>;
     fn skill_read_paths(&self, context: &TaskRunContext) -> Vec<PathBuf>;
     fn provider(&self, context: TaskRunContext) -> TaskRuntimeFuture<TaskProvider>;
     fn bridge(
@@ -679,9 +680,16 @@ impl BuiltinTaskAdapter {
             .host
             .bridge(context.clone(), Some(binding.clone()))
             .await?;
-        let mcp_tools = self.host.task_mcp_tools(&context).await.unwrap_or_default();
+        let mcp_tools = match self.host.task_mcp_tools(&context).await {
+            Ok(tools) => tools,
+            Err(error) => {
+                bridge.shutdown().await;
+                return Err(format!("Research-task MCP discovery failed: {error}"));
+            }
+        };
         let mut tools = file_tool_schemas(network);
         tools.extend(task_tool_schemas(&brief, self.host.web().is_some()));
+        let builtin_names: BTreeSet<String> = tools.iter().map(|tool| tool.name.clone()).collect();
         let reserved: BTreeSet<String> = tools.iter().map(|tool| tool.name.clone()).collect();
         tools.extend(
             bridge
@@ -705,6 +713,57 @@ impl BuiltinTaskAdapter {
             }
         }
         let names: BTreeSet<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+        let mut unavailable = Vec::new();
+        if !context.desktop_apps {
+            unavailable.push("desktop_apps:disabled".into());
+        }
+        if self.host.web().is_none() {
+            unavailable.push("web_tools:unavailable".into());
+        }
+        if brief.permissions.commands == crate::model::CommandPolicy::Off {
+            unavailable.push("commands:disabled".into());
+        }
+        let runtime_event = TaskRuntimeEvent::Observation {
+            observation: TaskObservation::Runtime {
+                runtime_id: context.runtime_id.clone(),
+                provider_id: resolved.provider_id.clone(),
+                model_id: resolved.model_id.clone(),
+                session_id: context.session_id.clone(),
+                tools: tools
+                    .iter()
+                    .map(|tool| {
+                        Ok(ProvidedTool {
+                            name: tool.name.clone(),
+                            source: if mcp.contains_key(&tool.name) {
+                                "mcp"
+                            } else if builtin_names.contains(&tool.name) {
+                                "builtin"
+                            } else {
+                                "research_bridge"
+                            }
+                            .into(),
+                            schema_sha256: content_hash(
+                                &serde_json::to_vec(tool).map_err(|error| error.to_string())?,
+                            ),
+                        })
+                    })
+                    .collect::<Result<_, String>>()?,
+                declared_skills: context.skill_ids.clone(),
+                injected_skills: skills.injected,
+                unavailable,
+            },
+        };
+        if serde_json::to_vec(&runtime_event)
+            .map_err(|error| error.to_string())?
+            .len()
+            > crate::store::MAX_EVENT_BYTES
+        {
+            bridge.shutdown().await;
+            return Err(
+                "The effective capability snapshot exceeds the task event storage limit.".into(),
+            );
+        }
+        events(runtime_event);
         let tool_registry = registry(&names, &mcp);
         let jobs = Arc::new(CommandJobs::default());
         let usage_sink = usage.clone();
@@ -737,7 +796,8 @@ impl BuiltinTaskAdapter {
             provider: Arc::new((client.clone(), resolved.clone())),
             usage: Arc::new(move |event| usage_sink.observe(event)),
         });
-        let mut template = CompletionRequest::prompt(task_prompt(&context, &skills), String::new());
+        let mut template =
+            CompletionRequest::prompt(task_prompt(&context, &skills.prompt), String::new());
         template.tools = tools;
         template.effort = brief.reasoning_effort;
         let suspend = self.services.suspends.token(&context.task_id);
@@ -838,6 +898,10 @@ impl BuiltinTaskAdapter {
         usage: &Arc<dyn UsageSink>,
         observed: &Arc<Mutex<Option<TokenCounts>>>,
     ) -> Result<oleafly_agent::RunOutcome, String> {
+        // run_agent reports a cumulative snapshot for one turn. Wake-ups and
+        // wrap-up are separate turns within the same execution generation.
+        let previous = *lock(observed);
+        let mut calls: HashMap<String, (String, String)> = HashMap::new();
         oleafly_agent::run_agent_with_pipeline(
             client,
             resolved,
@@ -851,13 +915,122 @@ impl BuiltinTaskAdapter {
             None,
             runner,
             |event| {
-                if let AgentEvent::Usage { usage, .. } = &event {
-                    *lock(observed) = Some((
-                        usage.reported_input().map(u64::from),
-                        usage.reported_output().map(u64::from),
-                    ));
-                }
                 usage.observe(&event);
+                match &event {
+                    AgentEvent::ToolCallStart { id, name } => {
+                        calls.insert(id.clone(), (name.clone(), String::new()));
+                    }
+                    AgentEvent::ToolRequest {
+                        id,
+                        name,
+                        arguments,
+                    } => {
+                        calls.insert(id.clone(), (name.clone(), arguments.clone()));
+                        events(TaskRuntimeEvent::Observation {
+                            observation: TaskObservation::ToolRequested {
+                                call_id: id.clone(),
+                                name: name.clone(),
+                                input_sha256: content_hash(arguments.as_bytes()),
+                            },
+                        });
+                    }
+                    AgentEvent::ToolCallEnd { id, arguments } => {
+                        if let Some((name, input)) = calls.get_mut(id) {
+                            *input = arguments.clone();
+                            events(TaskRuntimeEvent::Observation {
+                                observation: TaskObservation::ToolRequested {
+                                    call_id: id.clone(),
+                                    name: name.clone(),
+                                    input_sha256: content_hash(arguments.as_bytes()),
+                                },
+                            });
+                        }
+                    }
+                    AgentEvent::ToolOutcome { id, output } => {
+                        if let Some((name, arguments)) = calls.remove(id) {
+                            let status = tool_result_status(output);
+                            let value = serde_json::from_str::<Value>(output).ok();
+                            // Skill calls through the research bridge retain their MCP envelope.
+                            let payload = value.as_ref().and_then(|value| {
+                                value["content"][0]["text"]
+                                    .as_str()
+                                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                            });
+                            let value = payload.as_ref().or(value.as_ref());
+                            let args = serde_json::from_str::<Value>(&arguments).ok();
+                            let skill_id =
+                                matches!(name.as_str(), "load_skill" | "read_skill_file")
+                                    .then(|| {
+                                        args.as_ref()
+                                            .and_then(|args| args["id"].as_str())
+                                            .map(str::to_owned)
+                                    })
+                                    .flatten();
+                            let skill_instructions_sha256 = (name == "load_skill"
+                                && status == "done")
+                                .then(|| {
+                                    value
+                                        .and_then(|value| value["instructions"].as_str())
+                                        .map(|text| content_hash(text.as_bytes()))
+                                })
+                                .flatten();
+                            let source = if name == "read_file" && status == "done" {
+                                value.and_then(|value| {
+                                    Some(ReadSource {
+                                        path: value["path"].as_str()?.into(),
+                                        file_sha256: value["fileSha256"].as_str()?.into(),
+                                        offset: value["offset"].as_u64()? as usize,
+                                        end_offset: value["endOffset"].as_u64()? as usize,
+                                        truncated: value["truncated"].as_bool()?,
+                                    })
+                                })
+                            } else {
+                                None
+                            };
+                            events(TaskRuntimeEvent::Observation {
+                                observation: TaskObservation::ToolExecution {
+                                    call_id: id.clone(),
+                                    name,
+                                    status: status.into(),
+                                    input_sha256: content_hash(arguments.as_bytes()),
+                                    output_sha256: content_hash(output.as_bytes()),
+                                    skill_id,
+                                    skill_instructions_sha256,
+                                    source,
+                                },
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                if let AgentEvent::Usage { usage, .. } = &event {
+                    let add = |prior: Option<u64>, current: Option<u32>| match previous {
+                        None => current.map(u64::from),
+                        Some(_) => prior.zip(current).map(|(a, b)| a + u64::from(b)),
+                    };
+                    let input_tokens =
+                        add(previous.and_then(|counts| counts.0), usage.reported_input());
+                    let output_tokens = add(
+                        previous.and_then(|counts| counts.1),
+                        usage.reported_output(),
+                    );
+                    let counts = Some((input_tokens, output_tokens));
+                    let changed = *lock(observed) != counts;
+                    *lock(observed) = counts;
+                    events(TaskRuntimeEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                    });
+                    if changed {
+                        events(TaskRuntimeEvent::Observation {
+                            observation: TaskObservation::Usage {
+                                input_tokens,
+                                output_tokens,
+                            },
+                        });
+                    }
+                    return;
+                }
                 if let Some(event) = builtin_event(event) {
                     events(event);
                 }
@@ -1102,7 +1275,13 @@ pub fn tool_result_status(output: &str) -> &'static str {
     let failed = value.get("error").is_some_and(|entry| !entry.is_null())
         || value.get("success") == Some(&Value::Bool(false))
         || value.get("timedOut") == Some(&Value::Bool(true))
-        || value.get("timed_out") == Some(&Value::Bool(true));
+        || value.get("timed_out") == Some(&Value::Bool(true))
+        || value.get("isError") == Some(&Value::Bool(true))
+        || value.get("ok") == Some(&Value::Bool(false))
+        || value
+            .get("exitCode")
+            .and_then(Value::as_i64)
+            .is_some_and(|code| code != 0);
     if failed {
         "error"
     } else {

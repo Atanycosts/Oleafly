@@ -9,6 +9,7 @@ import type {
   TaskIsolationSummary,
   TaskProgress,
   TaskRuntimeEvent,
+  TaskObservationView,
 } from "@/lib/research-tasks";
 import { formatDateTime } from "@/lib/intl";
 import enCommon from "@/i18n/locales/en/common.json" with { type: "json" };
@@ -28,6 +29,14 @@ const previewMocks = vi.hoisted(() => ({
   file: vi.fn(),
   artifact: vi.fn(),
   events: vi.fn(),
+  observations: vi.fn().mockResolvedValue({
+    summary: { runtime: null, usage: null, baseline: null, changedFiles: [], changedFileCount: 0, evidence: null, coverageGaps: [] },
+    page: { events: [], nextSequence: 0, throughSequence: 0, hasMore: false },
+  }),
+  source: vi.fn(),
+  findings: vi.fn().mockResolvedValue({ findings: [], nextSequence: 0, hasMore: false, coverageGaps: [] }),
+  findingSource: vi.fn(),
+  findingDecide: vi.fn(),
   keepRunning: vi.fn(),
   config: vi.fn(),
   plan: vi.fn(),
@@ -42,6 +51,11 @@ vi.mock("@/lib/research-tasks", () => ({
   previewResearchTaskFile: previewMocks.file,
   previewResearchTaskArtifact: previewMocks.artifact,
   loadResearchTaskEventsBefore: previewMocks.events,
+  loadResearchTaskObservations: previewMocks.observations,
+  previewResearchTaskSource: previewMocks.source,
+  loadResearchTaskFindings: previewMocks.findings,
+  previewResearchTaskFindingSource: previewMocks.findingSource,
+  decideResearchTaskFinding: previewMocks.findingDecide,
   NEWEST_EVENTS: Number.MAX_SAFE_INTEGER,
   MAX_PLAN_BYTES: 64 * 1024,
   setResearchTaskKeepRunning: previewMocks.keepRunning,
@@ -223,11 +237,33 @@ function props(current: ResearchTask, onCancel = vi.fn(async () => {})) {
   };
 }
 
+function observedRun(id: string): TaskObservationView {
+  const row = (sequence: number, event: TaskRuntimeEvent) => ({ taskId: id, executionGeneration: 1, sequence, event, createdAt: sequence });
+  return {
+    summary: {
+      taskId: id, projectId: "paper", executionGeneration: 1, status: "awaiting_review", goal: "Read evidence", successCriteria: ["Source can be recovered"],
+      runtime: row(1, { kind: "observation", observation: { type: "runtime", runtimeId: "builtin", providerId: "actual-provider", modelId: "actual-model", sessionId: "session", tools: [{ name: "read_file", source: "builtin", schemaSha256: "schema-hash" }], declaredSkills: ["selected"], injectedSkills: [{ id: "selected", sectionSha256: "section-hash" }], unavailable: ["commands:disabled"] } }),
+      usage: row(2, { kind: "observation", observation: { type: "usage", inputTokens: 0, outputTokens: null } }),
+      baseline: { kind: "git_worktree", executionRoot: "workspace", sourceRevision: "revision-start", baselineHash: "baseline-hash", fileCount: 2, createdAt: 1, initialGitStatus: [" M main.tex", "?? notes.md"], initialGitStatusComplete: true },
+      changedFiles: [], changedFileCount: 1, evidence: { checkedAt: 1, checks: [] }, coverageGaps: [],
+    },
+    page: { events: [
+      row(3, { kind: "observation", observation: { type: "toolRequested", callId: "source-call", name: "read_file", inputSha256: "input-hash" } }),
+      row(4, { kind: "observation", observation: { type: "toolExecution", callId: "source-call", name: "read_file", status: "done", inputSha256: "input-hash", outputSha256: "output-hash", skillId: null, skillInstructionsSha256: null, source: { path: "main.tex", fileSha256: "source-hash", offset: 6, endOffset: 12, truncated: true } } }),
+    ], nextSequence: 4, throughSequence: 4, hasMore: false },
+  };
+}
+
 describe("TaskDetailDialog", () => {
   beforeEach(() => {
     previewMocks.file.mockReset();
     previewMocks.artifact.mockReset();
     previewMocks.events.mockReset();
+    previewMocks.observations.mockReset().mockResolvedValue({ summary: { runtime: null, usage: null, baseline: null, evidence: null, coverageGaps: [] }, page: { events: [], nextSequence: 0, throughSequence: 0, hasMore: false } });
+    previewMocks.source.mockReset();
+    previewMocks.findings.mockReset().mockResolvedValue({ findings: [], nextSequence: 0, hasMore: false, coverageGaps: [] });
+    previewMocks.findingSource.mockReset();
+    previewMocks.findingDecide.mockReset();
     previewMocks.keepRunning.mockReset();
     previewMocks.config.mockReset().mockResolvedValue({ research_background_enabled: true });
     previewMocks.plan.mockReset().mockResolvedValue({ text: "- [ ] Measure the baseline", truncated: false });
@@ -239,6 +275,95 @@ describe("TaskDetailDialog", () => {
   });
 
   afterEach(() => cleanup());
+
+  it("shows the recorded runtime, paired call and exact source range in the existing activity", async () => {
+    const current = task("observed");
+    const view = observedRun(current.id);
+    previewMocks.observations.mockResolvedValue(view);
+    previewMocks.source.mockResolvedValue({ source: view.page.events[1], text: "证据" });
+    const events = [{ taskId: current.id, executionGeneration: 1, sequence: 5, createdAt: 5, event: { kind: "tool" as const, callId: "source-call", name: "read_file", phase: "request" as const, detail: '{"path":"main.tex"}', status: "running" } }];
+    render(<TaskDetailDialog {...props(current)} events={events} />);
+    openTab(enResearchTools.tasks.detail.tabActivity);
+    const section = within(page().getByTestId("task-observations"));
+    await waitFor(() => expect(section.getByText("actual-provider / actual-model · builtin")).toBeInTheDocument());
+    expect(section.getByText(/Reported input.*0 \/ Unknown/)).toBeInTheDocument();
+    expect(section.getByText(/Commands turned off/)).toBeInTheDocument();
+    fireEvent.click(section.getByText(enResearchTools.tasks.observations.records));
+    expect(section.getByText(/#3 → #4/)).toHaveTextContent("source-call");
+    const scroll = vi.mocked(HTMLElement.prototype.scrollIntoView);
+    const scrollsBefore = scroll.mock.calls.length;
+    fireEvent.click(section.getByRole("button", { name: enResearchTools.tasks.observations.openCall }));
+    expect(scroll).toHaveBeenCalledTimes(scrollsBefore + 1);
+    fireEvent.click(section.getByRole("button", { name: enResearchTools.tasks.observations.openCall }));
+    expect(scroll).toHaveBeenCalledTimes(scrollsBefore + 2);
+    fireEvent.click(section.getByRole("button", { name: enResearchTools.tasks.observations.openSource }));
+    await waitFor(() => expect(section.getByText("证据")).toBeInTheDocument());
+    expect(previewMocks.source).toHaveBeenCalledWith(current.id, 1, 4);
+    previewMocks.source.mockRejectedValue(new Error("The source revision is no longer retained."));
+    fireEvent.click(section.getByRole("button", { name: enResearchTools.tasks.observations.openSource }));
+    await waitFor(() => expect(section.getByRole("alert")).toHaveTextContent("no longer retained"));
+    fireEvent.click(section.getByText(enResearchTools.tasks.observations.baseline));
+    expect(section.getByText(/M main.tex/)).toHaveTextContent("?? notes.md");
+    fireEvent.click(section.getByRole("button", { name: "Review 1 file changes" }));
+    expect(page().getByRole("tab", { name: enResearchTools.tasks.detail.tabReview })).toHaveAttribute("data-state", "active");
+  });
+
+  it("recovers observation query errors and ignores an old page after a newer task revision", async () => {
+    const current = task("refresh-observed");
+    const first = observedRun(current.id);
+    first.page.hasMore = true;
+    previewMocks.observations.mockRejectedValueOnce(new Error("Observation storage unavailable")).mockResolvedValue(first);
+    const input = props(current);
+    const ui = render(<TaskDetailDialog {...input} />);
+    openTab(enResearchTools.tasks.detail.tabActivity);
+    const section = within(page().getByTestId("task-observations"));
+    await waitFor(() => expect(section.getByRole("alert")).toHaveTextContent("Observation storage unavailable"));
+    fireEvent.click(section.getByRole("button", { name: enResearchTools.tasks.observations.retry }));
+    await waitFor(() => expect(section.getByRole("button", { name: enResearchTools.tasks.observations.more })).toBeEnabled());
+    const older = deferred<TaskObservationView>();
+    previewMocks.observations.mockReturnValueOnce(older.promise);
+    fireEvent.click(section.getByRole("button", { name: enResearchTools.tasks.observations.more }));
+    expect(previewMocks.observations).toHaveBeenLastCalledWith(current.id, 1, 4);
+    const latest = observedRun(current.id);
+    latest.page.events = [{ taskId: current.id, executionGeneration: 1, sequence: 12, createdAt: 12, event: { kind: "observation", observation: { type: "toolRequested", callId: "new-call", name: "load_skill", inputSha256: "new-input" } } }];
+    latest.page.nextSequence = 12;
+    latest.page.throughSequence = 12;
+    previewMocks.observations.mockResolvedValue(latest);
+    ui.rerender(<TaskDetailDialog {...input} task={{ ...current, updatedAt: 2 }} />);
+    await waitFor(() => expect(section.getByText("Committed through sequence 12")).toBeInTheDocument());
+    expect(previewMocks.observations).toHaveBeenLastCalledWith(current.id, 1, 4);
+    fireEvent.click(section.getByText(enResearchTools.tasks.observations.records));
+    expect(section.getByText(/#3 → #4/)).toHaveTextContent("source-call");
+    expect(section.getByText(/#12 · new-call/)).toBeInTheDocument();
+    await act(async () => { older.resolve(first); });
+    expect(section.getByText("Committed through sequence 12")).toBeInTheDocument();
+    expect(section.queryByText("Committed through sequence 4")).toBeNull();
+  });
+
+  it("shows shortened Git, file and check coverage instead of implying a complete summary", async () => {
+    const current = task("partial-observed");
+    const view = observedRun(current.id);
+    view.summary.coverageGaps = ["observations.git_status_shortened", "observations.file_list_shortened", "observations.check_items_shortened"];
+    if (!view.summary.baseline) throw new Error("Missing baseline fixture");
+    const baseline = view.summary.baseline;
+    baseline.initialGitStatus = [];
+    baseline.initialGitStatusComplete = false;
+    previewMocks.observations.mockResolvedValue(view);
+    const input = props(current);
+    const ui = render(<TaskDetailDialog {...input} />);
+    openTab(enResearchTools.tasks.detail.tabActivity);
+    const section = within(page().getByTestId("task-observations"));
+    await waitFor(() => expect(section.getByText(enResearchTools.tasks.observations.gitShortened)).toBeInTheDocument());
+    expect(section.getByText(enResearchTools.tasks.observations.filesShortened)).toBeInTheDocument();
+    expect(section.getByText(enResearchTools.tasks.observations.checksShortened)).toBeInTheDocument();
+    expect(section.queryByText(enResearchTools.tasks.observations.clean)).toBeNull();
+    view.summary.coverageGaps = ["observations.git_status_completeness_unknown"];
+    baseline.initialGitStatusComplete = null;
+    ui.rerender(<TaskDetailDialog {...input} task={{ ...current, updatedAt: 2 }} />);
+    await waitFor(() => expect(section.getByText(enResearchTools.tasks.observations.gitCompletenessUnknown)).toBeInTheDocument());
+    fireEvent.click(section.getByRole("button", { name: "View 0 evidence checks" }));
+    expect(page().getByRole("tab", { name: enResearchTools.tasks.detail.tabReview })).toHaveAttribute("data-state", "active");
+  });
 
   it("the detail dialog toggles keep running and loads earlier activity", async () => {
     previewMocks.keepRunning.mockResolvedValue(undefined);
@@ -717,7 +842,7 @@ describe("TaskDetailDialog", () => {
     expect(input.onLoadMoreEvents).toHaveBeenCalledOnce();
     view.rerender(<TaskDetailDialog {...input} eventsLoading />);
     expect(page().getByRole("button", { name: enResearchTools.tasks.detail.loadMore })).toBeDisabled();
-    expect(page().getByRole("status")).toHaveTextContent("Loading activity");
+    expect(within(page().getByRole("region", { name: enResearchTools.tasks.detail.tabActivity })).getByRole("status")).toHaveTextContent("Loading activity");
   });
 
   it("marks an unfinished tool as interrupted and flags the failure milestone", () => {

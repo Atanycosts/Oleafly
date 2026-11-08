@@ -1757,16 +1757,9 @@ impl ResearchTaskState {
         let services = self.services().ok();
         let runs = services
             .as_ref()
-            .and_then(|services| services.runs.list(&task.id).ok())
-            .unwrap_or_default();
-        let ledger = record::read_record_file(
-            Path::new(&isolation.execution_root),
-            &task.record_slug,
-            "ledger.tsv",
-            4 * 1024 * 1024,
-        )
-        .map(|text| record::parse_ledger(&text))
-        .unwrap_or_default();
+            .ok_or_else(|| "The run evidence store is unavailable.".to_string())
+            .and_then(|services| services.runs.list(&task.id));
+        let ledger = record::read_ledger(Path::new(&isolation.execution_root), &task.record_slug);
         let project_root = self
             .host()
             .and_then(|host| host.locate_project(&task.project_id))

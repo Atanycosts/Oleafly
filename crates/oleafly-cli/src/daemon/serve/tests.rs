@@ -152,6 +152,8 @@ fn the_helper_resumes_its_own_interrupted_tasks_at_start() {
         allowed_paths: Vec::new(),
         created_at: now_ms(),
         skipped: Vec::new(),
+        initial_git_status: None,
+        initial_git_status_complete: None,
     };
     assert!(helper_store
         .set_isolation(&id, running.execution_generation, &isolation)

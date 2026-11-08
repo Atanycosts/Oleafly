@@ -28,6 +28,115 @@ fn claimed(store: &TaskStore, title: &str) -> ResearchTask {
     store.claim_next().unwrap().unwrap()
 }
 
+#[test]
+fn observation_cursor_retains_facts_while_transcript_rows_grow_and_are_trimmed() {
+    use crate::observations::TaskObservation;
+    let (_temp, store) = store();
+    let task = claimed(&store, "Observed run");
+    let generation = task.execution_generation;
+    let fact = TaskRuntimeEvent::Observation {
+        observation: TaskObservation::Usage {
+            input_tokens: Some(0),
+            output_tokens: None,
+        },
+    };
+    let first = store
+        .append_event(&task.id, generation, &fact)
+        .unwrap()
+        .unwrap();
+    let text = store
+        .append_event(
+            &task.id,
+            generation,
+            &TaskRuntimeEvent::Text {
+                text: "growing".into(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let page = store
+        .observations("paper", &task.id, generation, 0, 1)
+        .unwrap();
+    assert_eq!(page.page.events, vec![first.clone()]);
+    assert_eq!(page.page.next_sequence, text.sequence);
+    assert!(!page.page.has_more);
+    store
+        .replace_event(
+            &task.id,
+            generation,
+            text.sequence,
+            &TaskRuntimeEvent::Text {
+                text: "grown".into(),
+            },
+        )
+        .unwrap();
+    assert!(store
+        .replace_event(&task.id, generation, first.sequence, &fact)
+        .is_err());
+    assert!(store
+        .replace_event(
+            &task.id,
+            generation,
+            first.sequence,
+            &TaskRuntimeEvent::Text {
+                text: "overwrite".into()
+            }
+        )
+        .unwrap()
+        .is_none());
+    let second = store
+        .append_event(&task.id, generation, &fact)
+        .unwrap()
+        .unwrap();
+    let rows = (4..=5505)
+        .map(|sequence| EventWrite {
+            task_id: task.id.clone(),
+            generation,
+            sequence,
+            created_at: 1,
+            replace: false,
+            event_json: if sequence < 600 {
+                serde_json::to_string(&TaskRuntimeEvent::Tool {
+                    call_id: None,
+                    name: "read_file".into(),
+                    phase: crate::model::ToolPhase::Result,
+                    detail: "x".repeat(4000),
+                    status: None,
+                })
+                .unwrap()
+            } else {
+                serde_json::to_string(&TaskRuntimeEvent::Text {
+                    text: "discardable transcript".into(),
+                })
+                .unwrap()
+            },
+        })
+        .collect::<Vec<_>>();
+    store.write_events(&rows).unwrap();
+    let reopened = TaskStore::new(store.root().to_path_buf()).unwrap();
+    let next = reopened
+        .observations("paper", &task.id, generation, page.page.next_sequence, 1)
+        .unwrap();
+    assert_eq!(next.page.events, vec![second]);
+    let all = reopened
+        .observations("paper", &task.id, generation, 0, 1)
+        .unwrap();
+    assert!(all.page.has_more);
+    assert_eq!(all.page.next_sequence, first.sequence);
+    assert_eq!(all.page.events, vec![first]);
+    for (project, id, gen, cursor, limit) in [
+        ("other", task.id.as_str(), generation, 0, 1),
+        ("paper", "missing", generation, 0, 1),
+        ("paper", task.id.as_str(), generation + 1, 0, 1),
+        ("paper", task.id.as_str(), generation, 99999, 1),
+        ("paper", task.id.as_str(), generation, 0, 51),
+    ] {
+        assert!(reopened
+            .observations(project, id, gen, cursor, limit)
+            .is_err());
+    }
+}
+
 fn owner_columns(store: &TaskStore, id: &str) -> (Option<i64>, Option<i64>) {
     store
         .open()
@@ -238,6 +347,8 @@ fn reviewable_task(store: &TaskStore) -> ResearchTask {
         allowed_paths: vec!["main.tex".into()],
         created_at: now_ms(),
         skipped: Vec::new(),
+        initial_git_status: None,
+        initial_git_status_complete: None,
     };
     assert!(store
         .set_isolation(&task.id, running.execution_generation, &isolation)
@@ -273,6 +384,88 @@ fn reviewable_task(store: &TaskStore) -> ResearchTask {
         .finish_success(&task.id, running.execution_generation, &result)
         .unwrap());
     store.require(&task.id).unwrap()
+}
+
+#[test]
+fn observation_summary_marks_partial_git_and_shortened_lists_without_changing_saved_evidence() {
+    use crate::model::{
+        EvidenceCheck, EvidenceCheckId, EvidenceItem, EvidenceStatus, TaskFileChange,
+    };
+    let (_temp, store) = store();
+    let task = reviewable_task(&store);
+    let connection = store.open().unwrap();
+    let mut isolation = task.isolation.unwrap();
+    isolation.initial_git_status = Some(vec!["?? retained.md".into()]);
+    let changes = (0..51)
+        .map(|index| TaskFileChange {
+            path: format!("file-{index}.tex"),
+            kind: crate::model::TaskFileChangeKind::Added,
+            before_sha256: None,
+            after_sha256: Some("after".into()),
+            before_size: None,
+            after_size: Some(1),
+        })
+        .collect::<Vec<_>>();
+    let mut result = task.result.unwrap();
+    result.changed_files = changes;
+    let evidence = EvidenceReport {
+        checked_at: 1,
+        checks: [EvidenceCheckId::Numbers, EvidenceCheckId::Figures]
+            .into_iter()
+            .map(|id| EvidenceCheck {
+                id,
+                status: EvidenceStatus::Warn,
+                items: (0..11)
+                    .map(|index| EvidenceItem {
+                        code: format!("issue-{index}"),
+                        file: None,
+                        line: None,
+                        params: Default::default(),
+                        provenance: None,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    };
+    for (complete, gap) in [
+        (Some(false), "observations.git_status_shortened"),
+        (None, "observations.git_status_completeness_unknown"),
+    ] {
+        isolation.initial_git_status_complete = complete;
+        connection
+            .execute(
+                "UPDATE research_tasks SET isolation_json=?2, result_json=?3 WHERE id=?1",
+                params![
+                    task.id,
+                    encode_json(&isolation).unwrap(),
+                    encode_json(&result).unwrap()
+                ],
+            )
+            .unwrap();
+        store
+            .set_evidence(&task.id, task.execution_generation, &evidence)
+            .unwrap();
+        let view = store
+            .observations("paper", &task.id, task.execution_generation, 0, 20)
+            .unwrap();
+        assert!(view.summary.coverage_gaps.contains(&gap.to_owned()));
+        assert!(view
+            .summary
+            .coverage_gaps
+            .contains(&"observations.file_list_shortened".into()));
+        assert_eq!(
+            view.summary
+                .coverage_gaps
+                .iter()
+                .filter(|gap| *gap == "observations.check_items_shortened")
+                .count(),
+            1
+        );
+        assert_eq!(view.summary.changed_files.len(), 50);
+        assert_eq!(view.summary.changed_file_count, 51);
+        assert_eq!(view.summary.evidence.unwrap().checks[0].items.len(), 10);
+        assert_eq!(store.require(&task.id).unwrap().evidence.unwrap(), evidence);
+    }
 }
 
 #[test]
@@ -459,6 +652,8 @@ fn transcripts_page_backwards_from_the_newest_row_and_know_what_they_resumed() {
         allowed_paths: Vec::new(),
         created_at: 1,
         skipped: Vec::new(),
+        initial_git_status: None,
+        initial_git_status_complete: None,
     };
     let connection = store.open().unwrap();
     connection
@@ -735,6 +930,8 @@ fn interrupted_runs_recover_as_failures_with_the_workspace_intact() {
         allowed_paths: Vec::new(),
         created_at: now_ms(),
         skipped: Vec::new(),
+        initial_git_status: None,
+        initial_git_status_complete: None,
     };
     store
         .set_isolation(&task.id, running.execution_generation, &isolation)
@@ -860,6 +1057,8 @@ fn isolation_with(workspace: &std::path::Path, files: usize) -> TaskIsolation {
         allowed_paths: vec!["sections".into()],
         created_at: now_ms(),
         skipped: Vec::new(),
+        initial_git_status: None,
+        initial_git_status_complete: None,
     }
 }
 

@@ -177,6 +177,8 @@ function appendEntry(
   event: EntryEvent,
 ) {
   switch (event.kind) {
+    case "observation":
+      break; // Shown in the task's recorded-observations section.
     case "sessionBound":
       state.items.push({
         ...base,

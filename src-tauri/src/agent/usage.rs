@@ -54,6 +54,7 @@ impl CostTally {
 struct UsageState {
     event: UsageEventInput,
     latest: Option<Usage>,
+    previous_turns: Option<Usage>,
     settled: bool,
     connection: Option<Connection>,
     last_persist: Option<Instant>,
@@ -111,6 +112,7 @@ impl NativeUsageGuard {
                     aggregation_scope: "self".into(),
                 },
                 latest: None,
+                previous_turns: None,
                 settled: false,
                 connection: None,
                 last_persist: None,
@@ -138,6 +140,10 @@ impl NativeUsageGuard {
             return;
         }
         state.latest = Some(*usage);
+        let cumulative = state
+            .previous_turns
+            .map_or(*usage, |previous| task_usage_total(previous, *usage));
+        let usage = &cumulative;
         state.event.input_tokens = usage.reported_input().map(i64::from);
         state.event.output_tokens = usage.reported_output().map(i64::from);
         state.event.cache_read_tokens = usage.cache_read.map(i64::from);
@@ -168,6 +174,17 @@ impl NativeUsageGuard {
         };
         if due {
             self.persist(&mut state);
+        }
+    }
+
+    pub fn begin_task_turn(&self) {
+        let mut state = super::lock_or_recover(&self.state);
+        if let Some(latest) = state.latest.take() {
+            state.previous_turns = Some(
+                state
+                    .previous_turns
+                    .map_or(latest, |previous| task_usage_total(previous, latest)),
+            );
         }
     }
 
@@ -217,6 +234,28 @@ impl NativeUsageGuard {
                 serde_json::Value::Null,
             );
         }
+    }
+}
+
+fn task_usage_total(previous: Usage, current: Usage) -> Usage {
+    let sum = |a: Option<u32>, b: Option<u32>| a.zip(b).map(|(a, b)| a.saturating_add(b));
+    Usage {
+        input: previous.input.saturating_add(current.input),
+        output: previous.output.saturating_add(current.output),
+        input_known: Some(
+            previous.reported_input().is_some() && current.reported_input().is_some(),
+        ),
+        output_known: Some(
+            previous.reported_output().is_some() && current.reported_output().is_some(),
+        ),
+        cache_read: sum(previous.cache_read, current.cache_read),
+        cache_write: sum(previous.cache_write, current.cache_write),
+        reasoning: sum(previous.reasoning, current.reasoning),
+        input_semantics: if previous.input_semantics == current.input_semantics {
+            previous.input_semantics
+        } else {
+            InputTokenSemantics::Unknown
+        },
     }
 }
 
@@ -379,6 +418,72 @@ fn billing_mode(resolved: &Resolved) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_wake_up_turns_accumulate_in_the_native_usage_record() {
+        let root = tempfile::tempdir().unwrap();
+        let resolved = Resolved {
+            provider_id: "test".into(),
+            model_id: "test".into(),
+            credential: String::new(),
+            auth: None,
+            wire: Wire::OpenAiChat {
+                base_url: "https://example.test".into(),
+                reasoning_content: false,
+            },
+            caps: Default::default(),
+        };
+        let guard = NativeUsageGuard::new(
+            root.path().into(),
+            UsageScope {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                project_id: Some("project".into()),
+                task_id: Some("task".into()),
+                parent_session_id: None,
+            },
+            &resolved,
+        );
+        let usage = |input, output| {
+            AgentEvent::usage(Usage {
+                input,
+                output,
+                input_known: Some(true),
+                output_known: Some(true),
+                ..Default::default()
+            })
+        };
+        guard.begin_task_turn();
+        guard.observe(&usage(10, 2));
+        guard.observe(&usage(20, 4));
+        guard.begin_task_turn();
+        guard.observe(&usage(5, 1));
+        guard.observe(&usage(10, 2));
+        guard.finish("completed");
+        let connection = crate::library_db::open(root.path()).unwrap();
+        let counts: (i64, i64) = connection
+            .query_row(
+                "SELECT input_tokens, output_tokens FROM usage_records",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (30, 6));
+        let total = task_usage_total(
+            Usage {
+                input: 0,
+                output: 0,
+                input_known: Some(true),
+                output_known: Some(true),
+                ..Default::default()
+            },
+            Usage::default(),
+        );
+        assert_eq!(
+            (total.reported_input(), total.reported_output()),
+            (None, None)
+        );
+    }
 
     #[tokio::test]
     async fn provider_responses_keep_missing_counters_unknown_in_native_ledger() {

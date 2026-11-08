@@ -215,6 +215,9 @@ impl TaskFiles {
         }
         Ok(json!({
             "content": &content[offset..end],
+            "path": value,
+            "fileSha256": crate::observations::content_hash(content.as_bytes()),
+            "endOffset": end,
             "offset": offset,
             "nextOffset": (end < content.len()).then_some(end),
             "totalBytes": content.len(),

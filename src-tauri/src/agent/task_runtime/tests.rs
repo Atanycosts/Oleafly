@@ -133,9 +133,12 @@ impl UsageSink for NullUsage {
 }
 
 impl TaskHost for FixtureHost {
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+    fn skills(
+        &self,
+        context: &TaskRunContext,
+    ) -> Result<oleafly_research::observations::TaskSkills, String> {
         assert!(context.skill_ids.is_empty());
-        Ok(String::new())
+        Ok(Default::default())
     }
 
     fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<PathBuf> {
@@ -699,7 +702,14 @@ fn a_device_enabled_skill_reaches_the_task_prompt_without_a_project_record() {
     let mut task = context(root.path());
     task.skill_ids = vec!["literature-review".into()];
 
-    let prompt = skill_prompt_in(data.path(), None, &task).unwrap();
+    let selected = task_skills_in(data.path(), None, &task).unwrap();
+    assert_eq!(selected.injected.len(), 1);
+    assert_eq!(selected.injected[0].id, "literature-review");
+    assert_eq!(
+        selected.injected[0].section_sha256,
+        content_hash(selected.prompt.as_bytes())
+    );
+    let prompt = selected.prompt;
 
     assert!(prompt.contains("Selected skill: Literature Review"));
     assert!(prompt.contains("Start with the claim audit."));

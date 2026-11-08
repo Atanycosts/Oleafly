@@ -105,6 +105,26 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
     let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
     let mut tools = vec![
         tool(
+            "task_observations",
+            "Read this bound task's recorded runtime summary and a bounded page of immutable observation events. Returns the next sequence cursor, baseline, file changes and existing evidence checks. Does not return prompts or transcript text. Only committed observations are visible; query again for newer records.",
+            json!({
+                "after_sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991_u64},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            }),
+            &[],
+        ),
+        tool(
+            "task_findings",
+            "Read a bounded page of this task generation's retained findings, rule versions, source quotes, current dependency validity and operator dispositions. Read-only. after_sequence is a finding cursor, independent of observation events. To refresh validity or dispositions of already seen findings, query again from 0 with optional file/rule/disposition filters. Only numeric deterministic checks are currently supported; no model reviewer has run.",
+            json!({
+                "after_sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991_u64},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "file": {"type": "string"}, "rule": {"type": "string"},
+                "disposition": {"type": "string", "enum": ["open", "accepted", "rejected", "deferred"]},
+            }),
+            &[],
+        ),
+        tool(
             "start_run",
             &format!(
                 "Start a long command (training, a benchmark, an analysis) as a supervised run in the task workspace and return at once. The command runs through {shell}. Use wait_runs to be woken when it finishes; never poll in a tight loop. Print metrics as key=value or JSON lines to have them recorded. Each run stops after the task's run time limit ({} minutes).",
@@ -772,6 +792,11 @@ pub async fn call_task_tool(
     binding: &TaskBinding,
 ) -> Option<Result<Value, String>> {
     let result = match name {
+        "task_observations" => task_observations(binding, &args),
+        "task_findings" => serde_json::from_value::<crate::findings::FindingQuery>(args)
+            .map_err(|error| error.to_string())
+            .and_then(|query| binding.store()?.findings(&binding.project_id, &binding.task_id, binding.generation, &query))
+            .and_then(|page| serde_json::to_value(page).map_err(|error| error.to_string())),
         "start_run" => start_run(binding, &args).await,
         "wait_runs" => wait_runs(binding, &args).await,
         "run_status" => match text(&args, "id") {
@@ -895,6 +920,45 @@ pub async fn call_task_tool(
         _ => return None,
     };
     Some(result)
+}
+
+fn task_observations(binding: &TaskBinding, args: &Value) -> Result<Value, String> {
+    let fields = args
+        .as_object()
+        .ok_or("Tool arguments must be an object.")?;
+    if fields
+        .keys()
+        .any(|key| !matches!(key.as_str(), "after_sequence" | "limit"))
+    {
+        return Err(
+            "This query uses the bound task; only after_sequence and limit are accepted.".into(),
+        );
+    }
+    let after = fields
+        .get("after_sequence")
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or("after_sequence must be a nonnegative integer.")
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let limit = fields
+        .get("limit")
+        .map(|value| value.as_u64().ok_or("limit must be an integer."))
+        .transpose()?
+        .unwrap_or(20);
+    if !(1..=50).contains(&limit) || after > 9_007_199_254_740_991 {
+        return Err("Use a nonnegative cursor and a limit between 1 and 50.".into());
+    }
+    let view = binding.store()?.observations(
+        &binding.project_id,
+        &binding.task_id,
+        binding.generation,
+        after,
+        limit as usize,
+    )?;
+    serde_json::to_value(view).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

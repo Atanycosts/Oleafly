@@ -56,6 +56,7 @@ import { i18n } from "@/i18n";
 import type { ResearchTaskDetailTab } from "@/store/research-tasks";
 import { phaseLabel, relativeTime, statusLabel } from "./task-status";
 import { TaskAgentChip, TaskOwnerBadge, TaskStatusBadge } from "./TaskChips";
+import { TaskObservations } from "./TaskObservations";
 import {
   buildTaskTimeline,
   buildTaskTimelineIncremental,
@@ -70,6 +71,9 @@ import { PlanReview } from "./PlanReview";
 
 const TaskProgressTab = lazy(() =>
   import("./progress/TaskProgressTab").then((module) => ({ default: module.TaskProgressTab })),
+);
+const TaskFindings = lazy(() =>
+  import("./evidence/TaskFindings").then((module) => ({ default: module.TaskFindings })),
 );
 const EvidenceChecklist = lazy(() =>
   import("./evidence/EvidenceChecklist").then((module) => ({ default: module.EvidenceChecklist })),
@@ -325,7 +329,7 @@ const TimelineRow = memo(
   function TimelineRow({ item, live, failing, runKey, loadingArtifact, onOpenArtifact }: Readonly<TimelineRowProps>) {
     const { t } = useTranslation(["common", "researchTools"]);
     return (
-      <li className="relative grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-3">
+      <li data-task-call-id={item.kind === "tool" ? item.tool.id : undefined} className="relative grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-3">
         <TimelineDot item={item} live={live} tall={item.kind === "tool"} failing={failing} />
         <div className="min-w-0">
           {item.kind === "milestone" ? (
@@ -849,6 +853,14 @@ export function TaskDetailDialog({
   const timelineCount = timeline.items.length;
   const lastItemSize = itemSize(timeline.items.at(-1));
   const [shownItems, setShownItems] = useState(SHOWN_ITEMS);
+  const [focusedCall, setFocusedCall] = useState<{ id: string } | null>(null);
+  const availableCalls = useMemo(() => new Set(timeline.items.flatMap((item) => item.kind === "tool" ? [item.tool.id] : [])), [timeline.items]);
+  useEffect(() => {
+    if (!focusedCall) return;
+    const row = [...(activityRef.current?.querySelectorAll<HTMLElement>("[data-task-call-id]") ?? [])]
+      .find((element) => element.dataset.taskCallId === focusedCall.id);
+    row?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focusedCall]);
 
   const showOlderActivity = () => {
     if (timeline.items.length > shownItems) {
@@ -1365,6 +1377,7 @@ export function TaskDetailDialog({
       <>
         {sourceRevisionNote()}
         {changedFiles.length > 0 ? changedFilesSection() : reviewEmptyState()}
+        {showEvidence ? <Suspense fallback={null}><TaskFindings key={taskRunKey} taskId={task.id} generation={task.executionGeneration} revision={task.updatedAt} /></Suspense> : null}
         {showEvidence && onRefreshEvidence ? (
           <Suspense fallback={null}>
             <EvidenceChecklist
@@ -1541,6 +1554,16 @@ export function TaskDetailDialog({
               className="min-h-0 flex-1 overflow-y-auto px-5 py-4"
             >
               <DependencyList dependencies={dependencies} />
+              <TaskObservations
+                key={taskRunKey}
+                taskId={task.id}
+                generation={task.executionGeneration}
+                revision={task.updatedAt}
+                availableCalls={availableCalls}
+                onOpenCall={(id) => { setShownItems(timeline.items.length); setFocusedCall({ id }); }}
+                onReview={() => setChosenTab("review")}
+                onChecks={() => setChosenTab("review")}
+              />
 
               <section aria-labelledby="research-task-activity" className="min-w-0">
                 <h4 id="research-task-activity" className="sr-only">

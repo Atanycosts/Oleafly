@@ -125,6 +125,10 @@ fn parse_metrics(cell: &str) -> BTreeMap<String, f64> {
 }
 
 pub fn parse_ledger(text: &str) -> Vec<LedgerRow> {
+    parse_ledger_rows(text, MAX_LEDGER_ROWS)
+}
+
+fn parse_ledger_rows(text: &str, max_rows: usize) -> Vec<LedgerRow> {
     let mut lines = text.lines().map(|line| line.trim_end_matches('\r'));
     let Some(header) = lines.next() else {
         return Vec::new();
@@ -146,7 +150,7 @@ pub fn parse_ledger(text: &str) -> Vec<LedgerRow> {
         index("notes"),
     );
     let rows: Vec<&str> = lines.filter(|line| !line.trim().is_empty()).collect();
-    let skipped = rows.len().saturating_sub(MAX_LEDGER_ROWS);
+    let skipped = rows.len().saturating_sub(max_rows);
     rows.into_iter()
         .skip(skipped)
         .map(|line| {
@@ -239,6 +243,27 @@ pub fn parse_plan_checklist(markdown: &str) -> Vec<PlanItem> {
         .collect()
 }
 
+/// A missing ledger is a known empty basis; unreadable or oversized records
+/// remain errors so checkers cannot claim absence from a failed read.
+pub fn read_ledger(execution_root: &Path, slug: &str) -> Result<Vec<LedgerRow>, String> {
+    let files = open_record(execution_root, slug)?;
+    let path = format!("{}/ledger.tsv", record_dir(slug));
+    if !files.exists(&path)? {
+        return Ok(Vec::new());
+    }
+    let text = files.read(&path)?;
+    if !text.lines().next().is_some_and(|header| {
+        header
+            .split('\t')
+            .any(|column| column.trim().eq_ignore_ascii_case("id"))
+    }) {
+        return Err("The ledger has no id column.".into());
+    }
+    // Evidence checks need membership across this entire bounded file. The
+    // shorter UI/reasoning window must not manufacture an absent run.
+    Ok(parse_ledger_rows(&text, usize::MAX))
+}
+
 pub fn read_record_file(
     execution_root: &Path,
     slug: &str,
@@ -291,6 +316,23 @@ mod tests {
 
     fn workspace() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn evidence_ledger_keeps_old_run_membership_and_reports_invalid_records() {
+        let root = tempfile::tempdir().unwrap();
+        let files = open_record(root.path(), "study-ab12").unwrap();
+        let path = "research/study-ab12/ledger.tsv";
+        let rows = (0..2100)
+            .map(|index| format!("r{index:04}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        files.write(path, &format!("id\n{rows}\n")).unwrap();
+        let ledger = read_ledger(root.path(), "study-ab12").unwrap();
+        assert_eq!(ledger.len(), 2100);
+        assert_eq!(ledger[0].id, "r0000");
+        files.write(path, "metrics\nloss=0.5\n").unwrap();
+        assert!(read_ledger(root.path(), "study-ab12").is_err());
     }
 
     #[test]

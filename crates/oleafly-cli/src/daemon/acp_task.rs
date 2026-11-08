@@ -897,7 +897,7 @@ impl DaemonAcpAdapter {
             .await
             .map_err(|_| OPEN_OLEAFLY.to_string())?
         };
-        let skills = skills?;
+        let skills = skills?.prompt;
         let root = PathBuf::from(&context.execution_root);
         let binding = TaskBinding {
             task_id: context.task_id.clone(),

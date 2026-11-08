@@ -79,6 +79,7 @@ fn item(code: &str, entry: &NewEntry, extra: Option<(&str, String)>) -> Evidence
         file: Some(entry.file.clone()),
         line: None,
         params,
+        provenance: None,
     }
 }
 

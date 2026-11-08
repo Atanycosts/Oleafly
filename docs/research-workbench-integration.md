@@ -1,6 +1,6 @@
 # Private research workbench integration
 
-Decision date: 2026-11-02. Current verification: 2026-11-07.
+Decision date: 2026-11-02. Current verification: 2026-11-08.
 
 ## Direction and current state
 
@@ -12,6 +12,11 @@ entire application or recreating Oleafly's editor and agent infrastructure.
 The operator confirmed private local use. AGPL/GPL components are acceptable
 for this scope. Preserve upstream licence and attribution files. Publishing
 or operating a service for others is not part of this task.
+
+On 2026-11-07, the operator excluded a complete journal submission workflow and
+comprehensive submission acceptance from the product scope. Journal-requirement
+research, source review, versioned rules and supported manuscript checks remain
+in scope; complete submission is not a pending deliverable.
 
 Current checkout:
 
@@ -342,6 +347,319 @@ The MCP compatibility step and native panel now work. The local preview starts
 the existing domain service as a child process and presents one application.
 Bundling its Python runtime for installation on other machines remains delivery
 work; this host uses the selected existing environment.
+
+## Native task observations, wave 1 (2026-11-08)
+
+Implemented on `codex/research-workbench`, based on
+`553c72d48b583e85549ca4e45721805181b67c00`. The source changes are uncommitted.
+The separately built test application uses `com.oleafly.app.e2e` and its own
+library. The installed application and existing author projects were not updated.
+
+The current **Activity** tab now shows **Recorded run** / **本次运行记录**.
+It reads the existing TaskStore, links calls to the existing timeline, and links
+the initial baseline and check summary to **Review**. The retained
+facts distinguish selected skills, exact injected section hashes, successful
+dynamic skill loads, failed loads, actual offered tool schemas, requests and
+returned outcomes. Provider/model identifiers come from the resolved native
+runtime. They identify the configured endpoint and requested model; they do not
+attest which weights an upstream gateway ran.
+
+`TaskObservation` variants live in the existing `research_task_events` table.
+Their identity is `(task_id, execution_generation, sequence)`, with the existing
+timestamp. They retain hashes and locators instead of another copy of prompts,
+source bodies or conversation history. Runtime snapshots include the native
+session ID and the effective tool set after builtin, research-bridge and MCP
+merging. The set stays fixed across that native invocation's ordinary, wake-up
+and wrap-up turns. MCP discovery errors now fail explicitly rather than silently
+removing those capabilities. Selected skill snapshots establish prompt delivery;
+dynamic `load_skill` success establishes that the loader returned instructions.
+Neither establishes model adoption.
+
+The existing transcript can grow in place at the same sequence and later lose
+old text or tool bodies. New observation rows are immutable and excluded from
+that shortening. `TaskStore::observations` takes one read transaction, returns
+the latest runtime/usage summary and 1–50 committed observations, and supplies
+`nextSequence`, `throughSequence` and `hasMore`. At the end of a page sequence
+can advance past transcript-only rows. A subsequent query cannot miss an
+observation by skipping a mutable streamed text row. Desktop reads first flush
+the existing writer; Agent reads can lag its normal commit interval and should
+query again. No new event database, session store or retention service was added.
+
+`task_observations` accepts only `after_sequence` and `limit`. Trusted task
+binding supplies project, task and current generation. Unknown fields, another
+project, obsolete generation, future cursor and out-of-range limits fail.
+An unbound MCP session neither advertises nor executes it. UI IPC and the bound
+Agent tool use the same query and event IDs. The summary also carries the goal,
+success criteria, retained isolation, at most 50 file changes and existing check
+results with at most 10 items per check; shortened results declare coverage gaps.
+
+Git-backed isolation captures the initial porcelain dirty/untracked status.
+The bounded capture reads one extra byte to detect its 64 KiB limit. On overflow
+it retains only complete status lines and saves `initialGitStatusComplete=false`;
+the summary and UI explicitly show that the list is incomplete. A complete empty
+capture alone means clean. Older captures have unknown completeness; non-Git
+snapshots have no Git status. **Recorded run** also shows `file_list_shortened`
+and `check_items_shortened`, alongside Git and skipped-file gaps. The check-summary
+button opens **Review**, where the evidence checklist actually lives. File changes still compare the
+existing starting snapshot against the isolated result, with before/after
+hashes, so preexisting dirty work is not counted as a task change. Existing
+skipped-file and review limits remain. Changes describe workspace differences;
+external authorship is unknown, and rename identity is not inferred from an
+add/delete pair.
+
+Native `read_file` outcomes retain the relative path, full read-version SHA-256,
+byte interval and truncation state. **Read recorded source range** derives its
+locator from the stored event and uses the existing secure preview reader. It
+returns the interval only when retained baseline or execution bytes match that
+hash. A missing intermediate revision is an explicit unavailable result. Other
+context retrieval tools currently retain the paired call/hash, not this exact
+source-range contract. Skill support reads retain skill identity and result hash;
+only `load_skill` retains an instruction-body hash.
+
+Usage observations accumulate the main native agent's reported counters across
+wake-up/wrap-up turns; missing counters stay unknown and reported zero stays zero.
+The native usage record now accumulates those turns too. Helper calls still share
+the older host usage sink and are not separately attributed; helper observations
+and a complete parent/child usage reconciliation are outside this slice. No cost
+or model-quality claim is inferred from the counters.
+
+| Runtime path | Evidence owner and current coverage | Remaining gap / verification level |
+| --- | --- | --- |
+| Builtin desktop chat | Existing live Agent events, chat/session state and usage records. | No new task observation ingestion or task baseline. |
+| Standalone CLI Agent | Existing `RunEvent` output and usage spool; bounded/redacted tool arguments and result status/bytes. | No new ResearchTask observation history. |
+| Native desktop ResearchTask | New immutable observations plus existing transcript, isolation, diff/review and evidence checks. | Isolated real-provider desktop and packaged UI run verified below. Helpers and non-`read_file` source ranges remain gaps. |
+| Native daemon ResearchTask | Same builtin adapter and TaskStore query; CLI skill assembly records exact injected sections. | Rust contract/lifecycle tests passed; no separate real-provider daemon run in this increment. |
+| ACP ResearchTask, desktop/daemon | Existing mapped ACP transcript and task isolation/review; task-bound MCP can read the shared observation summary. | No new attested provider/tool/skill snapshot from the external ACP agent. Historical/uncollected UI state remains explicit. |
+| External MCP callers | Existing session-scoped tool boundary; new query only with trusted task binding. | Does not observe an external client's arbitrary calls or context. Unbound refusal tested. |
+| Agents, shells and Computer Use outside Oleafly | No automatic capture in this slice. | External log import and tracing adapters remain future work. |
+
+Existing build, references, bibliography, numbers and figures checks are reused
+as saved. They have check IDs/status/items, not a complete new checker-version,
+command and exit-status provenance contract. Their pass result covers their
+existing analyzers, not arbitrary assertions in a report. Wave 1 itself did not
+include findings or dispositions; the following bounded wave-2 slice adds those
+contracts for the numeric checker only.
+
+### Real task and retained evidence
+
+The synthetic run used project `amber-lavender-panther`, task
+`task-f771ae2b47f594bec640ffed8e5ad976`, generation 1, native provider `xiaobai`,
+model `gpt-6.1-sol`, selected effort `low`. It finished `awaiting_review` with
+24 immutable observations through sequence 80, 35 offered tools and reported
+92283 input / 839 output tokens. The task read `main.md` (#10 request / #13
+result), loaded `observation-fixture` successfully (#20 / #23), and received the
+explicit disabled-skill error for `disabled-fixture` (#30 / #33). It called the
+bound query twice (#40 / #43 and #50 / #53); its report names the actual returned
+task/project/generation, model and event sequences. It correctly calculated
+50%, 75% and a 25 percentage-point difference from synthetic counts. The model
+itself did not have an independent UI view; the native E2E compared those IDs.
+
+The original dirty `main.md` and untracked `preexisting.md` hashes stayed
+unchanged, and the latter is absent from result changes. Captured initial status
+also includes `.oleafly/build.lock`; its presence is recorded without attributing
+it to the agent. The proposed result has four files: `main.md`, the requested
+report and the framework's brief/handoff. No files were applied. All five
+existing evidence checks returned pass after their completion.
+
+The packaged UI recovered the hash-matched original byte range [0, 151) from
+event #13. After stopping the isolated application and launching a new process,
+all 24 observation rows had the same content digest; native query rows matched
+SQLite independently. Webview reload also preserved the same query results.
+Safe synthetic evidence, screenshot and process-recovery digest are retained
+under `.private/observations-smoke/evidence/`; the original task database and
+isolated workspaces remain under `.private/observations-smoke/library/`.
+Selected check logs are kept with that evidence. The test application is stopped;
+its copied credentials, credential key and supplier configuration were deleted
+after verification. The retained task can be inspected without those secrets.
+Downloaded comparison sources were removed after recording the pinned revisions
+and decisions below.
+
+The first UI attempt exposed a real refresh bug: completion of evidence checks
+reset already-loaded observation pages. Refresh now appends from the retained
+cursor, and a regression test covers retention of earlier calls and rejection
+of a superseded pending response. A later test failure came from the native
+driver's text-locator `.first()` implementation; the source button was visible.
+Using its direct locator completed source recovery. An earlier dirty-baseline
+test kept the old clean-file expectation; that fixture expectation was corrected.
+The failed attempts are recorded here rather than described as successful runs.
+The combined failed attempt is explicitly named
+`rust-tests-before-baseline-fixture-fix.log` (CLI 667 passed; ResearchTask 509 passed,
+1 failed). Its bytes are unchanged, SHA-256
+`0791eb250c8c7192a1ee5c88b8a6169121c6f677c055886a0924ca1e44317cd4`.
+`research-tests.log` is the final wave-1 ResearchTask run, 510/510 passed;
+`checks.json.logRoles` identifies the historical and final logs. Follow-up findings
+validation uses `.private/findings-smoke/evidence/` and does not replace this history.
+
+Verification commands used Rust 1.98.1 and the existing Node 22 dependency tree:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy -p oleafly-research -p oleafly-cli -p oleafly --all-targets -- -D warnings
+cargo test -p oleafly-research --lib
+cargo test -p oleafly-cli --lib
+cargo test -p oleafly --lib research_tasks::
+cargo test -p oleafly --lib agent::usage::tests
+cargo test -p oleafly --lib agent::task_runtime::tests
+cargo test -p oleafly --lib agent::task_runtime::behavior_tests
+node node_modules/typescript/bin/tsc -b
+node node_modules/@biomejs/biome/bin/biome lint src packages
+node node_modules/vitest/vitest.mjs run src/components/research/tasks src/lib/research-tasks.test.ts --maxWorkers=4
+NODE_OPTIONS=--max-old-space-size=12288 VITE_E2E_HOOKS=1 node node_modules/vite/bin/vite.js build --mode workbench
+node node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --bundles app --config src-tauri/tauri.workbench.conf.json --config src-tauri/tauri.e2e.conf.json
+node node_modules/@playwright/test/cli.js test -c e2e/playwright.config.ts e2e/tests/117-research-observations.spec.ts
+git diff --check
+```
+
+Cargo used `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4`. The live E2E requires its explicit
+`OLEAFLY_OBSERVATIONS_LIVE=1` opt-in, isolated supplier library and native socket;
+`OLEAFLY_OBSERVATIONS_RESUME=1` rechecks a retained task without another model call.
+Research tests passed 510/510, CLI 667/667, desktop task tests 45/45, usage 8/8,
+task-runtime mapping 5/5 and behavior/skill/ACP tests 7/7, and affected frontend
+tests 341/341. TypeScript, lint (3325 files), Rust formatting,
+scoped Clippy, frontend/native packaging and the real-provider E2E passed. The
+large debug binary has the existing macOS compact-unwind linker warning, and
+Vite reports large chunks. The first frontend build exhausted the default Node
+heap; the explicit heap setting above completed it. The local pnpm executable
+was missing its platform package, so checks used the already-installed binaries.
+These scoped checks do not claim a full workspace test, coverage or dependency
+advisory audit.
+
+### Numeric findings and feedback, wave 2 first slice (2026-11-08)
+
+The existing numeric checker now captures `numbers-1` provenance from the same
+UTF-8 bytes it inspects: relative file path, full-file SHA-256, one-based line
+range, retained line quote and quote SHA-256, referenced run ID and the hash of
+its command/metrics/state/exit status, and whether the checked ledger contains
+that run. These checks still cover decimal/percentage values with explicit run
+markers in changed text files. They do not verify arbitrary claims, identify the
+intended metric by name or inspect unchanged files. Other checkers still use
+their existing reports without the new provenance contract.
+
+`TaskStore::set_evidence` saves the report and retains numeric `ReviewFinding`
+records atomically in the same SQLite database (schema 6). Each finding has a
+stable ID derived from task, execution generation and the complete check item,
+including provenance. Rechecking the same basis preserves the ID, original verdict,
+creation time and dispositions. A changed basis produces another record; earlier
+records remain available in that generation. Historical check items without
+provenance are never promoted. Lines over 8192 bytes remain ordinary check items
+with an explicit coverage gap. Unavailable run or ledger reads produce a skipped
+numeric check, rather than being interpreted as an unknown run or absent ledger row.
+A genuinely missing ledger is the checker's known empty-ledger basis. Evidence
+reads inspect the whole ledger within the existing 1 MiB text limit, including
+rows older than the 2000-row UI/reasoning window; a missing `id` header is an error.
+
+`research_task_findings` and append-only
+`research_task_finding_dispositions` belong to the existing TaskStore. They are
+not an external review database. Findings retain the checked line needed for later
+source recovery; they do not archive the whole source file or transcript.
+The **Review** tab lists the recorded warning, rule version, source line and
+three independent states: check verdict, dependency validity and operator
+disposition. Operators can accept, reject, defer or reopen a finding with a reason
+of 1–2000 characters. Each decision retains its commit sequence, actor/source,
+timestamp and rationale. A decision neither applies project files nor changes
+the recorded verdict, and does not add a task-completion gate.
+
+Validity is derived when queried, never saved as an authoritative flag. Current
+file bytes, the referenced run basis, ledger membership and current rule version
+are compared with the retained basis. A changed or missing cited file, changed run,
+changed membership or rule version marks the finding stale. Unrelated files,
+other runs and unrelated ledger rows do not. Inaccessible dependencies yield
+unknown when no known change already establishes staleness; all known changes and
+unavailable reasons are returned. A stale accepted finding stays accepted and
+stale. Rechecking invokes only the current checker and preserves old records;
+no obsolete checker is revived to validate history.
+
+The UI and bound read-only Agent tool `task_findings` use the same query.
+Trusted binding supplies project/task/current generation; caller-supplied IDs or
+unknown fields are rejected. An unbound MCP session omits the tool. The query
+accepts `after_sequence`, `limit` (1–50), exact file, rule code and disposition.
+Finding sequences are independent of transcript/observation sequences. Pagination
+returns new immutable findings; to refresh prior findings' validity or dispositions,
+query from 0 with the same filters. Decision summaries show the latest 20 records
+and their full count, explicitly indicating shortened history; all records remain
+in SQLite. Source retrieval accepts a stored finding ID and verifies the retained
+quote hash, so it can show the checked version after the task file changes.
+
+This slice queries only the current execution generation and its isolated workspace.
+Previous-generation records remain in SQLite but have no dedicated history UI yet.
+It does not compare a finding with an independently changed author project after
+apply, attribute a model review, or establish recall/precision. The UI and Agent
+query both disclose numeric-only coverage and that a model reviewer has not run.
+A Windows reviewer connection and held-out known-defect comparison remain future
+work; no model-quality improvement is claimed from this feedback contract.
+
+The final isolated native run used project `amber-slate-otter`, task
+`task-3fb0257693eb695c2f083860541822d2`, generation 1. A controlled local mock provider
+invoked the real `write_file` tool and proposed `Loss 0.70 <!-- run: r009 -->`;
+there was no recorded r009. The current numeric checker produced one finding.
+The native UI saved accepted, rejected and deferred decisions, each with its
+operator reason. An unrelated file edit kept the finding current; changing
+`main.md` to 0.80 made it stale. A refresh created a second current finding and
+left the first stale/deferred with all three decisions. Its source action still
+returned the original 0.70 quote. The original project `main.md` SHA-256 stayed
+`340ecd0fa6dd9631e7ab46f20649e0b33d87c6c57f5e2987124d8510f9101818`; no result
+was applied. Webview reload and a completely new process returned identical
+findings and dispositions. A separate read-only SQLite comparison matched both
+finding records and all three decision records to the native query.
+
+Final synthetic evidence and the screenshot are under
+`.private/findings-smoke/evidence/final/`; its `verification.json`,
+`process-recovery.json`, `sqlite-parity.json`, initial/final queries and native
+logs separate the final pass from earlier attempts. Earlier attempt logs are
+named `native-before-*-fix.log`: the fixture first used an invalid four-minute
+budget, assumed English despite the native saved locale, raced asynchronous
+checks, and used the driver's input-only `fill` for a textarea. Those were fixed
+in the test, using the existing textarea helper and an explicit evidence wait.
+They are not reported as successful runs. The final full workflow and recovery
+both pass. This is a real native application/IPC/filesystem/persistence test with
+a **mock provider**; it is not a real small-model review or accuracy benchmark.
+The isolated application is stopped, and its generated configuration/secret
+files have been removed. The retained synthetic database/workspaces and separate
+test bundle remain available; the installed application is unchanged.
+
+Follow-up verification passed: ResearchTask 524/524, CLI 667/667, desktop task
+45/45, affected frontend 348/348 in 16 suites, TypeScript, lint (3327 files),
+Rust formatting, scoped all-target Clippy, Vite workbench build, native app
+packaging and the final native workflow plus process recovery. The commands and
+Cargo settings are the same as the wave-1 list, with
+`e2e/tests/118-research-findings.spec.ts`, `OLEAFLY_FINDINGS_SMOKE=1` and an isolated
+library/socket. `OLEAFLY_FINDINGS_RESUME=1` checks the retained final identity
+without a provider call. Re-enable the research-task switch and select English
+if inspecting the fixture after its config cleanup. The existing linker and Vite
+chunk warnings remain; these scoped checks make no full-workspace or model-quality
+claim. Final log names and scopes are recorded in the follow-up `checks.json`.
+
+### Upstream source comparison and next waves
+
+All default branches below were `main` when inspected on 2026-11-08. Links pin
+the reviewed revision; source availability and licence findings refer to that
+revision. No upstream code, dependency, service or database was adopted.
+
+| Project / revision / licence | Checked implementation and decision |
+| --- | --- |
+| [agentlog, 340325cc4310, Apache-2.0](https://github.com/rutts29/agentlog/tree/340325cc43109e8cc338fcb6d41d42b621659fef) | `docs/transcript-storage.md`, `docs/mcp-server.md`, `ingest/pipeline.py` and migration `v027_transcript_storage.py`: new identities are source-backed, transient reads verify canonical identity/integrity, and old materialized text is retained. Useful provenance/retention design reference; another ledger is unnecessary here. |
+| [AgentTrail, 3785d4ea62ca, MIT](https://github.com/sodiumsun/agenttrail/tree/3785d4ea62ca58b9ded853b2e4c3b99f12c02c97) | `docs/OBSERVABILITY.md`, `bin/lib/logtail.mjs`, `git-scan.mjs` and hook relay: bounded local logs and file activity accompany explicit `PLAN.md`; activity does not establish agent identity or successful completion. Keep intent and observations distinct without requiring a new PLAN. |
+| [AgentPrism, 4fd371b5e4f2, MIT](https://github.com/evilmartians/agent-prism/tree/4fd371b5e4f25acd04278e94a0d4b21e543eb42c) | Lowercase `readme.md` still marks Alpha. `packages/ui/package.json` uses React 19.1 and Tailwind 3.4.17; the OTel adapter maps spans to its own trace tree, and `TraceViewer` owns selection/search/expansion state. Oleafly uses React 19/Tailwind 4; compatibility and reduced maintenance have not been demonstrated. Existing TaskDetail suffices. |
+| [Phoenix, 464a60fd3c24, ELv2](https://github.com/Arize-ai/phoenix/tree/464a60fd3c24aaed780cea3f2e0e437d3c8ba037) | Actual `LICENSE` is Elastic License 2.0. `src/phoenix/config.py`, database engines and database documentation confirm default working-directory SQLite and optional PostgreSQL. Tracing/evaluation/MCP are a possible external experiment; they do not justify a second authoritative task store. |
+| [RobertTLange AgentLens, df1a976020a6, licence not established](https://github.com/RobertTLange/agentlens/tree/df1a976020a6e219bdde7b0b6cddcd97574483d6) | `packages/core/src/traceIndex.ts` and `discovery.ts` discover, parse, redact and cache multiple local agent log formats. No licence file or package licence was found in this tree. Useful external-log UI reference; no source is copied. |
+| [agentkitai AgentLens, 78fe5eb3bbcc, MIT](https://github.com/agentkitai/agentlens/tree/78fe5eb3bbcc84f0f08f645bf4edd60c4ceef5f1) | Storage interface, `sqlite-store.ts`, storage docs and MCP `src/index.ts`: its own events/sessions/agents, SQLite WAL with PostgreSQL option, MCP-to-API transport and capability probe. This is a separate observability product; no parallel authority is added to Oleafly. |
+| [BAR Observatory, 72aef5e8e122, MIT public repository](https://github.com/bar181/bar-observatory/tree/72aef5e8e12225bbbfff89352dc9425d776dc210) | `hooks/hooks.json`, `process/03-ingestion.md`, `run.sh` and `CRATES.md`: Claude lifecycle capture, transcript ingestion, optional proxy/OTLP and explicit missing-channel semantics. The public repo says crate engine source lives in a private repo; its runner calls separately distributed binaries. No engine-source audit or Oleafly compatibility is claimed. |
+| [TokenTrail, 2fccd739bd68, Apache-2.0](https://github.com/sunil-bodeddula-pro/tokentrail/tree/2fccd739bd686b499f88a2609cdc02f22c9c8d80) | `store.py`, Claude adapter and telemetry schema: keeps its own per-conversation JSON copies even when upstream history disappears. Useful skill/tool/usage analysis reference; that duplicate-history policy is not adopted. |
+
+Wave 2 now has the bounded numeric-checker feedback slice described below.
+A configurable auxiliary-reviewer adapter with explicit off/unavailable/error/partial
+outcomes is still required. Wave 3 remains offline calibration and
+capability-to-output evaluation; wave 4 remains optional OTel/UI interoperability
+only when a concrete consumer demonstrates value.
+
+The Windows location was learned from the supplied integration prompt and its
+referenced `/Users/mayuheng/Documents/Trae-CN/temp_20261107_01/local-review-plan.md`,
+not from a live Windows check or an established deployed-model inventory. The
+prompt mentions Qwen/MiniCheck; the referenced deployment plan instead names
+Qwen3.5/Mellum candidates. No reviewer model/version or availability is asserted
+here, and no Windows connection or deployment occurred. Its 50 tok/s target is
+specific to that inference plan, not an Oleafly task-quality gate.
 
 ## Verified code anchors and remaining checks
 

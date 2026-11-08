@@ -41,6 +41,8 @@ fn staged_isolation_copies_dirty_files_without_touching_the_source() {
     .unwrap();
 
     assert_eq!(isolation.kind, TaskIsolationKind::StagedProject);
+    assert_eq!(isolation.initial_git_status, None);
+    assert_eq!(isolation.initial_git_status_complete, None);
     assert_eq!(
         fs::read_to_string(project.join("main.tex")).unwrap(),
         "dirty manuscript"
@@ -373,6 +375,8 @@ fn purging_a_task_removes_both_generations_and_unregisters_its_git_worktree() {
     run(&["config", "user.email", "fixture@example.invalid"]);
     run(&["add", "main.tex"]);
     run(&["commit", "-m", "fixture"]);
+    fs::write(project.join("main.tex"), "preexisting dirty manuscript").unwrap();
+    fs::write(project.join("notes.md"), "preexisting untracked notes").unwrap();
 
     let store_root = temp.path().join("store");
     let task_root = task_workspace_root(&store_root, "task-one");
@@ -388,6 +392,16 @@ fn purging_a_task_removes_both_generations_and_unregisters_its_git_worktree() {
         )
         .unwrap();
         assert_eq!(isolation.kind, TaskIsolationKind::GitWorktree);
+        assert_eq!(isolation.initial_git_status_complete, Some(true));
+        assert_eq!(
+            isolation.initial_git_status.as_ref().unwrap(),
+            &[" M main.tex", "?? notes.md"]
+        );
+        assert!(
+            collect_review_changes(&isolation, &CancellationToken::new())
+                .unwrap()
+                .is_empty()
+        );
     }
     let registrations = project.join(".git/worktrees");
     assert_eq!(fs::read_dir(&registrations).unwrap().count(), 2);
@@ -404,7 +418,79 @@ fn purging_a_task_removes_both_generations_and_unregisters_its_git_worktree() {
     );
     assert_eq!(
         fs::read_to_string(project.join("main.tex")).unwrap(),
-        "manuscript"
+        "preexisting dirty manuscript"
+    );
+}
+
+#[test]
+fn oversized_git_status_retains_complete_entries_and_declares_partial_capture() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    fs::create_dir(&project).unwrap();
+    fs::write(project.join("main.tex"), "manuscript").unwrap();
+    for args in [
+        vec!["init"],
+        vec!["add", "main.tex"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        assert!(git_command()
+            .arg("-C")
+            .arg(&project)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    // Excluded from manuscript snapshots, but still part of Git's untracked state.
+    let directory = project.join(".oleafly");
+    fs::create_dir(&directory).unwrap();
+    for index in 0..600 {
+        fs::write(
+            directory.join(format!("{index:04}-{}.txt", "x".repeat(120))),
+            "note",
+        )
+        .unwrap();
+    }
+    let isolation = prepare_at(
+        &project,
+        &temp.path().join("managed/task/1"),
+        IsolationSource::Repository,
+        git_env().as_ref(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    let entries = isolation.initial_git_status.as_ref().unwrap();
+    assert_eq!(isolation.initial_git_status_complete, Some(false));
+    assert!(!entries.is_empty() && entries.len() < 600);
+    for entry in entries {
+        let path = entry.strip_prefix("?? ").unwrap();
+        assert!(path.ends_with(".txt"));
+        assert!(project.join(path).is_file(), "{entry}");
+    }
+    assert!(
+        collect_review_changes(&isolation, &CancellationToken::new())
+            .unwrap()
+            .is_empty()
+    );
+    let mut legacy = serde_json::to_value(&isolation).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("initialGitStatusComplete");
+    assert_eq!(
+        serde_json::from_value::<TaskIsolation>(legacy)
+            .unwrap()
+            .initial_git_status_complete,
+        None
     );
 }
 
