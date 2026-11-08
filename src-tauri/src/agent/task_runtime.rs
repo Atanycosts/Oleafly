@@ -350,6 +350,7 @@ impl TaskHost for NativeTaskHost {
             self.app.clone(),
             crate::paths::oleafly_root().map(|root| root.join("research-tasks")),
             context.task_id.clone(),
+            context.execution_generation,
         );
         Box::pin(async move {
             let names = tokio::task::spawn_blocking(task_mcp_server_names)

@@ -62,6 +62,7 @@ pub(crate) fn tool(
     app: tauri::AppHandle,
     root: Result<std::path::PathBuf, String>,
     task: String,
+    generation: u64,
 ) -> oleafly_research::builtin::TaskMcpTool {
     let reference = json!({"type":"object","additionalProperties":false,"properties":{
         "taskId":{"type":"string"},"generation":{"type":"integer","minimum":1},
@@ -77,7 +78,7 @@ pub(crate) fn tool(
                 let request = request(arguments)?;
                 let reference = request.reference.clone();
                 let root = root?;
-                let bytes = tokio::task::spawn_blocking(move || oleafly_research::compiled_artifacts::read(&root, &task, reference.generation, &reference)).await.map_err(|e|e.to_string())??;
+                let bytes = tokio::task::spawn_blocking(move || oleafly_research::compiled_artifacts::read(&root, &task, generation, &reference)).await.map_err(|e|e.to_string())??;
                 let images = capture(app, bytes, &request.pages, request.scale).await?;
                 let mut content = vec![json!({"type":"text","text":json!({"artifact":request.reference,"pages":request.pages}).to_string()})];
                 content.extend(images.into_iter().map(|image| json!({"type":"image","mimeType":"image/png","data":image})));
@@ -170,6 +171,50 @@ mod tests {
             assert!(request(json!({"reference":reference,"pages":pages,"scale":scale})).is_err());
         }
         assert!(request(json!({"reference":reference})).is_ok());
+    }
+    #[test]
+    fn current_execution_rejects_an_older_generation_reference() {
+        use oleafly_research::{
+            compiled_artifacts::{retain, TaskCompileRequest},
+            host::{CompileOutput, CompileSummary},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let output = workspace.path().join("output.pdf");
+        std::fs::write(&output, b"%PDF-old").unwrap();
+        let request = TaskCompileRequest {
+            task_id: "task-a".into(),
+            generation: 1,
+            tasks_root: root.path().into(),
+            execution_root: workspace.path().into(),
+            source: None,
+            source_revision: "base".into(),
+        };
+        let summary = CompileSummary {
+            ok: true,
+            build: Some(CompileOutput {
+                main_document: "main.tex".into(),
+                build_directory: workspace.path().into(),
+                output: Some(output),
+                output_id: None,
+                fresh: true,
+            }),
+            ..Default::default()
+        };
+        let reference = retain(&request, "a".repeat(64), &summary).unwrap().unwrap();
+        assert!(
+            oleafly_research::compiled_artifacts::read(root.path(), "task-a", 1, &reference)
+                .is_ok()
+        );
+        let captured_generation = 2;
+        assert!(oleafly_research::compiled_artifacts::read(
+            root.path(),
+            "task-a",
+            captured_generation,
+            &reference
+        )
+        .unwrap_err()
+        .contains("Unknown compiled artifact reference"));
     }
     #[tokio::test]
     async fn capture_delivers_page_images_once_and_drop_clears_pending_bytes() {

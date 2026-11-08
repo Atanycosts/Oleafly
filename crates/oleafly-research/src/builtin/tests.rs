@@ -981,7 +981,9 @@ async fn commands_off_allows_read_only_mcp_but_does_not_invoke_write_tools() {
                 read_only_hint,
                 call: Arc::new(move |_| {
                     lock(&calls).push(name);
-                    Box::pin(async { Ok(json!({"content": "retained evidence"})) })
+                    Box::pin(async {
+                        Ok(json!({"content": [{"type":"text","text":"retained evidence"}]}))
+                    })
                 }),
             }
         })
