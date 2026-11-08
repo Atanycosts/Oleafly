@@ -661,6 +661,72 @@ Qwen3.5/Mellum candidates. No reviewer model/version or availability is asserted
 here, and no Windows connection or deployment occurred. Its 50 tok/s target is
 specific to that inference plan, not an Oleafly task-quality gate.
 
+## Captured application delegation and task PDFs (2026-11-08)
+
+The `codex/agent-app` slice starts at the retained observations/findings baseline
+`72c4c3da7b3b6110acc697611eaf4154efc8bee1`. It fixes an editor selection's
+project, path, main document, UTF-16 range, full buffer hash, disk hash and selected
+runtime/model before asynchronous handoff. The built-in and supported ACP paths
+consume that captured identity. An explicit **Delegate task** action creates an
+existing ResearchTask; changing the visible project does not change its target.
+Ordinary built-in chat retains its existing cancellation on project switches.
+
+`task_inputs.rs` retains inputs under the existing task library before start and
+prepares them through the existing task bridge. It writes the captured buffer
+into the execution copy once per workspace and keeps `delegation.json` in the
+task's record directory. Reusing that workspace preserves subsequent agent edits.
+Journal tasks retain the selected world, review, check and manuscript baseline
+per task instead of resolving a mutable project-wide latest-task pointer.
+The same input record freezes the effective `ProjectManifest`, including linked
+projects' device-local engine settings. Compilation uses the existing CLI engine
+API with that in-memory manifest; no synthetic `project.json` enters review/apply.
+
+Compilation now returns its actual main document, build directory, output ID and
+fresh-output status. Only a successful fresh PDF is retained. Its reference binds
+task, execution generation, input fingerprint, source revision, output ID, PDF
+hash and size. Later builds cannot replace the referenced bytes. Listing and
+reading a reference verify the real task and generation, stored identity and
+PDF bytes. The task Output tab uses the existing PDF viewer, extraction and page
+rendering functions with these retained bytes, independently of the global
+preview. The task agent can call `task_pdf_text` with the returned reference.
+Agent-side page-image delivery is a remaining extension; the current page image
+action is in the task UI.
+
+Selected native task skills now start as a compact catalog containing ID, name,
+description, folder and the `load_skill` entry point. Full instructions arrive
+only when requested. `injectedSkills` therefore remains empty for this initial
+catalog. Ordinary ACP composer skill handoff retains its existing inline-text
+contract. The main runtime owns dynamic tool schemas and its request hook.
+The frontend accepts its `member` and `requestContext` observations and displays
+each execution and each request's tools, schema/catalog/skill byte counts and
+requirement IDs. A catalog is not reported as schemas supplied to that request.
+
+Native application validation in `e2e/tests/86-agent-delegation.spec.ts` passed
+both scenarios in 19.9 seconds with exit 0. It exercised the actual selection
+menu and captured native task, plus a deterministic model tool sequence through
+real task writes and compilers. Before apply, the resulting PDF was extracted,
+rasterized and displayed on the task viewer's canvas. Switching projects and
+compiling a second task preserved the original reference and original manuscript.
+This is application-flow evidence with a mock model, not evidence of model
+reasoning quality. The later test-only rewrite to the existing packaged-import
+registry passed that registry's independent guard. The selected final native log
+is `.private/a0-native/final.log`; intermediate attempts remain separate.
+
+The frontend production build, full Biome lint and TypeScript checks passed.
+The first full frontend run completed 23,444 tests successfully with 21 failures:
+the new PDF parent fixtures and packaged-import entry were corrected, and the
+affected tests passed on targeted reruns. Four load-sensitive composer/diagram
+timeouts passed in their complete single-worker files. The remaining baseline
+failures concern journal/plain-text styles and outdated starter/rail fixtures;
+the files establishing them are unchanged from the shared baseline. Full i18n
+validation reports 6,971 errors both at that baseline and in this slice, with
+zero new issues using the same validator and each revision's own catalogs.
+The final focused frontend runs passed 372 tests. Task inputs (5), task
+skill/ACP behavior (7), compile host (6), retained artifacts (2), Rust formatting
+and Clippy for the three affected packages also passed. These results do not
+claim a passing full frontend gate. The official installed application has not
+been updated.
+
 ## Verified code anchors and remaining checks
 
 - Oleafly documents external MCP clients in `docs/mcp.md`; stdio sessions are

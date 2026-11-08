@@ -321,6 +321,7 @@
     "typstFailed": "Typst không kết xuất được phương trình này ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Giao nhiệm vụ",
     "askAi": "Hỏi AI",
     "paraphrase": "Diễn đạt lại",
     "improveWriting": "Cải thiện văn phong",

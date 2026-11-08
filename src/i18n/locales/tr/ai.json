@@ -886,6 +886,8 @@
     "chatForked": "Sohbet çatallandı.",
     "chatForkFailed": "Bu sohbet çatallanamadı.",
     "skillsLoadFailed": "Etkin beceriler yüklenemedi. Yeniden deneyin.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Onay kipi yüklenemedi.",
     "approvalRulesLoadFailed": "Proje onay kuralları yüklenemedi.",
     "restoreFailed": "Geri yüklenemedi: {{error}}",

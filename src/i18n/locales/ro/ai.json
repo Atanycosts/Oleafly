@@ -898,6 +898,8 @@
     "chatForked": "Conversația a fost bifurcată.",
     "chatForkFailed": "Această conversație nu a putut fi bifurcată.",
     "skillsLoadFailed": "Abilitățile activate nu au putut fi încărcate. Încearcă din nou.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Modul de aprobare nu a putut fi încărcat.",
     "approvalRulesLoadFailed": "Regulile de aprobare ale proiectului nu au putut fi încărcate.",
     "restoreFailed": "Restabilirea nu a reușit: {{error}}",

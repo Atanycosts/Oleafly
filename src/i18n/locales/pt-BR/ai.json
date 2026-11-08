@@ -898,6 +898,8 @@
     "chatForked": "Conversa bifurcada.",
     "chatForkFailed": "Não foi possível bifurcar esta conversa.",
     "skillsLoadFailed": "Não foi possível carregar as habilidades ativas. Tente de novo.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Não foi possível carregar o modo de aprovação.",
     "approvalRulesLoadFailed": "Não foi possível carregar as regras de aprovação do projeto.",
     "restoreFailed": "Não foi possível restaurar: {{error}}",

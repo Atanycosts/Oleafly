@@ -2876,6 +2876,7 @@ impl WorkspaceTools for WarningWorkspace {
                 warnings: 1,
                 log_tail: "! Undefined control sequence.".into(),
                 skipped: None,
+                ..Default::default()
             })
         })
     }

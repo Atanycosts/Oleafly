@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { CopyableBlock } from "@/components/ui/copyable-block";
 import { describeError } from "@/lib/app-error";
 import { loadResearchTaskObservations, previewResearchTaskSource, type TaskObservation, type TaskObservationView, type TaskTranscriptEvent } from "@/lib/research-tasks";
 
@@ -23,7 +24,7 @@ function SourceRead({ taskId, generation, row, source }: Readonly<{ taskId: stri
     <p className="break-all">{t(($) => $.researchTools.tasks.observations.sourceRange, { path: source.path, start: source.offset, end: source.endOffset })}{source.truncated ? ` · ${t(($) => $.researchTools.tasks.observations.partial)}` : ""}</p>
     <Button variant="outline" size="xs" disabled={loading} onClick={() => void preview()}>{t(($) => $.researchTools.tasks.observations.openSource)}</Button>
     {error ? <p role="alert" className="text-destructive">{error}</p> : null}
-    {text !== null ? <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2">{text}</pre> : null}
+    {text !== null ? <CopyableBlock source={text}><pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2">{text}</pre></CopyableBlock> : null}
     <p className="break-all font-mono text-muted-foreground">{`SHA-256 ${source.fileSha256}`}</p>
   </div>;
 }
@@ -77,17 +78,24 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
   const usage = usageEvent?.event.kind === "observation" && usageEvent.event.observation.type === "usage"
     ? usageEvent.event.observation : null;
   const unknown = t(($) => $.researchTools.tasks.observations.unknown);
+  const members: { row: TaskTranscriptEvent; observation: Extract<TaskObservation, { type: "member" }> }[] = [];
+  const requests: { row: TaskTranscriptEvent; observation: Extract<TaskObservation, { type: "requestContext" }> }[] = [];
   const calls = new Map<string, { request: TaskTranscriptEvent; name: string; inputSha256: string; result?: TaskTranscriptEvent }>();
   for (const row of events) {
     if (row.event.kind !== "observation") continue;
     const event = row.event.observation;
-    if (event.type === "toolRequested") {
+    if (event.type === "member") {
+      members.push({ row, observation: event });
+    } else if (event.type === "requestContext") {
+      requests.push({ row, observation: event });
+    } else if (event.type === "toolRequested") {
       calls.set(event.callId, { request: row, name: event.name, inputSha256: event.inputSha256 });
     } else if (event.type === "toolExecution") {
       const call = calls.get(event.callId) ?? { request: row, name: event.name, inputSha256: event.inputSha256 };
       calls.set(event.callId, { ...call, result: row });
     }
   }
+  const gitStatus = view?.summary.baseline?.initialGitStatus?.join("\n") || (view?.summary.baseline?.initialGitStatusComplete === true ? t(($) => $.researchTools.tasks.observations.clean) : unknown);
   return <section data-testid="task-observations" className="mb-4 min-w-0 space-y-3 rounded-lg border p-3 text-sm">
     <h4 className="font-medium">{t(($) => $.researchTools.tasks.observations.title)}</h4>
     {loading ? <p role="status">{t(($) => $.researchTools.tasks.observations.loading)}</p> : null}
@@ -110,10 +118,28 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
           return reason;
         }).join(" · ")}</p> : null}
       </> : <p>{t(($) => $.researchTools.tasks.observations.notCollected)}</p>}
+      {members.length > 0 ? <details><summary>{t(($) => $.researchTools.tasks.observations.memberExecutions)}</summary>
+        <ol className="max-h-52 space-y-2 overflow-auto break-all text-xs">{members.map(({ row, observation }) => <li key={row.sequence} className="border-t pt-2">
+          <p>{`#${row.sequence} · ${observation.memberId} · ${observation.status}`}</p>
+          <p>{t(($) => $.researchTools.tasks.observations.execution)}: {observation.executionId}</p>
+          <p>{t(($) => $.researchTools.tasks.observations.triggers)}: {observation.triggerIds.join(", ") || "—"}</p>
+        </li>)}</ol>
+      </details> : null}
+      {requests.length > 0 ? <details><summary>{t(($) => $.researchTools.tasks.observations.requestContexts)}</summary>
+        <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.tasks.observations.catalogBoundary)}</p>
+        <ol className="max-h-96 space-y-3 overflow-auto break-all text-xs">{requests.map(({ row, observation }) => <li key={row.sequence} className="space-y-1 border-t pt-2">
+          <p>{`#${row.sequence} · ${observation.sessionId}`}</p>
+          <p>{t(($) => $.researchTools.tasks.observations.requestBytes, { schema: observation.schemaBytes, catalog: observation.catalogBytes, skill: observation.skillBytes })}</p>
+          <p>{t(($) => $.researchTools.tasks.observations.requirements)}: {observation.requirementIds.join(", ") || "—"}</p>
+          <details><summary>{t(($) => $.researchTools.tasks.observations.provided, { count: observation.tools.length })}</summary>
+            <ul>{observation.tools.map((tool) => <li key={tool.name}><code>{tool.name}</code> · {tool.source}<details><summary>{"SHA-256"}</summary><code>{tool.schemaSha256}</code></details></li>)}</ul>
+          </details>
+        </li>)}</ol>
+      </details> : null}
       {view.summary.baseline ? <details><summary>{t(($) => $.researchTools.tasks.observations.baseline)}</summary>
         <p className="break-all font-mono text-xs">{view.summary.baseline.sourceRevision}</p>
         <p className="break-all font-mono text-xs">{`SHA-256 ${view.summary.baseline.baselineHash}`}</p>
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all text-xs">{view.summary.baseline.initialGitStatus?.join("\n") || (view.summary.baseline.initialGitStatusComplete === true ? t(($) => $.researchTools.tasks.observations.clean) : unknown)}</pre>
+        <CopyableBlock source={gitStatus}><pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all text-xs">{gitStatus}</pre></CopyableBlock>
         <Button variant="outline" size="xs" onClick={onReview}>{t(($) => $.researchTools.tasks.observations.changes, { count: view.summary.changedFileCount })}</Button>
       </details> : null}
       {view.summary.evidence ? <Button variant="outline" size="xs" onClick={onChecks}>{t(($) => $.researchTools.tasks.observations.checks, { count: view.summary.evidence.checks.length })}</Button> : null}

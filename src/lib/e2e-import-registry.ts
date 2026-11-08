@@ -27,6 +27,8 @@ const registry: Record<string, () => Promise<unknown>> = !E2E_HOOKS ? {} : {
   "/src/lib/proofreading/client.ts": () => import("@/lib/proofreading/client"),
   "/src/lib/proofreading/hunspell.ts": () => import("@/lib/proofreading/hunspell"),
   "/src/lib/research-tasks.ts": () => import("@/lib/research-tasks"),
+  "/src/lib/pdf-text.ts": () => import("@/lib/pdf-text"),
+  "/src/lib/pdf-image.ts": () => import("@/lib/pdf-image"),
   "/src/lib/research-workspace.ts": () => import("@/lib/research-workspace"),
   "/src/lib/journal-workbench.ts": () => import("@/lib/journal-workbench"),
   "/src/lib/tauri.ts": () => import("@/lib/tauri"),

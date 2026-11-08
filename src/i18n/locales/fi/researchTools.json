@@ -130,6 +130,15 @@
     "previewTruncated": "Esikatselu katkaistiin 256 KiB:n kohdalla."
   },
   "tasks": {
+    "observations": {
+      "memberExecutions": "Member executions",
+      "execution": "Execution",
+      "triggers": "Triggers",
+      "requestContexts": "Context provided for each request",
+      "requestBytes": "Tool schemas: {{schema}} bytes · Tool catalog: {{catalog}} bytes · Skills: {{skill}} bytes",
+      "requirements": "Requirement IDs",
+      "catalogBoundary": "The tool catalog describes available tools. Only the tools listed for this request were provided with schemas."
+    },
     "status": {
       "queued": "Jonossa",
       "running": "Käynnissä",
@@ -235,6 +244,12 @@
       }
     },
     "detail": {
+      "compiledPdfs": "Task compiled PDFs",
+      "compiledPdfIdentity": "Generation {{generation}} · input {{input}} · {{size}} bytes",
+      "compiledPdfText": "Read PDF text",
+      "compiledPdfRender": "Render first page",
+      "compiledPdfPage": "Page {{page}}",
+      "compiledPdfFirstPage": "Task PDF first page",
       "waiting": "Odottaa",
       "startWhenReady": "Käynnistä kun valmista",
       "start": "Käynnistä",

@@ -161,6 +161,7 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
             &["id"],
         ),
         tool("cancel_run", "Stop a run.", json!({"id": run_id}), &["id"]),
+        tool("task_pdf_text", "Read page text from an immutable compiled task PDF reference returned by compile.", json!({"reference": {"type": "object"}}), &["reference"]),
         tool("compile", "Build the task workspace with Oleafly's command-line tool and report errors and warnings.", json!({}), &[]),
         tool("project_map", "The project's outline, labels, references and citations, with any that do not resolve.", json!({}), &[]),
         tool(
@@ -834,11 +835,27 @@ pub async fn call_task_tool(
             Ok(id) => binding.services.runs.cancel(&binding.task_id, id).await.map(|()| json!({"stopping": id})),
             Err(error) => Err(error),
         },
+        "task_pdf_text" => async {
+            let reference: crate::compiled_artifacts::TaskCompiledArtifact = serde_json::from_value(args["reference"].clone()).map_err(|e| e.to_string())?;
+            crate::compiled_artifacts::read(&binding.services.tasks_root, &binding.task_id, binding.generation, &reference)?;
+            let extractor = binding.host.pdf_extractor().ok_or("Task PDF text extraction is unavailable.")?;
+            let pages = extractor.pages(binding.services.tasks_root.join(&reference.path)).await?;
+            Ok(json!({"artifact": reference, "pages": pages}))
+        }.await,
         "compile" => match &binding.services.workspace {
-            Some(workspace) => workspace
-                .compile(binding.execution_root.clone(), binding.project_root.clone())
+            Some(workspace) => async {
+                let task = binding.task()?;
+                let isolation = task.isolation.ok_or("The task has no input revision.")?;
+                workspace
+                .compile_task(crate::compiled_artifacts::TaskCompileRequest {
+                    task_id: binding.task_id.clone(), generation: binding.generation,
+                    tasks_root: binding.services.tasks_root.clone(), execution_root: binding.execution_root.clone(),
+                    source: binding.project_root.clone(),
+                    source_revision: isolation.source_revision,
+                })
                 .await
-                .and_then(|summary| serde_json::to_value(summary).map_err(|error| error.to_string())),
+                .and_then(|summary| serde_json::to_value(summary).map_err(|error| error.to_string()))
+            }.await,
             None => Ok(json!({"ok": false, "skipped": "The command-line tool isn't available."})),
         },
         "project_map" => match &binding.services.workspace {

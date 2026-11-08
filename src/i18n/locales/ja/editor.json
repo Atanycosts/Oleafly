@@ -321,6 +321,7 @@
     "typstFailed": "Typst でこの数式を描画できませんでした（{{detail}}）"
   },
   "selectionActions": {
+    "delegateTask": "タスクを委任",
     "askAi": "AI に聞く",
     "paraphrase": "言い換える",
     "improveWriting": "文章を改善",

@@ -356,6 +356,9 @@ export type TaskRuntimeEvent =
   | { kind: "phase"; phase: TaskPhase };
 
 export type TaskObservation =
+  | { type: "member"; memberId: string; executionId: string; triggerIds: string[]; status: string }
+  | { type: "requestContext"; sessionId: string; tools: { name: string; source: string; schemaSha256: string }[];
+      schemaBytes: number; catalogBytes: number; skillBytes: number; requirementIds: string[] }
   | { type: "runtime"; runtimeId: string; providerId: string; modelId: string; sessionId: string;
       tools: { name: string; source: string; schemaSha256: string }[]; declaredSkills: string[];
       injectedSkills: { id: string; sectionSha256: string }[]; unavailable: string[] }
@@ -441,6 +444,29 @@ export const listResearchTasks = (projectId: string) =>
 
 export const createResearchTask = (draft: ResearchTaskDraft) =>
   normalized(invoke<ResearchTask>("research_task_create", { draft }));
+
+export const createDelegatedResearchTask = (
+  draft: ResearchTaskDraft,
+  delegation: import("@/lib/assistant-delegation").AssistantDelegation,
+) => normalized(invoke<ResearchTask>("research_task_create_with_inputs", { draft, delegation, journalInput: null }));
+
+export interface TaskCompiledArtifact {
+  taskId: string;
+  generation: number;
+  inputFingerprint: string;
+  sourceRevision: string;
+  outputId: string | null;
+  pdfSha256: string;
+  size: number;
+  mainDocument: string;
+  path: string;
+}
+
+export const listTaskCompiledPdfs = (taskId: string, generation: number) =>
+  invoke<TaskCompiledArtifact[]>("research_task_compiled_pdfs", { taskId, generation });
+
+export const readTaskCompiledPdf = (taskId: string, generation: number, reference: TaskCompiledArtifact) =>
+  invoke<ArrayBuffer>("research_task_compiled_pdf_read", { taskId, generation, reference });
 
 export const editResearchTask = (taskId: string, edit: ResearchTaskEdit) =>
   normalized(invoke<ResearchTask>("research_task_edit", { taskId, edit }));

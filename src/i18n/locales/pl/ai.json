@@ -910,6 +910,8 @@
     "chatForked": "Czat rozgałęziony.",
     "chatForkFailed": "Nie udało się rozgałęzić tego czatu.",
     "skillsLoadFailed": "Nie udało się wczytać włączonych umiejętności. Spróbuj ponownie.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Nie udało się wczytać trybu zatwierdzania.",
     "approvalRulesLoadFailed": "Nie udało się wczytać reguł zatwierdzania dla projektu.",
     "restoreFailed": "Nie udało się przywrócić: {{error}}",

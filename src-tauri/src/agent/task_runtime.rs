@@ -12,7 +12,7 @@ use oleafly_research::builtin::{
 use oleafly_research::host::ConnectorSecrets;
 use oleafly_research::literature::paper::PdfTextExtractor;
 use oleafly_research::literature::{LiteratureClient, LiteratureSource};
-use oleafly_research::observations::{content_hash, InjectedSkill, TaskSkills};
+use oleafly_research::observations::TaskSkills;
 use oleafly_research::prompt::task_prompt;
 use oleafly_research::scheduler::TaskServices;
 use oleafly_research::task_tools::extra::TaskBinding;
@@ -91,56 +91,7 @@ fn skill_read_paths(context: &TaskRunContext) -> Vec<PathBuf> {
     skill_read_paths_in(&root, pack.as_deref(), context)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SkillAudience {
-    Task,
-    CliAgent,
-}
-
-pub(crate) fn skill_section(
-    record: &crate::skills::SkillRecord,
-    audience: SkillAudience,
-) -> String {
-    if audience == SkillAudience::CliAgent {
-        return cli_skill_section(record);
-    }
-    let mut section = format!("\n\nSelected skill: {}\n", record.name);
-    if !record.dir.is_empty() {
-        section.push_str(&format!(
-            "Skill folder: {}\nEvery relative path in the instructions below is inside that folder, which is readable from run_command.\n",
-            record.dir
-        ));
-    }
-    let scripts = crate::skills::skill_scripts(record);
-    if !scripts.is_empty() {
-        section.push_str("Bundled scripts, run one with run_command:\n");
-        for script in scripts {
-            section.push_str(&format!("- {}: {}\n", script.path, script.command));
-        }
-    }
-    let references: Vec<&str> = record
-        .files
-        .iter()
-        .filter(|file| !file.path.starts_with("scripts/"))
-        .map(|file| file.path.as_str())
-        .collect();
-    if !references.is_empty() {
-        section.push_str(&format!(
-            "Supporting files, read one with read_skill_file: {}\n",
-            references.join(", ")
-        ));
-    }
-    section.push_str(&record.instructions);
-    section.push_str(&oleafly_research::aliases::tool_alias_note(
-        &record.instructions,
-        &oleafly_research::aliases::AliasAudience::Task {
-            alphaxiv_tools: None,
-        },
-    ));
-    section
-}
-
-fn cli_skill_section(record: &crate::skills::SkillRecord) -> String {
+pub(crate) fn cli_skill_section(record: &crate::skills::SkillRecord) -> String {
     let mut section = format!("Selected skill: {}\n", record.name);
     if !record.dir.is_empty() {
         let folder = oleafly_core::plain_path(Path::new(&record.dir));
@@ -176,21 +127,31 @@ fn task_skills_in(
     context: &TaskRunContext,
 ) -> Result<TaskSkills, String> {
     let mut prompt = String::new();
-    let mut injected = Vec::new();
     for skill in selected_skills(root, pack, context)? {
-        let section = skill_section(&skill, SkillAudience::Task);
-        injected.push(InjectedSkill {
-            id: skill.id.clone(),
-            section_sha256: content_hash(section.as_bytes()),
-        });
-        prompt.push_str(&section);
+        if prompt.is_empty() {
+            prompt.push_str("\n\nSelected skills are available on demand. These entries are a catalog, not the full instructions. Call load_skill with the listed id before using a skill.\n");
+        }
+        prompt.push_str(
+            &serde_json::to_string(&json!({
+                "id": skill.id,
+                "name": skill.name,
+                "description": skill.description,
+                "folder": skill.dir,
+                "load": "load_skill"
+            }))
+            .map_err(|e| e.to_string())?,
+        );
+        prompt.push('\n');
         if prompt.len() > MAX_SKILL_BYTES {
             return Err(
                 "The selected skills exceed this task's context limit. Select fewer skills.".into(),
             );
         }
     }
-    Ok(TaskSkills { prompt, injected })
+    Ok(TaskSkills {
+        prompt,
+        injected: Vec::new(),
+    })
 }
 
 #[cfg(test)]

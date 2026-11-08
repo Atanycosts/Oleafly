@@ -32,6 +32,7 @@ import { gitIsInitialized } from "@/lib/tauri";
 import { TurnChangesCard } from "@/components/ai/turns/TurnChangesCard";
 import { useFilesStore } from "@/store/files";
 import { useSettingsStore } from "@/store/settings";
+import { useAgentHandoffStore } from "@/store/agent-handoff";
 import { AgentLogo } from "./AgentLogo";
 import { BridgeInstallCard } from "./AgentReadiness";
 import { TrustRequiredNotice } from "@/components/open-folder/TrustRequiredNotice";
@@ -87,6 +88,9 @@ export function AcpWorkspaceAssistant({ projectId }: Readonly<{ projectId: strin
   );
   const [busy, setBusy] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [initializedProject, setInitializedProject] = useState<string | null>(null);
+  const handoffPending = useAgentHandoffStore((state) => state.pendingPrompt);
+  const handoffDelegation = useAgentHandoffStore((state) => state.pendingDelegation);
   const [cancellingStart, setCancellingStart] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
@@ -193,6 +197,7 @@ export function AcpWorkspaceAssistant({ projectId }: Readonly<{ projectId: strin
       if (disposed) return;
       const id = useAcpSessionsStore.getState().activeByProject[projectId];
       if (id) await state.open(projectId, id);
+      if (!disposed) setInitializedProject(projectId);
     })().catch((error_: unknown) => { if (!disposed) setError(acpError(error_)); });
     const refresh = () => { void useAcpSessionsStore.getState().refreshCatalog().catch(() => {}); };
     window.addEventListener("oleafly:acp-catalog-changed", refresh);
@@ -206,10 +211,63 @@ export function AcpWorkspaceAssistant({ projectId }: Readonly<{ projectId: strin
   useEffect(() => {
     if (!catalog.length) return;
     if (agentId && catalog.some((agent) => agent.definition.id === agentId)) return;
+    if (handoffDelegation?.runtimeId === "acp" && handoffDelegation.projectId === projectId) return;
+    if (useComposerDrafts.getState().drafts[acpComposerId(projectId, agentId)]?.delegation) return;
     const preferred = catalog.find((agent) => acpUsable(agent)) ?? catalog[0];
     useComposerDrafts.getState().moveDraft(acpComposerId(projectId, null), acpComposerId(projectId, preferred.definition.id));
     setComposer(projectId, { agentId: preferred.definition.id });
-  }, [catalog, agentId, projectId, setComposer]);
+  }, [catalog, agentId, handoffDelegation, projectId, setComposer]);
+
+  useEffect(() => {
+    if (!handoffPending || handoffDelegation?.runtimeId !== "acp" || initializedProject !== projectId) return;
+    const handoff = useAgentHandoffStore.getState().consume();
+    const delegation = handoff?.delegation;
+    if (!handoff || !delegation) return;
+    const targetProject = delegation.projectId;
+    const state = useAcpSessionsStore.getState();
+    const targetId = state.activeByProject[targetProject];
+    const open = targetId ? state.sessions[targetId] : undefined;
+    const target = open?.agentId === delegation.agentId && !isDelegatedSession(open) ? open : undefined;
+    const draftId = acpDraftId(targetProject, delegation.agentId, target);
+    const draft: AcpPromptDraft = {
+      text: handoff.prompt,
+      attachments: [],
+      mentions: [],
+      selections: [{ id: crypto.randomUUID(), path: delegation.path, text: delegation.selection.text, label: delegation.path }],
+      skill: null,
+      delegation,
+    };
+    state.setComposer(targetProject, { agentId: delegation.agentId });
+    const chosen = state.catalog.find((entry) => entry.definition.id === delegation.agentId);
+    const restore = (message?: string) => {
+      useAcpSessionsStore.getState().setActive(targetProject, target?.id ?? null);
+      restoreDraft(targetProject, draftId, draft);
+      if (message) {
+        useAcpSessionsStore.getState().setError(targetProject, message);
+        if (targetProject !== projectId) setError(message);
+      }
+    };
+    if (!chosen || !acpUsable(chosen)) {
+      restore("The agent selected for this delegation is unavailable. The request is kept in its original project draft.");
+      return;
+    }
+    if (!handoff.autoSend) {
+      restore();
+      focusComposer();
+      return;
+    }
+    void (async () => {
+      if (!target || !["ready", "running", "cancelling", "connecting"].includes(target.status)) {
+        await state.startWithPrompt(targetProject, delegation.agentId, draft);
+      } else if (target.status !== "ready" || state.sending[target.id] || state.queues[target.id]?.length) {
+        state.enqueue(target.id, draft);
+        await state.dispatchQueued(targetProject, target.id);
+      } else if (!await state.sendPrompt(targetProject, target.id, draft)) {
+        restore(useAcpSessionsStore.getState().sessionErrors[target.id]
+          ?? "The delegated request was not sent. It is kept in its original project draft.");
+      }
+    })().catch((error_: unknown) => restore(acpError(error_)));
+  }, [handoffPending, handoffDelegation, initializedProject, projectId, focusComposer, setError]);
 
   const choosePermission = async (id: string, option: string | null) => {
     if (!activeId) return;

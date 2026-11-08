@@ -241,6 +241,7 @@ import { resolveResearchToolAliases } from "@/lib/research-tool-aliases";
 import { useAgentTodoStore, type AgentTodo } from "@/store/agent-todos";
 import { useAgentMemoryStore } from "@/store/agent-memory";
 import { useAgentHandoffStore } from "@/store/agent-handoff";
+import { delegationContext, type AssistantDelegation } from "@/lib/assistant-delegation";
 import { useAssistantRuntimeStore } from "@/store/assistant-runtime";
 import { useAcpSessionsStore } from "@/store/acp-sessions";
 import { SessionTranscriptDialog } from "@/components/ai/activity/SessionTranscriptDialog";
@@ -1148,6 +1149,7 @@ export function ChatCore() {
   const [restoringCheckpoint, setRestoringCheckpoint] = useState<string | null>(null);
   const handoffPending = useAgentHandoffStore((s) => s.pendingPrompt);
   const handoffAutoSend = useAgentHandoffStore((s) => s.autoSend);
+  const handoffDelegation = useAgentHandoffStore((s) => s.pendingDelegation);
   const pendingImagesRef = useRef<string[]>([]);
   const lastPartAtRef = useRef<number>(0);
   const [customPrompt, setCustomPrompt] = useState(initialProvider?.state.customPrompt ?? "");
@@ -1929,10 +1931,23 @@ export function ChatCore() {
     options?: {
       approvedPlan?: boolean;
       replay?: { attachments: readonly DraftAttachment[]; commit?: () => Promise<void> | void };
+      delegation?: AssistantDelegation;
     },
   ) => {
-    const { provider, model, providerModelsMap, providerReady, activeProviderName } = pickedModelRef.current;
     const sendComposerId = composerIdRef.current;
+    const delegation = options?.delegation ?? (!queued && !options?.replay
+      ? useComposerDrafts.getState().drafts[sendComposerId]?.delegation
+      : undefined);
+    if (delegation && (delegation.runtimeId !== "builtin" || delegation.projectId !== projectId)) {
+      toast.error(i18n.t(($) => $.ai.toasts.delegationWrongProject));
+      return;
+    }
+    const picked = pickedModelRef.current;
+    const provider = delegation?.agentId ?? picked.provider;
+    const model = delegation?.modelId ?? picked.model;
+    const { providerModelsMap } = picked;
+    const providerReady = delegation ? isProviderConfigured(provider, keysMap, customProviders) : picked.providerReady;
+    const activeProviderName = delegation ? provider : picked.activeProviderName;
     const draft = draftAttachments(sendComposerId);
     if (!options?.replay && !queued && draft.some((item) => item.status === "processing")) return;
     const outgoing: DraftAttachment[] = (
@@ -1944,6 +1959,10 @@ export function ChatCore() {
     sendSequenceRef.current = sendSequence;
     const inputRevision = inputRevisionRef.current;
     if (streaming || activeChatRun()) {
+      if (delegation) {
+        toast.info(i18n.t(($) => $.ai.toasts.delegationWaitingRun));
+        return;
+      }
       if (!queued && !options?.replay && activeChatId) {
         useAgentTurnsStore.getState().queueFollowUp(activeChatId, text, outgoing);
         setInput("");
@@ -2013,7 +2032,7 @@ export function ChatCore() {
       ...runTree.map((entry) => normalizeMentionPath(entry.path)),
       ...delegationTargetsRef.current.map((target) => target.id),
     ]);
-    const mentioned = await mentionAttachments(projectId, text, runTree);
+    const mentioned = delegation ? [] : await mentionAttachments(projectId, text, runTree);
     let runMcpServers: McpAgentServer[] = [];
     try {
       const result = await mcpAgentToolsQueryRef.current.refetch();
@@ -2054,6 +2073,7 @@ export function ChatCore() {
             confirm: () => Promise.resolve(false),
             onImage: () => {},
             runId: () => null,
+            researchScope: { projectId, runtimeId: "builtin", agentId: provider, modelId: model, delegation },
           },
           additions: capacityAdditions,
           excludedNames: excludedToolNames(
@@ -2426,21 +2446,23 @@ ${requestCustomPrompt.trim()}
 USER_CUSTOM_INSTRUCTIONS`
       : "";
 
-    let workspaceCtx = "";
-    try {
-      workspaceCtx = await buildWorkspaceContext();
-    } catch {
-      workspaceCtx = "(workspace context unavailable)";
-    }
-    try {
-      const chunks = await retrieveProjectChunks(runText, { topK: 4 });
-      const rag = formatRagContext(chunks);
-      if (rag) workspaceCtx = `${workspaceCtx}\n\n${rag}`;
-    } catch {
-      /* non-fatal */
+    let workspaceCtx = delegation ? delegationContext(delegation) : "";
+    if (!delegation) {
+      try {
+        workspaceCtx = await buildWorkspaceContext();
+      } catch {
+        workspaceCtx = "(workspace context unavailable)";
+      }
+      try {
+        const chunks = await retrieveProjectChunks(runText, { topK: 4 });
+        const rag = formatRagContext(chunks);
+        if (rag) workspaceCtx = `${workspaceCtx}\n\n${rag}`;
+      } catch {
+        /* non-fatal */
+      }
     }
 
-    const mainDocument = useFilesStore.getState().mainDoc || documentEngine.main_document || "main.tex";
+    const mainDocument = delegation?.mainDocument ?? (useFilesStore.getState().mainDoc || documentEngine.main_document || "main.tex");
     const activeGoalLine = goalPromptLine(useChatGoalStore.getState().goal(projectId));
     const runSkillTools = createLoadSkillTools(
       runSkills,
@@ -2468,6 +2490,7 @@ USER_CUSTOM_INSTRUCTIONS`
         confirm,
         onImage: collectRunImage,
         runId: () => activeRunRequestIdRef.current,
+        researchScope: { projectId: runProjectId, runtimeId: "builtin", agentId: provider, modelId: model, delegation },
       },
       additions: runToolAdditions,
       excludedNames: excludedToolNames(
@@ -3157,7 +3180,7 @@ ${sandboxedCustom}`;
         }
       }
     }
-  }, [streaming, projectId, projectName, currentHead, figureToolsAvailable, engineLoaded, documentEngine, projectKind, openAISettings, flushStreamPatches, updateLast, setMessages, setInput, activeChatId, trackRunRequestId, markRunSteerable, persistDebounced, dropPendingPersist, refreshChatCost]);
+  }, [streaming, projectId, projectName, currentHead, figureToolsAvailable, engineLoaded, documentEngine, projectKind, keysMap, customProviders, openAISettings, flushStreamPatches, updateLast, setMessages, setInput, activeChatId, trackRunRequestId, markRunSteerable, persistDebounced, dropPendingPersist, refreshChatCost]);
 
   const stop = useCallback(() => {
     pendingImagesRef.current = [];
@@ -3504,16 +3527,24 @@ ${sandboxedCustom}`;
 
   useEffect(() => {
     if (!handoffPending || streaming || !providerConfigReady) return;
+    if (handoffDelegation && (handoffDelegation.runtimeId !== "builtin" || handoffDelegation.projectId !== projectId)) return;
     if (handoffAutoSend && providerReady && !engineLoaded) return;
     const h = useAgentHandoffStore.getState().consume();
     if (!h) return;
     if (h.images.length) pendingImagesRef.current.push(...h.images);
+    if (h.delegation) {
+      const prompt = appendHandoffPrompt(inputRef.current, h.prompt);
+      setInput(prompt);
+      useComposerDrafts.getState().setDelegation(composerIdRef.current, h.delegation);
+      if (h.autoSend) void send(prompt, undefined, { delegation: h.delegation });
+      return;
+    }
     if (h.autoSend && providerReady) {
       void send(h.prompt);
       return;
     }
     setInput(appendHandoffPrompt(inputRef.current, h.prompt));
-  }, [handoffPending, handoffAutoSend, streaming, providerConfigReady, providerReady, engineLoaded, send, setInput]);
+  }, [handoffPending, handoffAutoSend, handoffDelegation, projectId, streaming, providerConfigReady, providerReady, engineLoaded, send, setInput]);
 
   const prevProjectIdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {

@@ -874,6 +874,8 @@
     "chatForked": "已從聊天建立分支。",
     "chatForkFailed": "無法從這個聊天建立分支。",
     "skillsLoadFailed": "無法載入已啟用的技能。請再試一次。",
+    "delegationWrongProject": "委託選區仍綁定原專案和 Agent，請開啟原專案後傳送。",
+    "delegationWaitingRun": "委託選區已保留在草稿中，請在目前執行結束後傳送。",
     "approvalModeLoadFailed": "無法載入核准模式。",
     "approvalRulesLoadFailed": "無法載入專案的核准規則。",
     "restoreFailed": "無法還原：{{error}}",

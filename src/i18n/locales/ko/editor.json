@@ -321,6 +321,7 @@
     "typstFailed": "Typst에서 이 수식을 렌더링하지 못했습니다({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "작업 위임",
     "askAi": "AI에게 묻기",
     "paraphrase": "다르게 표현",
     "improveWriting": "글 다듬기",

@@ -130,6 +130,15 @@
     "previewTruncated": "預覽在 256 KiB 處停止。"
   },
   "tasks": {
+    "observations": {
+      "memberExecutions": "Member executions",
+      "execution": "Execution",
+      "triggers": "Triggers",
+      "requestContexts": "Context provided for each request",
+      "requestBytes": "Tool schemas: {{schema}} bytes · Tool catalog: {{catalog}} bytes · Skills: {{skill}} bytes",
+      "requirements": "Requirement IDs",
+      "catalogBoundary": "The tool catalog describes available tools. Only the tools listed for this request were provided with schemas."
+    },
     "status": {
       "queued": "佇列中",
       "running": "執行中",
@@ -234,6 +243,12 @@
       }
     },
     "detail": {
+      "compiledPdfs": "任務編譯 PDF",
+      "compiledPdfIdentity": "執行代次 {{generation}} · 輸入 {{input}} · {{size}} 位元組",
+      "compiledPdfText": "讀取 PDF 文字",
+      "compiledPdfRender": "繪製首頁",
+      "compiledPdfPage": "第 {{page}} 頁",
+      "compiledPdfFirstPage": "任務 PDF 首頁",
       "waiting": "等待中",
       "startWhenReady": "就緒後開始",
       "start": "開始",

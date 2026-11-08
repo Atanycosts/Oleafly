@@ -120,6 +120,7 @@ mod storage;
 mod synctex;
 mod system_fonts;
 mod system_integration;
+mod task_inputs;
 mod template_packs;
 mod templates;
 mod terminal;
@@ -531,6 +532,7 @@ pub fn run() {
             research_tasks::research_tasks_set_enabled,
             research_tasks::research_task_list,
             research_tasks::research_task_create,
+            task_inputs::research_task_create_with_inputs,
             research_tasks::research_task_edit,
             research_tasks::research_task_start,
             research_tasks::research_task_cancel,
@@ -543,6 +545,8 @@ pub fn run() {
             research_tasks::research_task_source_preview,
             research_tasks::research_task_file_preview,
             research_tasks::research_task_artifact_preview,
+            research_tasks::research_task_compiled_pdfs,
+            research_tasks::research_task_compiled_pdf_read,
             research_tasks::research_task_apply,
             research_tasks::research_task_accept_result,
             research_tasks::research_task_delete,

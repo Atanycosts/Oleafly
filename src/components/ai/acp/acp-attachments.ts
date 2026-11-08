@@ -7,6 +7,7 @@ import { bytesToBase64 } from "@/lib/base64";
 import { composerMentionPaths } from "@/lib/composer-tokens";
 import type { FileEntry } from "@/lib/tauri";
 import type { AcpPromptDraft, AcpSelection } from "@/store/acp-sessions";
+import { delegationContext } from "@/lib/assistant-delegation";
 
 export const PROMPT_BUDGET = 1024 * 1024 - 1024;
 export const MAX_ACP_ATTACHMENTS = 10;
@@ -88,21 +89,26 @@ export async function toPromptInput(
     files.push({ kind: "stored", sha256: item.sha256, name: item.name, mime: item.mime });
   }
   for (const path of mentioned) files.push({ kind: "project", path });
-  const selections = draft.selections.map((selection) => ({
+  const selections = draft.delegation ? [{
+    path: draft.delegation.path,
+    text: draft.delegation.selection.text,
+  }] : draft.selections.map((selection) => ({
     path: selection.path,
     text: selection.text.slice(0, MAX_SELECTION_CHARS),
   }));
   if (draft.attachments.length + mentioned.length + selections.length > MAX_ACP_ATTACHMENTS) {
     throw new AcpPromptError("tooMany");
   }
-  const textBytes = byteLength(draft.text);
+  const text = draft.delegation ? `${draft.text}\n\n${delegationContext(draft.delegation)}` : draft.text;
+  const textBytes = byteLength(text);
   if (textBytes > MAX_TEXT_BYTES) throw new AcpPromptError("tooLarge");
   const selectionBytes = selections.reduce((total, selection) => total + byteLength(selection.text), 0);
+  if (textBytes + selectionBytes > PROMPT_BUDGET) throw new AcpPromptError("tooLarge");
   const prepared = images.length > 0
     ? await prepareImages(images, imageByteBudget(textBytes, selectionBytes, images.length))
     : [];
   return {
-    text: draft.text,
+    text,
     images: prepared,
     files,
     selections,

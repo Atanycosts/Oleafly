@@ -325,6 +325,7 @@
     "typstFailed": "Typst ei pystynyt piirtämään tätä kaavaa ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Delegoi tehtävä",
     "askAi": "Kysy tekoälyltä",
     "paraphrase": "Muotoile uudelleen",
     "improveWriting": "Paranna tekstiä",

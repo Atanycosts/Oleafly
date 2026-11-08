@@ -976,3 +976,39 @@ mod tests {
         std::env::remove_var("OLEAFLY_DATA_DIR");
     }
 }
+
+#[tauri::command]
+pub async fn research_task_compiled_pdfs(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    generation: u64,
+) -> Result<Vec<oleafly_research::compiled_artifacts::TaskCompiledArtifact>, String> {
+    blocking_task_command(&state, move |state| {
+        let store = state.store()?;
+        let task = store.require(&task_id)?;
+        if generation > task.execution_generation {
+            return Err("Unknown task generation.".into());
+        }
+        oleafly_research::compiled_artifacts::list(store.root(), &task_id, generation)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_compiled_pdf_read(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    generation: u64,
+    reference: oleafly_research::compiled_artifacts::TaskCompiledArtifact,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = blocking_task_command(&state, move |state| {
+        let store = state.store()?;
+        let task = store.require(&task_id)?;
+        if generation > task.execution_generation {
+            return Err("Unknown task generation.".into());
+        }
+        oleafly_research::compiled_artifacts::read(store.root(), &task_id, generation, &reference)
+    })
+    .await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}

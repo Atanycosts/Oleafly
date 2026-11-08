@@ -874,6 +874,8 @@
     "chatForked": "Đã fork trò chuyện.",
     "chatForkFailed": "Không thể fork trò chuyện này.",
     "skillsLoadFailed": "Không thể tải kỹ năng đã bật. Hãy thử lại.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Không thể tải chế độ phê duyệt.",
     "approvalRulesLoadFailed": "Không thể tải quy tắc phê duyệt của dự án.",
     "restoreFailed": "Không thể khôi phục: {{error}}",

@@ -333,6 +333,7 @@
     "typstFailed": "Typst tuto rovnici nedokázal vykreslit ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Delegovat úkol",
     "askAi": "Zeptat se AI",
     "paraphrase": "Parafrázovat",
     "improveWriting": "Vylepšit text",

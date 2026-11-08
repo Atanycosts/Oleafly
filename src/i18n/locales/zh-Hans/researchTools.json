@@ -131,6 +131,13 @@
   },
   "tasks": {
     "observations": {
+      "memberExecutions": "成员执行",
+      "execution": "执行标识",
+      "triggers": "触发来源",
+      "requestContexts": "每次请求实际提供的上下文",
+      "requestBytes": "工具 schema：{{schema}} 字节 · 工具目录：{{catalog}} 字节 · 技能：{{skill}} 字节",
+      "requirements": "需求标识",
+      "catalogBoundary": "工具目录用于介绍可用工具。只有本次请求列出的工具实际提供了 schema。",
       "title": "本次运行记录",
       "loading": "正在加载运行记录…",
       "unknown": "未知",
@@ -280,6 +287,12 @@
       }
     },
     "detail": {
+      "compiledPdfs": "任务编译 PDF",
+      "compiledPdfIdentity": "执行代次 {{generation}} · 输入 {{input}} · {{size}} 字节",
+      "compiledPdfText": "读取 PDF 文字",
+      "compiledPdfRender": "渲染首页",
+      "compiledPdfPage": "第 {{page}} 页",
+      "compiledPdfFirstPage": "任务 PDF 首页",
       "waiting": "等待中",
       "startWhenReady": "就绪后开始",
       "start": "开始",

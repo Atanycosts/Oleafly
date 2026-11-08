@@ -16,6 +16,7 @@ struct Session {
     address: String,
     token: String,
     client: reqwest::Client,
+    library_root: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -103,6 +104,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         address: url.to_string(),
         token,
         client,
+        library_root: library_root.to_path_buf(),
     })
 }
 
@@ -199,12 +201,82 @@ pub async fn journal_workbench_link(
 
 #[tauri::command]
 pub async fn journal_research_create(
+    state: State<'_, JournalWorkbenchState>,
     tasks: State<'_, crate::research_tasks::ResearchTaskState>,
     draft: oleafly_research::model::ResearchTaskDraft,
     world_version_id: String,
     check_id: Option<String>,
 ) -> Result<crate::research_tasks::ResearchTaskView, String> {
-    let task = crate::research_tasks::research_task_create(tasks, draft).await?;
+    let current = state.0.lock().await;
+    let session = current.as_ref().ok_or("Connect Workbench first.")?;
+    let query =
+        reqwest::Url::parse_with_params("http://127.0.0.1/", &[("version_id", &world_version_id)])
+            .map_err(|error| error.to_string())?;
+    let query = query.query().expect("version query");
+    let world = request(session, &format!("/api/world?{query}"), None).await?;
+    let review = request(session, &format!("/api/review?{query}"), None).await?;
+    let check = match check_id.clone() {
+        Some(id) => {
+            let query = reqwest::Url::parse_with_params("http://127.0.0.1/", &[("check_id", id)])
+                .map_err(|error| error.to_string())?;
+            let query = query.query().expect("check query");
+            Some(request(session, &format!("/api/check?{query}"), None).await?)
+        }
+        None => None,
+    };
+    let workspace = crate::research_workspace::roots::get_workspace(&draft.project_id)?;
+    let linked = workspace
+        .journal_project_id
+        .ok_or("Link a Workbench manuscript first.")?;
+    let discovery = request(session, "/api/state", None).await?;
+    let project = discovery["projects"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["project_id"] == linked))
+        .ok_or("Linked manuscript missing from this library.")?;
+    if let Some(check) = &check {
+        if check["project_id"] != linked || check["world_version_id"] != world_version_id {
+            return Err(
+                "The selected check does not belong to this manuscript and world version.".into(),
+            );
+        }
+    }
+    let baseline_id = check
+        .as_ref()
+        .and_then(|c| c["baseline_id"].as_str())
+        .or_else(|| project["baseline_id"].as_str())
+        .ok_or("Missing manuscript baseline.")?
+        .to_string();
+    let baseline_url = reqwest::Url::parse_with_params(
+        "http://127.0.0.1/",
+        &[("project_id", &linked), ("baseline_id", &baseline_id)],
+    )
+    .map_err(|error| error.to_string())?;
+    let baseline = request(
+        session,
+        &format!(
+            "/api/manuscript?{}",
+            baseline_url.query().expect("baseline query")
+        ),
+        None,
+    )
+    .await?;
+    let snapshot =
+        serde_json::json!({"world": world, "review": review, "check": check, "baseline": baseline});
+    let input = crate::task_inputs::JournalInput {
+        library_root: session.library_root.to_string_lossy().into_owned(),
+        world_version_id: world_version_id.clone(),
+        check_id: check_id.clone(),
+        baseline_id,
+        snapshot_sha256: oleafly_research::observations::content_hash(
+            &serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?,
+        ),
+        snapshot,
+    };
+    drop(current);
+    let task =
+        crate::task_inputs::research_task_create_with_inputs(tasks, draft, None, Some(input))
+            .await?;
+
     crate::research_workspace::roots::set_journal_research_task(
         &task.project_id,
         task.id.clone(),
@@ -218,50 +290,7 @@ pub(crate) async fn prepare_research_context(
     app: &tauri::AppHandle,
     context: &oleafly_research::model::TaskRunContext,
 ) -> Result<(), String> {
-    let workspace = crate::research_workspace::roots::get_workspace(&context.project_id)?;
-    let Some(link) = workspace
-        .journal_research
-        .filter(|link| link.task_id == context.task_id)
-    else {
-        return Ok(());
-    };
-    let state = app.state::<JournalWorkbenchState>();
-    let mut current = state.0.lock().await;
-    if current.is_none() {
-        let library = crate::paths::oleafly_root()?.join("journal-library");
-        *current = Some(start(&configured_python()?, &library).await?);
-    }
-    let session = current.as_ref().expect("connected Workbench");
-    let query = reqwest::Url::parse_with_params(
-        "http://127.0.0.1/",
-        &[("version_id", &link.world_version_id)],
-    )
-    .map_err(|error| error.to_string())?;
-    let query = query.query().expect("version query");
-    let world = request(session, &format!("/api/world?{query}"), None).await?;
-    let review = request(session, &format!("/api/review?{query}"), None).await?;
-    let check = match link.check_id {
-        Some(id) => {
-            let query = reqwest::Url::parse_with_params("http://127.0.0.1/", &[("check_id", id)])
-                .map_err(|error| error.to_string())?;
-            let query = query.query().expect("check query");
-            Some(request(session, &format!("/api/check?{query}"), None).await?)
-        }
-        None => None,
-    };
-    let data = serde_json::to_string_pretty(&serde_json::json!({
-        "world": world, "review": review, "check": check,
-    }))
-    .map_err(|error| error.to_string())?;
-    oleafly_research::task_tools::TaskFiles::open(
-        std::path::Path::new(&context.execution_root),
-        &context.allowed_paths,
-    )?
-    .write(
-        &format!("{}/journal-context.json", context.record_dir),
-        &data,
-    )?;
-    Ok(())
+    crate::task_inputs::prepare(app, context)
 }
 
 #[derive(Deserialize, Serialize)]

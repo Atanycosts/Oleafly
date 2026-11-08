@@ -1,3 +1,4 @@
+import { TaskCompiledPdfs } from "./TaskCompiledPdfs";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import {
@@ -1392,6 +1393,7 @@ export function TaskDetailDialog({
 
   const outputTab = () => (
     <>
+      <TaskCompiledPdfs key={taskRunKey} taskId={task.id} generation={task.executionGeneration} status={task.status} />
       {task.result ? (
         <section aria-labelledby="research-task-result" className="space-y-3">
           <div className="min-w-0">

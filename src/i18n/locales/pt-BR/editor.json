@@ -329,6 +329,7 @@
     "typstFailed": "O Typst não conseguiu renderizar esta equação ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Delegar tarefa",
     "askAi": "Perguntar à IA",
     "paraphrase": "Parafrasear",
     "improveWriting": "Melhorar a escrita",

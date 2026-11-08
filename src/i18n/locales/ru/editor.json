@@ -333,6 +333,7 @@
     "typstFailed": "Typst не смог отрисовать эту формулу ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Делегировать задачу",
     "askAi": "Спросить ИИ",
     "paraphrase": "Перефразировать",
     "improveWriting": "Улучшить текст",

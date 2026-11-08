@@ -206,6 +206,24 @@ describe("CLI prompt attachments", () => {
     expect(input.selections).toEqual([{ path: "main.tex", text: "y".repeat(64 * 1024) }]);
   });
 
+  it("keeps a delegated selection exact and sends its frozen reference without the full source", async () => {
+    const selection = "selected".repeat(9 * 1024);
+    const input = await toPromptInput(draft({
+      delegation: {
+        projectId: "paper", path: "original.tex", mainDocument: "original-main.tex",
+        selection: { from: 10, to: 10 + selection.length, text: selection },
+        sourceContent: "FULL SOURCE MUST STAY OUT", sourceSha256: "source-hash", diskSha256: "disk-hash",
+        editorDocVersion: 7, runtimeId: "acp", agentId: "fixture", modelId: "chosen",
+      },
+      selections: [{ id: "later", path: "later.tex", text: "later selection", label: "later" }],
+    }), session("s"), tree);
+    expect(input.selections).toEqual([{ path: "original.tex", text: selection }]);
+    expect(input.text).toContain('"sourceSha256":"source-hash"');
+    expect(input.text).toContain('"mainDocument":"original-main.tex"');
+    expect(input.text).not.toContain("FULL SOURCE MUST STAY OUT");
+    expect(input.text).not.toContain("later selection");
+  });
+
   it("explains each problem in words", () => {
     expect(promptErrorMessage(new AcpPromptError("tooLarge"))).toBe(
       "This message and its images are too large. Shorten the message or remove an image.",

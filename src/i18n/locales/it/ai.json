@@ -898,6 +898,8 @@
     "chatForked": "Chat duplicata.",
     "chatForkFailed": "Impossibile duplicare questa chat.",
     "skillsLoadFailed": "Impossibile caricare le skill abilitate. Riprova.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Impossibile caricare la modalità di approvazione.",
     "approvalRulesLoadFailed": "Impossibile caricare le regole di approvazione del progetto.",
     "restoreFailed": "Impossibile ripristinare: {{error}}",

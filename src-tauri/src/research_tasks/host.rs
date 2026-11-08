@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use oleafly_research::host::{
-    AttentionSummary, CompileSummary, GitEnv, IsolationEnv, Notification, NotificationKind,
-    ProjectLocation, ResearchHost, WorkspaceTools,
+    AttentionSummary, CompileOutput, CompileSummary, GitEnv, IsolationEnv, Notification,
+    NotificationKind, ProjectLocation, ResearchHost, WorkspaceTools,
 };
 use oleafly_research::model::{
     ResearchTask, ResearchTaskView, TaskTranscriptDelta, TaskTranscriptEvent,
@@ -298,10 +298,32 @@ pub(crate) fn compile_summary(report: &Value) -> CompileSummary {
         warnings,
         log_tail: tail(build["log"].as_str().unwrap_or_default(), MAX_LOG_TAIL),
         skipped: None,
+        artifact: None,
+        build: build["main_document"]
+            .as_str()
+            .zip(build["build_directory"].as_str())
+            .map(|(main_document, build_directory)| {
+                let fresh = build["fresh"].as_bool().unwrap_or(false);
+                let output = (ok && fresh)
+                    .then(|| build["output"].as_str().map(PathBuf::from))
+                    .flatten();
+                CompileOutput {
+                    main_document: main_document.into(),
+                    build_directory: build_directory.into(),
+                    output_id: output
+                        .as_ref()
+                        .and_then(|_| build["output_id"].as_str().map(str::to_owned)),
+                    output,
+                    fresh,
+                }
+            }),
     }
 }
 
-async fn compile_with_cli(root: PathBuf) -> Result<CompileSummary, String> {
+async fn compile_with_cli(
+    root: PathBuf,
+    main_document: Option<String>,
+) -> Result<CompileSummary, String> {
     let Some(cli) = cli_binary() else {
         return Ok(CompileSummary {
             skipped: Some(CLI_UNAVAILABLE.into()),
@@ -323,6 +345,9 @@ async fn compile_with_cli(root: PathBuf) -> Result<CompileSummary, String> {
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .no_console();
+    if let Some(main) = main_document {
+        command.args(["--main", &main]);
+    }
     let output = tokio::time::timeout(
         Duration::from_secs(BUILD_TIMEOUT_SECONDS + 30),
         command.output(),
@@ -345,13 +370,66 @@ async fn compile_with_cli(root: PathBuf) -> Result<CompileSummary, String> {
     Ok(compile_summary(&report))
 }
 
+async fn compile_with_manifest(
+    root: &Path,
+    manifest: oleafly_core::ProjectManifest,
+) -> Result<CompileSummary, String> {
+    use oleafly_cli::engine::{BuildRequest, OpenedProject, ProjectOrigin};
+    let opened = OpenedProject {
+        workspace: oleafly_core::Workspace::from_manifest(root, manifest)
+            .map_err(|e| e.to_string())?,
+        origin: ProjectOrigin::Manifest,
+        warnings: vec![],
+    };
+    let request = BuildRequest {
+        timeout: Duration::from_secs(BUILD_TIMEOUT_SECONDS),
+        ..Default::default()
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(BUILD_TIMEOUT_SECONDS + 30),
+        oleafly_cli::engine::build_opened(&opened, &request),
+    )
+    .await
+    .map_err(|_| "The build took longer than five minutes.".to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(compile_summary(
+        &serde_json::json!({"ok": result.ok, "build": result}),
+    ))
+}
+
 impl WorkspaceTools for AppWorkspaceTools {
+    fn compile_task(
+        &self,
+        request: oleafly_research::compiled_artifacts::TaskCompileRequest,
+    ) -> TaskRuntimeFuture<CompileSummary> {
+        Box::pin(async move {
+            let fingerprint = oleafly_research::compiled_artifacts::input_fingerprint(&request)?;
+            let mut summary = match crate::task_inputs::compile_manifest(
+                &request.tasks_root,
+                &request.task_id,
+            )? {
+                Some(manifest) => compile_with_manifest(&request.execution_root, manifest).await?,
+                None => {
+                    let main_document =
+                        crate::task_inputs::main_document(&request.tasks_root, &request.task_id)?;
+                    compile_with_cli(request.execution_root.clone(), main_document).await?
+                }
+            };
+            if fingerprint != oleafly_research::compiled_artifacts::input_fingerprint(&request)? {
+                return Err("The task inputs changed during compilation.".into());
+            }
+            summary.artifact =
+                oleafly_research::compiled_artifacts::retain(&request, fingerprint, &summary)?;
+            Ok(summary)
+        })
+    }
+
     fn compile(
         &self,
         root: PathBuf,
         _source: Option<PathBuf>,
     ) -> TaskRuntimeFuture<CompileSummary> {
-        Box::pin(compile_with_cli(root))
+        Box::pin(compile_with_cli(root, None))
     }
 
     fn project_map(&self, root: PathBuf) -> TaskRuntimeFuture<Value> {
@@ -445,6 +523,50 @@ mod tests {
         );
         assert_eq!(summary.log_tail, "! Undefined control sequence.");
         assert_eq!(summary.skipped, None);
+        assert_eq!(summary.build, None);
+    }
+
+    #[test]
+    fn a_fresh_cli_output_keeps_its_identity_without_using_previous_output() {
+        let mut report = json!({
+            "ok": true,
+            "build": {
+                "main_document": "chapters/main.tex",
+                "build_directory": "/task/build",
+                "output": "/task/build/main.pdf",
+                "previous_output": "/task/build/old.pdf",
+                "output_id": "sha256:compiled",
+                "fresh": true
+            }
+        });
+        let build = compile_summary(&report).build.unwrap();
+        assert_eq!(build.main_document, "chapters/main.tex");
+        assert_eq!(build.build_directory, PathBuf::from("/task/build"));
+        assert_eq!(build.output, Some(PathBuf::from("/task/build/main.pdf")));
+        assert_eq!(build.output_id.as_deref(), Some("sha256:compiled"));
+        assert!(build.fresh);
+        let serialized = serde_json::to_value(&build).unwrap();
+        assert_eq!(serialized["mainDocument"], "chapters/main.tex");
+        assert_eq!(serialized["outputId"], "sha256:compiled");
+
+        report["build"]["fresh"] = json!(false);
+        let stale = compile_summary(&report).build.unwrap();
+        assert!(!stale.fresh);
+        assert_eq!(stale.output, None);
+        assert_eq!(stale.output_id, None);
+
+        report["ok"] = json!(false);
+        report["build"]["fresh"] = json!(true);
+        let failed = compile_summary(&report).build.unwrap();
+        assert!(failed.fresh);
+        assert_eq!(failed.output, None);
+        assert_eq!(failed.output_id, None);
+
+        report["ok"] = json!(true);
+        report["build"]["output"] = Value::Null;
+        let missing = compile_summary(&report).build.unwrap();
+        assert_eq!(missing.output, None);
+        assert_eq!(missing.output_id, None);
     }
 
     #[test]

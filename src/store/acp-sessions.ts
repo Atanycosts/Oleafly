@@ -1,14 +1,16 @@
 import { useRef } from "react";
 import { create } from "zustand";
 import type { DraftAttachment } from "@/components/ai/composer/types";
+import type { AssistantDelegation } from "@/lib/assistant-delegation";
 import { refreshOpenFilesFromDisk } from "@/lib/external-file-changes";
 import { registerAttachmentHolder, useComposerDrafts } from "@/store/composer-drafts";
 import {
   acpBufferReply, acpCatalog, acpDisconnect, acpError, acpEvents, acpPrompt, acpPromptDelivered, acpSessions,
-  acpSnapshot, acpStart, acpSteer, onAcpBufferRequest, onAcpEvent, onAcpResync, onAcpSession,
+  acpSetConfigOption, acpSetModel, acpSnapshot, acpStart, acpSteer, onAcpBufferRequest, onAcpEvent, onAcpResync, onAcpSession,
   type AcpAgentStatus, type AcpBufferRequest, type AcpCommand, type AcpElicitation, type AcpEvent, type AcpPermission,
   type AcpSession, type AcpSessionSummary, type AcpSessionUsage, type AcpSnapshot, type AcpTurnCommit,
 } from "@/lib/acp";
+import { currentModelId, groupControls, modelChoices } from "@/components/ai/acp/acp-controls";
 
 export interface AcpComposerSkill { id: string; name: string }
 export interface AcpSelection { id: string; path: string | null; text: string; label: string }
@@ -20,6 +22,7 @@ export interface AcpQueuedPrompt {
   mentions: string[];
   selections: AcpSelection[];
   skill: AcpComposerSkill | null;
+  delegation?: AssistantDelegation;
   sending?: boolean;
   failed?: boolean;
 }
@@ -460,10 +463,30 @@ export const useAcpSessionsStore = create<AcpState>((set, get) => ({
         if (error instanceof SaveFlushError) return false;
         throw error;
       }
-      const session = get().sessions[sessionId];
+      let session = get().sessions[sessionId];
       if (!session) return false;
       const before = session.lastSequence;
       try {
+        const delegation = draft.delegation;
+        if (delegation) {
+          if (delegation.runtimeId !== "acp" || delegation.projectId !== projectId || session.projectId !== projectId || session.agentId !== delegation.agentId) {
+            throw new Error("The delegated selection does not belong to this project and agent. The request has not been sent.");
+          }
+          const model = groupControls(session.controls).model;
+          if (delegation.modelId && (currentModelId(model) ?? session.controls.modelId) !== delegation.modelId) {
+            if (!model || !modelChoices(model).some((choice) => choice.id === delegation.modelId && !choice.blocked)) {
+              throw new Error("The model selected for this delegation is unavailable. The request has not been sent.");
+            }
+            const snapshot = model.kind === "config"
+              ? await acpSetConfigOption(projectId, sessionId, model.option.id, delegation.modelId)
+              : await acpSetModel(projectId, sessionId, delegation.modelId);
+            get().setSnapshot(snapshot);
+            session = snapshot.session;
+            if ((currentModelId(groupControls(session.controls).model) ?? session.controls.modelId) !== delegation.modelId) {
+              throw new Error("The agent did not apply the selected model. The request has not been sent.");
+            }
+          }
+        }
         const [{ toPromptInput }, { useFilesStore }] = await Promise.all([
           import("@/components/ai/acp/acp-attachments"),
           import("@/store/files"),
@@ -491,7 +514,10 @@ export const useAcpSessionsStore = create<AcpState>((set, get) => ({
   startWithPrompt: async (projectId, agentId, draft) => {
     await get().start(projectId, agentId);
     const id = get().activeByProject[projectId];
-    if (!id) return;
+    if (!id) throw new Error("The agent conversation did not start. The request has not been sent.");
+    if (draft.delegation && get().sessions[id]?.agentId !== draft.delegation.agentId) {
+      throw new Error("The selected agent conversation did not start. The request has not been sent.");
+    }
     get().enqueue(id, draft);
     if (get().sessions[id]?.status === "ready") await get().dispatchQueued(projectId, id);
   },

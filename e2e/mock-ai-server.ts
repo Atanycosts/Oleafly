@@ -6,6 +6,7 @@ export interface MockAiServer {
   setReply: (text: string) => void;
   setStreamDelay: (milliseconds: number) => void;
   setToolCall: (call: { name: string; args: Record<string, unknown>; then: string } | null) => void;
+  setToolSequence: (calls: Array<{ name: string; args: Record<string, unknown> }>, then: string) => void;
   requestCount: () => number;
   requestBodies: () => string[];
   resetRequests: () => void;
@@ -15,6 +16,8 @@ export async function startMockAiServer(): Promise<MockAiServer> {
   let reply = "MOCKREPLY";
   let streamDelay = 0;
   let toolCall: { name: string; args: Record<string, unknown>; then: string } | null = null;
+  let sequence: Array<{ name: string; args: Record<string, unknown> }> | null = null;
+  let sequenceReply = "";
   let requests = 0;
   let bodies: string[] = [];
 
@@ -135,21 +138,24 @@ export async function startMockAiServer(): Promise<MockAiServer> {
             usage: { prompt_tokens: u.p, completion_tokens: u.c, total_tokens: u.p + u.c },
           });
 
-        if (toolCall && !hasToolResult) {
+        const toolResults = (JSON.parse(body).messages ?? []).filter((message: { role?: string }) => message.role === "tool").length;
+        const next = sequence?.[toolResults];
+        if (next || (toolCall && !hasToolResult)) {
+          const call = next ?? toolCall!;
           chunk({
             tool_calls: [
               {
                 index: 0,
-                id: "call_mock",
+                id: `call_mock_${toolResults}`,
                 type: "function",
-                function: { name: toolCall.name, arguments: JSON.stringify(toolCall.args) },
+                function: { name: call.name, arguments: JSON.stringify(call.args) },
               },
             ],
           });
           chunk({}, "tool_calls");
           usage({ p: 11, c: 7 });
         } else {
-          const text = toolCall && hasToolResult ? toolCall.then : reply;
+          const text = sequence ? sequenceReply : toolCall && hasToolResult ? toolCall.then : reply;
           for (const piece of text.match(/[\s\S]{1,4}/g) ?? [text]) {
             chunk({ content: piece });
           }
@@ -181,7 +187,9 @@ export async function startMockAiServer(): Promise<MockAiServer> {
     },
     setToolCall: (c) => {
       toolCall = c;
+      sequence = null;
     },
+    setToolSequence: (calls, then) => { sequence = calls; sequenceReply = then; toolCall = null; },
     requestCount: () => requests,
     requestBodies: () => [...bodies],
     resetRequests: () => {

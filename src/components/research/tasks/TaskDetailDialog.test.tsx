@@ -78,6 +78,8 @@ vi.mock("@/components/editor/diff/InlineDiffPreview", () => ({
   ),
 }));
 
+vi.mock("./TaskCompiledPdfs", () => ({ TaskCompiledPdfs: () => null }));
+
 const markdownDraws = vi.hoisted(() => ({ texts: [] as string[] }));
 
 vi.mock("@/components/ui/markdown", () => ({

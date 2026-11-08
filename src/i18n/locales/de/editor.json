@@ -325,6 +325,7 @@
     "typstFailed": "Typst konnte diese Formel nicht darstellen ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Aufgabe delegieren",
     "askAi": "KI fragen",
     "paraphrase": "Umformulieren",
     "improveWriting": "Text verbessern",

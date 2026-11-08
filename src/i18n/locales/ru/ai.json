@@ -910,6 +910,8 @@
     "chatForked": "Чат ответвлён.",
     "chatForkFailed": "Не удалось ответвить этот чат.",
     "skillsLoadFailed": "Не удалось загрузить включённые навыки. Попробуйте снова.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Не удалось загрузить режим разрешений.",
     "approvalRulesLoadFailed": "Не удалось загрузить правила разрешений проекта.",
     "restoreFailed": "Не удалось восстановить: {{error}}",

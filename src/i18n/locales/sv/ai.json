@@ -886,6 +886,8 @@
     "chatForked": "Chatten är förgrenad.",
     "chatForkFailed": "Det gick inte att förgrena den här chatten.",
     "skillsLoadFailed": "Det gick inte att läsa in aktiverade färdigheter. Försök igen.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Det gick inte att läsa in godkännandeläget.",
     "approvalRulesLoadFailed": "Det gick inte att läsa in projektets godkännanderegler.",
     "restoreFailed": "Det gick inte att återställa: {{error}}",

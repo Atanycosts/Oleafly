@@ -629,7 +629,7 @@ beforeEach(() => {
   useChatGoalStore.setState({ goalsByProject: {}, loaded: {} });
   useAiToolSettingsStore.setState({ enabledByName: {} });
   useAssistantRuntimeStore.setState({ runtime: "built-in", handoffRuntime: null });
-  useAgentHandoffStore.setState({ pendingPrompt: null, autoSend: false, pendingImages: [] });
+  useAgentHandoffStore.setState({ pendingPrompt: null, autoSend: false, pendingImages: [], pendingDelegation: null });
 });
 
 async function renderChat(): Promise<RenderResult> {

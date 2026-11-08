@@ -910,6 +910,8 @@
     "chatForked": "Чат відгалужено.",
     "chatForkFailed": "Не вдалося відгалузити цей чат.",
     "skillsLoadFailed": "Не вдалося завантажити увімкнені навички. Спробуйте ще раз.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Не вдалося завантажити режим схвалення.",
     "approvalRulesLoadFailed": "Не вдалося завантажити правила схвалення для проєкту.",
     "restoreFailed": "Не вдалося відновити: {{error}}",

@@ -325,6 +325,7 @@
     "typstFailed": "Typst kunde inte rendera den här ekvationen ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Delegera uppgift",
     "askAi": "Fråga AI",
     "paraphrase": "Omformulera",
     "improveWriting": "Förbättra texten",

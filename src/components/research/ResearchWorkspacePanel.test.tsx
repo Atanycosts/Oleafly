@@ -29,6 +29,8 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
 vi.mock("@tauri-apps/api/event", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/event")>(), listen: native.listen,
 }));
+vi.mock("./tasks/TaskObservations", () => ({ TaskObservations: () => null }));
+vi.mock("./tasks/TaskCompiledPdfs", () => ({ TaskCompiledPdfs: () => null }));
 
 beforeAll(async () => {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://oleafly.test" });

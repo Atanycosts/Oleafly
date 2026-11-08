@@ -33,6 +33,7 @@ function takeDraft(projectId: string, composerId: string): AcpPromptDraft {
     mentions: promptMentions(text, useFilesStore.getState().tree),
     selections: [...(composer?.selections ?? [])],
     skill: composer?.skill ?? null,
+    delegation: draft?.delegation,
   };
 }
 
@@ -49,6 +50,7 @@ export function restoreDraft(projectId: string, composerId: string, draft: AcpPr
   const current = drafts.drafts[composerId];
   if (draft.text && !current?.text) drafts.setText(composerId, draft.text);
   else if (draft.text) drafts.setText(composerId, `${draft.text}\n\n${current?.text ?? ""}`);
+  if (draft.delegation) drafts.setDelegation(composerId, draft.delegation);
   const known = new Set((current?.attachments ?? EMPTY_ATTACHMENTS).map((item) => item.id));
   drafts.addAttachments(composerId, draft.attachments.filter((item) => !known.has(item.id)));
   const composer = useAcpSessionsStore.getState().composers[projectId];

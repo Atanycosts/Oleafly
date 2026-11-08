@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use oleafly_core::context::{scan_project, ContextLimits};
 use oleafly_core::LogSeverity;
-use oleafly_research::host::{CompileSummary, WorkspaceTools};
+use oleafly_research::host::{CompileOutput, CompileSummary, WorkspaceTools};
 use oleafly_research::scheduler::TaskRuntimeFuture;
 use serde_json::{json, Value};
 
@@ -196,6 +196,22 @@ fn summary_of(built: Result<BuildResult, CliError>) -> Result<CompileSummary, St
             .unwrap_or(u32::MAX),
             log_tail: tail_bytes(&result.log, LOG_TAIL_BYTES).to_string(),
             skipped: None,
+            artifact: None,
+            build: Some(CompileOutput {
+                main_document: result.main_document,
+                build_directory: result.build_directory,
+                output_id: if result.ok && result.fresh && result.output.is_some() {
+                    result.output_id
+                } else {
+                    None
+                },
+                output: if result.ok && result.fresh {
+                    result.output
+                } else {
+                    None
+                },
+                fresh: result.fresh,
+            }),
         }),
         Err(error) if error.kind == ErrorKind::MissingTool => Ok(CompileSummary {
             ok: false,
@@ -215,6 +231,23 @@ pub(crate) fn project_map_of(root: &Path) -> Result<Value, String> {
 }
 
 impl WorkspaceTools for CliWorkspaceTools {
+    fn compile_task(
+        &self,
+        request: oleafly_research::compiled_artifacts::TaskCompileRequest,
+    ) -> TaskRuntimeFuture<CompileSummary> {
+        Box::pin(async move {
+            let fingerprint = oleafly_research::compiled_artifacts::input_fingerprint(&request)?;
+            let mut summary =
+                compile_summary(request.execution_root.clone(), request.source.clone()).await?;
+            if fingerprint != oleafly_research::compiled_artifacts::input_fingerprint(&request)? {
+                return Err("The task inputs changed during compilation.".into());
+            }
+            summary.artifact =
+                oleafly_research::compiled_artifacts::retain(&request, fingerprint, &summary)?;
+            Ok(summary)
+        })
+    }
+
     fn compile(&self, root: PathBuf, source: Option<PathBuf>) -> TaskRuntimeFuture<CompileSummary> {
         Box::pin(compile_summary(root, source))
     }

@@ -141,6 +141,22 @@ describe("app-level research tools wiring", () => {
 });
 
 describe("creating research tasks from the assistant", () => {
+  it("keeps the project and selected runtime frozen while the UI and settings change", async () => {
+    mocks.getConfig.mockResolvedValue({ ai_provider: "other", ai_model: "different" });
+    mocks.createResearchTask.mockResolvedValue(task("bound"));
+    const tools = createResearchTaskAiTools({ researchScope: {
+      projectId: "original", runtimeId: "acp", agentId: "chosen-agent", modelId: "chosen-model",
+    } });
+    files.projectId = "unrelated";
+    await tools.research_task_create.execute({ title: "Bound", prompt: "Check the original", start: false });
+    expect(mocks.createResearchTask).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "original", runtimeId: "acp", agentId: "chosen-agent", modelId: "chosen-model",
+    }));
+    mocks.listResearchTasks.mockResolvedValue([]);
+    await tools.research_task_status.execute({});
+    expect(mocks.listResearchTasks).toHaveBeenCalledWith("original");
+  });
+
   it("creates a task in the open project with the default brief and starts it", async () => {
     mocks.getConfig.mockResolvedValue({ ai_keys: { openai: "__stored__" } });
     mocks.createResearchTask.mockResolvedValue(task("t1", { title: "Survey" }));

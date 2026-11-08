@@ -886,6 +886,8 @@
     "chatForked": "Chat geforkt.",
     "chatForkFailed": "Kon deze chat niet forken.",
     "skillsLoadFailed": "Kon de ingeschakelde vaardigheden niet laden. Probeer het opnieuw.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Kon de goedkeuringsmodus niet laden.",
     "approvalRulesLoadFailed": "Kon de goedkeuringsregels van het project niet laden.",
     "restoreFailed": "Kon niet herstellen: {{error}}",

@@ -696,26 +696,23 @@ fn skill_root(id: &str, name: &str) -> tempfile::TempDir {
 }
 
 #[test]
-fn a_device_enabled_skill_reaches_the_task_prompt_without_a_project_record() {
+fn a_device_enabled_skill_is_discoverable_without_injecting_its_instructions() {
     let data = skill_root("literature-review", "Literature Review");
     let root = tempfile::tempdir().unwrap();
     let mut task = context(root.path());
     task.skill_ids = vec!["literature-review".into()];
 
     let selected = task_skills_in(data.path(), None, &task).unwrap();
-    assert_eq!(selected.injected.len(), 1);
-    assert_eq!(selected.injected[0].id, "literature-review");
-    assert_eq!(
-        selected.injected[0].section_sha256,
-        content_hash(selected.prompt.as_bytes())
-    );
+    assert!(selected.injected.is_empty());
     let prompt = selected.prompt;
 
-    assert!(prompt.contains("Selected skill: Literature Review"));
-    assert!(prompt.contains("Start with the claim audit."));
-    assert!(prompt.contains("Skill folder: "));
-    assert!(prompt.contains("scripts/verify_citations.py"));
-    assert!(prompt.contains("references.md"));
+    assert!(prompt.contains("Literature Review"));
+    assert!(prompt.contains("literature-review"));
+    assert!(prompt.contains("Review the sources for this task."));
+    assert!(prompt.contains("load_skill"));
+    assert!(!prompt.contains("Start with the claim audit."));
+    assert!(!prompt.contains("scripts/verify_citations.py"));
+    assert!(!prompt.contains("references.md"));
     assert!(crate::skills::list_with(data.path(), None, Some("project"))
         .unwrap()
         .iter()
@@ -751,7 +748,7 @@ fn a_project_that_turns_a_skill_off_stops_the_task_and_a_cleared_override_restor
     .unwrap();
     assert!(skill_prompt_in(data.path(), None, &task)
         .unwrap()
-        .contains("Selected skill: Literature Review"));
+        .contains("Literature Review"));
 }
 
 #[test]

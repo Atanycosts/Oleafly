@@ -5,6 +5,7 @@ pub mod budget;
 pub mod builtin;
 pub mod citation;
 pub mod collaboration;
+pub mod compiled_artifacts;
 pub mod conversation;
 pub mod evidence;
 pub mod findings;
