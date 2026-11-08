@@ -5,7 +5,10 @@ import type { AgentUsage } from "@oleafly/ai-core";
 import type { ModelMessage, ToolSet } from "@/lib/chat-types";
 import { TREE_DRAG_TYPE } from "@/lib/tree-drag";
 import type { ChatMessage, ChatTurnChanges, StoredChat } from "@/store/chats";
+import type { TaskAnnotation } from "@/lib/task-collaboration";
+import type { ChatAnnotationsDialogProps } from "./ChatAnnotationsDialog";
 import enAi from "@/i18n/locales/en/ai.json" with { type: "json" };
+import enResearch from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 
 interface RunOutcome {
   text: string;
@@ -105,6 +108,7 @@ const mocks = vi.hoisted(() => ({
   exportChatMarkdown: vi.fn(),
   shimmerText: null as string | null,
   messageItemProps: [] as MessageItemProps[],
+  annotationDialogProps: null as ChatAnnotationsDialogProps | null,
   modelSelectorProps: null as null | {
     modelId?: string;
     onChange?: (providerId: string, modelId: string) => void;
@@ -350,6 +354,13 @@ vi.mock("@/components/ai/SubagentActivity", () => ({
   SubagentActivity: () => null,
 }));
 
+vi.mock("./ChatAnnotationsDialog", () => ({
+  ChatAnnotationsDialog: (props: ChatAnnotationsDialogProps) => {
+    mocks.annotationDialogProps = props;
+    return null;
+  },
+}));
+
 vi.mock("@/store/acp-sessions", () => {
   const state = {
     open: async () => undefined,
@@ -504,6 +515,7 @@ beforeEach(() => {
   resetProviderConfigCache();
   mocks.runs.length = 0;
   mocks.messageItemProps.length = 0;
+  mocks.annotationDialogProps = null;
   mocks.modelSelectorProps = null;
   mocks.historyProps = null;
   mocks.shimmerText = null;
@@ -1884,6 +1896,81 @@ describe("ChatCore drafts per chat and queued follow-ups", () => {
     expect(useChatsStore.getState().activeId).toBe("chat-1");
     expect(savedMessages("chat-2").map((message) => message.content)).toEqual(["Review section 2"]);
     await completeRun(0, "Done.");
+  });
+});
+
+describe("ChatCore retained annotations", () => {
+  function savedAnnotation(props: ChatAnnotationsDialogProps, explicitRequest: boolean): TaskAnnotation {
+    return {
+      id: "annotation-real", target: props.target, author: { kind: "user", id: "user" },
+      body: "  Revisit the original decision.\nUse its retained evidence.  ",
+      parentId: null, mentions: [], explicitRequest, status: "open", createdAt: 1, updatedAt: 1,
+      handledAt: null, handledBy: null,
+    };
+  }
+
+  it("annotates an older message using its stable thread, original message id and exact source", async () => {
+    const content = "  An older decision.\nKeep its original wording.  ";
+    seedChat([
+      { id: "message-old", role: "assistant", content },
+      { id: "message-new", role: "assistant", content: "A later decision." },
+    ], { threadId: "thread-real" });
+    const rendered = await renderChat();
+    const row = rendered.container.querySelector('[data-message-key="message-old"]') as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: enResearch.tasks.annotations.annotate }));
+
+    await waitFor(() => expect(mocks.annotationDialogProps).not.toBeNull());
+    expect(mocks.annotationDialogProps?.target).toEqual({
+      projectId: useFilesStore.getState().projectId, taskId: null, objectKind: "thread", objectId: "thread-real",
+      objectRevision: "message:message-old", path: null,
+    });
+    expect(mocks.annotationDialogProps?.source).toEqual({ role: "assistant", content });
+    expect(mocks.runs).toHaveLength(0);
+  });
+
+  it("continues an explicit saved request while feedback and unsent composer text and attachments stay separate", async () => {
+    seedChat([], { threadId: "thread-real" });
+    const rendered = await renderChat();
+    changeComposer("My unsent draft");
+    await attach(rendered, [textFile("unsent.txt", "Private unsent attachment")]);
+    const draft = composerDraft();
+    fireEvent.click(rendered.getByRole("button", { name: enResearch.tasks.annotations.chatTitle }));
+    await waitFor(() => expect(mocks.annotationDialogProps).not.toBeNull());
+    const dialog = mocks.annotationDialogProps as ChatAnnotationsDialogProps;
+
+    await act(async () => dialog.onSaved?.(savedAnnotation(dialog, false)));
+    expect(mocks.runs).toHaveLength(0);
+    await act(async () => dialog.onSaved?.(savedAnnotation(dialog, true)));
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+    expect(lastUserContent(0)).toContain("Address retained annotation annotation-real");
+    expect(lastUserContent(0)).toContain("Revisit the original decision.\nUse its retained evidence.");
+    expect(JSON.stringify(mocks.runs[0].options.messages)).not.toContain("Private unsent attachment");
+    expect(savedMessages().find((message) => message.role === "user")?.attachments).toBeUndefined();
+    expect(composerBox()).toHaveValue("My unsent draft");
+    expect(composerDraft()).toEqual(draft);
+    await completeRun(0, "Reviewed the retained annotation.");
+  });
+
+  it("steers a saved explicit annotation into the current run without starting a second run", async () => {
+    seedChat([], { threadId: "thread-real" });
+    const rendered = await renderChat();
+    sendFromComposer("Review the manuscript");
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+    fireEvent.click(rendered.getByRole("button", { name: enResearch.tasks.annotations.chatTitle }));
+    await waitFor(() => expect(mocks.annotationDialogProps).not.toBeNull());
+    const dialog = mocks.annotationDialogProps as ChatAnnotationsDialogProps;
+    await act(async () => dialog.onSaved?.(savedAnnotation(dialog, true)));
+
+    await waitFor(() => expect(mocks.agentSteer).toHaveBeenCalledWith("request-1", {
+      role: "user", content: [{ type: "text", text: expect.stringContaining("Address retained annotation annotation-real") }],
+    }));
+    const queued = useAgentTurnsStore.getState().queuedByChat["chat-1"];
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ status: "steered", attachments: [] });
+    expect(queued[0].text).toContain("Revisit the original decision.\nUse its retained evidence.");
+    expect(mocks.runs).toHaveLength(1);
+    await completeRun(0, "Handled within the current run.");
+    expect(mocks.runs).toHaveLength(1);
   });
 });
 

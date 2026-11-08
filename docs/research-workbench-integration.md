@@ -773,6 +773,48 @@ work through real IPC and TaskStore. It uses a scripted model and awaits the
 integrated native application run; authoring and typechecking the spec does not
 establish that native acceptance passed. The official installation is unchanged.
 
+## Ordinary built-in chat annotations (2026-11-08)
+
+The built-in assistant now exposes **Conversation annotations** in its header
+and **Annotate** on saved messages. It uses the real agent thread ID with no
+ResearchTask, preserving the old message ID (or turn anchor) as the target
+revision and displaying the selected source verbatim. The shared annotation
+panel queries `research_object_annotations` across that object's history;
+replies retain their original target. The read-only IPC returns original
+annotations, real handling/distillation rows and applicable requirements from
+the same TaskStore. It does not manufacture a ResearchTask delivery receipt.
+
+Ordinary feedback is saved without invoking a model. An explicit saved request
+continues an idle conversation through its existing send path; when the current
+run can receive steering it uses the existing queued-follow-up/steer mechanism.
+The request contains the retained annotation ID and target, and unsent composer
+text, attachments and delegated selections remain separate. Opening a saved
+message reference scrolls to that stable message in the current conversation;
+references to unavailable records retain their identity and report the gap.
+Project/conversation switches clear the visible annotation dialog.
+
+The main runtime's native `annotation_*` tools and per-request context hook
+supply open thread/project/relevant-file feedback and enduring requirements to
+ordinary built-in model calls. ResearchTask and ordinary-chat annotations share
+the store while retaining their separate execution boundaries. This does not
+establish continuous ACP annotation context, model training or a learning gain.
+
+The shared panel/dialog regression passed **13/13**, and the complete composer
+file passed **80/80**, including historical-message targeting, feedback versus
+explicit idle continuation and active-run steering. The first composer run had
+three unchanged effort/web test timeouts under concurrent native compilation;
+all 80 passed with a 15-second CLI test timeout, without changing test or product
+semantics. The broader task panel run passed **129/129**, and the complete ordinary-agent
+loop file passed **193/193**. Final application TypeScript passed. Full Biome and i18n
+checks passed, with i18n at **0 errors / 0 warnings** after restoring missing
+English fallback keys and fixing 11 existing punctuation violations.
+
+`e2e/tests/120-chat-annotations.spec.ts` prepares a real ordinary-chat UI flow
+through native persistence and subsequent model request capture. The scripted
+`119-task-pdf-pages.spec.ts` likewise captures actual image parts following a
+native task compile. Both require the integrated native acceptance run;
+prepared specs and mocks are not evidence of real-model reasoning quality.
+
 ## Verified code anchors and remaining checks
 
 - Oleafly documents external MCP clients in `docs/mcp.md`; stdio sessions are

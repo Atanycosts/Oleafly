@@ -92,6 +92,9 @@ export interface TaskAnnotationDraft {
 export const loadTaskAnnotations = (projectId: string, taskId: string) =>
   invoke<AnnotationContext>("research_task_annotations", { projectId, taskId });
 
+export const loadObjectAnnotations = (target: AnnotationTarget) =>
+  invoke<AnnotationContext>("research_object_annotations", { target });
+
 export const submitTaskAnnotation = (draft: TaskAnnotationDraft) =>
   invoke<TaskAnnotation>("research_task_annotation_submit", { draft });
 

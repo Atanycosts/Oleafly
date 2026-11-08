@@ -6,8 +6,8 @@ import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { researchTaskFixture } from "./tests/task-fixtures";
 import { TaskAnnotations } from "./TaskAnnotations";
 
-const api = vi.hoisted(() => ({ load: vi.fn(), submit: vi.fn() }));
-vi.mock("@/lib/task-collaboration", () => ({ loadTaskAnnotations: api.load, submitTaskAnnotation: api.submit }));
+const api = vi.hoisted(() => ({ load: vi.fn(), loadObject: vi.fn(), submit: vi.fn() }));
+vi.mock("@/lib/task-collaboration", () => ({ loadTaskAnnotations: api.load, loadObjectAnnotations: api.loadObject, submitTaskAnnotation: api.submit }));
 const text = en.tasks.annotations;
 
 function target(patch: Partial<AnnotationTarget> = {}): AnnotationTarget {
@@ -41,10 +41,49 @@ function typeBody(body: string) {
 
 beforeEach(() => {
   api.load.mockReset().mockResolvedValue(context());
+  api.loadObject.mockReset().mockResolvedValue(context());
   api.submit.mockReset().mockImplementation(async (draft: TaskAnnotationDraft) => annotation({ ...draft, id: "annotation-saved" }));
 });
 
 describe("TaskAnnotations", () => {
+  it("saves an ordinary chat annotation with its real object target and exact original words without a task context", async () => {
+    const objectTarget = target({ taskId: null, objectKind: "thread", objectId: "thread-real", objectRevision: "message:message-stable-1", path: null });
+    const body = "  This message needs a second look.\nKeep the original distinction.  ";
+    api.loadObject.mockResolvedValueOnce(context()).mockResolvedValueOnce(context([annotation({ target: objectTarget, body, explicitRequest: true })]));
+    render(<TaskAnnotations contextScope="object" objectTarget={objectTarget} />);
+    await screen.findByText(text.empty);
+    expect(api.loadObject).toHaveBeenCalledWith(objectTarget);
+    expect(api.load).not.toHaveBeenCalled();
+    expect(screen.getByText(text.chatRequestHint)).toBeInTheDocument();
+    expect(screen.queryByText(text.requestHint)).toBeNull();
+    expect(screen.getByRole("checkbox", { name: text.explicitRequest })).not.toBeChecked();
+    typeBody(body);
+    fireEvent.click(screen.getByRole("checkbox", { name: text.explicitRequest }));
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledWith({ target: objectTarget, body, parentId: null, mentions: [], explicitRequest: true }));
+    expect(api.submit.mock.calls[0][0].target.taskId).toBeNull();
+    const card = await screen.findByTestId("task-annotation");
+    expect(within(card).getByText((_, node) => node?.tagName === "P" && node.textContent === body)).toBeInTheDocument();
+    expect(within(card).queryByText(text.queued)).toBeNull();
+    expect(api.load).not.toHaveBeenCalled();
+  });
+
+  it("keeps an ordinary chat reply attached to the old message target when a newer message becomes current", async () => {
+    const originalTarget = target({ taskId: null, objectKind: "thread", objectId: "thread-real", objectRevision: "message:message-stable-old", path: null });
+    const original = annotation({ target: originalTarget });
+    api.loadObject.mockResolvedValue(context([original]));
+    const view = render(<TaskAnnotations contextScope="object" objectTarget={originalTarget} />);
+    const card = await screen.findByTestId("task-annotation");
+    fireEvent.click(within(card).getByRole("button", { name: text.reply }));
+    const latestTarget = { ...originalTarget, objectRevision: "message:message-stable-new" };
+    view.rerender(<TaskAnnotations contextScope="object" objectTarget={latestTarget} />);
+    typeBody("Please revisit the older message.");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledWith({ target: originalTarget, parentId: original.id, body: "Please revisit the older message.", mentions: [], explicitRequest: false }));
+    expect(api.loadObject).toHaveBeenCalledWith(latestTarget);
+    expect(api.load).not.toHaveBeenCalled();
+  });
+
   it("saves exact feedback on an ordinary task without asking for execution or claiming delivery", async () => {
     render(<TaskAnnotations task={task()} target={null} />);
     await screen.findByText(text.empty);
@@ -161,6 +200,30 @@ describe("TaskAnnotations", () => {
     expect(screen.getByRole("textbox", { name: text.body })).toHaveValue("");
     expect(screen.getByRole("button", { name: text.save })).toBeDisabled();
     expect(api.submit).toHaveBeenCalledOnce();
+  });
+
+  it("notifies the caller once with the exact saved annotation after a failed attempt, even when receipt refresh fails", async () => {
+    const onSaved = vi.fn();
+    api.submit.mockRejectedValueOnce(new Error("Cannot save the annotation."));
+    render(<TaskAnnotations contextScope="object" objectTarget={target({ taskId: null, objectKind: "thread", objectId: "thread-real" })} onSaved={onSaved} />);
+    await screen.findByText(text.empty);
+    const body = "  Recheck this original decision.\nPreserve my wording.  ";
+    typeBody(body);
+    fireEvent.click(screen.getByRole("checkbox", { name: text.explicitRequest }));
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot save the annotation.");
+    expect(onSaved).not.toHaveBeenCalled();
+
+    api.loadObject.mockRejectedValueOnce(new Error("Receipts unavailable."));
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Receipts unavailable.");
+    expect(onSaved).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "annotation-saved", body, explicitRequest: true }));
+    expect(onSaved.mock.calls[0][0]).toEqual(await api.submit.mock.results[1].value);
+    expect(screen.getByRole("textbox", { name: text.body })).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: text.refresh }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(onSaved).toHaveBeenCalledOnce();
+    expect(api.submit).toHaveBeenCalledTimes(2);
   });
 
   it("ignores the previous project's response and resets the draft when the task changes", async () => {

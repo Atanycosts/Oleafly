@@ -49,6 +49,51 @@ pub struct AnnotationContext {
     requirements: Vec<EnduringRequirement>,
 }
 
+fn object_annotation_context(
+    store: &oleafly_research::store::TaskStore,
+    target: &AnnotationTarget,
+) -> Result<AnnotationContext, String> {
+    // Object history spans revisions; the original annotation still retains
+    // its exact message/turn/version anchor.
+    let annotations = store.list_annotations(&AnnotationQuery {
+        project_id: target.project_id.clone(),
+        task_id: target.task_id.clone(),
+        object_kind: Some(target.object_kind.clone()),
+        object_id: Some(target.object_id.clone()),
+        path: target.path.clone(),
+        ..Default::default()
+    })?;
+    let mut handlings = Vec::new();
+    let mut distillations = Vec::new();
+    for annotation in &annotations {
+        handlings.extend(store.annotation_handlings(&target.project_id, &annotation.id)?);
+        distillations.extend(store.annotation_distillations(&target.project_id, &annotation.id)?);
+    }
+    let requirements = store
+        .list_requirements(&target.project_id)?
+        .into_iter()
+        .filter(|requirement| requirement.scope.matches(target))
+        .collect();
+    Ok(AnnotationContext {
+        annotations,
+        deliveries: Vec::new(),
+        handlings,
+        distillations,
+        requirements,
+    })
+}
+
+#[tauri::command]
+pub async fn research_object_annotations(
+    state: State<'_, ResearchTaskState>,
+    target: AnnotationTarget,
+) -> Result<AnnotationContext, String> {
+    blocking_task_command(&state, move |state| {
+        object_annotation_context(&state.store()?, &target)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn research_task_annotations(
     state: State<'_, ResearchTaskState>,
@@ -98,7 +143,9 @@ pub async fn research_task_annotation_submit(
     draft: UserAnnotationDraft,
 ) -> Result<Annotation, String> {
     blocking_task_command(&state, move |state| {
-        ensure_enabled(state)?;
+        if draft.target.task_id.is_some() {
+            ensure_enabled(state)?;
+        }
         state.submit_annotation(draft.into())
     })
     .await
@@ -284,5 +331,66 @@ mod tests {
         assert!(supported_members(std::slice::from_ref(&member)).is_ok());
         member.model_id.clear();
         assert!(supported_members(&[member]).is_err());
+    }
+
+    #[test]
+    fn ordinary_object_context_keeps_history_and_real_handlings_without_a_task() {
+        use oleafly_research::annotations::{
+            AnnotationHandlingDraft, RequirementDraft, RequirementScope,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let store = oleafly_research::store::TaskStore::new(root.path().into()).unwrap();
+        let old = AnnotationTarget::new("paper", "thread", "thread-a").revision("message:old");
+        let current = AnnotationTarget::new("paper", "thread", "thread-a").revision("message:new");
+        let original = store
+            .add_annotation(&AnnotationDraft::new(
+                old.clone(),
+                AnnotationAuthor::user("user"),
+                "  Keep the old claim.\nRetain its evidence.  ",
+            ))
+            .unwrap();
+        store
+            .add_annotation(&AnnotationDraft::new(
+                current.clone(),
+                AnnotationAuthor::user("user"),
+                "Later feedback",
+            ))
+            .unwrap();
+        store
+            .add_annotation(&AnnotationDraft::new(
+                AnnotationTarget::new("paper", "thread", "thread-b"),
+                AnnotationAuthor::user("user"),
+                "Other conversation",
+            ))
+            .unwrap();
+        store
+            .record_annotation_handling(
+                "paper",
+                &AnnotationHandlingDraft {
+                    annotation_id: original.id.clone(),
+                    author: AnnotationAuthor::model("thread-a"),
+                    summary: "Rechecked the earlier claim".into(),
+                    result_refs: vec![old.clone()],
+                },
+            )
+            .unwrap();
+        let requirement = store
+            .add_requirement(&RequirementDraft::enduring(
+                RequirementScope::from_target(&old),
+                AnnotationAuthor::user("user"),
+                "Retain the evidence across turns",
+            ))
+            .unwrap();
+        let context = object_annotation_context(&store, &current).unwrap();
+        assert_eq!(context.annotations.len(), 2);
+        assert_eq!(
+            context.annotations[0].body,
+            "  Keep the old claim.\nRetain its evidence.  "
+        );
+        assert_eq!(context.annotations[0].target, old);
+        assert_eq!(context.handlings.len(), 1);
+        assert_eq!(context.handlings[0].annotation_id, original.id);
+        assert_eq!(context.requirements[0].id, requirement.id);
+        assert!(context.deliveries.is_empty());
     }
 }

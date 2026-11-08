@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -8,17 +8,21 @@ import { describeError } from "@/lib/app-error";
 import { formatDateTime } from "@/lib/intl";
 import type { ResearchTask } from "@/lib/research-tasks";
 import {
-  loadTaskAnnotations, submitTaskAnnotation,
+  loadObjectAnnotations, loadTaskAnnotations, submitTaskAnnotation,
   type AnnotationAuthor, type AnnotationContext, type AnnotationTarget, type GroupMember, type TaskAnnotation,
 } from "@/lib/task-collaboration";
 
-export interface TaskAnnotationsProps {
-  task: ResearchTask;
-  target: AnnotationTarget | null;
+interface AnnotationPanelOptions {
   members?: GroupMember[];
   revision?: number;
   onOpenTarget?: (target: AnnotationTarget) => void;
+  onSaved?: (annotation: TaskAnnotation) => void;
 }
+
+export type TaskAnnotationsProps = AnnotationPanelOptions & (
+  | { task: ResearchTask; target: AnnotationTarget | null; contextScope?: "task"; objectTarget?: never }
+  | { contextScope: "object"; objectTarget: AnnotationTarget; task?: never; target?: never }
+);
 
 function TargetReference({ target, onOpen }: Readonly<{ target: AnnotationTarget; onOpen?: (target: AnnotationTarget) => void }>) {
   const { t } = useTranslation("researchTools");
@@ -29,10 +33,23 @@ function TargetReference({ target, onOpen }: Readonly<{ target: AnnotationTarget
 }
 
 export function TaskAnnotations(props: Readonly<TaskAnnotationsProps>) {
-  return <TaskAnnotationPanel key={`${props.task.projectId}:${props.task.id}`} {...props} />;
+  const scopeKey = props.contextScope === "object"
+    ? JSON.stringify(["object", props.objectTarget.projectId, props.objectTarget.taskId, props.objectTarget.objectKind, props.objectTarget.objectId, props.objectTarget.path])
+    : `${props.task.projectId}:${props.task.id}`;
+  return <TaskAnnotationPanel key={scopeKey} {...props} />;
 }
 
-function TaskAnnotationPanel({ task, target, members = [], revision, onOpenTarget }: Readonly<TaskAnnotationsProps>) {
+function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
+  const { members = [], revision, onOpenTarget, onSaved } = props;
+  const task = props.contextScope === "object" ? null : props.task;
+  const taskProjectId = task?.projectId;
+  const taskIdForQuery = task?.id;
+  const defaultTarget: AnnotationTarget = props.contextScope === "object" ? props.objectTarget : props.target ?? {
+    projectId: props.task.projectId, taskId: props.task.id, objectKind: "task", objectId: props.task.id,
+    objectRevision: `generation:${props.task.executionGeneration}`, path: null,
+  };
+  const { projectId, taskId, objectKind, objectId, objectRevision, path } = defaultTarget;
+  const queryTarget = useMemo(() => ({ projectId, taskId, objectKind, objectId, objectRevision, path }), [projectId, taskId, objectKind, objectId, objectRevision, path]);
   const { t } = useTranslation(["common", "researchTools"]);
   const formId = useId();
   const [context, setContext] = useState<AnnotationContext | null>(null);
@@ -55,20 +72,17 @@ function TaskAnnotationPanel({ task, target, members = [], revision, onOpenTarge
     const version = ++requestVersion.current;
     setLoading(true); setLoadError(null);
     try {
-      const result = await loadTaskAnnotations(task.projectId, task.id);
+      const result = taskProjectId && taskIdForQuery ? await loadTaskAnnotations(taskProjectId, taskIdForQuery) : await loadObjectAnnotations(queryTarget);
       if (version === requestVersion.current) setContext(result);
     } catch (error) {
       if (version === requestVersion.current) setLoadError(describeError(error));
     } finally {
       if (version === requestVersion.current) setLoading(false);
     }
-  }, [task.projectId, task.id]);
+  }, [taskProjectId, taskIdForQuery, queryTarget]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: task revisions refresh retained handling and delivery receipts.
-  useEffect(() => { void refresh(); }, [refresh, revision, task.updatedAt]);
-  const currentTarget: AnnotationTarget = reply?.target ?? target ?? {
-    projectId: task.projectId, taskId: task.id, objectKind: "task", objectId: task.id,
-    objectRevision: `generation:${task.executionGeneration}`, path: null,
-  };
+  useEffect(() => { void refresh(); }, [refresh, revision, task?.updatedAt]);
+  const currentTarget: AnnotationTarget = reply?.target ?? defaultTarget;
   const authorLabel = (author: AnnotationAuthor) => {
     const kind = author.kind === "user" ? t(($) => $.researchTools.tasks.annotations.authorUser)
       : author.kind === "member" ? t(($) => $.researchTools.tasks.annotations.authorMember)
@@ -77,7 +91,8 @@ function TaskAnnotationPanel({ task, target, members = [], revision, onOpenTarge
     const name = author.kind === "member" ? members.find((member) => member.id === author.id)?.name : null;
     return `${kind} · ${name ? `${name} · ` : ""}${author.id}`;
   };
-  const anchor = (kind: string, id: string) => `task-${encodeURIComponent(task.id)}-${kind}-${encodeURIComponent(id)}`;
+  const anchorPrefix = task ? `task-${encodeURIComponent(task.id)}` : `object-${encodeURIComponent(projectId)}-${encodeURIComponent(objectKind)}-${encodeURIComponent(objectId)}`;
+  const anchor = (kind: string, id: string) => `${anchorPrefix}-${kind}-${encodeURIComponent(id)}`;
   const reference = (kind: "annotation" | "handling" | "requirement", id: string) => {
     const present = kind === "annotation" ? context?.annotations.some((item) => item.id === id)
       : kind === "handling" ? context?.handlings.some((item) => item.id === id)
@@ -95,6 +110,7 @@ function TaskAnnotationPanel({ task, target, members = [], revision, onOpenTarge
         requirements: previous?.requirements ?? [], handlings: previous?.handlings ?? [], distillations: previous?.distillations ?? [],
       }));
       setBody(""); setReply(null); setMentions([]); setExplicitRequest(false); setSaved(true);
+      onSaved?.(annotation);
       await refresh();
     } catch (error) {
       if (mounted.current) setSaveError(describeError(error));
@@ -170,7 +186,7 @@ function TaskAnnotationPanel({ task, target, members = [], revision, onOpenTarge
         <div className="flex flex-wrap gap-3">{members.map((member) => <label key={member.id} htmlFor={`${formId}-mention-${member.id}`} className="flex items-center gap-1.5 text-xs"><Checkbox id={`${formId}-mention-${member.id}`} checked={mentions.includes(member.id)} onCheckedChange={(checked) => setMentions((previous) => checked === true ? [...previous, member.id] : previous.filter((id) => id !== member.id))} /><span>{`@${member.name}`}</span></label>)}</div>
       </fieldset> : null}
       <label htmlFor={`${formId}-request`} className="flex items-start gap-2 text-xs"><Checkbox id={`${formId}-request`} checked={explicitRequest} disabled={saving} onCheckedChange={(checked) => setExplicitRequest(checked === true)} /><span>{t(($) => $.researchTools.tasks.annotations.explicitRequest)}</span></label>
-      <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.tasks.annotations.requestHint)}</p>
+      <p className="text-xs text-muted-foreground">{props.contextScope === "object" ? t(($) => $.researchTools.tasks.annotations.chatRequestHint) : t(($) => $.researchTools.tasks.annotations.requestHint)}</p>
       <Button type="submit" size="sm" disabled={saving || !body.trim()}>{saving ? t(($) => $.researchTools.tasks.annotations.saving) : t(($) => $.researchTools.tasks.annotations.save)}</Button>
       {saveError ? <p role="alert" className="break-words text-xs text-destructive">{saveError}</p> : null}
       {saved ? <p role="status" className="text-xs">{t(($) => $.researchTools.tasks.annotations.saved)}</p> : null}

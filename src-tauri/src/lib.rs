@@ -548,6 +548,7 @@ pub fn run() {
             research_tasks::research_task_compiled_pdfs,
             research_tasks::research_task_compiled_pdf_read,
             research_tasks::collaboration::research_task_annotations,
+            research_tasks::collaboration::research_object_annotations,
             research_tasks::collaboration::research_task_annotation_submit,
             research_tasks::collaboration::research_task_group,
             research_tasks::collaboration::research_task_group_snapshot,
