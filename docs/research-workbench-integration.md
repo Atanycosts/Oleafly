@@ -807,7 +807,12 @@ all 80 passed with a 15-second CLI test timeout, without changing test or produc
 semantics. The broader task panel run passed **129/129**, and the complete ordinary-agent
 loop file passed **193/193**. Final application TypeScript passed. Full Biome and i18n
 checks passed, with i18n at **0 errors / 0 warnings** after restoring missing
-English fallback keys and fixing 11 existing punctuation violations.
+English fallback keys and fixing 11 existing punctuation violations. The
+application collaboration Rust boundary passed **3/3**, including object
+history without a task; package all-target Clippy with `-D warnings` passed.
+A later historical-artifact boundary regression passed in the full **75/75**
+task-detail suite: an old generation's artifact cannot open the current
+generation's bytes through the generic preview action.
 
 `e2e/tests/120-chat-annotations.spec.ts` prepares a real ordinary-chat UI flow
 through native persistence and subsequent model request capture. The scripted

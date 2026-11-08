@@ -1719,7 +1719,7 @@ export function TaskDetailDialog({
                 <p className="break-all font-mono text-xs">{referencePreview.target.objectKind}:{referencePreview.target.objectId} · {referencePreview.target.objectRevision}</p>
                 {referenceLoading ? <p role="status" className="text-xs">{t(($) => $.researchTools.tasks.annotations.loading)}</p> : null}
                 {referenceError ? <p role="alert" className="text-xs text-destructive">{referenceError}</p> : null}
-                {referencePreview.item ? <TimelineList {...timelineProps} runKey={referencePreview.target.objectId} items={[referencePreview.item]} live={false} /> : null}
+                {referencePreview.item?.kind === "artifact" && referencePreview.target.objectRevision !== `generation:${task.executionGeneration}` ? <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.tasks.annotations.referenceUnavailable)}</p> : referencePreview.item ? <TimelineList {...timelineProps} runKey={referencePreview.target.objectId} items={[referencePreview.item]} live={false} /> : null}
                 {referencePreview.message ? <><p className="text-xs">{`${referencePreview.message.author.id} · #${referencePreview.message.sequence}`}</p><Markdown>{referencePreview.message.body}</Markdown></> : null}
               </section> : null}
               <Suspense fallback={null}>

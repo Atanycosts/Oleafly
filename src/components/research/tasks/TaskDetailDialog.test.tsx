@@ -348,6 +348,22 @@ describe("TaskDetailDialog", () => {
     expect(page().getByRole("tab", { name: enResearchTools.tasks.annotations.title })).toHaveAttribute("data-state", "active");
   });
 
+  it("does not open a historical artifact through the current generation's preview", async () => {
+    const current = { ...task("older-artifact"), executionGeneration: 8 };
+    const reference: AnnotationTarget = { projectId: current.projectId, taskId: current.id, objectKind: "artifact", objectId: `${current.id}:2:7`, objectRevision: "generation:2", path: "figures/result.png" };
+    previewMocks.referencedEvents.mockResolvedValue({
+      events: [{ taskId: current.id, executionGeneration: 2, sequence: 7, createdAt: 7, event: { kind: "artifact", artifact: { path: "figures/result.png", label: "Original chart", mediaType: "image/png" } } }], nextSequence: null,
+    });
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenTarget).toBeDefined());
+    await act(async () => { annotationMocks.props?.onOpenTarget?.(reference); });
+    const source = page().getByTestId("task-annotation-source");
+    await waitFor(() => expect(within(source).getByText(enResearchTools.tasks.annotations.referenceUnavailable)).toBeInTheDocument());
+    expect(source).toHaveTextContent("generation:2");
+    expect(within(source).queryByRole("button", { name: /Original chart/ })).toBeNull();
+    expect(previewMocks.artifact).not.toHaveBeenCalled();
+  });
+
   it("shows the recorded runtime, paired call and exact source range in the existing activity", async () => {
     const current = task("observed");
     const view = observedRun(current.id);
