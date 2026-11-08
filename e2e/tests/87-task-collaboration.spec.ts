@@ -29,7 +29,7 @@ test("native annotations retain feedback and deliver an explicit historical foll
     await expect(panel).toBeVisible();
     const feedback = "Keep this original wording as feedback only: α claim stays provisional.";
     await fillTextarea(page, '[data-testid="task-annotations"] textarea', feedback);
-    await panel.getByRole("button", { name: "Save annotation", exact: true }).click();
+    await panel.locator('form button[type="submit"]').click();
     const feedbackRow = panel.locator('[data-testid="task-annotation"]').filter({ hasText: feedback });
     await expect(feedbackRow).toContainText("Feedback");
     const stored = await page.evaluate<AnnotationContext>(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m => m.loadTaskAnnotations(${scriptValue(projectId)}, ${scriptValue(task.id)}))`);
@@ -38,11 +38,11 @@ test("native annotations retain feedback and deliver an explicit historical foll
     expect(stored.deliveries.some(delivery => delivery.annotationId === saved?.id)).toBe(false);
     expect(await page.evaluate<number>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m => (await m.listResearchTasks(${scriptValue(projectId)})).find(t => t.id === ${scriptValue(task.id)}).executionGeneration)`)).toBe(generation);
     server.setReply("Scripted follow-up delivery acknowledged");
-    await feedbackRow.getByRole("button", { name: "Reply", exact: true }).click();
+    await page.getByText("Reply", { exact: true }).click();
     const followUp = "Revisit that original generation and check the provisional claim.";
     await fillTextarea(page, '[data-testid="task-annotations"] textarea', followUp);
-    await panel.getByRole("checkbox", { name: "Request follow-up handling" }).check();
-    await panel.getByRole("button", { name: "Save annotation", exact: true }).click();
+    await page.getByLabel("Request follow-up handling", { exact: true }).click();
+    await panel.locator('form button[type="submit"]').click();
     let receipts: AnnotationContext = stored;
     await expect.poll(async () => {
       receipts = await page.evaluate<AnnotationContext>(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m => m.loadTaskAnnotations(${scriptValue(projectId)}, ${scriptValue(task.id)}))`);
@@ -53,7 +53,7 @@ test("native annotations retain feedback and deliver an explicit historical foll
     expect(request?.parentId).toBe(saved?.id);
     expect(request?.target.objectRevision).toBe(`generation:${generation}`);
     expect(await page.evaluate<number>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m => (await m.listResearchTasks(${scriptValue(projectId)})).find(t => t.id === ${scriptValue(task.id)}).executionGeneration)`)).toBeGreaterThan(generation);
-    await panel.getByRole("button", { name: "Refresh annotations" }).click();
+    await page.getByText("Refresh annotations", { exact: true }).click();
     await expect(panel.locator('[data-testid="task-annotation"]').filter({ hasText: followUp })).toContainText("Delivered to generation");
   } finally { await server.close(); }
 });
@@ -78,10 +78,10 @@ test("native task group routes addressed work into member execution and a reply"
     await page.evaluate(`window.__oleaflyE2EImport('/src/store/research-tasks.ts').then(async m => { await m.useResearchTasksStore.getState().bindProject(${scriptValue(projectId)}); m.useResearchTasksStore.getState().receiveTask(${scriptValue(task)}); m.useResearchTasksStore.getState().openTaskDetail(${scriptValue(task.id)}, 'group'); })`);
     const panel = page.locator('section[aria-label="Task group"]');
     await expect(panel).toBeVisible();
-    await panel.getByRole("checkbox", { name: "@Reviewer", exact: true }).check();
+    await page.getByLabel("@Reviewer", { exact: true }).check();
     await fillTextarea(page, 'section[aria-label="Task group"] textarea[aria-label="Message"]', "Review this bounded claim and return your finding.");
-    await panel.getByRole("checkbox", { name: "Request work", exact: true }).check();
-    await panel.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByLabel("Request work", { exact: true }).check();
+    await page.getByText("Send", { exact: true }).click();
     let result: GroupSnapshot = group;
     await expect.poll(async () => {
       result = await page.evaluate<GroupSnapshot>(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m => m.loadTaskGroup(${scriptValue(projectId)}, ${scriptValue(task.id)}))`);
@@ -91,7 +91,7 @@ test("native task group routes addressed work into member execution and a reply"
     if (!work) throw new Error("Native member work has no returned message");
     expect(result.executions.some(execution => execution.id === work.executionId && execution.memberId === reviewer.id && execution.modelId === "llama3.2")).toBe(true);
     expect(result.messages.find(message => message.id === work.resultMessageId)?.author.id).toBe(reviewer.id);
-    await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.locator('section[aria-label="Task group"] > button').click();
     await expect(panel.locator(`[id="group-message-${work.resultMessageId}"]`)).toContainText("Scripted member review returned");
     await expect(panel.locator(`a[href="#group-message-${work.resultMessageId}"]`)).toBeVisible();
     expect(server.requestBodies().length).toBeGreaterThan(0);

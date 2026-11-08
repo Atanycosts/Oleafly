@@ -933,6 +933,29 @@ describe("TaskDetailDialog", () => {
     expect(within(page().getByRole("region", { name: enResearchTools.tasks.detail.tabActivity })).getByRole("status")).toHaveTextContent("Loading activity");
   });
 
+  it("prefers final task totals over the last member usage and falls back per missing count", () => {
+    const current = task("group-usage");
+    const input = {
+      ...props(current),
+      task: { ...current, result: { ...current.result!, inputTokens: 723944, outputTokens: 5811 } },
+      events: [{
+        taskId: current.id, executionGeneration: 1, sequence: 1, createdAt: 1,
+        event: { kind: "usage" as const, inputTokens: 24454, outputTokens: 67 },
+      }],
+    };
+    const view = render(<TaskDetailDialog {...input} />);
+    expect(page().getByText("Input 724k, output 5.8k")).toBeInTheDocument();
+    expect(page().queryByText("Input 24k, output 67")).toBeNull();
+
+    view.rerender(<TaskDetailDialog {...input} task={{
+      ...current, result: { ...current.result!, inputTokens: 0, outputTokens: null },
+    }} />);
+    expect(page().getByText("Input 0, output 67")).toBeInTheDocument();
+
+    view.rerender(<TaskDetailDialog {...input} task={{ ...current, status: "running", result: null }} />);
+    expect(page().getByText("Input 24k, output 67")).toBeInTheDocument();
+  });
+
   it("marks an unfinished tool as interrupted and flags the failure milestone", () => {
     const current = {
       ...task("stopped"),

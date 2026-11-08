@@ -1154,8 +1154,8 @@ export function TaskDetailDialog({
     .map((change) => change.path)
     .filter((path) => blocksApply(filePreviews[`${taskRunKey}:${path}`]));
   const usage = {
-    inputTokens: timelineUsage.inputTokens ?? task.result?.inputTokens ?? null,
-    outputTokens: timelineUsage.outputTokens ?? task.result?.outputTokens ?? null,
+    inputTokens: task.result?.inputTokens ?? timelineUsage.inputTokens ?? null,
+    outputTokens: task.result?.outputTokens ?? timelineUsage.outputTokens ?? null,
   };
   const artifacts = task.result?.artifacts ?? [];
 
