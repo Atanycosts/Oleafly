@@ -1,5 +1,7 @@
 mod apply;
+pub(crate) mod collaboration;
 pub(crate) mod host;
+pub(crate) mod pdf_pages;
 pub(crate) mod pdf_text;
 pub(crate) mod preview;
 #[cfg(test)]

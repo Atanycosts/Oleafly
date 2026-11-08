@@ -31,6 +31,7 @@ const registry: Record<string, () => Promise<unknown>> = !E2E_HOOKS ? {} : {
   "/src/lib/pdf-image.ts": () => import("@/lib/pdf-image"),
   "/src/lib/research-workspace.ts": () => import("@/lib/research-workspace"),
   "/src/lib/journal-workbench.ts": () => import("@/lib/journal-workbench"),
+  "/src/lib/task-collaboration.ts": () => import("@/lib/task-collaboration"),
   "/src/lib/tauri.ts": () => import("@/lib/tauri"),
   "/src/lib/tauri-collab.ts": () => import("@/lib/tauri-collab"),
   "/src/lib/typst-universe.ts": () => import("@/lib/typst-universe"),

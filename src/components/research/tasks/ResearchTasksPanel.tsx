@@ -577,6 +577,7 @@ export function ResearchTasksPanel({
           tasks={tasks}
           busy={pendingActions.includes(selectedTask.id)}
           agentName={agentNameFor(selectedTask)}
+          agents={agents}
           initialTab={detailTab}
           onEdit={() => openComposer(selectedTask.id)}
           onStart={async () => {

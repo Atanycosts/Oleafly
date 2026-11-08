@@ -689,8 +689,10 @@ reading a reference verify the real task and generation, stored identity and
 PDF bytes. The task Output tab uses the existing PDF viewer, extraction and page
 rendering functions with these retained bytes, independently of the global
 preview. The task agent can call `task_pdf_text` with the returned reference.
-Agent-side page-image delivery is a remaining extension; the current page image
-action is in the task UI.
+The native task also discovers `task_pdf_pages`, which verifies that retained
+reference and uses the existing window pdf.js bridge to return actual image
+parts to the next model request. It is independent of the visible project PDF;
+rendering pages is evidence delivery, not a claim of model visual review.
 
 Selected native task skills now start as a compact catalog containing ID, name,
 description, folder and the `load_skill` entry point. Full instructions arrive
@@ -726,6 +728,50 @@ skill/ACP behavior (7), compile host (6), retained artifacts (2), Rust formattin
 and Clippy for the three affected packages also passed. These results do not
 claim a passing full frontend gate. The official installed application has not
 been updated.
+
+## Task collaboration and historical annotations in the application (2026-11-08)
+
+The task detail dialog now has **Annotations** and **Task group** tabs backed by
+nine thin IPC commands against the existing TaskStore. A single ResearchTask
+can retain user feedback without creating a group. Timeline rows and group
+messages expose an annotation action which fixes the original object ID and
+version; replies keep their parent's target. Opening a retained timeline
+reference reads its original generation and sequence, even after the task has
+continued. Missing records are reported as unavailable. Arbitrary historical
+file or run references do not yet have a versioned preview in this panel.
+
+The annotation view separates the saved original, actual delivery receipt,
+handling records and later distillation into requirements. Ordinary feedback
+has no execution state without a real receipt. Member mentions use retained
+member IDs. Original text, author, object/version, handling result references,
+requirement scope, supersession and source links remain visible. The application
+assigns user authorship at its boundary instead of accepting an author supplied
+by the frontend. Task updates or explicit refresh reread receipts and handling.
+
+The group tab creates built-in members with explicit provider/model choices and
+uses existing scheduler/store routing. It shows original messages, replies,
+recipients, interests, member pause/group status, actual work and member
+executions, plus links from completed work to its returned message. Refreshes
+use the persisted message cursor. This application slice only creates built-in
+groups; ordinary ACP tasks remain supported, and an unavailable selected ACP
+model now fails before prompting instead of continuing with the default model.
+Continuous ACP group context and ordinary chat annotations are outside this
+slice's verified boundary.
+
+Application TypeScript and scoped Biome checks passed. Focused UI and bridge
+regression tests passed **133/133**, including three historical-target and
+member-loading parent tests, seven annotation panel tests and six group tests.
+The application collaboration boundary passed **2/2** Rust tests. ACP behavior
+passed **8/8**; task PDF page bridge frontend passed **8/8**, Rust page boundary
+passed **3/3**, and the runtime test confirmed an image URL in the actual next
+model request (**1/1**). The full frontend/i18n baseline failures documented above
+remain; these focused results do not claim those full gates passed.
+
+`e2e/tests/87-task-collaboration.spec.ts` adds native acceptance scenarios for
+ordinary feedback versus an explicit historical follow-up and addressed member
+work through real IPC and TaskStore. It uses a scripted model and awaits the
+integrated native application run; authoring and typechecking the spec does not
+establish that native acceptance passed. The official installation is unchanged.
 
 ## Verified code anchors and remaining checks
 

@@ -1,4 +1,6 @@
 import { TaskCompiledPdfs } from "./TaskCompiledPdfs";
+import type { ResearchTaskAgentOption } from "./ResearchTasksPanel";
+import { loadTaskGroup, loadTaskGroupMessages, type AnnotationTarget, type GroupMessage, type GroupSnapshot } from "@/lib/task-collaboration";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import {
@@ -33,6 +35,7 @@ import { InlineDiffPreview } from "@/components/editor/diff/InlineDiffPreview";
 import { ResearchToolCard } from "@/components/ai/activity/ResearchToolCard";
 import {
   loadResearchTaskEventsBefore,
+  loadResearchTaskEvents,
   NEWEST_EVENTS,
   previewResearchTaskArtifact,
   previewResearchTaskFile,
@@ -73,6 +76,12 @@ import { PlanReview } from "./PlanReview";
 const TaskProgressTab = lazy(() =>
   import("./progress/TaskProgressTab").then((module) => ({ default: module.TaskProgressTab })),
 );
+const TaskAnnotations = lazy(() =>
+  import("./TaskAnnotations").then((module) => ({ default: module.TaskAnnotations })),
+);
+const TaskGroupPanel = lazy(() =>
+  import("./TaskGroupPanel").then((module) => ({ default: module.TaskGroupPanel })),
+);
 const TaskFindings = lazy(() =>
   import("./evidence/TaskFindings").then((module) => ({ default: module.TaskFindings })),
 );
@@ -101,6 +110,7 @@ export interface TaskDetailDialogProps {
   canLoadMoreEvents: boolean;
   busy: boolean;
   agentName?: string;
+  agents?: ResearchTaskAgentOption[];
   initialTab?: ResearchTaskDetailTab | null;
   onStart: () => Promise<void>;
   onCancel: () => Promise<void>;
@@ -324,13 +334,14 @@ interface TimelineRowProps {
   runKey: string;
   loadingArtifact: boolean;
   onOpenArtifact: (artifact: TaskArtifact) => void;
+  onAnnotate: (item: TaskTimelineItem) => void;
 }
 
 const TimelineRow = memo(
-  function TimelineRow({ item, live, failing, runKey, loadingArtifact, onOpenArtifact }: Readonly<TimelineRowProps>) {
+  function TimelineRow({ item, live, failing, runKey, loadingArtifact, onOpenArtifact, onAnnotate }: Readonly<TimelineRowProps>) {
     const { t } = useTranslation(["common", "researchTools"]);
     return (
-      <li data-task-call-id={item.kind === "tool" ? item.tool.id : undefined} className="relative grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-3">
+      <li data-task-item-key={item.key} data-task-call-id={item.kind === "tool" ? item.tool.id : undefined} className="relative grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-3">
         <TimelineDot item={item} live={live} tall={item.kind === "tool"} failing={failing} />
         <div className="min-w-0">
           {item.kind === "milestone" ? (
@@ -365,6 +376,9 @@ const TimelineRow = memo(
               </span>
             </Button>
           ) : null}
+          <Button size="xs" variant="ghost" onClick={() => onAnnotate(item)}>
+            {t(($) => $.researchTools.tasks.annotations.annotate)}
+          </Button>
         </div>
       </li>
     );
@@ -375,6 +389,7 @@ const TimelineRow = memo(
     previous.runKey === next.runKey &&
     previous.loadingArtifact === next.loadingArtifact &&
     previous.onOpenArtifact === next.onOpenArtifact &&
+    previous.onAnnotate === next.onAnnotate &&
     sameTimelineItem(previous.item, next.item),
 );
 
@@ -385,11 +400,12 @@ interface TimelineListProps {
   taskError: string | null;
   previewingPath: string | null;
   onOpenArtifact: (artifact: TaskArtifact) => void;
+  onAnnotate: (item: TaskTimelineItem) => void;
 }
 
 type TimelineListShared = Omit<TimelineListProps, "items" | "live">;
 
-function TimelineList({ items, live, runKey, taskError, previewingPath, onOpenArtifact }: Readonly<TimelineListProps>) {
+function TimelineList({ items, live, runKey, taskError, previewingPath, onOpenArtifact, onAnnotate }: Readonly<TimelineListProps>) {
   return (
     <div className="relative min-w-0">
       <span
@@ -406,6 +422,7 @@ function TimelineList({ items, live, runKey, taskError, previewingPath, onOpenAr
             runKey={runKey}
             loadingArtifact={item.kind === "artifact" && previewingPath === item.artifact.path}
             onOpenArtifact={onOpenArtifact}
+            onAnnotate={onAnnotate}
           />
         ))}
       </ol>
@@ -786,6 +803,7 @@ export function TaskDetailDialog({
   canLoadMoreEvents,
   busy,
   agentName,
+  agents = [],
   initialTab,
   onStart,
   onCancel,
@@ -827,6 +845,12 @@ export function TaskDetailDialog({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [artifactPreview, setArtifactPreview] = useState<TaskArtifactPreview | null>(null);
   const [chosenTab, setChosenTab] = useState<string | null>(initialTab ?? null);
+  const [annotationTarget, setAnnotationTarget] = useState<AnnotationTarget | null>(null);
+  const [groupSnapshot, setGroupSnapshot] = useState<GroupSnapshot | null>(null);
+  const [referencePreview, setReferencePreview] = useState<{ target: AnnotationTarget; item?: TaskTimelineItem; message?: GroupMessage } | null>(null);
+  const [referenceLoading, setReferenceLoading] = useState(false);
+  const [referenceError, setReferenceError] = useState<string | null>(null);
+  const referenceRequest = useRef(0);
   const activityRef = useRef<HTMLDivElement | null>(null);
   const nearBottom = useRef(true);
 
@@ -840,6 +864,77 @@ export function TaskDetailDialog({
 
   const tab = chosenTab ?? autoTabFor(task);
   const activityShown = open && tab === "activity";
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changing task scope clears references and ignores the previous task's pending response.
+  useEffect(() => {
+    setGroupSnapshot(null);
+    setAnnotationTarget(null);
+    setReferencePreview(null);
+    setReferenceLoading(false);
+    setReferenceError(null);
+    referenceRequest.current++;
+  }, [task.id, task.projectId]);
+  useEffect(() => {
+    if (!open || tab !== "annotations") return;
+    let active = true;
+    void loadTaskGroup(task.projectId, task.id).then((snapshot) => {
+      if (active) setGroupSnapshot(snapshot);
+    }).catch(() => {
+      // The annotation reader remains usable without a task group.
+    });
+    return () => { active = false; };
+  }, [open, tab, task.projectId, task.id]);
+  const receiveGroupSnapshot = useCallback((snapshot: GroupSnapshot | null) => setGroupSnapshot(snapshot), []);
+  const annotateItem = useCallback((item: TaskTimelineItem) => {
+    setAnnotationTarget({
+      projectId: task.projectId, taskId: task.id,
+      objectKind: item.kind === "artifact" ? "artifact" : item.kind === "tool" ? "tool_call" : "message",
+      objectId: `${task.id}:${item.key}`, objectRevision: `generation:${item.key.split(":")[0]}`,
+      path: item.kind === "artifact" ? item.artifact.path : null,
+    });
+    setChosenTab("annotations");
+  }, [task.projectId, task.id]);
+  const annotateGroupMessage = useCallback((message: GroupMessage) => {
+    setAnnotationTarget({
+      projectId: task.projectId, taskId: task.id, objectKind: "group_message", objectId: message.id,
+      objectRevision: `sequence:${message.sequence}`, path: null,
+    });
+    setChosenTab("annotations");
+  }, [task.projectId, task.id]);
+  const openAnnotationTarget = async (target: AnnotationTarget) => {
+    const request = ++referenceRequest.current;
+    setReferencePreview({ target }); setReferenceLoading(true); setReferenceError(null);
+    try {
+      if (target.projectId !== task.projectId || (target.taskId && target.taskId !== task.id)) {
+        throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
+      }
+      if (target.objectKind === "group_message") {
+        const snapshot = await loadTaskGroup(task.projectId, task.id);
+        const sequence = Number(target.objectRevision?.replace(/^sequence:/, ""));
+        if (!snapshot || !Number.isSafeInteger(sequence) || sequence < 1) throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
+        const page = await loadTaskGroupMessages(task.projectId, snapshot.group.id, sequence - 1);
+        const message = page.messages.find((entry) => entry.id === target.objectId && entry.sequence === sequence);
+        if (!message) throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
+        if (request === referenceRequest.current) setReferencePreview({ target, message });
+      } else {
+        const identity = target.objectId.startsWith(`${task.id}:`) ? target.objectId.slice(task.id.length + 1).split(":") : [];
+        const [generation, sequence] = identity.map(Number);
+        if (identity.length !== 2 || !Number.isSafeInteger(generation) || !Number.isSafeInteger(sequence) || generation < 1 || sequence < 1 || target.objectRevision !== `generation:${generation}`) {
+          throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
+        }
+        // Read the referenced generation even after the task has moved to a later run.
+        const page = await loadResearchTaskEvents(task.id, generation, sequence - 1, EARLIER_PAGE_SIZE);
+        const entries = page.events.filter((entry) => entry.executionGeneration === generation);
+        if (!entries.some((entry) => entry.sequence === sequence)) throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
+        const item = buildTaskTimeline(entries, false).items.find((entry) => entry.key === `${generation}:${sequence}`);
+        if (!item) throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
+        if (request === referenceRequest.current) setReferencePreview({ target, item });
+      }
+    } catch (failure) {
+      if (request === referenceRequest.current) setReferenceError(describeError(failure));
+    } finally {
+      if (request === referenceRequest.current) setReferenceLoading(false);
+    }
+  };
 
   const timelineCache = useRef<{ language: string; cache: TaskTimelineCache | null }>({ language, cache: null });
   const shownTimeline = useRef<TaskTimeline>(NO_TIMELINE);
@@ -1465,6 +1560,7 @@ export function TaskDetailDialog({
     taskError: task.error,
     previewingPath,
     onOpenArtifact: openArtifactFromRow,
+    onAnnotate: annotateItem,
   };
 
   return (
@@ -1534,6 +1630,12 @@ export function TaskDetailDialog({
               </TabsTrigger>
               <TabsTrigger value="output">
                 {t(($) => $.researchTools.tasks.detail.tabOutput)}
+              </TabsTrigger>
+              <TabsTrigger value="annotations">
+                {t(($) => $.researchTools.tasks.annotations.title)}
+              </TabsTrigger>
+              <TabsTrigger value="group">
+                {t(($) => $.researchTools.tasks.group.title)}
               </TabsTrigger>
             </TabsList>
 
@@ -1607,6 +1709,33 @@ export function TaskDetailDialog({
 
             <TabsContent value="output" className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
               {outputTab()}
+            </TabsContent>
+            <TabsContent value="annotations" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              {referencePreview ? <section data-testid="task-annotation-source" className="mb-3 space-y-2 rounded-md border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-sm font-medium">{t(($) => $.researchTools.tasks.annotations.recordedObject)}</h4>
+                  <Button size="xs" variant="ghost" onClick={() => { referenceRequest.current++; setReferencePreview(null); setReferenceLoading(false); }}>{t(($) => $.common.actions.close)}</Button>
+                </div>
+                <p className="break-all font-mono text-xs">{referencePreview.target.objectKind}:{referencePreview.target.objectId} · {referencePreview.target.objectRevision}</p>
+                {referenceLoading ? <p role="status" className="text-xs">{t(($) => $.researchTools.tasks.annotations.loading)}</p> : null}
+                {referenceError ? <p role="alert" className="text-xs text-destructive">{referenceError}</p> : null}
+                {referencePreview.item ? <TimelineList {...timelineProps} runKey={referencePreview.target.objectId} items={[referencePreview.item]} live={false} /> : null}
+                {referencePreview.message ? <><p className="text-xs">{`${referencePreview.message.author.id} · #${referencePreview.message.sequence}`}</p><Markdown>{referencePreview.message.body}</Markdown></> : null}
+              </section> : null}
+              <Suspense fallback={null}>
+              <TaskAnnotations
+                task={task}
+                target={annotationTarget}
+                members={groupSnapshot?.members ?? []}
+                revision={groupSnapshot?.group.updatedAt ?? task.updatedAt}
+                onOpenTarget={(target) => { void openAnnotationTarget(target); }}
+              />
+              </Suspense>
+            </TabsContent>
+            <TabsContent value="group" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              <Suspense fallback={null}>
+              <TaskGroupPanel task={task} agents={agents} onSnapshot={receiveGroupSnapshot} onAnnotate={annotateGroupMessage} />
+              </Suspense>
             </TabsContent>
           </Tabs>
 

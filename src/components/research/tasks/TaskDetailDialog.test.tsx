@@ -16,6 +16,8 @@ import enCommon from "@/i18n/locales/en/common.json" with { type: "json" };
 import enResearchTools from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { taskFieldsSince047 } from "./tests/task-fixtures";
 import * as timelineBuilders from "./task-timeline";
+import type { AnnotationTarget, GroupSnapshot } from "@/lib/task-collaboration";
+import type { TaskAnnotationsProps } from "./TaskAnnotations";
 
 let TaskDetailDialog: typeof import("./TaskDetailDialog").TaskDetailDialog;
 let act: typeof import("@testing-library/react").act;
@@ -29,6 +31,7 @@ const previewMocks = vi.hoisted(() => ({
   file: vi.fn(),
   artifact: vi.fn(),
   events: vi.fn(),
+  referencedEvents: vi.fn(),
   observations: vi.fn().mockResolvedValue({
     summary: { runtime: null, usage: null, baseline: null, changedFiles: [], changedFileCount: 0, evidence: null, coverageGaps: [] },
     page: { events: [], nextSequence: 0, throughSequence: 0, hasMore: false },
@@ -51,6 +54,7 @@ vi.mock("@/lib/research-tasks", () => ({
   previewResearchTaskFile: previewMocks.file,
   previewResearchTaskArtifact: previewMocks.artifact,
   loadResearchTaskEventsBefore: previewMocks.events,
+  loadResearchTaskEvents: previewMocks.referencedEvents,
   loadResearchTaskObservations: previewMocks.observations,
   previewResearchTaskSource: previewMocks.source,
   loadResearchTaskFindings: previewMocks.findings,
@@ -79,6 +83,12 @@ vi.mock("@/components/editor/diff/InlineDiffPreview", () => ({
 }));
 
 vi.mock("./TaskCompiledPdfs", () => ({ TaskCompiledPdfs: () => null }));
+
+const annotationMocks = vi.hoisted(() => ({ props: null as TaskAnnotationsProps | null, group: vi.fn() }));
+vi.mock("./TaskAnnotations", () => ({
+  TaskAnnotations: (props: TaskAnnotationsProps) => { annotationMocks.props = props; return null; },
+}));
+vi.mock("@/lib/task-collaboration", () => ({ loadTaskGroup: annotationMocks.group }));
 
 const markdownDraws = vi.hoisted(() => ({ texts: [] as string[] }));
 
@@ -261,6 +271,9 @@ describe("TaskDetailDialog", () => {
     previewMocks.file.mockReset();
     previewMocks.artifact.mockReset();
     previewMocks.events.mockReset();
+    previewMocks.referencedEvents.mockReset().mockResolvedValue({ events: [], nextSequence: null });
+    annotationMocks.props = null;
+    annotationMocks.group.mockReset().mockResolvedValue(null);
     previewMocks.observations.mockReset().mockResolvedValue({ summary: { runtime: null, usage: null, baseline: null, evidence: null, coverageGaps: [] }, page: { events: [], nextSequence: 0, throughSequence: 0, hasMore: false } });
     previewMocks.source.mockReset();
     previewMocks.findings.mockReset().mockResolvedValue({ findings: [], nextSequence: 0, hasMore: false, coverageGaps: [] });
@@ -277,6 +290,63 @@ describe("TaskDetailDialog", () => {
   });
 
   afterEach(() => cleanup());
+
+  it("annotates an earlier activity row with its original object identity and generation", async () => {
+    const current = { ...task("older-annotation"), executionGeneration: 4, resumedFrom: 2 };
+    previewMocks.events.mockResolvedValue({
+      events: [{ taskId: current.id, executionGeneration: 2, sequence: 7, createdAt: 7, event: { kind: "text", text: "Earlier decision" } }],
+      nextSequence: null, previousSequence: null, resumedFrom: null,
+    });
+    render(<TaskDetailDialog {...props(current)} initialTab="activity" />);
+    fireEvent.click(page().getByRole("button", { name: enResearchTools.backgroundHelper.earlierActivity }));
+    const earlier = await page().findByTestId("research-task-earlier-activity");
+    expect(within(earlier).getByText("Earlier decision")).toBeInTheDocument();
+    fireEvent.click(within(earlier).getByRole("button", { name: enResearchTools.tasks.annotations.annotate }));
+    await waitFor(() => expect(annotationMocks.props?.target).toEqual({
+      projectId: current.projectId, taskId: current.id, objectKind: "message", objectId: `${current.id}:2:7`, objectRevision: "generation:2", path: null,
+    }));
+    expect(page().getByRole("tab", { name: enResearchTools.tasks.annotations.title })).toHaveAttribute("data-state", "active");
+    expect(previewMocks.events).toHaveBeenCalledWith(current.id, 2, Number.MAX_SAFE_INTEGER, 200);
+  });
+
+  it("reads a saved message reference from its recorded generation and reports a missing original sequence", async () => {
+    const current = { ...task("referenced"), executionGeneration: 8 };
+    const reference: AnnotationTarget = { projectId: current.projectId, taskId: current.id, objectKind: "message", objectId: `${current.id}:2:7`, objectRevision: "generation:2", path: null };
+    previewMocks.referencedEvents.mockResolvedValueOnce({
+      events: [{ taskId: current.id, executionGeneration: 2, sequence: 7, createdAt: 7, event: { kind: "text", text: "Original generation-two decision" } }], nextSequence: null,
+    });
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" events={[{ taskId: current.id, executionGeneration: 8, sequence: 7, createdAt: 8, event: { kind: "text", text: "Current replacement" } }]} />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenTarget).toBeDefined());
+    await act(async () => { annotationMocks.props?.onOpenTarget?.(reference); });
+    expect(previewMocks.referencedEvents).toHaveBeenCalledExactlyOnceWith(current.id, 2, 6, 200);
+    const source = page().getByTestId("task-annotation-source");
+    expect(within(source).getByText("Original generation-two decision")).toBeInTheDocument();
+    expect(within(source).queryByText("Current replacement")).toBeNull();
+    previewMocks.referencedEvents.mockResolvedValueOnce({
+      events: [{ taskId: current.id, executionGeneration: 2, sequence: 8, createdAt: 8, event: { kind: "text", text: "A different old message" } }], nextSequence: null,
+    });
+    await act(async () => { annotationMocks.props?.onOpenTarget?.(reference); });
+    await waitFor(() => expect(within(source).getByRole("alert")).toHaveTextContent(enResearchTools.tasks.annotations.referenceUnavailable));
+    expect(within(source).queryByText("Original generation-two decision")).toBeNull();
+    expect(within(source).queryByText("A different old message")).toBeNull();
+    expect(previewMocks.referencedEvents).toHaveBeenLastCalledWith(current.id, 2, 6, 200);
+  });
+
+  it("loads existing group members when annotations opens directly without visiting the group tab", async () => {
+    const current = task("direct-annotations");
+    const snapshot: GroupSnapshot = {
+      group: { id: "group-existing", taskId: current.id, projectId: current.projectId, status: "open", createdAt: 1, updatedAt: 5 },
+      members: [{ id: "member-reviewer", groupId: "group-existing", name: "Reviewer", responsibility: "Check evidence", runtimeId: "builtin", agentId: "openai", modelId: "model", skillIds: [], coordinator: false, paused: false, joinedAt: 1 }],
+      interests: [], messages: [], work: [], executions: [], nextSequence: 0,
+    };
+    annotationMocks.group.mockResolvedValue(snapshot);
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.members).toEqual(snapshot.members));
+    expect(annotationMocks.group).toHaveBeenCalledWith(current.projectId, current.id);
+    expect(annotationMocks.props?.revision).toBe(snapshot.group.updatedAt);
+    expect(page().getByRole("tab", { name: enResearchTools.tasks.group.title })).toHaveAttribute("data-state", "inactive");
+    expect(page().getByRole("tab", { name: enResearchTools.tasks.annotations.title })).toHaveAttribute("data-state", "active");
+  });
 
   it("shows the recorded runtime, paired call and exact source range in the existing activity", async () => {
     const current = task("observed");
