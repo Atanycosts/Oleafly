@@ -1,12 +1,14 @@
 import { createServer, type Server } from "node:http";
 
+type SequenceArgs = Record<string, unknown> | ((request: Record<string, unknown>) => Record<string, unknown>);
+
 export interface MockAiServer {
   url: string;
   close: () => Promise<void>;
   setReply: (text: string) => void;
   setStreamDelay: (milliseconds: number) => void;
   setToolCall: (call: { name: string; args: Record<string, unknown>; then: string } | null) => void;
-  setToolSequence: (calls: Array<{ name: string; args: Record<string, unknown> }>, then: string) => void;
+  setToolSequence: (calls: Array<{ name: string; args: SequenceArgs }>, then: string) => void;
   requestCount: () => number;
   requestBodies: () => string[];
   resetRequests: () => void;
@@ -16,7 +18,7 @@ export async function startMockAiServer(): Promise<MockAiServer> {
   let reply = "MOCKREPLY";
   let streamDelay = 0;
   let toolCall: { name: string; args: Record<string, unknown>; then: string } | null = null;
-  let sequence: Array<{ name: string; args: Record<string, unknown> }> | null = null;
+  let sequence: Array<{ name: string; args: SequenceArgs }> | null = null;
   let sequenceReply = "";
   let requests = 0;
   let bodies: string[] = [];
@@ -148,7 +150,7 @@ export async function startMockAiServer(): Promise<MockAiServer> {
                 index: 0,
                 id: `call_mock_${toolResults}`,
                 type: "function",
-                function: { name: call.name, arguments: JSON.stringify(call.args) },
+                function: { name: call.name, arguments: JSON.stringify(typeof call.args === "function" ? call.args(JSON.parse(body)) : call.args) },
               },
             ],
           });
