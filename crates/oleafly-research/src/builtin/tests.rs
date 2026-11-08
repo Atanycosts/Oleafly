@@ -13,6 +13,9 @@ use crate::scheduler::ResearchTaskState;
 use crate::store::TaskStore;
 use crate::test_support::{FakeEnv, FakeHost, CHILD_PATIENCE};
 
+#[path = "dynamic_tests.rs"]
+mod dynamic_tests;
+
 fn context(root: &Path) -> TaskRunContext {
     TaskRunContext {
         task_id: "task".into(),
@@ -485,6 +488,7 @@ impl ProviderFixture {
                     (ProviderBehavior::Skills, _) => json!({"content":"Reviewed skill outcomes."}),
                     (ProviderBehavior::RepeatTool, _) => tool_delta(vec![("list_files", json!({}))]),
                     (_, 0) => tool_delta(vec![
+                        ("discover_tools",json!({"query":"research_context"})),
                         ("write_file",json!({"path":"analysis/result.md","content":"Isolated manuscript revision"})),
                         ("write_file",json!({"path":"../original/main.tex","content":"Forbidden revision"})),
                     ]),
@@ -954,6 +958,8 @@ async fn commands_off_allows_read_only_mcp_but_does_not_invoke_write_tools() {
     let root = tempfile::tempdir().unwrap();
     let provider = Scripted::start(script(|_, step| {
         if step == 0 {
+            tool_delta(vec![("discover_tools", json!({"query":"mcp_"}))])
+        } else if step == 1 {
             tool_delta(vec![("mcp_read", json!({})), ("mcp_write", json!({}))])
         } else {
             text_reply("Read completed; write denied.")
@@ -989,8 +995,8 @@ async fn commands_off_allows_read_only_mcp_but_does_not_invoke_write_tools() {
 
     assert_eq!(*lock(&calls), ["mcp_read"]);
     let requests = provider.requests();
-    assert_eq!(requests.len(), 2);
-    let outputs = tool_outputs(&requests[1]);
+    assert_eq!(requests.len(), 3);
+    let outputs = tool_outputs(&requests[2]);
     assert!(outputs
         .iter()
         .any(|output| output.contains("retained evidence")));

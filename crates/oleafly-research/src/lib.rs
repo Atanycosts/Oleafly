@@ -1,8 +1,10 @@
 pub mod aliases;
+pub mod annotations;
 pub mod approvals;
 pub mod budget;
 pub mod builtin;
 pub mod citation;
+pub mod collaboration;
 pub mod conversation;
 pub mod evidence;
 pub mod findings;

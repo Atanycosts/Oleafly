@@ -267,6 +267,7 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
             &["query"],
         ));
     }
+    tools.extend(super::collaboration::schemas());
     tools
 }
 
@@ -791,6 +792,9 @@ pub async fn call_task_tool(
     args: Value,
     binding: &TaskBinding,
 ) -> Option<Result<Value, String>> {
+    if let Some(result) = super::collaboration::call(name, args.clone(), binding) {
+        return Some(result);
+    }
     let result = match name {
         "task_observations" => task_observations(binding, &args),
         "task_findings" => serde_json::from_value::<crate::findings::FindingQuery>(args)

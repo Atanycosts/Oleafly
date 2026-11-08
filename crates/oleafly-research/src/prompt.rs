@@ -37,6 +37,14 @@ pub fn task_prompt(context: &TaskRunContext, skills: &str) -> String {
         ));
     }
     prompt.push_str(&format!("\n\nTask: {}\n{}", context.title, context.prompt));
+    if let Some(turn) = &context.collaboration {
+        prompt.push_str(&format!(
+            "\n\nYou are the persistent member {}. Responsibility: {}. Work on the pending messages, events and annotations below; communicate directly using group_message, register relevant interests with group_interest, and return concrete results. The runtime dispatches subsequent work. Read the original annotation and record actual handling before distilling enduring value.\n{}",
+            turn.member.config.name,
+            turn.member.config.responsibility,
+            serde_json::to_string(turn).expect("member turn is serializable"),
+        ));
+    }
     prompt
 }
 
@@ -128,6 +136,7 @@ pub fn resume_message(resume: &ResumeContext, record_dir: &str) -> String {
         ResumeReason::Retry => "the previous attempt stopped",
         ResumeReason::PlanApproved => "the user approved the plan below; carry it out",
         ResumeReason::Handoff => "the task moved to a new owner",
+        ResumeReason::Collaboration => "new related work is waiting for a task member",
     };
     format!(
         "You are resuming this task in the same workspace ({reason}). Use the retained context below and {record_dir}/handoff.md. Read plan.md and ledger.tsv if they exist and are needed; an empty plan or ledger can mean this task did not need one.\n\nHandoff:\n{}\n\nPlan:\n{}\n\nLast ledger rows:\n{}",

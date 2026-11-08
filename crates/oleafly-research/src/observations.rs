@@ -40,6 +40,20 @@ pub struct ProvidedTool {
     rename_all_fields = "camelCase"
 )]
 pub enum TaskObservation {
+    Member {
+        member_id: String,
+        execution_id: String,
+        trigger_ids: Vec<String>,
+        status: String,
+    },
+    RequestContext {
+        session_id: String,
+        tools: Vec<ProvidedTool>,
+        schema_bytes: u64,
+        catalog_bytes: u64,
+        skill_bytes: u64,
+        requirement_ids: Vec<String>,
+    },
     ToolRequested {
         call_id: String,
         name: String,

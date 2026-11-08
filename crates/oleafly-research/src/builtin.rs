@@ -235,9 +235,123 @@ struct ToolScope {
     children: Arc<tokio::sync::Semaphore>,
     provider: Arc<(reqwest::Client, oleafly_agent::Resolved)>,
     usage: Arc<dyn Fn(&AgentEvent) + Send + Sync>,
+    catalog: Arc<Vec<ToolSchema>>,
+    selected: Mutex<BTreeSet<String>>,
+    touched: Mutex<BTreeSet<String>>,
+    targets: Vec<crate::annotations::AnnotationTarget>,
+    read_versions: Mutex<HashMap<String, String>>,
+    member_turn: bool,
+    session_id: String,
+    skill_bytes: u64,
 }
 
 impl ToolScope {
+    fn prepare_request(
+        &self,
+        request: &mut CompletionRequest,
+        base_suffix: &str,
+    ) -> Result<(), String> {
+        let selected = lock(&self.selected);
+        request.tools = self
+            .catalog
+            .iter()
+            .filter(|tool| selected.contains(&tool.name))
+            .cloned()
+            .collect();
+        drop(selected);
+        let store = crate::store::TaskStore::new(self.binding.services.tasks_root.clone())?;
+        let pending_annotations =
+            store.pending_task_annotations(&self.binding.task_id, self.binding.generation, true)?;
+        let current_member =
+            store.refresh_member_inbox(&self.binding.task_id, self.binding.generation)?;
+        let mut targets = self.targets.clone();
+        targets.extend(
+            pending_annotations
+                .iter()
+                .map(|annotation| annotation.target.clone()),
+        );
+        if let Some(turn) = &current_member {
+            targets.extend(
+                turn.annotations
+                    .iter()
+                    .map(|annotation| annotation.target.clone()),
+            );
+            targets.extend(
+                turn.messages
+                    .iter()
+                    .filter_map(|message| message.content.object.as_ref())
+                    .chain(turn.events.iter().map(|event| &event.object))
+                    .map(|object| crate::annotations::AnnotationTarget {
+                        project_id: self.binding.project_id.clone(),
+                        task_id: Some(self.binding.task_id.clone()),
+                        object_kind: object.kind.clone(),
+                        object_id: object.id.clone(),
+                        object_revision: object.revision.clone(),
+                        path: object.path.clone(),
+                    }),
+            );
+        }
+        targets.extend(lock(&self.touched).iter().map(|path| {
+            crate::annotations::AnnotationTarget::new(&self.binding.project_id, "file", path)
+                .task(&self.binding.task_id)
+                .at_path(path)
+        }));
+        let mut requirements = std::collections::BTreeMap::new();
+        for target in targets {
+            for requirement in store.list_active_requirements(&target)? {
+                requirements.insert(requirement.id.clone(), requirement);
+            }
+        }
+        let mut suffix = base_suffix.to_owned();
+        if !pending_annotations.is_empty() {
+            suffix.push_str("\n\nCurrent retained user requests on earlier work (priority does not depend on source age). Handle applicable requests with concrete results; preserve unresolved questions. annotation_handle records handling, and annotation_distill records the second pass about enduring value:\n");
+            suffix
+                .push_str(&serde_json::to_string(&pending_annotations).map_err(|e| e.to_string())?);
+        }
+        if let Some(turn) = &current_member {
+            suffix.push_str("\n\nYour current claimed work and source messages, events and annotations. This view is refreshed before each provider request; new relevant user requests take precedence for related work:\n");
+            suffix.push_str(&serde_json::to_string(turn).map_err(|e| e.to_string())?);
+        }
+        if let Some(events) = &self.binding.events {
+            events(TaskRuntimeEvent::Observation {
+                observation: TaskObservation::RequestContext {
+                    session_id: self.session_id.clone(),
+                    tools: request
+                        .tools
+                        .iter()
+                        .map(|tool| {
+                            Ok(ProvidedTool {
+                                name: tool.name.clone(),
+                                source: "loaded".into(),
+                                schema_sha256: content_hash(
+                                    &serde_json::to_vec(tool).map_err(|e| e.to_string())?,
+                                ),
+                            })
+                        })
+                        .collect::<Result<_, String>>()?,
+                    schema_bytes: serde_json::to_vec(&request.tools)
+                        .map_err(|e| e.to_string())?
+                        .len() as u64,
+                    catalog_bytes: serde_json::to_vec(self.catalog.as_ref())
+                        .map_err(|e| e.to_string())?
+                        .len() as u64,
+                    skill_bytes: self.skill_bytes,
+                    requirement_ids: requirements.keys().cloned().collect(),
+                },
+            });
+        }
+        if !requirements.is_empty() {
+            suffix.push_str("\n\nCurrent requirements for the objects in this execution (retained independently of conversation history):\n");
+            suffix.push_str(
+                &serde_json::to_string(&requirements.values().collect::<Vec<_>>())
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        suffix.push_str("\n\nAdditional available tools can be found and loaded with discover_tools. Loading takes effect at the next model request.");
+        request.system_suffix = Some(suffix);
+        Ok(())
+    }
+
     async fn call(
         self: Arc<Self>,
         name: String,
@@ -261,21 +375,37 @@ impl ToolScope {
             if token.is_cancelled() {
                 return Err("The task was cancelled.".to_string());
             }
-            if !self.names.contains(&name) {
+            if !self.names.contains(&name) || !lock(&self.selected).contains(&name) {
                 return Err("This tool is unavailable in research tasks.".into());
             }
             let args: Value = serde_json::from_str(&arguments)
                 .map_err(|_| "Tool arguments must be valid JSON.".to_string())?;
             match name.as_str() {
-                "read_file" => self.files.read_window(
+                "discover_tools" => {
+                    let query=args["query"].as_str().unwrap_or("").to_lowercase();
+                    let matches=self.catalog.iter().filter(|tool|query.is_empty() || format!("{} {}",tool.name,tool.description).to_lowercase().contains(&query)).take(20).cloned().collect::<Vec<_>>();
+                    if args["load"].as_bool().unwrap_or(true){let mut selected=lock(&self.selected);for tool in &matches{selected.insert(tool.name.clone());}}
+                    Ok(json!({"tools":matches,"loaded":args["load"].as_bool().unwrap_or(true)}))
+                }
+                "read_file" => {let path=text_argument(&args,"path")?;lock(&self.touched).insert(path.into());let result=self.files.read_window(
                     text_argument(&args, "path")?,
                     args["offset"].as_u64().unwrap_or(0) as usize,
                     args["limit"].as_u64().unwrap_or(MAX_OUTPUT_BYTES as u64) as usize,
-                ),
-                "write_file" => self.files.write(
-                    text_argument(&args, "path")?,
-                    text_argument(&args, "content")?,
-                ),
+                )?;if let Some(hash)=result["fileSha256"].as_str(){lock(&self.read_versions).insert(path.into(),hash.into());}Ok(result)},
+                "write_file" => {
+                    let path=text_argument(&args,"path")?;
+                    let newly_touched=lock(&self.touched).insert(path.into());
+                    let target=crate::annotations::AnnotationTarget::new(&self.binding.project_id,"file",path).task(&self.binding.task_id).at_path(path);
+                    let requirements=crate::store::TaskStore::new(self.binding.services.tasks_root.clone())?.list_active_requirements(&target)?;
+                    if newly_touched && !requirements.is_empty() {return Err(format!("Review the current requirements before this write: {}. The next request also includes them.",serde_json::to_string(&requirements).map_err(|e|e.to_string())?));}
+                    if self.member_turn {
+                        let expected=lock(&self.read_versions).get(path).cloned();
+                        if expected.is_none() && self.files.exists(path)? {return Err("Read the current file before editing it so the write can compare its version.".into());}
+                        let result=self.files.write_if_unchanged(path,text_argument(&args,"content")?,expected.as_deref())?;
+                        lock(&self.read_versions).insert(path.into(),content_hash(text_argument(&args,"content")?.as_bytes()));
+                        Ok(result)
+                    }else{self.files.write(path,text_argument(&args,"content")?)}
+                },
                 "list_files" => self
                     .files
                     .list(args["path"].as_str().unwrap_or(""))
@@ -473,6 +603,44 @@ fn registry(names: &BTreeSet<String>, mcp: &HashMap<String, TaskMcpTool>) -> Too
     registry
 }
 
+fn initial_task_tool(name: &str, group: bool) -> bool {
+    matches!(
+        name,
+        "discover_tools"
+            | "spawn_agent"
+            | "read_file"
+            | "write_file"
+            | "list_files"
+            | "search_project"
+            | "run_command"
+            | "start_run"
+            | "wait_runs"
+            | "run_status"
+            | "compile"
+            | "project_map"
+            | "load_skill"
+            | "read_skill_file"
+            | "update_todos"
+            | "get_todos"
+            | "literature_search"
+            | "read_paper"
+            | "web_search"
+            | "web_fetch"
+            | "desktop_apps"
+            | "task_observations"
+            | "annotation_context"
+            | "annotation_create"
+    ) || (group
+        && matches!(
+            name,
+            "group_context"
+                | "group_message"
+                | "group_interest"
+                | "annotation_handle"
+                | "annotation_distill"
+        ))
+}
+
 fn watch_time(
     services: &TaskServices,
     task_id: &str,
@@ -642,6 +810,13 @@ impl BuiltinTaskAdapter {
             resolved,
             usage,
         } = self.host.provider(context.clone()).await?;
+        if let Some(turn) = &context.collaboration {
+            crate::store::TaskStore::new(self.services.tasks_root.clone())?.bind_member_provider(
+                &turn.execution.id,
+                &resolved.provider_id,
+                &resolved.model_id,
+            )?;
+        }
         if let Some(effort) = brief.reasoning_effort {
             if !oleafly_agent::effort_choices(
                 &resolved.provider_id,
@@ -712,7 +887,18 @@ impl BuiltinTaskAdapter {
                 mcp.insert(tool.schema.name.clone(), tool);
             }
         }
+        tools.push(ToolSchema {name:"discover_tools".into(),description:"Find and load additional application, research, group or annotation tools by name or a topic. Loaded schemas are provided at the next model request.".into(),input_schema:json!({"type":"object","properties":{"query":{"type":"string"},"load":{"type":"boolean"}},"additionalProperties":false})});
         let names: BTreeSet<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+        let selected: BTreeSet<String> = tools
+            .iter()
+            .filter(|tool| initial_task_tool(&tool.name, context.collaboration.is_some()))
+            .map(|tool| tool.name.clone())
+            .collect();
+        let provided = tools
+            .iter()
+            .filter(|tool| selected.contains(&tool.name))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut unavailable = Vec::new();
         if !context.desktop_apps {
             unavailable.push("desktop_apps:disabled".into());
@@ -729,7 +915,7 @@ impl BuiltinTaskAdapter {
                 provider_id: resolved.provider_id.clone(),
                 model_id: resolved.model_id.clone(),
                 session_id: context.session_id.clone(),
-                tools: tools
+                tools: provided
                     .iter()
                     .map(|tool| {
                         Ok(ProvidedTool {
@@ -767,6 +953,44 @@ impl BuiltinTaskAdapter {
         let tool_registry = registry(&names, &mcp);
         let jobs = Arc::new(CommandJobs::default());
         let usage_sink = usage.clone();
+        let mut targets = vec![crate::annotations::AnnotationTarget::new(
+            &context.project_id,
+            "task",
+            &context.task_id,
+        )
+        .task(&context.task_id)];
+        if let Some(turn) = &context.collaboration {
+            targets.extend(
+                turn.annotations
+                    .iter()
+                    .map(|annotation| annotation.target.clone()),
+            );
+            targets.extend(
+                turn.messages
+                    .iter()
+                    .filter_map(|message| message.content.object.as_ref())
+                    .map(|object| crate::annotations::AnnotationTarget {
+                        project_id: context.project_id.clone(),
+                        task_id: Some(context.task_id.clone()),
+                        object_kind: object.kind.clone(),
+                        object_id: object.id.clone(),
+                        object_revision: object.revision.clone(),
+                        path: object.path.clone(),
+                    }),
+            );
+            targets.extend(
+                turn.events
+                    .iter()
+                    .map(|event| crate::annotations::AnnotationTarget {
+                        project_id: context.project_id.clone(),
+                        task_id: Some(context.task_id.clone()),
+                        object_kind: event.object.kind.clone(),
+                        object_id: event.object.id.clone(),
+                        object_revision: event.object.revision.clone(),
+                        path: event.object.path.clone(),
+                    }),
+            );
+        }
         let scope = Arc::new(ToolScope {
             files,
             jobs: jobs.clone(),
@@ -795,10 +1019,18 @@ impl BuiltinTaskAdapter {
             children: Arc::new(tokio::sync::Semaphore::new(CHILDREN_AT_ONCE)),
             provider: Arc::new((client.clone(), resolved.clone())),
             usage: Arc::new(move |event| usage_sink.observe(event)),
+            catalog: Arc::new(tools.clone()),
+            selected: Mutex::new(selected),
+            touched: Mutex::new(BTreeSet::new()),
+            targets,
+            read_versions: Mutex::new(HashMap::new()),
+            member_turn: context.collaboration.is_some(),
+            session_id: context.session_id.clone(),
+            skill_bytes: skills.prompt.len() as u64,
         });
         let mut template =
             CompletionRequest::prompt(task_prompt(&context, &skills.prompt), String::new());
-        template.tools = tools;
+        template.tools = provided;
         template.effort = brief.reasoning_effort;
         let suspend = self.services.suspends.token(&context.task_id);
         let restored = self.restored_conversation(&context, &resolved, &events);
@@ -809,6 +1041,16 @@ impl BuiltinTaskAdapter {
         let (messages, mut wait_first) = match restored {
             Some(snapshot) => (snapshot.messages, snapshot.waiting_for_runs),
             None => (vec![Message::user(first_message(&context))], false),
+        };
+        let messages = if let Some(turn) = &context.collaboration {
+            let store = crate::store::TaskStore::new(self.services.tasks_root.clone())?;
+            let mut saved = store
+                .member_conversation(&turn.member.id, &context.runtime_id, &resolved.model_id)?
+                .unwrap_or_default();
+            saved.push(Message::user(first_message(&context)));
+            saved
+        } else {
+            messages
         };
         events(TaskRuntimeEvent::SessionBound {
             native_session_id: context.session_id.clone(),
@@ -847,6 +1089,10 @@ impl BuiltinTaskAdapter {
             turns.wrap_up_turn().await;
         }
         let summary = turns.summary;
+        if let Some(turn) = &context.collaboration {
+            crate::store::TaskStore::new(self.services.tasks_root.clone())?
+                .save_member_conversation(&turn.execution.id, &turns.messages)?;
+        }
         let was_cancelled = cancel.is_cancelled();
         cancel.cancel();
         jobs.finish().await;
@@ -891,6 +1137,7 @@ impl BuiltinTaskAdapter {
         request: CompletionRequest,
         config: RunConfig,
         registry: &ToolRegistry,
+        scope: &Arc<ToolScope>,
         token: &CancellationToken,
         suspend: Option<&CancellationToken>,
         runner: ToolRunner,
@@ -902,6 +1149,7 @@ impl BuiltinTaskAdapter {
         // wrap-up are separate turns within the same execution generation.
         let previous = *lock(observed);
         let mut calls: HashMap<String, (String, String)> = HashMap::new();
+        let base_suffix = request.system_suffix.clone().unwrap_or_default();
         oleafly_agent::run_agent_with_pipeline(
             client,
             resolved,
@@ -910,6 +1158,14 @@ impl BuiltinTaskAdapter {
             ToolPipeline {
                 token: token.clone(),
                 suspend: suspend.cloned(),
+                prepare_request: Some({
+                    let scope = scope.clone();
+                    Arc::new(move |request| {
+                        scope
+                            .prepare_request(request, &base_suffix)
+                            .map_err(oleafly_agent::AgentError::Decode)
+                    })
+                }),
                 ..ToolPipeline::from_registry(registry.clone())
             },
             None,
@@ -1042,6 +1298,11 @@ impl BuiltinTaskAdapter {
 }
 
 fn first_message(context: &TaskRunContext) -> String {
+    if let Some(turn) = &context.collaboration {
+        return format!("You are {}. Responsibility: {}. Work on the pending items below with the shared task goal. Read the relevant current evidence, communicate directly with members through group_message, register interests using group_interest, and leave concrete results. Finish this turn when your current work is complete; the runtime will wake the relevant member for new messages or changes. Do not manufacture disagreement.\n\n{}",
+            turn.member.config.name,turn.member.config.responsibility,
+            serde_json::to_string(turn).expect("member turn is serializable"));
+    }
     match &context.resume {
         Some(resume) => {
             let message = resume_message(resume, &context.record_dir);
@@ -1101,6 +1362,7 @@ impl TurnLoop<'_> {
                     ..RunConfig::default()
                 },
                 self.registry,
+                self.scope,
                 &turn,
                 Some(self.suspend),
                 runner,
@@ -1115,6 +1377,7 @@ impl TurnLoop<'_> {
         }
         if let Ok(outcome) = &outcome {
             if outcome.suspended {
+                self.messages = outcome.history.clone();
                 return ControlFlow::Break(
                     adapter
                         .save_conversation(context, self.resolved, outcome.history.clone(), false)
@@ -1202,6 +1465,7 @@ impl TurnLoop<'_> {
                     ..RunConfig::default()
                 },
                 self.registry,
+                self.scope,
                 &wrap_token,
                 None,
                 tool_runner(self.scope, &wrap_token),

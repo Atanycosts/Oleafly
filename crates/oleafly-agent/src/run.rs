@@ -89,6 +89,9 @@ pub struct RunOutcome {
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 pub type ToolRunner = Arc<dyn Fn(ToolCall) -> BoxFuture<ToolOutput> + Send + Sync>;
+/// Host-owned capabilities and relevant current requirements are refreshed at
+/// model request boundaries, including after compaction.
+pub type RequestPreparation = Arc<dyn Fn(&mut CompletionRequest) -> Result<()> + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct ToolPipeline {
@@ -96,6 +99,7 @@ pub struct ToolPipeline {
     pub gate: ToolGate,
     pub token: CancellationToken,
     pub suspend: Option<CancellationToken>,
+    pub prepare_request: Option<RequestPreparation>,
 }
 
 impl ToolPipeline {
@@ -105,6 +109,7 @@ impl ToolPipeline {
             gate: ToolGate::new(),
             token: CancellationToken::new(),
             suspend: None,
+            prepare_request: None,
         }
     }
 }

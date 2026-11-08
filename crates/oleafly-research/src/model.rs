@@ -313,6 +313,7 @@ pub enum ResumeReason {
     Retry,
     PlanApproved,
     Handoff,
+    Collaboration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -908,6 +909,8 @@ pub struct TaskRunContext {
     pub desktop_apps: bool,
     #[serde(default)]
     pub handoff: Option<HandoffResume>,
+    #[serde(default)]
+    pub collaboration: Option<crate::collaboration::MemberTurn>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

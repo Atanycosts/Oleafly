@@ -1,0 +1,694 @@
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::{mpsc, oneshot};
+
+use super::*;
+use crate::collaboration::{
+    ActorKind, GroupActor, GroupObject, GroupSnapshot, GroupStatus, InterestKind, MemberDraft,
+    MemberInterest, MessageDraft, WorkStatus,
+};
+use crate::test_support::{draft, FakeEnv, FakeHost, CHILD_PATIENCE};
+
+const ORIGINAL: &str =
+    "\\documentclass{article}\n\\begin{document}\nOriginal result.\n\\end{document}\n";
+const REVISED: &str = "\\documentclass{article}\n\\begin{document}\nThe counterexample remains in the result.\n\\end{document}\n";
+
+struct StartedTurn {
+    context: TaskRunContext,
+    complete: oneshot::Sender<Result<TaskRuntimeOutcome, String>>,
+}
+
+struct ControlledGroupRuntime {
+    starts: mpsc::UnboundedSender<StartedTurn>,
+    cancellations: Arc<Mutex<Vec<String>>>,
+}
+
+impl TaskRuntimeAdapter for ControlledGroupRuntime {
+    fn supports(&self, agent_id: &str) -> bool {
+        agent_id == "fixture-agent"
+    }
+
+    fn run(
+        &self,
+        context: TaskRunContext,
+        _cancel: CancellationToken,
+        _events: TaskEventSink,
+    ) -> TaskRuntimeFuture<TaskRuntimeOutcome> {
+        let (complete, result) = oneshot::channel();
+        let sent = self
+            .starts
+            .send(StartedTurn { context, complete })
+            .map_err(|_| "the test stopped observing member starts".to_string());
+        Box::pin(async move {
+            sent?;
+            result
+                .await
+                .map_err(|_| "the test dropped the member result".to_string())?
+        })
+    }
+
+    fn cancel(&self, session_id: String) -> TaskRuntimeFuture<()> {
+        lock(&self.cancellations).push(session_id);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+struct GroupFixture {
+    _directory: tempfile::TempDir,
+    project: PathBuf,
+    state: ResearchTaskState,
+    task: ResearchTask,
+    group: GroupSnapshot,
+    starts: mpsc::UnboundedReceiver<StartedTurn>,
+    base_cancellations: Arc<Mutex<Vec<String>>>,
+}
+
+impl GroupFixture {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("paper");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("main.tex"), ORIGINAL).unwrap();
+        let host = FakeHost::new(FakeEnv::new().with_project("paper", &project).without_git());
+        let state = ResearchTaskState::for_test(directory.path().join("tasks"), 1);
+        state.attach(Arc::new(host), tokio::runtime::Handle::current());
+        let (starts, receiver) = mpsc::unbounded_channel();
+        let base_cancellations = Arc::new(Mutex::new(Vec::new()));
+        state
+            .register_runtime(
+                "fixture",
+                Arc::new(ControlledGroupRuntime {
+                    starts,
+                    cancellations: base_cancellations.clone(),
+                }),
+            )
+            .unwrap();
+        let task = state
+            .store()
+            .unwrap()
+            .create(draft("paper", "Preserve the evidence"))
+            .unwrap();
+        let group = state
+            .create_task_group(
+                "paper",
+                Some(&task.id),
+                &[
+                    member("Coordinator", true),
+                    member("Methods", false),
+                    member("Explorer", false),
+                ],
+            )
+            .unwrap();
+        Self {
+            _directory: directory,
+            project,
+            state,
+            task,
+            group,
+            starts: receiver,
+            base_cancellations,
+        }
+    }
+
+    fn member(&self, name: &str) -> String {
+        self.group
+            .members
+            .iter()
+            .find(|member| member.config.name == name)
+            .unwrap()
+            .id
+            .clone()
+    }
+
+    async fn next(&mut self) -> StartedTurn {
+        tokio::time::timeout(CHILD_PATIENCE, self.starts.recv())
+            .await
+            .expect("the task group did not start the expected member")
+            .expect("the member start channel closed")
+    }
+
+    async fn start(&self) {
+        self.state.request_start(&self.task.id).unwrap();
+        self.state.launch_ready().await.unwrap();
+    }
+
+    fn store(&self) -> TaskStore {
+        self.state.store().unwrap()
+    }
+
+    fn snapshot(&self) -> GroupSnapshot {
+        self.store()
+            .group_snapshot("paper", &self.group.group.id, 0)
+            .unwrap()
+    }
+}
+
+fn member(name: &str, coordinator: bool) -> MemberDraft {
+    MemberDraft {
+        name: name.into(),
+        responsibility: format!("Advance and verify the task as {name}"),
+        runtime_id: "fixture".into(),
+        agent_id: "fixture-agent".into(),
+        model_id: format!("{}-model", name.to_lowercase()),
+        coordinator,
+        ..Default::default()
+    }
+}
+
+fn actor(context: &TaskRunContext) -> GroupActor {
+    let turn = context
+        .collaboration
+        .as_ref()
+        .expect("member context was not bound");
+    GroupActor {
+        kind: ActorKind::Member,
+        id: turn.member.id.clone(),
+        execution_id: Some(turn.execution.id.clone()),
+    }
+}
+
+fn complete(turn: StartedTurn, summary: &str, input: u64, output: u64) {
+    turn.complete
+        .send(Ok(TaskRuntimeOutcome {
+            summary: summary.into(),
+            artifacts: Vec::new(),
+            native_session_id: None,
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+        }))
+        .unwrap();
+}
+
+async fn settled(state: &ResearchTaskState, task: &str) -> ResearchTask {
+    if let Some(waiter) = state.settle_waiter(task) {
+        tokio::time::timeout(CHILD_PATIENCE, waiter)
+            .await
+            .expect("the task group did not settle");
+    }
+    let result = state.store().unwrap().require(task).unwrap();
+    assert_eq!(result.status, ResearchTaskStatus::AwaitingReview);
+    result
+}
+
+async fn stop(state: &ResearchTaskState) {
+    tokio::time::timeout(Duration::from_secs(5), state.shutdown())
+        .await
+        .expect("the group scheduler did not shut down");
+}
+
+async fn wait_for(mut ready: impl FnMut() -> bool) {
+    tokio::time::timeout(CHILD_PATIENCE, async {
+        while !ready() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the controlled lifecycle boundary did not occur");
+}
+
+struct ExternalStart {
+    context: TaskRunContext,
+    token: CancellationToken,
+}
+
+/// Cancellation models an external execution whose cleanup only completes
+/// while the run future keeps being polled. Dropping that future is insufficient.
+struct ExternalRuntime {
+    starts: mpsc::UnboundedSender<ExternalStart>,
+    cancellations: Arc<Mutex<Vec<String>>>,
+    cancel_requested: CancellationToken,
+    finished: Arc<AtomicBool>,
+}
+
+impl TaskRuntimeAdapter for ExternalRuntime {
+    fn supports(&self, agent_id: &str) -> bool {
+        agent_id == "fixture-agent"
+    }
+
+    fn run(
+        &self,
+        context: TaskRunContext,
+        token: CancellationToken,
+        _events: TaskEventSink,
+    ) -> TaskRuntimeFuture<TaskRuntimeOutcome> {
+        let sent = self
+            .starts
+            .send(ExternalStart {
+                context,
+                token: token.clone(),
+            })
+            .map_err(|_| "the external member was not observed".to_string());
+        let requested = self.cancel_requested.clone();
+        let finished = self.finished.clone();
+        Box::pin(async move {
+            sent?;
+            requested.cancelled().await;
+            tokio::task::yield_now().await;
+            finished.store(true, Ordering::Release);
+            Err("external member stopped".into())
+        })
+    }
+
+    fn cancel(&self, session_id: String) -> TaskRuntimeFuture<()> {
+        lock(&self.cancellations).push(session_id);
+        self.cancel_requested.cancel();
+        let finished = self.finished.clone();
+        Box::pin(async move {
+            wait_for(|| finished.load(Ordering::Acquire)).await;
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn first_generation_routes_real_file_change_to_an_unmentioned_member_and_back() {
+    let mut fixture = GroupFixture::new();
+    let coordinator = fixture.member("Coordinator");
+    let methods = fixture.member("Methods");
+    let explorer = fixture.member("Explorer");
+    fixture
+        .store()
+        .set_member_interest(
+            "paper",
+            &fixture.group.group.id,
+            &MemberInterest {
+                member_id: explorer.clone(),
+                kind: InterestKind::Path,
+                value: "main.tex".into(),
+            },
+            true,
+        )
+        .unwrap();
+    fixture.start().await;
+
+    let first = fixture.next().await;
+    let initial = first.context.collaboration.as_ref().unwrap();
+    assert_eq!(initial.member.id, coordinator);
+    assert_eq!(first.context.execution_generation, 1);
+    let execution_root = first.context.execution_root.clone();
+    let task_session = first.context.session_id.clone();
+    let shared_clock = fixture
+        .state
+        .services()
+        .unwrap()
+        .clocks
+        .get(&fixture.task.id)
+        .unwrap();
+    let delegation = fixture
+        .store()
+        .group_message(
+            "paper",
+            &fixture.group.group.id,
+            &actor(&first.context),
+            &MessageDraft {
+                body: "Check the negative result and revise the manuscript if required.".into(),
+                recipients: vec![methods.clone()],
+                request_work: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    complete(first, "Asked Methods to check the evidence", 10, 1);
+
+    let second = fixture.next().await;
+    let turn = second.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.id, methods);
+    assert_eq!(turn.messages, vec![delegation.clone()]);
+    assert_eq!(second.context.execution_generation, 1);
+    assert_eq!(second.context.execution_root, execution_root);
+    assert_ne!(second.context.session_id, task_session);
+    assert!(Arc::ptr_eq(
+        &shared_clock,
+        &fixture
+            .state
+            .services()
+            .unwrap()
+            .clocks
+            .get(&fixture.task.id)
+            .unwrap()
+    ));
+    std::fs::write(
+        Path::new(&second.context.execution_root).join("main.tex"),
+        REVISED,
+    )
+    .unwrap();
+    complete(
+        second,
+        "Preserved the negative result in the manuscript",
+        20,
+        2,
+    );
+
+    // Explorer was not named in the delegation. Its path responsibility must be
+    // enough for the first generation's actual file revision to wake it.
+    let third = fixture.next().await;
+    let turn = third.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.id, explorer);
+    assert_eq!(third.context.execution_generation, 1);
+    assert!(turn.messages.is_empty());
+    assert_eq!(turn.events.len(), 1);
+    assert_eq!(turn.events[0].kind, "file_changed");
+    assert_eq!(turn.events[0].object.path.as_deref(), Some("main.tex"));
+    assert!(turn.events[0].object.revision.is_some());
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&third.context.execution_root).join("main.tex")).unwrap(),
+        REVISED
+    );
+    assert!(Arc::ptr_eq(
+        &shared_clock,
+        &fixture
+            .state
+            .services()
+            .unwrap()
+            .clocks
+            .get(&fixture.task.id)
+            .unwrap()
+    ));
+    let reply = fixture
+        .store()
+        .group_message(
+            "paper",
+            &fixture.group.group.id,
+            &actor(&third.context),
+            &MessageDraft {
+                body: "The counterexample is retained; compare its scope with the main result."
+                    .into(),
+                reply_to: Some(delegation.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(reply.content.recipients, vec![coordinator.clone()]);
+    complete(
+        third,
+        "Verified the changed manuscript and proposed a comparison",
+        30,
+        3,
+    );
+
+    let fourth = fixture.next().await;
+    let turn = fourth.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.id, coordinator);
+    assert_eq!(turn.messages, vec![reply]);
+    assert_eq!(fourth.context.execution_generation, 1);
+    assert!(Arc::ptr_eq(
+        &shared_clock,
+        &fixture
+            .state
+            .services()
+            .unwrap()
+            .clocks
+            .get(&fixture.task.id)
+            .unwrap()
+    ));
+    complete(
+        fourth,
+        "Integrated the checked revision and comparison",
+        40,
+        4,
+    );
+
+    let finished = settled(&fixture.state, &fixture.task.id).await;
+    assert_eq!(finished.execution_generation, 1);
+    let result = finished.result.unwrap();
+    assert_eq!(result.input_tokens, Some(100));
+    assert_eq!(result.output_tokens, Some(10));
+    assert!(result
+        .changed_files
+        .iter()
+        .any(|file| file.path == "main.tex"));
+    assert_eq!(
+        std::fs::read_to_string(fixture.project.join("main.tex")).unwrap(),
+        ORIGINAL
+    );
+    let snapshot = fixture.snapshot();
+    assert_eq!(snapshot.executions.len(), 4);
+    assert!(snapshot
+        .executions
+        .iter()
+        .all(|execution| execution.task_generation == 1 && execution.status == "completed"));
+    assert!(snapshot
+        .work
+        .iter()
+        .all(|work| work.status == WorkStatus::Completed));
+    assert!(!fixture
+        .store()
+        .group_has_pending(&fixture.group.group.id)
+        .unwrap());
+    assert!(fixture.starts.try_recv().is_err());
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn closed_group_keeps_feedback_and_explicit_old_object_request_continues_saved_task() {
+    let mut fixture = GroupFixture::new();
+    fixture.start().await;
+    let first = fixture.next().await;
+    let original_context = first.context.clone();
+    let original_message = first.context.collaboration.as_ref().unwrap().messages[0].clone();
+    fixture
+        .store()
+        .set_group_status("paper", &fixture.group.group.id, GroupStatus::Closed)
+        .unwrap();
+    let feedback = fixture
+        .state
+        .send_group_message(
+            "paper",
+            &fixture.group.group.id,
+            &MessageDraft {
+                body: "The earlier explanation is useful.".into(),
+                reply_to: Some(original_message.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    complete(first, "Initial work is ready for review", 5, 1);
+    let previous = settled(&fixture.state, &fixture.task.id).await;
+    assert_eq!(fixture.snapshot().group.status, GroupStatus::Closed);
+    assert!(fixture.starts.try_recv().is_err());
+
+    let follow_up = fixture
+        .state
+        .send_group_message(
+            "paper",
+            &fixture.group.group.id,
+            &MessageDraft {
+                body: "Recheck the old decision against the current manuscript.".into(),
+                recipients: vec![fixture.member("Methods")],
+                reply_to: Some(feedback.id),
+                object: Some(GroupObject {
+                    kind: "decision".into(),
+                    id: "previous-result-scope".into(),
+                    revision: Some("historical-v1".into()),
+                    path: Some("main.tex".into()),
+                }),
+                request_work: true,
+            },
+        )
+        .unwrap();
+    let second = fixture.next().await;
+    let turn = second.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.config.name, "Methods");
+    assert_eq!(turn.messages, vec![follow_up]);
+    assert!(second.context.execution_generation > original_context.execution_generation);
+    assert_eq!(
+        second.context.execution_root,
+        original_context.execution_root
+    );
+    let resumed_clock = fixture
+        .state
+        .services()
+        .unwrap()
+        .clocks
+        .get(&fixture.task.id)
+        .unwrap();
+    assert!(resumed_clock.active_ms() >= previous.active_ms);
+    complete(
+        second,
+        "Rechecked the historical decision against the saved manuscript",
+        7,
+        2,
+    );
+    let finished = settled(&fixture.state, &fixture.task.id).await;
+    assert_eq!(fixture.snapshot().group.status, GroupStatus::Open);
+    assert_eq!(
+        finished.execution_generation,
+        original_context.execution_generation + 1
+    );
+    assert_eq!(fixture.snapshot().executions.len(), 2);
+    assert!(!fixture
+        .store()
+        .group_has_pending(&fixture.group.group.id)
+        .unwrap());
+    assert!(fixture.starts.try_recv().is_err());
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn cancellation_targets_the_selected_member_adapter_and_drives_external_cleanup() {
+    let mut fixture = GroupFixture::new();
+    fixture.start().await;
+    let first = fixture.next().await;
+    let coordinator_session = first.context.session_id.clone();
+    let delegation = fixture
+        .store()
+        .group_message(
+            "paper",
+            &fixture.group.group.id,
+            &actor(&first.context),
+            &MessageDraft {
+                body: "Check the evidence in the external member execution.".into(),
+                recipients: vec![fixture.member("Methods")],
+                request_work: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let (starts, mut external_starts) = mpsc::unbounded_channel();
+    let cancellations = Arc::new(Mutex::new(Vec::new()));
+    let finished = Arc::new(AtomicBool::new(false));
+    fixture
+        .state
+        .register_runtime(
+            "fixture",
+            Arc::new(ExternalRuntime {
+                starts,
+                cancellations: cancellations.clone(),
+                cancel_requested: CancellationToken::new(),
+                finished: finished.clone(),
+            }),
+        )
+        .unwrap();
+    complete(first, "Delegated the evidence check", 3, 1);
+    let second = tokio::time::timeout(CHILD_PATIENCE, external_starts.recv())
+        .await
+        .expect("the selected external adapter was not started")
+        .unwrap();
+    assert_eq!(
+        second
+            .context
+            .collaboration
+            .as_ref()
+            .unwrap()
+            .member
+            .config
+            .name,
+        "Methods"
+    );
+    assert_ne!(second.context.session_id, coordinator_session);
+    let selected_session = second.context.session_id.clone();
+    let cancelled = tokio::time::timeout(
+        CHILD_PATIENCE,
+        fixture.state.cancel(fixture.task.id.clone()),
+    )
+    .await
+    .expect("cancellation failed to drive the external run future")
+    .unwrap();
+    assert_eq!(cancelled.status, ResearchTaskStatus::Cancelled);
+    assert!(second.token.is_cancelled());
+    assert!(finished.load(Ordering::Acquire));
+    assert!(lock(&fixture.base_cancellations).is_empty());
+    let sessions = lock(&cancellations).clone();
+    assert!(!sessions.is_empty());
+    assert!(sessions.iter().all(|session| session == &selected_session));
+    let snapshot = fixture.snapshot();
+    let interrupted = snapshot
+        .executions
+        .iter()
+        .find(|execution| execution.session_id == selected_session)
+        .unwrap();
+    assert_eq!(interrupted.status, "interrupted");
+    let pending = snapshot
+        .work
+        .iter()
+        .find(|work| work.cause_id == delegation.id)
+        .unwrap();
+    assert_eq!(pending.status, WorkStatus::Pending);
+    assert!(pending.execution_id.is_none());
+    assert!(pending.result_message_id.is_none());
+    assert!(external_starts.try_recv().is_err());
+    assert!(fixture.starts.try_recv().is_err());
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn suspension_requeues_the_current_causes_and_does_not_start_the_next_member() {
+    let mut fixture = GroupFixture::new();
+    fixture.start().await;
+    let first = fixture.next().await;
+    let initial = first.context.collaboration.as_ref().unwrap().clone();
+    fixture
+        .store()
+        .group_message(
+            "paper",
+            &fixture.group.group.id,
+            &actor(&first.context),
+            &MessageDraft {
+                body: "Check this after the current member finishes.".into(),
+                recipients: vec![fixture.member("Methods")],
+                request_work: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let suspending = {
+        let state = fixture.state.clone();
+        let id = fixture.task.id.clone();
+        tokio::spawn(async move {
+            state
+                .suspend(&[id], SuspendMode::Prompt, Some(CHILD_PATIENCE))
+                .await
+        })
+    };
+    let services = fixture.state.services().unwrap();
+    wait_for(|| services.suspends.requested(&fixture.task.id)).await;
+    services.suspends.record(
+        &fixture.task.id,
+        SuspendState {
+            conversation: Some("member-pause.json".into()),
+            turn_interrupted: true,
+            acp: None,
+        },
+    );
+    complete(
+        first,
+        "Saved the current partial check before suspension",
+        11,
+        2,
+    );
+    let results = tokio::time::timeout(CHILD_PATIENCE, suspending)
+        .await
+        .expect("the member did not suspend")
+        .unwrap();
+    assert!(matches!(
+        results[0].1,
+        SuspendResult::Suspended { generation: 1, .. }
+    ));
+    assert_eq!(
+        fixture.store().require(&fixture.task.id).unwrap().status,
+        ResearchTaskStatus::Running
+    );
+    let snapshot = fixture.snapshot();
+    assert_eq!(snapshot.executions.len(), 1);
+    assert_eq!(snapshot.executions[0].status, "interrupted");
+    assert_eq!(snapshot.executions[0].input_tokens, Some(11));
+    assert_eq!(snapshot.executions[0].output_tokens, Some(2));
+    assert!(snapshot
+        .work
+        .iter()
+        .all(|work| work.status == WorkStatus::Pending));
+    assert!(snapshot
+        .work
+        .iter()
+        .any(|work| work.id == initial.work[0].id));
+    assert!(snapshot
+        .work
+        .iter()
+        .all(|work| work.execution_id.is_none() && work.result_message_id.is_none()));
+    assert!(fixture.starts.try_recv().is_err());
+    assert!(lock(&fixture.base_cancellations).is_empty());
+    stop(&fixture.state).await;
+}
