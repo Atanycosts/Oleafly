@@ -448,7 +448,14 @@ impl ToolScope {
             }
         }
         .await;
-        output(result)
+        if self.mcp.contains_key(&name) {
+            match result {
+                Ok(result) => mcp_output(&result),
+                Err(error) => output(Err(error)),
+            }
+        } else {
+            output(result)
+        }
     }
 }
 

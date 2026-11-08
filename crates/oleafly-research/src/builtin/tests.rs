@@ -1860,3 +1860,50 @@ async fn a_task_that_waits_for_runs_when_its_time_ends_still_wraps_up() {
     }));
     budgeted.state.shutdown().await;
 }
+
+#[tokio::test]
+async fn retained_pdf_mcp_images_reach_the_next_model_request() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Scripted::start(script(|_, step| match step {
+        0 => tool_delta(vec![("discover_tools", json!({"query":"task_pdf_pages"}))]),
+        1 => tool_delta(vec![("task_pdf_pages", json!({}))]),
+        _ => text_reply("Page received for inspection."),
+    }))
+    .await;
+    let mut host = fixture_host(root.path(), provider.url.clone()).await;
+    Arc::get_mut(&mut host).unwrap().mcp_tools = vec![TaskMcpTool {
+        schema: ToolSchema {
+            name: "task_pdf_pages".into(),
+            description: "Task PDF page image".into(),
+            input_schema: json!({"type":"object"}),
+        },
+        read_only_hint: true,
+        call: Arc::new(|_| {
+            Box::pin(async {
+                Ok(
+                    json!({"content":[{"type":"text","text":"Page 1"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo="}],"isError":false}),
+                )
+            })
+        }),
+    }];
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    within(adapter.run(
+        context(root.path()),
+        CancellationToken::new(),
+        event_log().1,
+    ))
+    .await
+    .unwrap();
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    let image = requests[2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .find(|part| part["type"] == "image_url");
+    assert_eq!(
+        image.unwrap()["image_url"]["url"],
+        "data:image/png;base64,iVBORw0KGgo="
+    );
+}

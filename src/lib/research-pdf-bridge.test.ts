@@ -8,7 +8,10 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) })
 vi.mock("@/lib/pdf-text", () => ({ extractPdfText: (...args: unknown[]) => extractPdfText(...args) }));
 
 import { listen } from "@tauri-apps/api/event";
-import { answerPdfTextRequest, mountResearchPdfBridge } from "./research-pdf-bridge";
+import { answerPdfPagesRequest, answerPdfTextRequest, mountResearchPdfBridge } from "./research-pdf-bridge";
+
+const renderPages = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/pdf-image", () => ({ renderPages }));
 
 describe("research PDF bridge", () => {
   beforeEach(() => {
@@ -116,4 +119,19 @@ describe("research PDF bridge", () => {
     );
     expect(invoke).toHaveBeenCalledWith("research_pdf_text_fetch", { token: "t6" });
   });
+});
+
+it("returns rendered page image bytes through the task request token", async () => {
+  invoke.mockImplementation(async (command: string) => command === "research_pdf_pages_fetch" ? new ArrayBuffer(4) : undefined);
+  renderPages.mockImplementation(async function* () { yield "data:image/png;base64,iVBORw0KGgo="; });
+  await answerPdfPagesRequest("pages-a", [2], 1.5);
+  expect(renderPages).toHaveBeenCalledWith(expect.any(Uint8Array), [2], 1.5);
+  expect(invoke).toHaveBeenCalledWith("research_pdf_pages_result", { token:"pages-a", images:["iVBORw0KGgo="], error:null });
+});
+
+it("reports page render failures without returning partial page images", async () => {
+  invoke.mockImplementation(async (command: string) => command === "research_pdf_pages_fetch" ? new ArrayBuffer(4) : undefined);
+  renderPages.mockImplementation(async function* () { yield "data:image/png;base64,iVBORw0KGgo="; throw new Error("page out of range"); });
+  await answerPdfPagesRequest("pages-b", [1, 5], 1);
+  expect(invoke).toHaveBeenCalledWith("research_pdf_pages_result", { token:"pages-b", images:null, error:"page out of range" });
 });

@@ -346,12 +346,17 @@ impl TaskHost for NativeTaskHost {
                 "generation": context.execution_generation,
             }
         });
+        let pdf_pages = crate::research_tasks::pdf_pages::tool(
+            self.app.clone(),
+            crate::paths::oleafly_root().map(|root| root.join("research-tasks")),
+            context.task_id.clone(),
+        );
         Box::pin(async move {
             let names = tokio::task::spawn_blocking(task_mcp_server_names)
                 .await
                 .unwrap_or_default();
             let servers = crate::mcp::client::task_server_tools(&names).await;
-            Ok(servers
+            let mut tools: Vec<TaskMcpTool> = servers
                 .into_iter()
                 .flat_map(|server| {
                     let server_name = server.name;
@@ -381,7 +386,9 @@ impl TaskHost for NativeTaskHost {
                         }
                     })
                 })
-                .collect())
+                .collect();
+            tools.push(pdf_pages);
+            Ok(tools)
         })
     }
 

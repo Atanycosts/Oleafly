@@ -17,8 +17,26 @@ export async function answerPdfTextRequest(token: string): Promise<void> {
   }
 }
 
-export function mountResearchPdfBridge(): Promise<() => void> {
-  return listen<{ token: string }>("research-pdf-text-request", (event) => {
+export async function answerPdfPagesRequest(token: string, pages: number[], scale: number): Promise<void> {
+  try {
+    const bytes = await invoke<ArrayBuffer>("research_pdf_pages_fetch", { token });
+    const { renderPages } = await import("@/lib/pdf-image");
+    const images: string[] = [];
+    for await (const image of renderPages(new Uint8Array(bytes), pages, scale)) images.push(image.slice("data:image/png;base64,".length));
+    await invoke("research_pdf_pages_result", { token, images, error: null });
+  } catch (error) {
+    await invoke("research_pdf_pages_result", { token, images: null, error: error instanceof Error ? error.message : String(error) }).catch(() => {});
+  }
+}
+
+export async function mountResearchPdfBridge(): Promise<() => void> {
+  const stopText = await listen<{ token: string }>("research-pdf-text-request", (event) => {
     void answerPdfTextRequest(event.payload.token);
   });
+  try {
+    const stopPages = await listen<{ token: string; pages: number[]; scale: number }>("research-pdf-pages-request", (event) => {
+      void answerPdfPagesRequest(event.payload.token, event.payload.pages, event.payload.scale);
+    });
+    return () => { stopText(); stopPages(); };
+  } catch (error) { stopText(); throw error; }
 }
