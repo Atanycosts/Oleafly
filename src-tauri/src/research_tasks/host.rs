@@ -397,25 +397,42 @@ async fn compile_with_manifest(
     ))
 }
 
+fn task_compile_config(
+    request: &oleafly_research::compiled_artifacts::TaskCompileRequest,
+) -> Result<(Option<oleafly_core::ProjectManifest>, Option<String>), String> {
+    let manifest = crate::task_inputs::compile_manifest(&request.tasks_root, &request.task_id)?;
+    let main_document = if manifest.is_none() {
+        crate::task_inputs::main_document(&request.tasks_root, &request.task_id)?
+    } else {
+        None
+    };
+    Ok((manifest, main_document))
+}
+
 impl WorkspaceTools for AppWorkspaceTools {
     fn compile_task(
         &self,
         request: oleafly_research::compiled_artifacts::TaskCompileRequest,
     ) -> TaskRuntimeFuture<CompileSummary> {
         Box::pin(async move {
-            let fingerprint = oleafly_research::compiled_artifacts::input_fingerprint(&request)?;
-            let mut summary = match crate::task_inputs::compile_manifest(
-                &request.tasks_root,
-                &request.task_id,
-            )? {
+            let (manifest, main_document) = task_compile_config(&request)?;
+            let effective_config =
+                serde_json::to_value((&manifest, &main_document)).map_err(|e| e.to_string())?;
+            let fingerprint = oleafly_research::compiled_artifacts::input_fingerprint_with_config(
+                &request,
+                &effective_config,
+            )?;
+            let mut summary = match manifest {
                 Some(manifest) => compile_with_manifest(&request.execution_root, manifest).await?,
-                None => {
-                    let main_document =
-                        crate::task_inputs::main_document(&request.tasks_root, &request.task_id)?;
-                    compile_with_cli(request.execution_root.clone(), main_document).await?
-                }
+                None => compile_with_cli(request.execution_root.clone(), main_document).await?,
             };
-            if fingerprint != oleafly_research::compiled_artifacts::input_fingerprint(&request)? {
+            if fingerprint
+                != oleafly_research::compiled_artifacts::input_fingerprint_with_config(
+                    &request,
+                    &serde_json::to_value(task_compile_config(&request)?)
+                        .map_err(|e| e.to_string())?,
+                )?
+            {
                 return Err("The task inputs changed during compilation.".into());
             }
             summary.artifact =

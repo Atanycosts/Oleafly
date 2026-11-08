@@ -85,6 +85,7 @@ describe("SidebarPanelHeader", () => {
     "src/components/preflight/PreflightPanel.tsx",
     "src/components/layout/ReferencesPanel.tsx",
     "src/components/research/ResearchWorkspacePanel.tsx",
+    "src/components/research/JournalChecksPanel.tsx",
     "src/components/layout/McpActivityPanel.tsx",
     "src/features/collab/sharing/CollabPane.tsx",
   ];

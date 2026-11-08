@@ -161,7 +161,7 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
             &["id"],
         ),
         tool("cancel_run", "Stop a run.", json!({"id": run_id}), &["id"]),
-        tool("task_pdf_text", "Read page text from an immutable compiled task PDF reference returned by compile.", json!({"reference": {"type": "object"}}), &["reference"]),
+        tool("task_pdf_text", "Read page text from an immutable compiled task PDF reference returned by compile. Pass the complete artifact object.", json!({"reference": crate::compiled_artifacts::reference_schema()}), &["reference"]),
         tool("compile", "Build the task workspace with Oleafly's command-line tool and report errors and warnings.", json!({}), &[]),
         tool("project_map", "The project's outline, labels, references and citations, with any that do not resolve.", json!({}), &[]),
         tool(

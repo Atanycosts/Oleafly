@@ -1234,3 +1234,67 @@ fn inbox_refresh_claims_late_sources_for_only_the_running_member() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn pending_group_work_admits_an_unstarted_task_once_and_paused_groups_hold() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = TaskStore::new(directory.path().join("tasks")).unwrap();
+    let task = store
+        .create(ResearchTaskDraft {
+            project_id: "paper".into(),
+            title: "New group task".into(),
+            prompt: "Check the manuscript".into(),
+            runtime_id: "fixture".into(),
+            agent_id: "fixture-agent".into(),
+            model_id: "fixture-model".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let group = store
+        .create_task_group(
+            "paper",
+            Some(&task.id),
+            &[member("Coordinator", "Integrate results", true)],
+        )
+        .unwrap();
+    assert!(!task.start_requested);
+    store
+        .group_message(
+            "paper",
+            &group.group.id,
+            &GroupActor::user(),
+            &MessageDraft {
+                body: "Background feedback only".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(store.queue_group_followups().unwrap().is_empty());
+    assert!(!store.require(&task.id).unwrap().start_requested);
+    store
+        .set_group_status("paper", &group.group.id, GroupStatus::Paused)
+        .unwrap();
+    store
+        .group_message(
+            "paper",
+            &group.group.id,
+            &GroupActor::user(),
+            &request("Start checking", &[&group.members[0].id]),
+        )
+        .unwrap();
+    assert!(store.queue_group_followups().unwrap().is_empty());
+    assert!(!store.require(&task.id).unwrap().start_requested);
+    store
+        .set_group_status("paper", &group.group.id, GroupStatus::Open)
+        .unwrap();
+    let admitted = store.queue_group_followups().unwrap();
+    assert_eq!(admitted.len(), 1);
+    assert_eq!(admitted[0].id, task.id);
+    assert!(admitted[0].start_requested);
+    assert_eq!(admitted[0].status, ResearchTaskStatus::Queued);
+    assert_eq!(admitted[0].execution_generation, task.execution_generation);
+    assert_eq!(admitted[0].active_ms, task.active_ms);
+    assert_eq!(admitted[0].pending_start, task.pending_start);
+    assert!(store.queue_group_followups().unwrap().is_empty());
+    assert_eq!(store.claim_next().unwrap().unwrap().id, task.id);
+}

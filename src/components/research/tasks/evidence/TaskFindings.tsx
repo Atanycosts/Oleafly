@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { Textarea } from "@/components/ui/textarea";
 import { i18n } from "@/i18n";
 import { describeError } from "@/lib/app-error";
@@ -59,7 +60,7 @@ function FindingCard({ taskId, generation, view, onSaved }: Readonly<{
     <Button size="xs" variant="outline" disabled={busy} onClick={() => void preview()}>{t(($) => $.researchTools.findings.source)}</Button>
     {source ? <div className="space-y-1 text-xs" data-testid="finding-source">
       <p>{t(($) => $.researchTools.findings.retainedQuote)} · {`${source.path}:${source.lineStart}–${source.lineEnd}`}</p>
-      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2">{source.quote}</pre>
+      <CodeBlock code={source.quote} preClassName="max-h-48 whitespace-pre-wrap break-words" />
       <p className="break-all font-mono">{`SHA-256 ${source.fileSha256}`}</p>
       <p className="break-all font-mono">{t(($) => $.researchTools.findings.quoteHash)}: {source.quoteSha256}</p>
     </div> : null}

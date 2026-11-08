@@ -1,7 +1,7 @@
 import type { ResearchTask } from "../../src/lib/research-tasks";
 import type { AnnotationContext, GroupSnapshot } from "../../src/lib/task-collaboration";
 import { test, expect } from "../fixtures";
-import { createBlankProject, openRailTab } from "../helpers";
+import { createBlankProject, fillTextarea, openRailTab } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 
@@ -28,7 +28,7 @@ test("native annotations retain feedback and deliver an explicit historical foll
     const panel = page.locator('[data-testid="task-annotations"]');
     await expect(panel).toBeVisible();
     const feedback = "Keep this original wording as feedback only: α claim stays provisional.";
-    await panel.locator("textarea").fill(feedback);
+    await fillTextarea(page, '[data-testid="task-annotations"] textarea', feedback);
     await panel.getByRole("button", { name: "Save annotation", exact: true }).click();
     const feedbackRow = panel.locator('[data-testid="task-annotation"]').filter({ hasText: feedback });
     await expect(feedbackRow).toContainText("Feedback");
@@ -40,7 +40,7 @@ test("native annotations retain feedback and deliver an explicit historical foll
     server.setReply("Scripted follow-up delivery acknowledged");
     await feedbackRow.getByRole("button", { name: "Reply", exact: true }).click();
     const followUp = "Revisit that original generation and check the provisional claim.";
-    await panel.locator("textarea").fill(followUp);
+    await fillTextarea(page, '[data-testid="task-annotations"] textarea', followUp);
     await panel.getByRole("checkbox", { name: "Request follow-up handling" }).check();
     await panel.getByRole("button", { name: "Save annotation", exact: true }).click();
     let receipts: AnnotationContext = stored;
@@ -79,7 +79,7 @@ test("native task group routes addressed work into member execution and a reply"
     const panel = page.locator('section[aria-label="Task group"]');
     await expect(panel).toBeVisible();
     await panel.getByRole("checkbox", { name: "@Reviewer", exact: true }).check();
-    await panel.locator('textarea[aria-label="Message"]').fill("Review this bounded claim and return your finding.");
+    await fillTextarea(page, 'section[aria-label="Task group"] textarea[aria-label="Message"]', "Review this bounded claim and return your finding.");
     await panel.getByRole("checkbox", { name: "Request work", exact: true }).check();
     await panel.getByRole("button", { name: "Send", exact: true }).click();
     let result: GroupSnapshot = group;

@@ -32,6 +32,21 @@ pub struct TaskCompiledArtifact {
     pub path: String,
 }
 
+pub fn reference_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "description": "The complete artifact object returned by compile. Copy the values without constructing a filesystem path.",
+        "properties": {
+            "taskId": {"type":"string"}, "generation": {"type":"integer"},
+            "inputFingerprint": {"type":"string"}, "sourceRevision": {"type":"string"},
+            "outputId": {"type":["string","null"]}, "pdfSha256": {"type":"string"},
+            "size": {"type":"integer"}, "mainDocument": {"type":"string"}, "path": {"type":"string"}
+        },
+        "required": ["taskId", "generation", "inputFingerprint", "sourceRevision", "pdfSha256", "size", "mainDocument", "path"],
+        "additionalProperties": false
+    })
+}
+
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -51,12 +66,24 @@ fn directory(root: &Path, task: &str, generation: u64) -> Result<PathBuf, String
 }
 
 pub fn input_fingerprint(request: &TaskCompileRequest) -> Result<String, String> {
+    input_fingerprint_with_config(request, &serde_json::Value::Null)
+}
+
+/// Broad workspace identity, including retained effective compiler settings.
+/// Task records are included because research folders can also hold real inputs.
+pub fn input_fingerprint_with_config(
+    request: &TaskCompileRequest,
+    effective_config: &serde_json::Value,
+) -> Result<String, String> {
     let (manifest, skipped) = crate::isolation::collect_manifest_limited(
         &request.execution_root,
         &CancellationToken::new(),
         crate::isolation::CopyLimits::default(),
     )?;
-    let bytes = serde_json::to_vec(&(manifest, skipped)).map_err(|e| e.to_string())?;
+    let mut effective_config = effective_config.clone();
+    effective_config.sort_all_objects();
+    let bytes =
+        serde_json::to_vec(&(manifest, skipped, effective_config)).map_err(|e| e.to_string())?;
     Ok(digest(&bytes))
 }
 
@@ -250,5 +277,37 @@ mod tests {
         assert_eq!(before, input_fingerprint(&request).unwrap());
         std::fs::write(root.path().join("main.tex"), "after").unwrap();
         assert_ne!(before, input_fingerprint(&request).unwrap());
+    }
+    #[test]
+    fn effective_compile_settings_change_identity_with_the_same_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("main.tex"), "source").unwrap();
+        let request = TaskCompileRequest {
+            task_id: "task-a".into(),
+            generation: 1,
+            tasks_root: root.path().into(),
+            execution_root: root.path().into(),
+            source: None,
+            source_revision: "base".into(),
+        };
+        let config = serde_json::json!({"manifest":{"main_doc":"main.tex","engine":"latexmk","tex_flavor":"xelatex"},"mainDocument":null});
+        let baseline = input_fingerprint_with_config(&request, &config).unwrap();
+        for (field, value) in [
+            ("main_doc", "other.tex"),
+            ("engine", "tectonic"),
+            ("tex_flavor", "pdflatex"),
+        ] {
+            let mut changed = config.clone();
+            changed["manifest"][field] = serde_json::json!(value);
+            assert_ne!(
+                baseline,
+                input_fingerprint_with_config(&request, &changed).unwrap(),
+                "{field}"
+            );
+        }
+        assert_eq!(
+            baseline,
+            input_fingerprint_with_config(&request, &config).unwrap()
+        );
     }
 }

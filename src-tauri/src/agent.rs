@@ -14,6 +14,7 @@ use tauri::{Manager, State};
 use crate::config::{AppConfig, ModelProbe, ProbeVerdict};
 
 mod acp_usage;
+mod annotation_context;
 mod child_acp;
 mod registry;
 mod subagents;
@@ -801,6 +802,27 @@ pub async fn agent_run(
             notices: web_notices,
         } = web::prepare_run_web(&mut request, &resolved, search_key, hosted_web)?;
         notices.extend(web_notices);
+        let annotations = if !request.tools.is_empty() {
+            pinned_project
+                .as_ref()
+                .map(|project| {
+                    annotation_context::ChatAnnotationContext::new(
+                        data_root.clone(),
+                        project.clone(),
+                        thread_id.clone(),
+                        &run_registration_id,
+                    )
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        if annotations.is_some() {
+            for schema in annotation_context::ChatAnnotationContext::schemas() {
+                request.tools.retain(|tool| tool.name != schema.name);
+                request.tools.push(schema);
+            }
+        }
         oleafly_agent::validate_completion_request(&request).map_err(tagged)?;
         let client = agent_state.client()?;
         let sink = on_event.clone();
@@ -821,6 +843,10 @@ pub async fn agent_run(
             pinned_project.clone(),
             cua_run,
         );
+        let inner_tool = match &annotations {
+            Some(context) => context.wrap(inner_tool),
+            None => inner_tool,
+        };
         let inner_tool = match &web_ctx {
             Some(ctx) => oleafly_agent::tools::web::web_tool_runner(ctx.clone(), inner_tool),
             None => inner_tool,
@@ -835,7 +861,15 @@ pub async fn agent_run(
             approval_classifier(pinned_project.clone()),
         );
         let classified_tool = allowlisted_tool_runner(shared_tools, classified_tool);
-        let pipeline = tool_pipeline();
+        let mut pipeline = tool_pipeline();
+        if let Some(context) = annotations {
+            let suffix = request.system_suffix.clone().unwrap_or_default();
+            pipeline.prepare_request = Some(std::sync::Arc::new(move |request| {
+                context
+                    .prepare_request(request, &suffix)
+                    .map_err(oleafly_agent::AgentError::Decode)
+            }));
+        }
         let multi_agent = crate::agent_config::MultiAgentConfig::load(&data_root);
         for notice in notices {
             let _ = on_event.send(notice);

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { BookOpenCheck, FileUp, Play, RefreshCw, Sparkles } from "lucide-react";
 import { SidebarPanelHeader } from "@/components/layout/SidebarSection";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -601,7 +602,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   {(visibleCheck?.coverage_gaps ?? world?.coverage_gaps ?? []).map((gap) => (
                     <li key={`${gap.code}-${gap.locator}-${gap.message}`}>
                       <span>{journalMessage(gap.message)}</span>
-                      {gap.locator && <code className="block break-all text-[10px]">{gap.locator}</code>}
+                      {gap.locator && <code className="block break-all text-[0.625rem]">{gap.locator}</code>}
                     </li>
                   ))}
                 </ul>
@@ -954,9 +955,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   </dl>
                   <details className="mt-2 text-xs">
                     <summary>{text.sourceData}</summary>
-                    <pre className="overflow-x-auto whitespace-pre-wrap break-all">
-                      {JSON.stringify(item.content, null, 2)}
-                    </pre>
+                    <CodeBlock code={JSON.stringify(item.content, null, 2)} preClassName="whitespace-pre-wrap break-all" />
                   </details>
                 </div>
               ))}

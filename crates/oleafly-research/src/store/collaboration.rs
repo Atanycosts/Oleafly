@@ -779,11 +779,19 @@ impl TaskStore {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
-        let ids = tx.prepare("SELECT DISTINCT g.task_id FROM collaboration_groups g JOIN collaboration_work w ON w.group_id=g.id JOIN collaboration_members m ON m.id=w.member_id JOIN research_tasks t ON t.id=g.task_id WHERE g.status='open' AND w.status='\"pending\"' AND m.paused=0 AND t.status IN ('awaiting_review','completed') AND t.apply_state IS NULL")
+        let ids = tx.prepare("SELECT DISTINCT g.task_id FROM collaboration_groups g JOIN collaboration_work w ON w.group_id=g.id JOIN collaboration_members m ON m.id=w.member_id JOIN research_tasks t ON t.id=g.task_id WHERE g.status='open' AND w.status='\"pending\"' AND m.paused=0 AND (t.status IN ('awaiting_review','completed') OR (t.status='queued' AND t.start_requested=0)) AND t.apply_state IS NULL")
             .and_then(|mut q|q.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?;
         let mut queued = Vec::new();
         for id in ids {
             let task = Self::require_on(&tx, &id)?;
+            if task.status == ResearchTaskStatus::Queued {
+                tx.execute(
+                    "UPDATE research_tasks SET start_requested=1,updated_at=?2 WHERE id=?1 AND status='queued' AND start_requested=0",
+                    params![id, now_ms()],
+                ).map_err(store_error)?;
+                queued.push(id);
+                continue;
+            }
             if matches!(
                 task.stop_reason,
                 Some(

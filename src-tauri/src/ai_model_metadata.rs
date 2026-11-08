@@ -970,7 +970,10 @@ mod tests {
         let caps = model_caps(&parse_snapshot(&json).unwrap(), None, "anthropic", "m");
         assert_eq!(
             caps.reasoning.efforts,
-            Some(vec![oleafly_agent::Effort::Low])
+            Some(vec![
+                oleafly_agent::Effort::Low,
+                oleafly_agent::Effort::Ultra
+            ])
         );
     }
 
@@ -1025,11 +1028,9 @@ mod tests {
                 oleafly_agent::Effort::Max,
             ])
         );
-        assert_eq!(
-            model_caps(&snapshot, None, "openai", "gpt-6.1-sol"),
-            oleafly_agent::ModelCaps::default()
-        );
+        assert_eq!(model_caps(&snapshot, None, "openai", "gpt-6.1-sol"), custom);
         let stored = serde_json::json!({
+            "metadataSource": "provider",
             "reasoning": true,
             "reasoningOptions": [{"type":"effort","values":["low","high"]}]
         });
@@ -1047,7 +1048,7 @@ mod tests {
             .is_none());
         assert!(snapshot
             .lookup_for_provider("openai", "gpt-6.1-sol")
-            .is_none());
+            .is_some());
     }
 
     #[test]
