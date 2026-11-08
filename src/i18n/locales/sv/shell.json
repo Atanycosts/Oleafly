@@ -1263,7 +1263,9 @@
     "upToDateGeneric": "Du kör den senaste versionen av Oleafly",
     "upToDateHeadline": "Du är uppdaterad!",
     "upToDateVersion": "Oleafly v{{version}} är den senaste versionen",
-    "viewRelease": "Visa versionen"
+    "viewRelease": "Visa versionen",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "Fönsterreglage",

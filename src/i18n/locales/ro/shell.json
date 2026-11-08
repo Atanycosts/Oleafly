@@ -1283,7 +1283,9 @@
     "upToDateGeneric": "Folosești cea mai recentă versiune de Oleafly",
     "upToDateHeadline": "Ești la zi!",
     "upToDateVersion": "Oleafly v{{version}} este cea mai recentă versiune",
-    "viewRelease": "Vezi lansarea"
+    "viewRelease": "Vezi lansarea",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "Comenzile ferestrei",

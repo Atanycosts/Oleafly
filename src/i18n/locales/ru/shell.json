@@ -1303,7 +1303,9 @@
     "upToDateGeneric": "У вас последняя версия Oleafly",
     "upToDateHeadline": "У вас всё актуально!",
     "upToDateVersion": "Oleafly v{{version}} является последней версией",
-    "viewRelease": "Посмотреть выпуск"
+    "viewRelease": "Посмотреть выпуск",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "Управление окном",
