@@ -714,20 +714,12 @@ reasoning quality. The later test-only rewrite to the existing packaged-import
 registry passed that registry's independent guard. The selected final native log
 is `.private/a0-native/final.log`; intermediate attempts remain separate.
 
-The frontend production build, full Biome lint and TypeScript checks passed.
-The first full frontend run completed 23,444 tests successfully with 21 failures:
-the new PDF parent fixtures and packaged-import entry were corrected, and the
-affected tests passed on targeted reruns. Four load-sensitive composer/diagram
-timeouts passed in their complete single-worker files. The remaining baseline
-failures concern journal/plain-text styles and outdated starter/rail fixtures;
-the files establishing them are unchanged from the shared baseline. Full i18n
-validation reports 6,971 errors both at that baseline and in this slice, with
-zero new issues using the same validator and each revision's own catalogs.
-The final focused frontend runs passed 372 tests. Task inputs (5), task
-skill/ACP behavior (7), compile host (6), retained artifacts (2), Rust formatting
-and Clippy for the three affected packages also passed. These results do not
-claim a passing full frontend gate. The official installed application has not
-been updated.
+The frontend production build, full Biome lint and TypeScript checks passed in
+this application slice. Earlier full-suite baseline and fixture failures were
+subsequently addressed on the integrated branch; current exact gate results
+are recorded in “Integrated runtime and real-model acceptance” below. Historical
+logs are retained separately and are not edited into success. The official
+installed application has not been updated.
 
 ## Task collaboration and historical annotations in the application (2026-11-08)
 
@@ -755,8 +747,7 @@ executions, plus links from completed work to its returned message. Refreshes
 use the persisted message cursor. This application slice only creates built-in
 groups; ordinary ACP tasks remain supported, and an unavailable selected ACP
 model now fails before prompting instead of continuing with the default model.
-Continuous ACP group context and ordinary chat annotations are outside this
-slice's verified boundary.
+Continuous ACP group context is outside this slice's verified boundary. Ordinary built-in chat annotations are delivered by the later integrated section below.
 
 Application TypeScript and scoped Biome checks passed. Focused UI and bridge
 regression tests passed **133/133**, including three historical-target and
@@ -764,14 +755,11 @@ member-loading parent tests, seven annotation panel tests and six group tests.
 The application collaboration boundary passed **2/2** Rust tests. ACP behavior
 passed **8/8**; task PDF page bridge frontend passed **8/8**, Rust page boundary
 passed **3/3**, and the runtime test confirmed an image URL in the actual next
-model request (**1/1**). The full frontend/i18n baseline failures documented above
-remain; these focused results do not claim those full gates passed.
+model request (**1/1**). These were slice-level focused results; the later integrated gate results supersede their historical baseline status.
 
 `e2e/tests/87-task-collaboration.spec.ts` adds native acceptance scenarios for
 ordinary feedback versus an explicit historical follow-up and addressed member
-work through real IPC and TaskStore. It uses a scripted model and awaits the
-integrated native application run; authoring and typechecking the spec does not
-establish that native acceptance passed. The official installation is unchanged.
+work through real IPC and TaskStore. It uses a scripted model; its final integrated native execution is recorded below, separately from the real-model reasoning fixtures. The official installation is unchanged.
 
 ## Ordinary built-in chat annotations (2026-11-08)
 
@@ -817,8 +805,134 @@ generation's bytes through the generic preview action.
 `e2e/tests/120-chat-annotations.spec.ts` prepares a real ordinary-chat UI flow
 through native persistence and subsequent model request capture. The scripted
 `119-task-pdf-pages.spec.ts` likewise captures actual image parts following a
-native task compile. Both require the integrated native acceptance run;
-prepared specs and mocks are not evidence of real-model reasoning quality.
+native task compile. Both have a final integrated native run recorded below; scripted model sequencing is evidence of delivery and persistence, not real-model reasoning quality.
+
+## Integrated runtime and real-model acceptance (2026-11-08)
+
+The integrated checkout is `/Volumes/Studio/Projects/Oleafly-agent-runtime`,
+branch `codex/agent-runtime`, based on the preserved local snapshot
+`72c4c3da7b3b6110acc697611eaf4154efc8bee1`. The original checkout remains at
+`553c72d4` with all 53 captured dirty/untracked file hashes unchanged; see
+`.private/agent-acceptance/evidence/source-preservation.json`. No official
+installation, upstream push or remote deployment was changed.
+
+The code is committed through `8c8d95a6` on the integration branch. The isolated
+acceptance application has been stopped, its configuration credentials cleared,
+and its four isolated secret/key files removed. A byte scan of the retained
+acceptance scope found no configured gateway credential value. TaskStore,
+original model traces, run outputs and rendered artifacts remain available;
+see `evidence/cleanup.json`. The debug bundle remains an acceptance artifact,
+not an update to the user's installed application.
+
+The runtime stores persistent members, immutable messages, per-member work,
+interests and independent executions in the existing TaskStore. Work commits
+before scheduler wake. A group currently executes one member at a time against
+its shared isolated workspace and existing task budget. Task result/aggregate usage describes the current execution generation; per-member records retain previous generations and unknown interrupted usage. It is not a lifetime token total; the existing native cost probe is task-bound across turns. Busy-member inbox is
+refreshed before each provider request; pending work keeps its original causes.
+Orphaned executions are interrupted and their original work is requeued. A crash
+can lose the current unsaved conversation; recovery uses the latest saved
+compatible conversation. Retained cause identity does not provide exactly-once
+external side effects. Managed group file tools compare the last read hash under
+a write lock; shell/MCP/external background writes are not all covered by that
+CAS contract.
+
+Tool schemas are prepared per provider request. `discover_tools` adds deferred
+schemas to later requests; calls enforce the actual selection. Skills begin as
+a compact catalog and load full instructions on demand. Open annotations and
+enduring requirements are provided by task/thread/object/path scope each round;
+handling a discussion does not withdraw its active requirement. The observation
+retains actual tool hashes, schema/catalog sizes and requirement IDs. `skillBytes`
+currently measures the skill catalog, not all retained skill instructions or
+billable context.
+
+All real-model fixtures use `agent-acceptance / gpt/gpt-6.1-sol` through the
+configured gateway, in a separate `com.oleafly.app.e2e` library. Model choice is
+recorded per execution; synthetic teaching data are clearly labelled. They are
+real model/application runs, distinct from the scripted native delivery tests.
+
+| Scenario | Actual result | Retained evidence |
+| --- | --- | --- |
+| A0 frozen manuscript | Task `task-d77c6f0f7eec8dcc7fcbb1593ddee995`, generation 2, completed pending review. Frozen buffer/selection and disk hashes verified; means 5/6, sample SD .894427 independently checked. The model compiled twice, read PDF text and page images, then revised from two pages to one. Final PDF SHA `e1826b53d7c78d2fbe8ef557f868d734744e253a26a4af33db63be1d414892db`; page visually checked. Original project unchanged. | `evidence/a0/checks.json`, retained PDF, page PNG, observations and delegation |
+| A0 historical follow-up | Explicit annotation stays on generation 2; automatically resumed generation 3 adds an actual reproducibility paragraph, existing calculation script/output paths, handling and promoted enduring requirement. Main manuscript unchanged; requirement remains active after handling. | `evidence/a0/followup-final.json`, `followup-checks.json` |
+| Three-member open research | Task `task-8d21c6826e8f7ece4ab47bb009fe6afd` ran Welch baseline r001 and exhaustive permutation r002, both exit 0. Independent script reruns and closed-form check match: t=1.93649, df=10, p=.0815534, CI[-.150606,2.150606]; 138/924 permutation p=.14935065. Reviewer found no blocking defect; Explorer added 104 boundary ties + 34 strictly extreme interpretation. Main/report/table/ledger agree and preserve both non-rejections and design limitations. 32 work completed. | `evidence/group/checks.json`, `group-latest.json`, retained run evidence |
+| Real ordinary chat follow-up | A project-bound ordinary chat read main.tex, answered, then an explicit historical annotation continued the same thread, created actual research-note.md, called annotation_handle/distill and retained an active thread-scoped requirement. TaskStore contains **zero ResearchTasks** for this project. Original manuscript unchanged. The existing ordinary-chat file approval was satisfied by the authorized fixture driver. | `evidence/ordinary/checks.json`, `latest.json` |
+| Task-group annotation | Historical message request actually produced a baseline/alternative table and revised conclusion. Handling→distillation→active requirement links retained; 27 later request contexts contain that requirement ID. | `evidence/annotation.json`, `group/checks.json` |
+| Pure path-triggered participation | Task `task-86c5d55be3a4fea655d7bcf58de77d5b`: Editor saved one useful revision without messaging Reviewer. Reviewer's sole work came from `file_changed` on main.tex, read the current SHA, independently verified means and conclusion, then removed its interest. No addressed message, no fabricated defect. | `evidence/subscriber-checks.json`, `subscriber-latest.json` |
+| Actual interrupted execution | Reviewer generation 2 interrupted on application termination; resumed generation 3 completed the exact same 10 work/trigger IDs. Original messages, annotations and requirement survived. Final current activeMs=715512 and two runs retained; the earlier in-flight restart's pre-budget snapshot was not separately saved, so that point is supported by source/tests rather than a before/after artifact. Final package restart is separately captured: activeMs=715512 before and after, same generation, messages/work IDs, handled annotation and active requirement. | `evidence/group/checks.json`, final restart snapshots |
+
+The A0 initial task reported 367,488 input / 6,911 output tokens. The pure path
+fixture reported 77,293 / 613. These gateway-reported counts are retained usage,
+not a price estimate or a claim that this design reduces cost. No equal-budget
+single-agent/helper/group comparison was run. The fixtures establish working
+application cooperation and useful limited results, not general superiority.
+
+Real execution exposed macOS Bash 3.2 heredoc attempting temporary writes outside
+its granted paths because that implementation ignores TMPDIR for heredocs.
+Confined POSIX commands now use the existing system `/bin/dash` on macOS,
+without adding a grant. Actual sandbox regressions demonstrate heredoc success
+under `analysis/` while workspace-root/outside writes remain denied, for both
+persistent and temporary task-home modes. The PDF page model tool additionally
+binds the running generation; a model cannot supply an older generation to
+bypass the current execution boundary. Retained UI history may still read the
+original artifact under its own identity.
+
+Validation was performed in layers, not inferred from commit existence:
+
+- Full Rust workspace tests passed during integration, including the desktop
+  library's 4,226 passed / 21 ignored. Later integrated research tests passed
+  574/574; the new actual heredoc regression also passed. Final desktop
+  `research_tasks::` tests passed 53/53 and ordinary annotation-context tests 2/2.
+- A final broad Rust rerun first stopped at an existing Git command test:
+  4,235 desktop tests passed, one failed because the host's global
+  `url.https://ghfast.top/https://github.com/Oleafly/.insteadOf` rewrote the
+  expected GitHub URL. The user's Git configuration was left intact. A rerun with `GIT_CONFIG_GLOBAL=/dev/null` passed that Git test, but
+  reported another unchanged session-isolation test failure (unexpected
+  `projects/` entry while other app tests run). It passed 4,235 other desktop
+  tests. Its exact isolated rerun passed 1/1. These Git/session-test sources are unchanged from the shared baseline.
+  This parallel full run is not described as green. The initial failure log remains
+  `/tmp/oleafly-agent-runtime-workspace-final-all.log`.
+- The final remaining-workspace command was
+  `GIT_CONFIG_GLOBAL=/dev/null cargo +1.98.1 test --workspace --exclude oleafly --all-targets`.
+  It exited 0: **5,030 passed / 0 failed / 14 ignored across 123 test targets**.
+  See `evidence/validation/workspace-final-other.log`. This excludes the desktop
+  main package and does not erase its parallel-run failure described above.
+- Final full-workspace, all-target Clippy passed with `-D warnings`; see
+  `evidence/validation/workspace-clippy-last.log`. Final rustfmt and diff
+  checks passed.
+- The first integrated full frontend run reported 23,484 passed / 1 failed /
+  7 skipped. Its sole TaskFindings fixture asserted before an asynchronous stale
+  reload; corrected to await the actual UI state. Seven affected files then passed 187/187. The final full run passed **23,495 tests, 7 skipped; 1,648 files passed, 1 skipped**, exit 0 in 371.34 seconds. Log: `/tmp/oleafly-agent-runtime-frontend-final-all.log`.
+- A real group screenshot exposed a footer bug: the last member's timeline
+  usage hid the generation's aggregate task result. The footer now prefers
+  the result's non-null counts, retaining zero and per-field fallback.
+  The complete task-detail file passed 76/76 after this final two-line change;
+  production build passed and the rebuilt native package passed all six scenarios again. This
+  focused post-change pass is distinct from the preceding full frontend run.
+  The actual group UI also displays the generation's 724k input / 5.8k output
+  rather than the last member's 24k / 67; see `evidence/group/usage-ui-checks.json`.
+- Full Biome lint passed (3,341 files), i18n generated types were current, i18n
+  validation had 0 errors / 0 warnings across 24 namespaces. TypeScript and
+  production build passed. The final isolated native debug app was bundled.
+- The final isolated package passed **6/6 native scenarios** in 15.0 seconds,
+  exit 0: editor selection delegation, retained task PDF before apply across
+  project/task switches, actual page image parts in the next model request,
+  ordinary chat feedback versus explicit follow-up, historical ResearchTask
+  delivery, and addressed member work linked to its reply. Log:
+  `/tmp/oleafly-agent-runtime-native-verified-last.log`. Earlier fixture
+  attempts are kept under `evidence/native-initial` and `native-selectors`:
+  the isolated config initially selected Chinese while English locators were
+  used, and this native driver's `getByRole` does not implement implicit HTML
+  roles or accessible names. The specs now use its supported labels/CSS/text
+  primitives without changing product behavior. Scripted responses verify
+  delivery, persistence and actual application/compiler behavior; reasoning
+  quality is assessed only by the separate real-model artifacts.
+
+Remaining boundaries are ACP persistent groups and per-round annotation context,
+semantic responsibility/claim-dependency inference, arbitrary `@model` execution
+selection, automatic capability improvement, reliable Workbench cross-store
+reconciliation, additional application business entry points, parallel shared
+writers, and measured Windows specialist-model gain. Existing journal rules,
+LaTeX/PDF, citations and manual workflows remain in place.
 
 ## Verified code anchors and remaining checks
 
@@ -844,9 +958,7 @@ prepared specs and mocks are not evidence of real-model reasoning quality.
   the task composer. The direct-supplier task persists `max`; local wire/component
   tests cover explicit effort propagation. This source-run evidence does not
   capture the outgoing supplier request or prove the supplier's internal effort.
-- Manuscript editing, full DOCX layout semantics, independent object/page
-  acceptance and automatic interpretation of arbitrary journal guidance are
-  not established by this integration proposal.
+- The retained synthetic manuscript flow above establishes editing and task-PDF inspection for that fixture. Full DOCX layout semantics, general journal-guidance interpretation and untested application entry points are not established by it.
 
 For implementation changes, run the affected repository's gates. Evidence of
 a successful mock, protocol or unit test must not be described as desktop or
