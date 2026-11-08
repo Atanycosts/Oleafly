@@ -791,12 +791,10 @@ impl AcpTaskAdapter {
             .await?
             == crate::acp::ModelChoice::NotOffered
         {
-            events(TaskRuntimeEvent::Status {
-                message: format!(
-                    "The agent does not offer {}, so it keeps its own model.",
-                    context.model_id.trim()
-                ),
-            });
+            return Err(format!(
+                "The agent does not offer the requested task model {}. Choose an available model before retrying the task.",
+                context.model_id.trim()
+            ));
         }
         let before = self.runtime.snapshot(id).await?.session;
         let mut receiver = self.runtime.subscribe();

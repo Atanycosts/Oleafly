@@ -441,6 +441,42 @@ impl AcpFixture {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
+async fn acp_adapter_rejects_an_unavailable_requested_model_before_prompting() {
+    let fixture = AcpFixture::new("complete").await;
+    let mut context = fixture.context();
+    context.model_id = "unsupported-task-model".into();
+    let error = tokio::time::timeout(
+        test_wait::CHILD_PATIENCE,
+        fixture
+            .adapter
+            .run(context, CancellationToken::new(), event_log().1),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(
+        error.contains("does not offer the requested task model unsupported-task-model"),
+        "{error}"
+    );
+    assert!(!fixture.workspace.join("analysis/selected-model").exists());
+    assert!(!fixture.workspace.join("analysis/result.md").exists());
+    assert!(lock(&fixture.host.bridge.calls).is_empty());
+    fixture.assert_cleaned().await;
+    let sessions = fixture.adapter.runtime.list("project").unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].status, crate::acp::SessionStatus::Disconnected);
+    assert_eq!(
+        sessions[0].controls.model_id.as_deref(),
+        Some("default-model")
+    );
+    assert!(!fixture
+        .saved_events(&sessions[0].id)
+        .iter()
+        .any(|event| event.kind == "agent_message_chunk"));
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
 async fn acp_adapter_runs_confined_tools_and_replays_the_durable_transcript() {
     let fixture = AcpFixture::new("complete").await;
     let (events, sink) = event_log();
