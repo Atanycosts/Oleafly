@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const env = { ...process.env };
@@ -12,6 +13,17 @@ if (args[0] === "dev" && !env.OLEAFLY_DATA_DIR) {
 }
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
+const workbenchPython = join(
+  scriptDir,
+  "..",
+  "services",
+  "research-workbench",
+  ".venv",
+  process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+);
+if (args[0] === "dev" && !env.OLEAFLY_WORKBENCH_PYTHON && existsSync(workbenchPython)) {
+  env.OLEAFLY_WORKBENCH_PYTHON = workbenchPython;
+}
 const tauriCli = join(scriptDir, "..", "node_modules", "@tauri-apps", "cli", "tauri.js");
 const child = spawn(process.execPath, [tauriCli, ...args], {
   env,

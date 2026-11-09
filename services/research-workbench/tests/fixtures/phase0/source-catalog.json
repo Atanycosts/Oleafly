@@ -1,0 +1,106 @@
+{
+  "contract_version": "1.0.0",
+  "project_id": "research-file-workbench-test-only",
+  "author_workspace_root": "controlled-phase0-author-workspace",
+  "artifacts": [
+    {
+      "artifact_id": "main-annotated-docx",
+      "role": "chinese_main_source",
+      "path": "controlled-phase0-author-workspace/main.docx",
+      "kind": "file",
+      "required": true,
+      "phase": "S1",
+      "limitations": [
+        "Test-only controlled text artifact; it is not an author manuscript."
+      ]
+    },
+    {
+      "artifact_id": "ijam-english-working-docx",
+      "role": "primary_s1_docx_sample",
+      "path": "controlled-phase0-author-workspace/english.docx",
+      "kind": "file",
+      "required": true,
+      "phase": "S1",
+      "limitations": [
+        "Test-only controlled text artifact; it is not an author manuscript."
+      ]
+    },
+    {
+      "artifact_id": "chinese-historical-review-pdf",
+      "role": "historical_reference_only",
+      "path": "controlled-phase0-author-workspace/history.pdf",
+      "kind": "file",
+      "required": true,
+      "phase": "S1",
+      "limitations": [
+        "Test-only controlled text artifact; it is not historical manuscript evidence."
+      ]
+    },
+    {
+      "artifact_id": "latex-template-directory",
+      "role": "future_latex_input",
+      "path": "controlled-phase0-author-workspace/latex-template",
+      "kind": "directory",
+      "required": true,
+      "phase": "S4",
+      "limitations": [
+        "Test-only controlled directory for source-catalog contract checks."
+      ]
+    },
+    {
+      "artifact_id": "candidate-figure-directory",
+      "role": "future_figure_assets",
+      "path": "controlled-phase0-author-workspace/candidate-figures",
+      "kind": "directory",
+      "required": true,
+      "phase": "S3",
+      "limitations": [
+        "Test-only controlled directory for source-catalog contract checks."
+      ]
+    },
+    {
+      "artifact_id": "zotero-readonly-database",
+      "role": "future_reference_input",
+      "path": "controlled-phase0-author-workspace/zotero.sqlite",
+      "kind": "file",
+      "required": true,
+      "phase": "S3",
+      "limitations": [
+        "Test-only controlled text artifact; it contains no reference database."
+      ]
+    },
+    {
+      "artifact_id": "author-terminology-rules",
+      "role": "author_decision_input",
+      "path": "controlled-phase0-author-workspace/terminology.md",
+      "kind": "file",
+      "required": true,
+      "phase": "S2A",
+      "limitations": [
+        "Test-only controlled text artifact; it contains no author decisions."
+      ]
+    },
+    {
+      "artifact_id": "current-evidence-ledger",
+      "role": "research_evidence_boundary_input",
+      "path": "controlled-phase0-author-workspace/evidence.md",
+      "kind": "file",
+      "required": true,
+      "phase": "S2A",
+      "limitations": [
+        "Test-only controlled text artifact; it contains no research evidence."
+      ]
+    },
+    {
+      "artifact_id": "ijam-legacy-word-template",
+      "role": "template_probe_input",
+      "path": "controlled-phase0-author-workspace/legacy-template.doc",
+      "kind": "file",
+      "required": true,
+      "phase": "S2A",
+      "limitations": [
+        "Test-only controlled text artifact with a .doc suffix; it is not a Word document."
+      ]
+    }
+  ]
+}

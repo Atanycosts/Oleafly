@@ -1,0 +1,46 @@
+{
+  "contract_version": "1.0.0",
+  "scenarios": [
+    {
+      "scenario_id": "renderer_unavailable",
+      "source_sample_id": "s1-regions-fields",
+      "input": {
+        "render_profile_id": "microsoft-word-local"
+      },
+      "expected_result": {
+        "status": "renderer_unavailable",
+        "source_unchanged": true,
+        "output_created": false
+      },
+      "evidence": "reports/phase0/render-environment.json"
+    },
+    {
+      "scenario_id": "render_failure",
+      "source_sample_id": "s1-regions-fields",
+      "input": {
+        "render_profile_id": "controlled-failing-renderer"
+      },
+      "expected_result": {
+        "status": "render_failed",
+        "source_unchanged": true,
+        "output_created": false,
+        "structure_result_preserved": true
+      },
+      "evidence": "tests/phase0/test_failure_scenarios.py::test_render_failure_preserves_source_and_creates_no_output",
+      "evidence_scope": "Real PowerShell exporter with a controlled failure before COM construction; no Word or WPS execution or renderer attestation."
+    },
+    {
+      "scenario_id": "bypass_attempt",
+      "source_sample_id": "s1-regions-fields",
+      "input": {
+        "request_kind": "fingerprint_output_inside_author_workspace"
+      },
+      "expected_result": {
+        "status": "access_denied",
+        "source_unchanged": true,
+        "content_disclosed": false
+      },
+      "evidence": "tests/phase0/test_cli.py::test_fingerprint_rejects_output_in_scanned_root"
+    }
+  ]
+}

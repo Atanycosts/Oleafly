@@ -1,0 +1,22 @@
+* text=auto
+*.py text eol=lf
+*.ps1 text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.docx binary
+*.doc binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.zip binary
+*.sqlite3 binary
+
+# Frozen evidence and contracts retain their original byte identities.
+annotations/** -text whitespace=cr-at-eol
+reports/** -text whitespace=cr-at-eol
+contracts/** -text whitespace=cr-at-eol
+# The original requirement baseline uses Markdown hard line breaks.
+方案文档.md whitespace=-blank-at-eol

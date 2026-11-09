@@ -1,0 +1,28 @@
+{
+  "contract_version": "1.0.0",
+  "baselines": [
+    {
+      "baseline_id": "test-only-s1-regions-fields-fixture-baseline",
+      "source_artifact_id": "ijam-english-working-docx",
+      "source_sha256": "controlled-phase0-artifact:ijam-english-working-docx",
+      "render_profile_id": "wps-writer-12.1.0.28505",
+      "pdf_path": "controlled-phase0-project-root/reports/phase0/fixtures/s1-regions-fields/s1-regions-fields.pdf",
+      "pdf_sha256": "0c89ee3fa836aac894101951c1a05f5407fb61fd7e4aa816606407ce97e43a5c",
+      "page_image_directory": "controlled-phase0-project-root/reports/phase0/fixtures/s1-regions-fields/pages-150dpi",
+      "page_count": 1,
+      "pages": [
+        {
+          "page_number": 1,
+          "path": "controlled-phase0-project-root/reports/phase0/fixtures/s1-regions-fields/pages-150dpi/page-1.png",
+          "sha256": "3ffc50c59986188f0ea76fbf906846234d95b6ca98aacc15b7d39c24b145c472",
+          "size": 136378
+        }
+      ],
+      "status": "candidate_with_known_limitations",
+      "limitations": [
+        "Test-only baseline: the PDF and PNG metadata identify the committed synthetic s1-regions-fields fixture render.",
+        "This test input does not represent a real WPS render of an author manuscript and makes no author-content or visual-review claim."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+dist/
+build/
+*.egg-info/
+var/*
+!var/.gitkeep
+
+# Local agent sessions and operator scratch areas (kept on disk, never committed)
+.claude/
+.helloagents/
+.workbuddy/
+.playwright-cli/
+front/
+probe-repo/
+.DS_Store
+
+# Environment-bound author evidence stays local; portable tests use synthetic inputs.
+contracts/phase0/source-catalog.json
+contracts/phase0/render-baselines.json
+annotations/s1/ijam-english-working/
+annotations/s1/tdsc-guide/
+reports/*
+!reports/phase0/
+reports/phase0/*
+!reports/phase0/fixtures/
+!reports/phase0/fixture-render-catalog.json
+!reports/phase0/fixture-page-index.json

@@ -5,9 +5,9 @@ Decision date: 2026-11-02. Current verification: 2026-11-09.
 ## Direction and current state
 
 Use Oleafly as the primary application foundation for a private research
-workbench. Adapt the useful ideas and verified domain capabilities from the
-adjacent `research-file-workbench` repository rather than transplanting its
-entire application or recreating Oleafly's editor and agent infrastructure.
+workbench. The Workbench Python service now lives at `services/research-workbench/` in this
+repository. Reuse its domain capabilities while keeping Oleafly's editor, native
+shell and Agent infrastructure as the application foundation.
 
 The integration was developed for local research use. Preserve upstream licence
 and attribution files. On 2026-11-09 the operator authorized committing and
@@ -26,9 +26,10 @@ Source and integration checkouts:
 - Original development checkout: `<original-development-checkout>`, branch
   `codex/research-workbench`; fast-forwarded to `72c4c3da` after verifying all
   53 formerly dirty files were byte-identical to that committed baseline.
-- Current Agent integration checkout: `<agent-integration-checkout>`,
-  branch `main`, tracking the operator's `origin/main`; delivered from
-  `codex/agent-runtime`. Earlier implementation commits extend through
+- Canonical source checkout: this repository. The former Agent integration and
+  auxiliary app worktrees were retired on 2026-11-09 after preserving evidence
+  and unique history. The delivery on the operator's `origin/main` came from
+  `codex/agent-runtime`; the Workbench service consolidation is a subsequent change. Earlier implementation commits extend through
   `dc287af1`; the source snapshots, helper usage, ACP receipts, PDF selection,
   native journal continuation, actual relationship routing and compact contexts
   are included in the 2026-11-09 delivery commits. The dependency PR was based
@@ -49,15 +50,16 @@ Source and integration checkouts:
   A real-provider native task has called Workbench MCP 0.4.1's three read methods;
   its persisted receipt matches the actual Oleafly project/task/generation.
   The original synthetic source bytes remain separate from the staged task files.
-  See the adjacent Workbench repository's
-  `reports/integration-investigation/oleafly-native-research-task-2026-11-05.md`.
+  The original Workbench native-task report is retained in the private source archive
+  at `workbench-original-source/reports/integration-investigation/` (2026-11-05).
   No existing user library was migrated.
 
 This document separates the integration direction from the verified product slice.
-The original workbench remains intact as the source of its current code,
-contracts, tests and historical evidence. Its root requirements document
-describes planned capabilities; `docs/s1-progress.md` distinguishes current
-implementation from pending acceptance.
+Workbench source, contracts and portable tests are maintained under
+`services/research-workbench/`. Its original source snapshot and Git history are
+archived locally; existing libraries retain their absolute data paths. The module
+requirements describe planned capabilities; its `docs/s1-progress.md` distinguishes
+current implementation from pending acceptance.
 
 ## Reuse instead of duplication
 
@@ -1706,3 +1708,70 @@ independent Workbench repository has no configured Git remote and contains
 other work, so it is left intact. Verification commands and actual results are
 recorded in the fork PR descriptions and ignored delivery records; historical
 checkpoints above keep their original scope.
+
+
+## Repository consolidation (2026-11-09)
+
+The operator requested one active repository and retirement of both temporary
+Oleafly worktrees. Current Workbench source, including its previously uncommitted
+implementation, is imported under `services/research-workbench/`. The import keeps
+all domain packages, current HTTP/MCP contracts, CLI entry points, browser assets,
+synthetic fixture evidence and regression tests. It does not translate Python into
+Rust or merge the domain databases. Oleafly owns the application shell; the earlier
+standalone Workbench desktop shell and build entry are archived locally. Existing
+Python packaging helpers remain covered by their regression tests.
+
+`pnpm workbench:setup` creates the module's Python 3.12 environment with uv and
+installs its declared development extras. `pnpm tauri dev` supplies that environment
+when `OLEAFLY_WORKBENCH_PYTHON` is absent. Packaged apps retain the existing interpreter
+selector. The two retained preview libraries now select the new interpreter; their
+obsolete MCP smoke-recorder entry is replaced by the same read-only module entry
+and retained library. No credentials or manuscript/library records are relocated.
+The former independent Workbench root retains only `var/` and a migration pointer,
+because saved project bindings and the installed preview still reference that data.
+With the old source and environment removed, both retained journal libraries opened
+through the new service: 8 projects / 14 worlds and 2 projects / 5 worlds.
+
+This is a reviewed current-source import, not an import of private Git history into
+the public fork. A verified bundle and all 556 original tracked/untracked source and
+evidence files are preserved locally. Real manuscript annotations and renders,
+author source catalogs, raw provider transcripts, local sessions, databases and
+credentials remain ignored. Portable Phase 0 tests use explicit controlled source
+and renderer inputs and the existing synthetic DOCX/PDF/PNG evidence. The real
+historical acceptance catalogs remain unchanged and retain their environmental
+requirements. A controlled placeholder test is not author or rendering acceptance.
+
+Both temporary Oleafly worktrees are now removed. The managed auxiliary worktree
+was archived through Codex after releasing completed subtask associations; its
+unique history is recoverable. Thirteen evidence groups, including all four native
+acceptance app bundles and the upstream investigation source, were retained with
+91,844 entry identities checked before cleanup. Current evidence links use this
+repository's `.private/` locations; historical evidence bytes keep original paths.
+
+Consolidation validation:
+
+- Python Ruff format (213 files), Ruff lint and mypy (118 source files) passed.
+- The full Python regression suite passed **1,034 tests**, with **33 existing
+  platform/environment skips** and five PyMuPDF/SWIG warnings.
+- The preserved native acceptance app connected to the new service environment and
+  passed the existing journal workflow **1/1**, including source/manuscript imports,
+  binding, checks, revision, dispositions and restored history. The opt-in live
+  provider scenario was skipped; no new real-model reasoning claim is made.
+- The first native test-driver attempt failed before tests because its restricted
+  PATH lacked rustc. The next reached app startup but pnpm tried to reinstall an
+  unchanged dependency tree without a TTY. Both driver failures were corrected
+  locally; the successful run calls the existing Playwright CLI directly.
+- A source-only copy exported from the staged files, with private catalogs and
+  manuscript evidence absent, passed **68/68** focused Phase 0, architecture and
+  owned-service lifecycle tests. Staged contract/evidence blobs match the retained
+  bytes; Git attributes preserve their CRLF where present.
+- Actual historical Phase 0 validation remains **CONTRACT_INVALID /
+  PHASE0_INCOMPLETE**: nine author inputs and the pinned Windows WPS executable are
+  unavailable on this Mac. It was not replaced by the controlled test result.
+
+The frontend and Rust product implementation are unchanged by this consolidation,
+so the full Oleafly suites were not repeated. JavaScript setup/development scripts
+pass Node syntax checks; the repository Biome configuration excludes these scripts,
+so an explicit Biome call processed no files and is not reported as a lint pass.
+No installer, formal application or Windows service was updated. GitHub checks have
+no result for the earlier delivery; local verification is not called green CI.

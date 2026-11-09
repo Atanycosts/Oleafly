@@ -1,0 +1,103 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-figures-tables",
+  "artifact_id": "fixture-docx-s1-figures-tables",
+  "artifact_sha256": "49107368b3b1ce80d6b042abe935425c76a4ea8638afed900d9c1704f6fd8dcc",
+  "annotator": "independent-fixture-audit",
+  "review_status": "reviewed",
+  "objects": [
+    {
+      "annotation_id": "rfw-fx-ft-inline-image-001",
+      "region": "body",
+      "kind": "inline_drawing",
+      "locator": "word/document.xml body paragraph 2; wp:inline wp:docPr id=1 name='Picture 1', a:blip r:embed=rId9",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rId9->media/image1.png"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-ft-floating-image-001",
+      "region": "body",
+      "kind": "anchored_drawing",
+      "locator": "word/document.xml body paragraph 4; wp:anchor wp:docPr id=2 name='Picture 2', wrapSquare, a:blip r:embed=rId9",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rId9->media/image1.png",
+        "square-wrap anchor precedes paragraph 5 marker RFW-FX-FT-FLOAT-ANCHOR-001"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-ft-table-header-001",
+      "region": "body",
+      "kind": "repeated_header",
+      "locator": "word/document.xml first table row 1; w:trPr/w:tblHeader containing RFW-FX-FT-TABLE-HEADER-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "same table header is visibly repeated on reviewed PDF pages 1, 2, and 3"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-ft-table-row-001",
+      "region": "body",
+      "kind": "multi_page_table",
+      "locator": "word/document.xml first table rows 2-56 containing RFW-FX-FT-TABLE-ROW-001 through -055",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "first table spans reviewed PDF pages 1-3; row 019 continues across the page 1/page 2 boundary"
+      ],
+      "limitations": [
+        "Page boundaries are renderer-specific and bind to the reviewed PDF hash."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-ft-merged-cell-001",
+      "region": "body",
+      "kind": "merged_cell",
+      "locator": "word/document.xml second table row 1 cell 1; w:tcPr/w:gridSpan w:val=2 containing RFW-FX-FT-MERGED-CELL-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "merged cell renders on reviewed PDF page 3"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-ft-figure-caption-001",
+      "region": "body",
+      "kind": "caption",
+      "locator": "word/document.xml body paragraph 3; w:pStyle w:val=Caption containing RFW-FX-FT-FIGURE-CAPTION-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "caption follows the inline drawing paragraph and renders on reviewed PDF page 1"
+      ],
+      "limitations": [
+        "Uses the native Caption paragraph style without a SEQ field; automatic numbering is not claimed."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-ft-table-caption-001",
+      "region": "body",
+      "kind": "caption",
+      "locator": "word/document.xml body paragraph 6; w:pStyle w:val=Caption containing RFW-FX-FT-TABLE-CAPTION-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "caption immediately precedes the multi-page table and renders on reviewed PDF page 1"
+      ],
+      "limitations": [
+        "Uses the native Caption paragraph style without a SEQ field; automatic numbering is not claimed."
+      ]
+    }
+  ],
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent direct ZIP/OOXML package inspection plus page-image review of the fixed WPS PDF; package and page claims remain separate"
+}

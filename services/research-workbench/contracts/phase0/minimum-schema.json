@@ -1,0 +1,209 @@
+{
+  "contract_version": "1.2.0",
+  "phase": "S1",
+  "conventions": {
+    "identifier_format": "lowercase kebab-case type prefix plus UUIDv7 or content-derived digest",
+    "version_format": "immutable opaque version ID; never reuse an ID for changed content",
+    "timestamp_format": "RFC 3339 UTC with explicit offset",
+    "path_format": "absolute normalized path at the boundary; portable relative locator inside artifacts",
+    "hash_format": "lowercase SHA-256 hexadecimal",
+    "references": "references identify immutable entity versions, not mutable display names"
+  },
+  "entities": {
+    "artifact_version": {
+      "required": ["artifact_id", "version_id", "kind", "sha256", "source_kind", "limitations"],
+      "fields": {
+        "artifact_id": { "type": "string", "nullable": false },
+        "version_id": { "type": "string", "nullable": false },
+        "kind": { "type": "enum", "values": ["file", "directory", "rendered_pdf", "page_image"] },
+        "path": { "type": "string", "nullable": true },
+        "sha256": { "type": "sha256", "nullable": false },
+        "source_kind": { "type": "enum", "values": ["author_input", "application_snapshot", "derived"] },
+        "created_at": { "type": "timestamp", "nullable": true },
+        "limitations": { "type": "array<string>", "nullable": false }
+      }
+    },
+    "baseline": {
+      "required": ["baseline_id", "artifact_version_ids", "author_decision_version_ids", "source_kind", "created_at"],
+      "fields": {
+        "baseline_id": { "type": "string", "nullable": false },
+        "artifact_version_ids": { "type": "array<ref:artifact_version.version_id>", "min_items": 1 },
+        "author_decision_version_ids": { "type": "array<ref:author_decision.version_id>", "nullable": false },
+        "source_kind": { "type": "enum", "values": ["initial_import", "trusted_rebaseline", "published_change"] },
+        "created_at": { "type": "timestamp", "nullable": false }
+      }
+    },
+    "task": {
+      "required": ["task_id", "baseline_id", "scope", "status", "actual_read_ranges", "unresolved_items"],
+      "fields": {
+        "task_id": { "type": "string", "nullable": false },
+        "baseline_id": { "type": "ref:baseline.baseline_id", "nullable": false },
+        "scope": { "type": "object", "nullable": false },
+        "status": { "type": "enum", "values": ["created", "reading", "completed", "partial", "failed"] },
+        "actual_read_ranges": { "type": "array<object>", "nullable": false },
+        "unresolved_items": { "type": "array<string>", "nullable": false }
+      }
+    },
+    "evidence_item": {
+      "required": ["evidence_id", "evidence_version", "kind", "artifact_version_id", "object_locator", "parse_status", "limitations", "dependencies", "statement", "scope", "extraction_method", "extraction_method_version", "verification_record_ids"],
+      "fields": {
+        "evidence_id": { "type": "string", "nullable": false },
+        "evidence_version": { "type": "string", "nullable": false },
+        "kind": { "type": "enum", "values": ["source_observation", "extracted_value", "inference", "manuscript_claim"] },
+        "statement": { "type": "string", "nullable": false },
+        "scope": { "type": "object", "nullable": false },
+        "value": { "type": "object", "nullable": true },
+        "unit": { "type": "string", "nullable": true },
+        "extraction_method": { "type": "string", "nullable": false },
+        "extraction_method_version": { "type": "string", "nullable": false },
+        "verification_record_ids": { "type": "array<ref:verification_record.verification_id>", "nullable": false },
+        "artifact_version_id": { "type": "ref:artifact_version.version_id", "nullable": false },
+        "object_locator": { "type": "object", "nullable": false },
+        "content_hash": { "type": "sha256", "nullable": true },
+        "parse_status": { "type": "enum", "values": ["parsed", "partial", "unsupported", "failed", "unverified"] },
+        "limitations": { "type": "array<string>", "nullable": false },
+        "dependencies": { "type": "array<string>", "nullable": false }
+      }
+    },
+    "read_record": {
+      "required": ["read_record_id", "task_id", "returned_versions", "ranges", "truncation", "unread_ranges", "actor_id", "client_id", "created_at"],
+      "fields": {
+        "read_record_id": { "type": "string", "nullable": false },
+        "actor_id": { "type": "string", "nullable": false },
+        "client_id": { "type": "string", "nullable": false },
+        "created_at": { "type": "timestamp", "nullable": false },
+        "task_id": { "type": "ref:task.task_id", "nullable": false },
+        "returned_versions": { "type": "array<string>", "nullable": false },
+        "ranges": { "type": "array<object>", "nullable": false },
+        "pagination": { "type": "object", "nullable": true },
+        "truncation": { "type": "boolean", "nullable": false },
+        "unread_ranges": { "type": "array<object>", "nullable": false }
+      }
+    },
+    "verification_record": {
+      "required": ["verification_id", "target_versions", "scope", "method", "method_version", "verdict", "evidence_refs", "limitations", "actor_id", "created_at", "dependencies"],
+      "fields": {
+        "verification_id": { "type": "string", "nullable": false },
+        "target_versions": { "type": "array<string>", "min_items": 1 },
+        "scope": { "type": "object", "nullable": false },
+        "method": { "type": "enum", "values": ["human_annotation", "deterministic_check"] },
+        "method_version": { "type": "string", "nullable": false },
+        "verdict": { "type": "enum", "values": ["PASS", "FAIL", "UNCERTAIN"] },
+        "evidence_refs": { "type": "array<string>", "nullable": false },
+        "limitations": { "type": "array<string>", "nullable": false },
+        "actor_id": { "type": "string", "nullable": false },
+        "created_at": { "type": "timestamp", "nullable": false },
+        "dependencies": { "type": "array<string>", "nullable": false }
+      }
+    },
+    "read_baseline_request": {
+      "required": ["request_id", "request_digest", "project_id", "actor_id", "expected_baseline_id", "artifact_version_ids", "author_decision_version_ids", "rule_bindings", "created_at"],
+      "fields": {
+        "request_id": { "type": "string", "nullable": false },
+        "request_digest": { "type": "sha256", "nullable": false },
+        "project_id": { "type": "string", "nullable": false },
+        "actor_id": { "type": "string", "nullable": false },
+        "expected_baseline_id": { "type": "ref:baseline.baseline_id", "nullable": true },
+        "artifact_version_ids": { "type": "array<ref:artifact_version.version_id>", "min_items": 1 },
+        "author_decision_version_ids": { "type": "array<ref:author_decision.version_id>", "nullable": false },
+        "rule_bindings": { "type": "array<string>", "nullable": false },
+        "created_at": { "type": "timestamp", "nullable": false }
+      }
+    },
+    "read_baseline_result": {
+      "required": ["request_id", "request_digest", "status", "previous_baseline_id", "result_baseline_id", "invalidated_refs", "created_at"],
+      "fields": {
+        "request_id": { "type": "ref:read_baseline_request.request_id", "nullable": false },
+        "request_digest": { "type": "sha256", "nullable": false },
+        "status": { "type": "enum", "values": ["APPLIED", "BASELINE_CONFLICT", "IDEMPOTENCY_CONFLICT", "REJECTED"] },
+        "previous_baseline_id": { "type": "ref:baseline.baseline_id", "nullable": true },
+        "result_baseline_id": { "type": "ref:baseline.baseline_id", "nullable": true },
+        "invalidated_refs": { "type": "array<string>", "nullable": false },
+        "created_at": { "type": "timestamp", "nullable": false }
+      }
+    },
+    "task_material_directory": {
+      "required": ["material_directory_id", "baseline_id", "task_scope", "entries", "gaps", "selection_method_version"],
+      "fields": {
+        "material_directory_id": { "type": "string", "nullable": false },
+        "baseline_id": { "type": "ref:baseline.baseline_id", "nullable": false },
+        "task_scope": { "type": "object", "nullable": false },
+        "entries": { "type": "array<object>", "nullable": false },
+        "gaps": { "type": "array<object>", "nullable": false },
+        "selection_method_version": { "type": "string", "nullable": false }
+      }
+    },
+    "author_decision": {
+      "required": ["decision_id", "version_id", "decision_type", "content", "scope", "applicability", "confirmed_by", "confirmed_at", "invalidation_conditions"],
+      "fields": {
+        "decision_id": { "type": "string", "nullable": false },
+        "version_id": { "type": "string", "nullable": false },
+        "decision_type": { "type": "enum", "values": ["terminology", "research_goal", "evidence_boundary"] },
+        "content": { "type": "string", "nullable": false },
+        "scope": { "type": "enum", "values": ["DOCUMENT", "PROJECT"] },
+        "applicability": { "type": "object", "nullable": false },
+        "confirmed_by": { "type": "string", "nullable": false },
+        "confirmed_at": { "type": "timestamp", "nullable": false },
+        "invalidation_conditions": { "type": "array<string>", "nullable": false }
+      }
+    },
+    "handoff_bookmark": {
+      "required": ["bookmark_id", "task_id", "baseline_id", "actual_read_ranges", "material_refs", "unresolved_items", "notes", "validity"],
+      "fields": {
+        "bookmark_id": { "type": "string", "nullable": false },
+        "task_id": { "type": "ref:task.task_id", "nullable": false },
+        "baseline_id": { "type": "ref:baseline.baseline_id", "nullable": false },
+        "actual_read_ranges": { "type": "array<object>", "nullable": false },
+        "material_refs": { "type": "array<string>", "nullable": false },
+        "unresolved_items": { "type": "array<string>", "nullable": false },
+        "notes": { "type": "array<string>", "nullable": false },
+        "validity": { "type": "enum", "values": ["CURRENT", "STALE"] }
+      }
+    },
+    "cache_entry": {
+      "required": ["cache_entry_id", "result_type", "dependency_fingerprint", "coverage", "limitations", "producer_version", "created_at"],
+      "fields": {
+        "cache_entry_id": { "type": "string", "nullable": false },
+        "result_type": { "type": "string", "nullable": false },
+        "dependency_fingerprint": { "type": "sha256", "nullable": false },
+        "coverage": { "type": "object", "nullable": false },
+        "limitations": { "type": "array<string>", "nullable": false },
+        "producer_version": { "type": "string", "nullable": false },
+        "created_at": { "type": "timestamp", "nullable": false },
+        "invalidation_reason": { "type": "string", "nullable": true }
+      }
+    }
+  },
+  "semantics": {
+    "verification": [
+      "verification_status is derived per target version and scope from applicable verification_record entries; it is never directly writable.",
+      "No applicable records means NOT_REVIEWED; incomplete or conflicting coverage cannot yield PASS. Preserve FAIL and UNCERTAIN rather than counting votes.",
+      "Import, author confirmation and cache hits never create scientific or semantic PASS. S1 records only human annotations and deterministic checks."
+    ],
+    "freshness": [
+      "CURRENT or STALE is derived from immutable source, method, scope and dependency versions, independently of verification verdict.",
+      "A corrected extraction or verification method invalidates dependent results even if source bytes are unchanged; retain historical records."
+    ],
+    "rebaseline": [
+      "Only a trusted user request establishes or changes a reading baseline; ordinary MCP clients cannot directly change the current pointer.",
+      "Within the project and actor scope, equal request_id and request_digest return the existing result; different digests return IDEMPOTENCY_CONFLICT without switching.",
+      "An atomic expected_baseline_id check, result record, new baseline and current pointer share one commit boundary; mismatch returns BASELINE_CONFLICT.",
+      "Changing bindings may reuse source snapshots; changed source bytes require a new ArtifactVersion. Rebaseline never modifies manuscripts or erases failed-artifact provenance."
+    ],
+    "source_dependencies": [
+      "Dependencies refer to immutable artifact, evidence, method and binding versions, never names or mutable file paths.",
+      "Referenced source, evidence, verification and read-baseline request/result records are persistent, not cache entries."
+    ],
+    "read_receipts": [
+      "Record authenticated actor and client, exact returned versions and ranges, truncation and known unread ranges.",
+      "A directory listing does not mark referenced materials as read; a read receipt does not prove understanding."
+    ]
+  },
+  "digest_contract": "digest-contract.json",
+  "deferred_s2b_digest_fields": {
+    "proposal_hash": "single frozen proposal digest",
+    "ordered_proposal_hashes": "ordered proposal digest list",
+    "plan_hash": "complete executable plan digest",
+    "request_digest": "idempotent request semantic digest"
+  }
+}

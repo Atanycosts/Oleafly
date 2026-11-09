@@ -1,0 +1,92 @@
+{
+  "contract_version": "1.0.0",
+  "fixture_groups": [
+    {
+      "group_id": "regions-and-text",
+      "required_cases": [
+        "body",
+        "textbox",
+        "header",
+        "footer",
+        "footnote",
+        "endnote",
+        "hidden_text",
+        "revision",
+        "comment",
+        "external_target"
+      ],
+      "expected_support": "mixed_required_and_registered",
+      "annotation_status": "reviewed"
+    },
+    {
+      "group_id": "pages-and-formatting",
+      "required_cases": [
+        "a4",
+        "other_page_size",
+        "portrait_landscape",
+        "section",
+        "two_column",
+        "page_break",
+        "column_break",
+        "style_inheritance",
+        "numbering"
+      ],
+      "expected_support": "required_structural_result",
+      "annotation_status": "reviewed"
+    },
+    {
+      "group_id": "equations-and-fields",
+      "required_cases": [
+        "inline_omml",
+        "display_omml",
+        "nested_field",
+        "zotero_field",
+        "cross_reference"
+      ],
+      "expected_support": "required_structural_result",
+      "annotation_status": "reviewed"
+    },
+    {
+      "group_id": "figures-and-tables",
+      "required_cases": [
+        "inline_drawing",
+        "floating_figure",
+        "text_wrap",
+        "multi_page_table",
+        "merged_cell",
+        "repeated_header",
+        "caption"
+      ],
+      "expected_support": "mixed_required_and_registered",
+      "annotation_status": "reviewed"
+    },
+    {
+      "group_id": "complex-and-unknown",
+      "required_cases": [
+        "embedded_chart",
+        "ole",
+        "group_drawing",
+        "unknown_extension",
+        "unknown_namespace",
+        "missing_relationship",
+        "missing_internal_target",
+        "missing_external_dependency"
+      ],
+      "expected_support": "register_and_render",
+      "annotation_status": "reviewed"
+    },
+    {
+      "group_id": "failure-and-access",
+      "required_cases": [
+        "missing_font",
+        "renderer_unavailable",
+        "render_failure",
+        "long_document_pagination",
+        "duplicate_text_mapping",
+        "bypass_attempt"
+      ],
+      "expected_support": "explicit_partial_or_failure",
+      "annotation_status": "reviewed"
+    }
+  ]
+}

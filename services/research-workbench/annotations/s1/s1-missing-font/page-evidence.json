@@ -1,0 +1,39 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-missing-font",
+  "source_artifact_sha256": "c81ca07a2f38c1d7e981913ae06f936fce88c6ac5592ef6489db48f9854e6cb5",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "pdf_sha256": "dc26ec5d6883697dbdf60c29ee3607e6479e5cc750a63d8b87bfa25fd7b7100a",
+  "review_status": "reviewed",
+  "mappings": [
+    {
+      "annotation_id": "missing-font-control-page-001",
+      "object_annotation_id": "rfw-fx-mf-control-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Arial control text is fully visible on page 1.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "missing-font-substitution-page-001",
+      "object_annotation_id": "rfw-fx-mf-missing-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The missing-font sample text is fully visible with an obvious substituted appearance on page 1.",
+      "limitations": [
+        "The exact fallback font is not identified and Microsoft Word rendering is unverified."
+      ]
+    }
+  ],
+  "limitations": [
+    "The exact WPS fallback font was not identified.",
+    "Microsoft Word cross-rendering is unverified because Word is unavailable locally."
+  ],
+  "reviewed_by": "independent-fixture-audit",
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent page-image inspection bound to the fixed PDF hash and WPS profile"
+}

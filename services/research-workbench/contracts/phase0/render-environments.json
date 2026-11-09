@@ -1,0 +1,51 @@
+{
+  "contract_version": "1.0.0",
+  "profiles": [
+    {
+      "profile_id": "wps-writer-12.1.0.28505",
+      "renderer": "WPS Writer",
+      "executable_path": "C:/Users/Administrator/AppData/Local/Kingsoft/WPS Office/12.1.0.28505/office6/wps.exe",
+      "executable_sha256": "9a0ceb217d77238a8891e1ef5a2ff3763572417091d0e4646ea5c554db46736d",
+      "file_version": "12.1.0.28505",
+      "status": "candidate",
+      "required_settings": {
+        "revision_display": "insertions_inline_deletions_in_markup_balloons",
+        "field_update_behavior": "PAGE_field_refreshed_on_export",
+        "hidden_text_behavior": "omitted_from_pdf",
+        "font_inventory": {
+          "installed": [
+            "Calibri",
+            "Cambria",
+            "Cambria Math (provided by cambria.ttc)",
+            "宋体",
+            "Tahoma",
+            "Times New Roman"
+          ],
+          "missing": ["Baskerville"]
+        },
+        "pdf_export_settings": {
+          "automation": "KWPS.Application",
+          "open_read_only": true,
+          "format_code": 17,
+          "page_image_dpi": 150
+        }
+      },
+      "limitations": [
+        "An older WPS 12.1.0.28043 executable is also present",
+        "Invocation must use the pinned full path",
+        "Baskerville is unavailable and may be substituted",
+        "Field and revision behavior is renderer-observed, not source-authored content"
+      ]
+    },
+    {
+      "profile_id": "microsoft-word-local",
+      "renderer": "Microsoft Word",
+      "executable_path": null,
+      "executable_sha256": null,
+      "file_version": null,
+      "status": "unavailable",
+      "required_settings": {},
+      "limitations": ["No local Microsoft Word executable was found during Phase 0 inventory"]
+    }
+  ]
+}

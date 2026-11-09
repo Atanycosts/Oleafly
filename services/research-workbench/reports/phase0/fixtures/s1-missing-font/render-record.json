@@ -1,0 +1,17 @@
+﻿{
+    "report_version":  "1.0.0",
+    "source_path":  "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/environment/s1-missing-font/s1-missing-font.docx",
+    "source_sha256":  "c81ca07a2f38c1d7e981913ae06f936fce88c6ac5592ef6489db48f9854e6cb5",
+    "render_copy_path":  "C:/Users/Administrator/Desktop/research-file-workbench/var/render-tasks/4c975bfdd7e04ce7bd904ff6f6171e8e/s1-missing-font.docx",
+    "render_copy_sha256":  "c81ca07a2f38c1d7e981913ae06f936fce88c6ac5592ef6489db48f9854e6cb5",
+    "output_path":  "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-missing-font/s1-missing-font.pdf",
+    "output_sha256":  "dc26ec5d6883697dbdf60c29ee3607e6479e5cc750a63d8b87bfa25fd7b7100a",
+    "output_size":  52217,
+    "renderer_path":  "C:/Users/Administrator/AppData/Local/Kingsoft/WPS Office/12.1.0.28505/office6/wps.exe",
+    "renderer_sha256":  "9a0ceb217d77238a8891e1ef5a2ff3763572417091d0e4646ea5c554db46736d",
+    "renderer_file_version":  "12.1.0.28505",
+    "export_method":  "KWPS.Application Documents.Open(readOnly=true) + ExportAsFixedFormat(format=17)",
+    "initial_document_count":  0,
+    "source_unchanged":  true,
+    "task_id":  "4c975bfdd7e04ce7bd904ff6f6171e8e"
+}

@@ -1,0 +1,17 @@
+﻿{
+    "report_version":  "1.0.0",
+    "source_path":  "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/normal/s1-pagination-ambiguity/s1-pagination-ambiguity.docx",
+    "source_sha256":  "aff77e49a43a13d0bd944b4176ede04cf73297d0db171bb04ad3a65ea570ec19",
+    "render_copy_path":  "C:/Users/Administrator/Desktop/research-file-workbench/var/render-tasks/a3f20a6d38ba49a2a66c732f94c16760/s1-pagination-ambiguity.docx",
+    "render_copy_sha256":  "aff77e49a43a13d0bd944b4176ede04cf73297d0db171bb04ad3a65ea570ec19",
+    "output_path":  "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/s1-pagination-ambiguity.pdf",
+    "output_sha256":  "ecd63652f8113eb858400e8a6789b284b8e6f44b530427b8197a52538efe2152",
+    "output_size":  108409,
+    "renderer_path":  "C:/Users/Administrator/AppData/Local/Kingsoft/WPS Office/12.1.0.28505/office6/wps.exe",
+    "renderer_sha256":  "9a0ceb217d77238a8891e1ef5a2ff3763572417091d0e4646ea5c554db46736d",
+    "renderer_file_version":  "12.1.0.28505",
+    "export_method":  "KWPS.Application Documents.Open(readOnly=true) + ExportAsFixedFormat(format=17)",
+    "initial_document_count":  0,
+    "source_unchanged":  true,
+    "task_id":  "a3f20a6d38ba49a2a66c732f94c16760"
+}

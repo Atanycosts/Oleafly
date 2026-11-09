@@ -1,0 +1,107 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-sections-layout",
+  "source_artifact_sha256": "5efae02dc0c52b523ea85cc9bc2f61b96511f9fef7da026533baa42c3b78770a",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "pdf_sha256": "32eb944ab00882521a527fbed2f1e4182c6301fd4634b593cf83e2da262f2fe1",
+  "review_status": "reviewed",
+  "mappings": [
+    {
+      "annotation_id": "sections-layout-page-001",
+      "object_annotation_id": "rfw-fx-sl-section-a4-portrait-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "A4 portrait section marker is visible on page 1.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "sections-layout-page-002",
+      "object_annotation_id": "rfw-fx-sl-section-letter-portrait-002",
+      "page_numbers": [
+        2
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Letter portrait section marker is visible on page 2.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "sections-layout-page-003",
+      "object_annotation_id": "rfw-fx-sl-section-a4-landscape-003",
+      "page_numbers": [
+        3
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "A4 landscape section marker and landscape page are visible on page 3.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "sections-layout-page-004",
+      "object_annotation_id": "rfw-fx-sl-section-a4-two-column-004",
+      "page_numbers": [
+        4
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "A4 portrait two-column section is visibly laid out in two columns on page 4.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "sections-layout-page-005",
+      "object_annotation_id": "rfw-fx-sl-section-a4-restored-005",
+      "page_numbers": [
+        5
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "A4 portrait single-column layout is restored on page 5.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "sections-column-break-page-004",
+      "object_annotation_id": "rfw-fx-sl-column-break-before-001",
+      "page_numbers": [
+        4
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Column-break before/after markers occupy the two-column page 4 as expected.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "sections-page-break-page-005",
+      "object_annotation_id": "rfw-fx-sl-page-break-before-001",
+      "page_numbers": [
+        5
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Page-break before marker is on page 5 and the after marker starts page 6.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "sections-style-inheritance-page-006",
+      "object_annotation_id": "rfw-fx-sl-style-inheritance-001",
+      "page_numbers": [
+        6
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Style-inheritance marker is visibly rendered on page 6.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "sections-numbering-page-006",
+      "object_annotation_id": "rfw-fx-sl-numbering-001",
+      "page_numbers": [
+        6
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Three numbered fixture items are visibly rendered on page 6.",
+      "limitations": []
+    }
+  ],
+  "limitations": [
+    "Page and column positions bind to the fixed WPS PDF hash and render profile.",
+    "Microsoft Word cross-rendering is unverified because Word is unavailable locally."
+  ],
+  "reviewed_by": "independent-fixture-audit",
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent page-image inspection bound to the fixed PDF hash and WPS profile"
+}

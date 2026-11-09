@@ -1,0 +1,196 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-regions-fields",
+  "source_artifact_sha256": "4542a04586ffa3e9a563d24f14ba0da7960c5d5f8e8d913905263f7b05b05515",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "pdf_sha256": "0c89ee3fa836aac894101951c1a05f5407fb61fd7e4aa816606407ce97e43a5c",
+  "review_status": "reviewed",
+  "mappings": [
+    {
+      "annotation_id": "regions-visible-page-001",
+      "object_annotation_id": "rfw-fx-rf-body-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Body marker is visible on page 1 without clipping.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "regions-textbox-page-001",
+      "object_annotation_id": "rfw-fx-rf-textbox-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Textbox content is visible on page 1 without clipping.",
+      "limitations": [
+        "Page appearance alone does not distinguish duplicated surrounding marker text from the textbox structure."
+      ]
+    },
+    {
+      "annotation_id": "regions-header-page-001",
+      "object_annotation_id": "rfw-fx-rf-header-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Header marker is visible on page 1.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "regions-footer-page-001",
+      "object_annotation_id": "rfw-fx-rf-footer-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Footer marker is visible on page 1.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "regions-footnote-reference-page-001",
+      "object_annotation_id": "rfw-fx-rf-footnote-ref-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Footnote reference is visible in the page-1 body.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "regions-footnote-body-page-001",
+      "object_annotation_id": "rfw-fx-rf-footnote-body-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Footnote body marker is visible in the page-1 footnote area.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "regions-endnote-reference-page-001",
+      "object_annotation_id": "rfw-fx-rf-endnote-ref-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Endnote reference is visible in the page-1 body.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "regions-endnote-body-page-001",
+      "object_annotation_id": "rfw-fx-rf-endnote-body-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Endnote body marker is visible in the exported page content.",
+      "limitations": [
+        "This one-page fixture does not test a separate endnote section across multiple pages."
+      ]
+    },
+    {
+      "annotation_id": "regions-revision-page-001",
+      "object_annotation_id": "rfw-fx-rf-revision-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Revision insertion and deletion markup are visible on page 1 without clipping.",
+      "limitations": [
+        "Appearance depends on the pinned WPS revision-display settings."
+      ]
+    },
+    {
+      "annotation_id": "regions-comment-page-001",
+      "object_annotation_id": "rfw-fx-rf-comment-anchor-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Comment markup associated with the anchor is visible on page 1 without clipping.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "regions-inline-equation-page-001",
+      "object_annotation_id": "rfw-fx-rf-inline-omml-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Inline equation is visibly rendered on page 1.",
+      "limitations": [
+        "Formula semantics are not inferred from the page image."
+      ]
+    },
+    {
+      "annotation_id": "regions-display-equation-page-001",
+      "object_annotation_id": "rfw-fx-rf-display-omml-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Display equation is visibly rendered on page 1.",
+      "limitations": [
+        "Formula semantics are not inferred from the page image."
+      ]
+    },
+    {
+      "annotation_id": "regions-nested-field-page-001",
+      "object_annotation_id": "rfw-fx-rf-nested-field-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The nested field's exported result is visible on page 1.",
+      "limitations": [
+        "The page image does not expose the field nesting structure."
+      ]
+    },
+    {
+      "annotation_id": "regions-zotero-field-page-001",
+      "object_annotation_id": "rfw-fx-rf-zotero-field-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The synthetic Zotero field result is visible on page 1.",
+      "limitations": [
+        "No live Zotero integration is claimed."
+      ]
+    },
+    {
+      "annotation_id": "regions-xref-page-001",
+      "object_annotation_id": "rfw-fx-rf-xref-result-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The cross-reference result and its target text are visible on page 1.",
+      "limitations": [
+        "The page image does not prove bookmark/field linkage; package inspection supplies that evidence."
+      ]
+    },
+    {
+      "annotation_id": "regions-external-link-page-001",
+      "object_annotation_id": "rfw-fx-rf-external-link-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "External-link display text is visible on page 1.",
+      "limitations": [
+        "The external URI is not contacted or validated."
+      ]
+    }
+  ],
+  "limitations": [
+    "Hidden text is intentionally omitted by the pinned WPS export and has no page mapping.",
+    "Page appearance does not replace package inspection for fields, comments, revisions, or relationships.",
+    "Microsoft Word cross-rendering is unverified because Word is unavailable locally."
+  ],
+  "reviewed_by": "independent-fixture-audit",
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent page-image inspection bound to the fixed PDF hash and WPS profile"
+}

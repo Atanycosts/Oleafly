@@ -1,0 +1,48 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-native-complex-objects",
+  "artifact_id": "fixture-docx-s1-native-complex-objects",
+  "artifact_sha256": "b79624007401c884e9f3de06c2a14b87b7bb451c78ef2be84cfacf481406f5f0",
+  "annotator": "independent-fixture-audit",
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent ZIP/OOXML relationship inspection, embedded package signature checks, fixed WPS read-only reopen, and page-image review",
+  "review_status": "reviewed",
+  "objects": [
+    {
+      "annotation_id": "rfw-fx-eo-chart-001",
+      "region": "body",
+      "kind": "embedded_chart",
+      "locator": "word/document.xml c:chart r:id=rId6 -> word/charts/chart1.xml; docPr descr/title RFW-FX-EO-CHART-001",
+      "expected_support": "register_and_render",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rId6->charts/chart1.xml",
+        "word/charts/_rels/chart1.xml.rels->../embeddings/Workbook1.xlsx"
+      ],
+      "limitations": ["Semantic correctness of the chart data is outside this fixture's scope."]
+    },
+    {
+      "annotation_id": "rfw-fx-eo-ole-001",
+      "region": "body",
+      "kind": "ole",
+      "locator": "word/document.xml o:OLEObject r:id=rId7 ProgID=Package",
+      "expected_support": "register_and_render",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rId7->embeddings/oleObject1.bin",
+        "word/_rels/document.xml.rels:rId8->media/image1.emf"
+      ],
+      "limitations": ["The product must not execute the embedded object."]
+    },
+    {
+      "annotation_id": "rfw-fx-eo-group-001",
+      "region": "body",
+      "kind": "group_drawing",
+      "locator": "word/document.xml wpg:wgp with wp:docPr descr=RFW-FX-EO-GROUP-001",
+      "expected_support": "register_and_render",
+      "review_status": "reviewed",
+      "expected_relations": [],
+      "limitations": ["Group member text is page evidence, not a stable cross-editor object ID."]
+    }
+  ]
+}

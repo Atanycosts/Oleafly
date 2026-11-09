@@ -1,0 +1,19 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "replace-with-sample-id",
+  "artifact_id": "replace-with-artifact-id",
+  "artifact_sha256": "replace-with-64-hex-digest",
+  "annotator": "replace-with-name",
+  "review_status": "pending_review",
+  "objects": [
+    {
+      "annotation_id": "object-001",
+      "region": "body",
+      "kind": "paragraph",
+      "locator": "human-readable structural locator",
+      "expected_support": "required_structural_result",
+      "expected_relations": [],
+      "limitations": []
+    }
+  ]
+}

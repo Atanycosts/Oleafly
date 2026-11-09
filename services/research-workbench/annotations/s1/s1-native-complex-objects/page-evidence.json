@@ -1,0 +1,42 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-native-complex-objects",
+  "source_artifact_sha256": "b79624007401c884e9f3de06c2a14b87b7bb451c78ef2be84cfacf481406f5f0",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "pdf_sha256": "cb3b70a49a552572dec15533f185b0f324dd84ff32c52de10f1a9be975e77731",
+  "reviewed_by": "independent-fixture-audit",
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent page-image inspection bound to the fixed PDF hash and WPS profile",
+  "review_status": "reviewed",
+  "mappings": [
+    {
+      "annotation_id": "native-chart-page-001",
+      "object_annotation_id": "rfw-fx-eo-chart-001",
+      "page_numbers": [1],
+      "mapping_status": "reviewed",
+      "evidence": "The WPS-created bar chart is visible without clipping on page 1.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "native-ole-page-001",
+      "object_annotation_id": "rfw-fx-eo-ole-001",
+      "page_numbers": [1],
+      "mapping_status": "reviewed",
+      "evidence": "The OLE package icon and rfw-ole-payload.txt label are visible on page 1.",
+      "limitations": ["Page appearance does not prove payload semantics or safe execution."]
+    },
+    {
+      "annotation_id": "native-group-page-001",
+      "object_annotation_id": "rfw-fx-eo-group-001",
+      "page_numbers": [2],
+      "mapping_status": "reviewed",
+      "evidence": "Two grouped rectangle members are visible without clipping on page 2.",
+      "limitations": []
+    }
+  ],
+  "limitations": [
+    "Chart data semantics are outside the reviewed page-mapping scope.",
+    "The OLE payload was not executed and must not be executed by the product.",
+    "Microsoft Word cross-rendering is unverified because Word is unavailable locally."
+  ]
+}

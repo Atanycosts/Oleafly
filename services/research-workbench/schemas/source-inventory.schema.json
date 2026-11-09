@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.research-file-workbench/schemas/source-inventory.schema.json",
+  "title": "Phase 0 source inventory",
+  "type": "object",
+  "required": ["report_version", "generated_at", "author_workspace_root", "artifacts"],
+  "properties": {
+    "report_version": { "type": "string" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "author_workspace_root": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["artifact_id", "path", "kind", "exists", "status", "limitations"],
+        "properties": {
+          "artifact_id": { "type": "string" },
+          "path": { "type": "string" },
+          "kind": { "enum": ["file", "directory"] },
+          "exists": { "type": "boolean" },
+          "status": {
+            "enum": [
+              "available",
+              "missing",
+              "hash_mismatch",
+              "type_mismatch",
+              "unreadable",
+              "outside_author_workspace"
+            ]
+          },
+          "limitations": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

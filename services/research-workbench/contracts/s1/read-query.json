@@ -1,0 +1,120 @@
+{
+  "contract_version": "s1-read-query-1.7.0",
+  "status": "implemented_slice_pending_full_s1_acceptance",
+  "entry_point": "rfw-s1-query",
+  "input": "existing_application_owned_s1_run",
+  "commands": [
+    "catalog",
+    "read"
+  ],
+  "selectors": [
+    "region",
+    "object_type",
+    "object_id",
+    "page_number"
+  ],
+  "selector_semantics": "intersection",
+  "object_types": [
+    "text_block",
+    "table",
+    "image",
+    "math",
+    "field",
+    "section",
+    "break",
+    "complex_object",
+    "reference"
+  ],
+  "regions": [
+    "body",
+    "header",
+    "footer",
+    "footnote",
+    "endnote",
+    "textbox"
+  ],
+  "pagination": {
+    "unit": "complete_object_observation",
+    "default_page_size": 20,
+    "order": "object_type_then_reader_order_not_visual_order",
+    "cursor_dependencies": [
+      "source_sha256",
+      "reader_version",
+      "query_version",
+      "baseline_id",
+      "selection",
+      "page_size",
+      "page_mapping_sha256"
+    ],
+    "cursor_decoding": "strict_base64_and_json_object_with_unique_keys_and_no_nonfinite_numbers",
+    "cursor_fields": ["binding", "offset"],
+    "cursor_method_change": "A cursor from query 1.6.0 is not reusable under 1.7.0; start a new query without it. Saved responses retain their original bytes, status and method identity.",
+    "unread_scope": "all_indexed_objects_not_returned_in_this_response",
+    "byte_limit": null
+  },
+  "response_axes": {
+    "status": {
+      "meaning": "Coverage and capability state of the DOCX reader for this response.",
+      "values": ["partial", "catalog_only"],
+      "conditions": {
+        "partial": "content responses: the reader declares unconditional limits, so it is never complete coverage",
+        "catalog_only": "catalog responses: metadata is delivered and no content response or receipt is produced"
+      },
+      "basis": "The S1 reader declares unconditional limits, so a content response is never complete coverage. This axis never reports document-level completeness.",
+      "shared_constant": "docx/report.py COVERAGE_STATUS for content responses; docx/query.py catalog_docx produces catalog_only"
+    },
+    "selection_delivery": {
+      "meaning": "Continuation state of the requested selection after this response. It reports whether another page exists, not how much of the selection this response holds.",
+      "values": ["continuation_exhausted", "continuation_available"],
+      "derivation": "continuation_exhausted when pagination.has_more is false, otherwise continuation_available.",
+      "note": "continuation_exhausted means the page sequence ends with this response; a page reached with a cursor may hold only its last part, and every selected object it did not return remains listed in the receipt's unread ranges. The value asserts nothing about document coverage or semantic understanding, which stay on the status axis and in limitations. A catalog response carries no selection_delivery at all. The delivery of the response file itself is a separate concern recorded by query_run.delivery."
+    }
+  },
+  "exit_codes": {
+    "0": "catalog delivered, or a content response whose selection_delivery is continuation_exhausted; the page sequence ends here, and earlier pages are in hand only if the caller followed every continuation",
+    "1": "content delivered with selection_delivery continuation_available; continue with pagination.next_cursor",
+    "2": "request refused, delivery failed, or the response carries no readable selection_delivery value; exit 2 does not by itself prove that no output directory was written"
+  },
+  "page_query_requirements": [
+    "snapshot_hash_matches_run",
+    "mapping_and_render_source_hashes_match_snapshot",
+    "structure_reader_version_matches_current_reader",
+    "mapping_pdf_hash_and_renderer_profile_match_render_record",
+    "process_verified_render_record",
+    "physical_pdf_hash_and_page_count_verified",
+    "unique_reviewed_object_mapping",
+    "typed_object_kind_and_field_occurrence_match_unique_reader_observation"
+  ],
+  "receipt_rules": [
+    "Catalog metadata never produces a content-read receipt.",
+    "Each content response records only its returned versions and object ranges.",
+    "Earlier pages are not presumed read by this response.",
+    "Receipt and full response persist under a new application-owned output directory.",
+    "Returned observations do not establish semantic understanding or visual inspection.",
+    "Actor and client labels are local operator metadata, not authenticated identities.",
+    "Receipt identity binds the method, dependencies, pagination and optional task caller correlation as well as returned content.",
+    "Optional caller metadata identifies an Oleafly project, task and execution generation for local correlation only; it is not authentication.",
+    "Historical response recovery returns the saved response; it does not execute an older query implementation."
+  ],
+  "refusals": [
+    "failed_run",
+    "source_version_drift",
+    "invalid_selector",
+    "unknown_object_id",
+    "stale_or_malformed_cursor",
+    "missing_page_mapping",
+    "render_evidence_drift",
+    "page_out_of_range",
+    "existing_output",
+    "author_workspace_output",
+    "reparse_point_path"
+  ],
+  "limits": [
+    "The snapshot is reparsed; no persistent query cache is implemented.",
+    "Page queries return reviewed mapped observations, not all content on the page.",
+    "Part-level region attribution does not establish nested table or textbox containment.",
+    "Unsupported objects and reader issues remain explicit; no semantic PASS is inferred.",
+    "This is a local operator interface, not an authenticated MCP service or desktop application.",
+    "Existing run records are operator-controlled data, not cryptographically authenticated attestations."
+  ]
+}

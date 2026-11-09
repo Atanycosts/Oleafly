@@ -1,0 +1,293 @@
+{
+  "report_version": "1.0.0",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "page_image_dpi": 150,
+  "fixtures": [
+    {
+      "sample_id": "s1-regions-fields",
+      "source_path": "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/normal/s1-regions-fields/s1-regions-fields.docx",
+      "registered_source_sha256": "4542a04586ffa3e9a563d24f14ba0da7960c5d5f8e8d913905263f7b05b05515",
+      "actual_source_sha256": "4542a04586ffa3e9a563d24f14ba0da7960c5d5f8e8d913905263f7b05b05515",
+      "source_hash_matches": true,
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-regions-fields/s1-regions-fields.pdf",
+      "pdf_sha256": "0c89ee3fa836aac894101951c1a05f5407fb61fd7e4aa816606407ce97e43a5c",
+      "page_directory": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-regions-fields/pages-150dpi",
+      "page_count": 1,
+      "pages": [
+        {
+          "page_number": 1,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-regions-fields/pages-150dpi/page-1.png",
+          "sha256": "3ffc50c59986188f0ea76fbf906846234d95b6ca98aacc15b7d39c24b145c472",
+          "size": 136378
+        }
+      ],
+      "status": "rendered"
+    },
+    {
+      "sample_id": "s1-sections-layout",
+      "source_path": "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/normal/s1-sections-layout/s1-sections-layout.docx",
+      "registered_source_sha256": "5efae02dc0c52b523ea85cc9bc2f61b96511f9fef7da026533baa42c3b78770a",
+      "actual_source_sha256": "5efae02dc0c52b523ea85cc9bc2f61b96511f9fef7da026533baa42c3b78770a",
+      "source_hash_matches": true,
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-sections-layout/s1-sections-layout.pdf",
+      "pdf_sha256": "32eb944ab00882521a527fbed2f1e4182c6301fd4634b593cf83e2da262f2fe1",
+      "page_directory": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-sections-layout/pages-150dpi",
+      "page_count": 6,
+      "pages": [
+        {
+          "page_number": 1,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-sections-layout/pages-150dpi/page-1.png",
+          "sha256": "5e73d612794713ddb23dfcf99ec197ccade6774b4e6cedeff1da8de06610b550",
+          "size": 20890
+        },
+        {
+          "page_number": 2,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-sections-layout/pages-150dpi/page-2.png",
+          "sha256": "c906110b24170afc71b06efe91e8573206e20759f87cce167f99991eb2a9bdd4",
+          "size": 15035
+        },
+        {
+          "page_number": 3,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-sections-layout/pages-150dpi/page-3.png",
+          "sha256": "023473900ccf1e319ac0550624f11164c3f37af84207b77209c4bdffc046c94c",
+          "size": 16727
+        },
+        {
+          "page_number": 4,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-sections-layout/pages-150dpi/page-4.png",
+          "sha256": "e9e1daacb9c6dbc9796a68d3c3fb3790f81b87aee52ecf4d7d7d399b5ba936e1",
+          "size": 26982
+        },
+        {
+          "page_number": 5,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-sections-layout/pages-150dpi/page-5.png",
+          "sha256": "66c4cbcce9efa9ee934e8380a755624d4dd9d7062ca9998c9f74ac063a7f943d",
+          "size": 21258
+        },
+        {
+          "page_number": 6,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-sections-layout/pages-150dpi/page-6.png",
+          "sha256": "f0e69d7500e1b06e58f182889d70fa323619ccb1bd0ffdd63defee2a8490d7d2",
+          "size": 43382
+        }
+      ],
+      "status": "rendered"
+    },
+    {
+      "sample_id": "s1-figures-tables",
+      "source_path": "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/normal/s1-figures-tables/s1-figures-tables.docx",
+      "registered_source_sha256": "49107368b3b1ce80d6b042abe935425c76a4ea8638afed900d9c1704f6fd8dcc",
+      "actual_source_sha256": "49107368b3b1ce80d6b042abe935425c76a4ea8638afed900d9c1704f6fd8dcc",
+      "source_hash_matches": true,
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-figures-tables/s1-figures-tables.pdf",
+      "pdf_sha256": "3174c4aa7cc36bea04658ed332044f8555fdab1a92f87e2ae380398133648a04",
+      "page_directory": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-figures-tables/pages-150dpi",
+      "page_count": 3,
+      "pages": [
+        {
+          "page_number": 1,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-figures-tables/pages-150dpi/page-1.png",
+          "sha256": "930dca6207dce183519efd00420caf5908d0409c7d6cccd0a836173b46bf1bcc",
+          "size": 268399
+        },
+        {
+          "page_number": 2,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-figures-tables/pages-150dpi/page-2.png",
+          "sha256": "470eb758986c4369b531f4739cc15707c17e1b3a2ac37447c566bf9894d1b334",
+          "size": 345804
+        },
+        {
+          "page_number": 3,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-figures-tables/pages-150dpi/page-3.png",
+          "sha256": "343fbdc736f4841f9b7040bb441b62a422ce8507c97e684454ce30a2cf0b39a8",
+          "size": 119984
+        }
+      ],
+      "status": "rendered"
+    },
+    {
+      "sample_id": "s1-embedded-objects",
+      "source_path": "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/normal/s1-embedded-objects/s1-embedded-objects.docx",
+      "registered_source_sha256": "c35e900292cce6aef20aedd1fb0deb4df95be15b014dba8cbf08343e0bd01d8d",
+      "actual_source_sha256": "c35e900292cce6aef20aedd1fb0deb4df95be15b014dba8cbf08343e0bd01d8d",
+      "source_hash_matches": true,
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-embedded-objects/s1-embedded-objects.pdf",
+      "pdf_sha256": "3c16cb84afb48ffcbff464396bce7164e2442fa3a0dcd4c8fd88a5625abef921",
+      "page_directory": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-embedded-objects/pages-150dpi",
+      "page_count": 1,
+      "pages": [
+        {
+          "page_number": 1,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-embedded-objects/pages-150dpi/page-1.png",
+          "sha256": "b2d76d22f33f92e144fa9f510a3d13215e5b95869512a539132f4fc0e9ddb068",
+          "size": 42191
+        }
+      ],
+      "status": "rendered"
+    },
+    {
+      "sample_id": "s1-broken-relationships",
+      "source_path": "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/faults/s1-broken-relationships/s1-broken-relationships.docx",
+      "registered_source_sha256": "8f6d29885162ba526a520ea06846781c3069ec41181029913a3e77994d98d20c",
+      "actual_source_sha256": "8f6d29885162ba526a520ea06846781c3069ec41181029913a3e77994d98d20c",
+      "source_hash_matches": true,
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-broken-relationships/s1-broken-relationships.pdf",
+      "pdf_sha256": "9b8640cf92312801fc3c321b311ee8a197e87ba3338c4f2cd4f013ffd42448ec",
+      "page_directory": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-broken-relationships/pages-150dpi",
+      "page_count": 1,
+      "pages": [
+        {
+          "page_number": 1,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-broken-relationships/pages-150dpi/page-1.png",
+          "sha256": "1dd9f9a104d480a23377774e3786e51a443774d5682165049cfc8996b525c653",
+          "size": 33765
+        }
+      ],
+      "status": "rendered"
+    },
+    {
+      "sample_id": "s1-missing-font",
+      "source_path": "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/environment/s1-missing-font/s1-missing-font.docx",
+      "registered_source_sha256": "c81ca07a2f38c1d7e981913ae06f936fce88c6ac5592ef6489db48f9854e6cb5",
+      "actual_source_sha256": "c81ca07a2f38c1d7e981913ae06f936fce88c6ac5592ef6489db48f9854e6cb5",
+      "source_hash_matches": true,
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-missing-font/s1-missing-font.pdf",
+      "pdf_sha256": "dc26ec5d6883697dbdf60c29ee3607e6479e5cc750a63d8b87bfa25fd7b7100a",
+      "page_directory": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-missing-font/pages-150dpi",
+      "page_count": 1,
+      "pages": [
+        {
+          "page_number": 1,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-missing-font/pages-150dpi/page-1.png",
+          "sha256": "17dd1ac221bf2f27d05eb21c89d66a6da8a86ffad8c53aea6582e26e1cc3ae95",
+          "size": 26429
+        }
+      ],
+      "status": "rendered"
+    },
+    {
+      "sample_id": "s1-pagination-ambiguity",
+      "source_path": "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/normal/s1-pagination-ambiguity/s1-pagination-ambiguity.docx",
+      "registered_source_sha256": "aff77e49a43a13d0bd944b4176ede04cf73297d0db171bb04ad3a65ea570ec19",
+      "actual_source_sha256": "aff77e49a43a13d0bd944b4176ede04cf73297d0db171bb04ad3a65ea570ec19",
+      "source_hash_matches": true,
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/s1-pagination-ambiguity.pdf",
+      "pdf_sha256": "ecd63652f8113eb858400e8a6789b284b8e6f44b530427b8197a52538efe2152",
+      "page_directory": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi",
+      "page_count": 14,
+      "pages": [
+        {
+          "page_number": 1,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-01.png",
+          "sha256": "8b5d863e85eb96e8673be9a1575c3f10f39b903aec140146f146b975b4f8ff32",
+          "size": 510054
+        },
+        {
+          "page_number": 2,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-02.png",
+          "sha256": "6b69582f7f38d53a727a59af64abc6a9f49bbe6f4a9f9144ecb7e7ce02c20321",
+          "size": 499936
+        },
+        {
+          "page_number": 3,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-03.png",
+          "sha256": "c00265b11a7af3f10a9345308b9b97264d23bf681c03267030f12cb21643f376",
+          "size": 548378
+        },
+        {
+          "page_number": 4,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-04.png",
+          "sha256": "bf3798479ef453097506e510bd9a3024a57fda67e0724ea54e744b273fd2e1bc",
+          "size": 548709
+        },
+        {
+          "page_number": 5,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-05.png",
+          "sha256": "842fddbce47275fca2142933526b382730ff9542cc5140e8538dd41187848595",
+          "size": 542909
+        },
+        {
+          "page_number": 6,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-06.png",
+          "sha256": "eb2bee3da9467bfabc5a0f3c2ec0e64a306d3074c22ccd8a54e20daabdb86764",
+          "size": 544963
+        },
+        {
+          "page_number": 7,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-07.png",
+          "sha256": "593863170c7219b0ca828de5b2f26fb8df3dab6f980fa2cc14f5e051716f1686",
+          "size": 545270
+        },
+        {
+          "page_number": 8,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-08.png",
+          "sha256": "31a7f387eada37dcbdf6eed462f2d6e4f050c8246cb86b025316ddd899088590",
+          "size": 544922
+        },
+        {
+          "page_number": 9,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-09.png",
+          "sha256": "550feeabd739e19cc64bfbf7e33284a5be8a6dac2940021bff68f04e1faad07e",
+          "size": 544818
+        },
+        {
+          "page_number": 10,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-10.png",
+          "sha256": "84e34762eaa91e7ec6e711805cb76c39040d657773c63b4f5c040461589859f9",
+          "size": 499233
+        },
+        {
+          "page_number": 11,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-11.png",
+          "sha256": "cebaaf951909422d4a3747b1d5f55c861cd937d654bb7f98c45ed86d11070300",
+          "size": 547327
+        },
+        {
+          "page_number": 12,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-12.png",
+          "sha256": "47b7c28f5ca11d22eb6d157a1b78a92ff437a6826c5f02f11b7383310048ed7a",
+          "size": 548006
+        },
+        {
+          "page_number": 13,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-13.png",
+          "sha256": "1431810435393c01db0c2a9fb1b9719236e3a036b8cdddf1a6bddbe788c663c8",
+          "size": 547030
+        },
+        {
+          "page_number": 14,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/pages-150dpi/page-14.png",
+          "sha256": "c7e5529883c922f21d35f87bcbcc8d98b004fdecd2111dce841464f2667f377b",
+          "size": 78612
+        }
+      ],
+      "status": "rendered"
+    },
+    {
+      "sample_id": "s1-native-complex-objects",
+      "source_path": "C:/Users/Administrator/Desktop/research-file-workbench/tests/fixtures/docx/native/s1-native-complex-objects/s1-native-complex-objects.docx",
+      "registered_source_sha256": "b79624007401c884e9f3de06c2a14b87b7bb451c78ef2be84cfacf481406f5f0",
+      "actual_source_sha256": "b79624007401c884e9f3de06c2a14b87b7bb451c78ef2be84cfacf481406f5f0",
+      "source_hash_matches": true,
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-native-complex-objects/s1-native-complex-objects.pdf",
+      "pdf_sha256": "cb3b70a49a552572dec15533f185b0f324dd84ff32c52de10f1a9be975e77731",
+      "page_directory": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-native-complex-objects/pages-150dpi",
+      "page_count": 2,
+      "pages": [
+        {
+          "page_number": 1,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-native-complex-objects/pages-150dpi/page-1.png",
+          "sha256": "d7580952696ccd3f0c5d2cd30a1c5ad1cdf06791723a09bcb73cdddde9209016",
+          "size": 67366
+        },
+        {
+          "page_number": 2,
+          "path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-native-complex-objects/pages-150dpi/page-2.png",
+          "sha256": "59aae498ad5918e60871f598a0d9fc090bd389a87153838c9fa884c2bd21c2bb",
+          "size": 25807
+        }
+      ],
+      "status": "rendered"
+    }
+  ]
+}

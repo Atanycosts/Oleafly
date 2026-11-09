@@ -1,0 +1,162 @@
+{
+  "contract_version": "1.0.0",
+  "canonicalization_id": "rfw-json-v1",
+  "normalization_rules": [
+    "UTF-8 without BOM; preserve Unicode code points, whitespace inside strings, and case; reject unpaired surrogates.",
+    "Sort object keys by Unicode code point; use compact JSON separators and standard JSON escapes; do not sort arrays.",
+    "Absent and null differ. Required null fields must be present; empty arrays and empty objects remain distinct.",
+    "Only null, bool, string, exact integers in [-9007199254740991,9007199254740991], arrays and objects are permitted. Decimal quantities use declared strings, not binary floats.",
+    "SHA-256 covers the canonicalization/kind/payload envelope; scope-specific required fields are exact.",
+    "ordered_proposal_hashes is an ordered list, not a digest; changing order changes plan_hash.",
+    "Request payload excludes attempt counters, transport timestamps, trace IDs and secrets; access-scope and semantic execution parameters remain included."
+  ],
+  "kinds": {
+    "proposal_hash": {
+      "fields": [
+        "source_baseline",
+        "content",
+        "dependencies",
+        "impact_scope"
+      ]
+    },
+    "plan_hash": {
+      "fields": [
+        "source_baseline",
+        "ordered_proposal_hashes",
+        "merge_strategy",
+        "combined_impact",
+        "validation_requirements",
+        "review_policy_version"
+      ]
+    },
+    "request_digest": {
+      "fields": [
+        "project_id",
+        "access_scope",
+        "operation_type",
+        "contract_version",
+        "source_baseline",
+        "plan_hash",
+        "approval_id",
+        "parameters"
+      ]
+    },
+    "read_baseline_request_digest": {
+      "fields": [
+        "project_id",
+        "actor_id",
+        "expected_baseline_id",
+        "artifact_version_ids",
+        "author_decision_version_ids",
+        "rule_bindings"
+      ]
+    }
+  },
+  "vectors": [
+    {
+      "vector_id": "null-and-empty",
+      "input": {
+        "a": null,
+        "b": [],
+        "c": {}
+      },
+      "canonical_json": "{\"a\":null,\"b\":[],\"c\":{}}",
+      "sha256": "9510e6bf165ccc8d641823fb9cba0ca6dcf57f0995667a9bb567516501eca574"
+    },
+    {
+      "vector_id": "unicode-and-order",
+      "input": {
+        "z": [
+          "b",
+          "a"
+        ],
+        "a": "文稿"
+      },
+      "canonical_json": "{\"a\":\"文稿\",\"z\":[\"b\",\"a\"]}",
+      "sha256": "1d70ef334f9f5cde9749bd321d5b4e72d32b641b13d9ed7d0e42b8486938fdbd"
+    },
+    {
+      "vector_id": "proposal",
+      "input": {
+        "canonicalization": "rfw-json-v1",
+        "kind": "proposal_hash",
+        "payload": {
+          "source_baseline": "b-1",
+          "content": "替换",
+          "dependencies": [
+            "e-1"
+          ],
+          "impact_scope": [
+            "p-1"
+          ]
+        }
+      },
+      "canonical_json": "{\"canonicalization\":\"rfw-json-v1\",\"kind\":\"proposal_hash\",\"payload\":{\"content\":\"替换\",\"dependencies\":[\"e-1\"],\"impact_scope\":[\"p-1\"],\"source_baseline\":\"b-1\"}}",
+      "sha256": "68cfeeb7c530ab16e2c620a12956353224ef6a414edf2e7021911f2e7ed6bc5f"
+    },
+    {
+      "vector_id": "plan",
+      "input": {
+        "canonicalization": "rfw-json-v1",
+        "kind": "plan_hash",
+        "payload": {
+          "source_baseline": "b-1",
+          "ordered_proposal_hashes": [
+            "a",
+            "b"
+          ],
+          "merge_strategy": "ordered",
+          "combined_impact": [
+            "p-1"
+          ],
+          "validation_requirements": [
+            "structure"
+          ],
+          "review_policy_version": "user-1"
+        }
+      },
+      "canonical_json": "{\"canonicalization\":\"rfw-json-v1\",\"kind\":\"plan_hash\",\"payload\":{\"combined_impact\":[\"p-1\"],\"merge_strategy\":\"ordered\",\"ordered_proposal_hashes\":[\"a\",\"b\"],\"review_policy_version\":\"user-1\",\"source_baseline\":\"b-1\",\"validation_requirements\":[\"structure\"]}}",
+      "sha256": "dc6bbdba4bcbe7b5c25395cc980c051c939bb7f776048e539909ac5e57736481"
+    },
+    {
+      "vector_id": "request",
+      "input": {
+        "canonicalization": "rfw-json-v1",
+        "kind": "request_digest",
+        "payload": {
+          "project_id": "p-1",
+          "access_scope": [
+            "edit"
+          ],
+          "operation_type": "text_replace",
+          "contract_version": "1",
+          "source_baseline": "b-1",
+          "plan_hash": "p",
+          "approval_id": "a-1",
+          "parameters": {}
+        }
+      },
+      "canonical_json": "{\"canonicalization\":\"rfw-json-v1\",\"kind\":\"request_digest\",\"payload\":{\"access_scope\":[\"edit\"],\"approval_id\":\"a-1\",\"contract_version\":\"1\",\"operation_type\":\"text_replace\",\"parameters\":{},\"plan_hash\":\"p\",\"project_id\":\"p-1\",\"source_baseline\":\"b-1\"}}",
+      "sha256": "af5605ce7f3d72d48a12253773c386f88b247543c1576d8f4c918de751d71ed4"
+    },
+    {
+      "vector_id": "read-baseline",
+      "input": {
+        "canonicalization": "rfw-json-v1",
+        "kind": "read_baseline_request_digest",
+        "payload": {
+          "project_id": "p-1",
+          "actor_id": "user-1",
+          "expected_baseline_id": null,
+          "artifact_version_ids": [
+            "v-1"
+          ],
+          "author_decision_version_ids": [],
+          "rule_bindings": []
+        }
+      },
+      "canonical_json": "{\"canonicalization\":\"rfw-json-v1\",\"kind\":\"read_baseline_request_digest\",\"payload\":{\"actor_id\":\"user-1\",\"artifact_version_ids\":[\"v-1\"],\"author_decision_version_ids\":[],\"expected_baseline_id\":null,\"project_id\":\"p-1\",\"rule_bindings\":[]}}",
+      "sha256": "b8dafb9dba75a48b8876c339a2e70d1b1019e3432bd02b7d6fa52c29b6f39dc9"
+    }
+  ]
+}
