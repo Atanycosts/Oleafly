@@ -1724,6 +1724,8 @@ mod tests {
             .execute_batch(
                 "ALTER TABLE research_task_annotation_work DROP COLUMN prepared_generation;
              ALTER TABLE research_task_annotation_work DROP COLUMN prepared_at;
+             ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+             DROP TABLE collaboration_attentions;
              PRAGMA user_version = 8;",
             )
             .unwrap();

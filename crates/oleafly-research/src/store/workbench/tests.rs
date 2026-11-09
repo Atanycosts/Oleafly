@@ -673,6 +673,8 @@ fn schema_ten_tasks_migrate_without_a_fabricated_workbench_scope() {
         .execute_batch(
             "DROP TABLE research_task_workbench_records;
              DROP TABLE research_task_workbench_scopes;
+             ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+             DROP TABLE collaboration_attentions;
              PRAGMA user_version=10;",
         )
         .unwrap();
@@ -1308,7 +1310,12 @@ fn schema_eleven_context_and_receipts_survive_origin_table_migration() {
         .store
         .open()
         .unwrap()
-        .execute_batch("DROP TABLE research_task_workbench_check_origins; PRAGMA user_version=11;")
+        .execute_batch(
+            "DROP TABLE research_task_workbench_check_origins;
+             ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+             DROP TABLE collaboration_attentions;
+             PRAGMA user_version=11;",
+        )
         .unwrap();
     let reopened = TaskStore::new(fixture.store.root().to_path_buf()).unwrap();
     assert_eq!(
@@ -1317,7 +1324,7 @@ fn schema_eleven_context_and_receipts_survive_origin_table_migration() {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u64>(0))
             .unwrap(),
-        12
+        crate::store::SCHEMA_VERSION as u64
     );
     assert_eq!(
         reopened

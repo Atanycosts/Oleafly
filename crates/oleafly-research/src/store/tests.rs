@@ -315,6 +315,8 @@ fn a_store_created_before_owners_gains_the_columns_and_keeps_its_rows() {
         .execute_batch(
             "ALTER TABLE research_tasks DROP COLUMN owner_pid;
              ALTER TABLE research_tasks DROP COLUMN owner_started;
+             ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+             DROP TABLE collaboration_attentions;
              PRAGMA user_version = 0;",
         )
         .unwrap();
@@ -844,7 +846,12 @@ fn schema_nine_migrates_input_gate_without_marking_existing_tasks() {
     store
         .open()
         .unwrap()
-        .execute_batch("DROP TABLE research_task_input_initializations; PRAGMA user_version = 9;")
+        .execute_batch(
+            "DROP TABLE research_task_input_initializations;
+             ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+             DROP TABLE collaboration_attentions;
+             PRAGMA user_version = 9;",
+        )
         .unwrap();
     drop(store);
 
@@ -1942,6 +1949,8 @@ mod handoff {
             .execute_batch(
                 "DROP INDEX research_task_events_kind;
                  ALTER TABLE research_task_events DROP COLUMN kind;
+                 ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+                 DROP TABLE collaboration_attentions;
                  PRAGMA user_version = 3;",
             )
             .unwrap();

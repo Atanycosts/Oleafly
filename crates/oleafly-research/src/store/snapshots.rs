@@ -256,7 +256,12 @@ mod tests {
         store
             .open()
             .unwrap()
-            .execute_batch("DROP TABLE research_task_file_snapshots; PRAGMA user_version = 7;")
+            .execute_batch(
+                "DROP TABLE research_task_file_snapshots;
+                 ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+                 DROP TABLE collaboration_attentions;
+                 PRAGMA user_version = 7;",
+            )
             .unwrap();
         let reopened = TaskStore::new(directory.path().into()).unwrap();
         assert_eq!(
