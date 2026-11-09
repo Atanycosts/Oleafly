@@ -365,12 +365,13 @@ describe("research task commands", () => {
     native.invoke.mockResolvedValue({});
 
     await previewResearchTaskFile("t1", "main.tex");
-    await previewResearchTaskArtifact("t1", "figures/loss.png");
+    await previewResearchTaskArtifact("t1", "figures/loss.png", 3);
 
     expect(native.invoke).toHaveBeenNthCalledWith(1, "research_task_file_preview", { taskId: "t1", path: "main.tex" });
     expect(native.invoke).toHaveBeenNthCalledWith(2, "research_task_artifact_preview", {
       taskId: "t1",
       path: "figures/loss.png",
+      executionGeneration: 3,
     });
   });
 

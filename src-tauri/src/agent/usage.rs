@@ -6,6 +6,7 @@ use serde_json::Value;
 use tauri::State;
 
 use oleafly_agent::{AgentEvent, InputTokenSemantics, Resolved, Usage, Wire};
+use oleafly_research::usage::TaskUsageAggregator;
 use rusqlite::Connection;
 
 pub use super::acp_usage::attach_acp_usage;
@@ -53,8 +54,7 @@ impl CostTally {
 
 struct UsageState {
     event: UsageEventInput,
-    latest: Option<Usage>,
-    previous_turns: Option<Usage>,
+    aggregate: TaskUsageAggregator,
     settled: bool,
     connection: Option<Connection>,
     last_persist: Option<Instant>,
@@ -111,8 +111,7 @@ impl NativeUsageGuard {
                     status: "in_progress".into(),
                     aggregation_scope: "self".into(),
                 },
-                latest: None,
-                previous_turns: None,
+                aggregate: TaskUsageAggregator::default(),
                 settled: false,
                 connection: None,
                 last_persist: None,
@@ -132,42 +131,21 @@ impl NativeUsageGuard {
     }
 
     pub fn observe(&self, event: &AgentEvent) {
-        let AgentEvent::Usage { usage, .. } = event else {
+        if !matches!(event, AgentEvent::Usage { .. }) {
+            return;
+        }
+        let mut state = super::lock_or_recover(&self.state);
+        if state.settled {
+            return;
+        }
+        let previous = state.aggregate.total();
+        let Some(total) = state.aggregate.observe_parent(event) else {
             return;
         };
-        let mut state = super::lock_or_recover(&self.state);
-        if state.settled || state.latest.as_ref() == Some(usage) {
+        if previous == Some(total) {
             return;
         }
-        state.latest = Some(*usage);
-        let cumulative = state
-            .previous_turns
-            .map_or(*usage, |previous| task_usage_total(previous, *usage));
-        let usage = &cumulative;
-        state.event.input_tokens = usage.reported_input().map(i64::from);
-        state.event.output_tokens = usage.reported_output().map(i64::from);
-        state.event.cache_read_tokens = usage.cache_read.map(i64::from);
-        state.event.cache_write_tokens = usage.cache_write.map(i64::from);
-        state.event.input_semantics = match usage.input_semantics {
-            InputTokenSemantics::Inclusive => "inclusive",
-            InputTokenSemantics::Exclusive => "exclusive",
-            InputTokenSemantics::Unknown => "unknown",
-        }
-        .into();
-        state.event.measurement = if [
-            state.event.input_tokens,
-            state.event.output_tokens,
-            state.event.cache_read_tokens,
-            state.event.cache_write_tokens,
-        ]
-        .iter()
-        .any(Option::is_some)
-        {
-            "provider_reported"
-        } else {
-            "unavailable"
-        }
-        .into();
+        apply_usage_snapshot(&mut state.event, total);
         let due = match state.last_persist {
             Some(last) => last.elapsed() >= PERSIST_INTERVAL,
             None => true,
@@ -177,21 +155,68 @@ impl NativeUsageGuard {
         }
     }
 
+    /// Register a helper before it runs. Only a started helper contributes usage.
+    pub fn register_helper(&self, actor: &str) -> Option<(Option<u64>, Option<u64>)> {
+        let mut state = super::lock_or_recover(&self.state);
+        if state.settled {
+            return state.aggregate.counts();
+        }
+        let previous = state.aggregate.total();
+        state.aggregate.register_helper(actor);
+        let total = state.aggregate.total()?;
+        if previous != Some(total) {
+            apply_usage_snapshot(&mut state.event, total);
+            self.persist(&mut state);
+        }
+        state.aggregate.counts()
+    }
+
+    pub fn observe_helper(
+        &self,
+        actor: &str,
+        event: &AgentEvent,
+    ) -> Option<(Option<u64>, Option<u64>)> {
+        let mut state = super::lock_or_recover(&self.state);
+        if state.settled {
+            return state.aggregate.counts();
+        }
+        let previous = state.aggregate.total();
+        let total = state.aggregate.observe_helper(actor, event)?;
+        if previous != Some(total) {
+            apply_usage_snapshot(&mut state.event, total);
+            let due = match state.last_persist {
+                Some(last) => last.elapsed() >= PERSIST_INTERVAL,
+                None => true,
+            };
+            if due {
+                self.persist(&mut state);
+            }
+        }
+        state.aggregate.counts()
+    }
+
+    pub fn task_usage_snapshot(&self) -> Option<(Option<u64>, Option<u64>)> {
+        super::lock_or_recover(&self.state).aggregate.counts()
+    }
+
     pub fn begin_task_turn(&self) {
         let mut state = super::lock_or_recover(&self.state);
-        if let Some(latest) = state.latest.take() {
-            state.previous_turns = Some(
-                state
-                    .previous_turns
-                    .map_or(latest, |previous| task_usage_total(previous, latest)),
-            );
+        if state.settled {
+            return;
         }
+        if let Some(total) = state.aggregate.begin_parent_turn() {
+            apply_usage_snapshot(&mut state.event, total);
+        }
+        self.persist(&mut state);
     }
 
     pub fn finish(&self, status: &str) {
         let mut state = super::lock_or_recover(&self.state);
         if state.settled {
             return;
+        }
+        if let Some(total) = state.aggregate.total() {
+            apply_usage_snapshot(&mut state.event, total);
         }
         state.event.status = status.into();
         self.persist(&mut state);
@@ -237,26 +262,31 @@ impl NativeUsageGuard {
     }
 }
 
-fn task_usage_total(previous: Usage, current: Usage) -> Usage {
-    let sum = |a: Option<u32>, b: Option<u32>| a.zip(b).map(|(a, b)| a.saturating_add(b));
-    Usage {
-        input: previous.input.saturating_add(current.input),
-        output: previous.output.saturating_add(current.output),
-        input_known: Some(
-            previous.reported_input().is_some() && current.reported_input().is_some(),
-        ),
-        output_known: Some(
-            previous.reported_output().is_some() && current.reported_output().is_some(),
-        ),
-        cache_read: sum(previous.cache_read, current.cache_read),
-        cache_write: sum(previous.cache_write, current.cache_write),
-        reasoning: sum(previous.reasoning, current.reasoning),
-        input_semantics: if previous.input_semantics == current.input_semantics {
-            previous.input_semantics
-        } else {
-            InputTokenSemantics::Unknown
-        },
+fn apply_usage_snapshot(event: &mut UsageEventInput, usage: Usage) {
+    event.input_tokens = usage.reported_input().map(i64::from);
+    event.output_tokens = usage.reported_output().map(i64::from);
+    event.cache_read_tokens = usage.cache_read.map(i64::from);
+    event.cache_write_tokens = usage.cache_write.map(i64::from);
+    event.input_semantics = match usage.input_semantics {
+        InputTokenSemantics::Inclusive => "inclusive",
+        InputTokenSemantics::Exclusive => "exclusive",
+        InputTokenSemantics::Unknown => "unknown",
     }
+    .into();
+    event.measurement = if [
+        event.input_tokens,
+        event.output_tokens,
+        event.cache_read_tokens,
+        event.cache_write_tokens,
+    ]
+    .iter()
+    .any(Option::is_some)
+    {
+        "provider_reported"
+    } else {
+        "unavailable"
+    }
+    .into();
 }
 
 impl Drop for NativeUsageGuard {
@@ -455,8 +485,15 @@ mod tests {
         };
         guard.begin_task_turn();
         guard.observe(&usage(10, 2));
+        assert_eq!(guard.register_helper("helper-a"), Some((Some(10), Some(2))));
+        assert_eq!(
+            guard.observe_helper("helper-a", &usage(7, 1)),
+            Some((Some(17), Some(3)))
+        );
         guard.observe(&usage(20, 4));
+        assert_eq!(guard.task_usage_snapshot(), Some((Some(27), Some(5))));
         guard.begin_task_turn();
+        assert_eq!(guard.task_usage_snapshot(), Some((None, None)));
         guard.observe(&usage(5, 1));
         guard.observe(&usage(10, 2));
         guard.finish("completed");
@@ -468,21 +505,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(counts, (30, 6));
-        let total = task_usage_total(
-            Usage {
-                input: 0,
-                output: 0,
-                input_known: Some(true),
-                output_known: Some(true),
-                ..Default::default()
-            },
-            Usage::default(),
-        );
-        assert_eq!(
-            (total.reported_input(), total.reported_output()),
-            (None, None)
-        );
+        assert_eq!(counts, (37, 7));
     }
 
     #[tokio::test]

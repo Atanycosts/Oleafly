@@ -325,6 +325,7 @@
     "typstFailed": "Typst kon deze vergelijking niet weergeven ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Taak delegeren",
     "askAi": "AI vragen",
     "paraphrase": "Parafraseren",
     "improveWriting": "Schrijfstijl verbeteren",

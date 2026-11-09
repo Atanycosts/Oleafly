@@ -1,5 +1,7 @@
 mod apply;
+pub(crate) mod collaboration;
 pub(crate) mod host;
+pub(crate) mod pdf_pages;
 pub(crate) mod pdf_text;
 pub(crate) mod preview;
 #[cfg(test)]
@@ -268,6 +270,19 @@ pub async fn research_task_create(
     .await
 }
 
+pub(crate) async fn create_task_pending_inputs(
+    state: tauri::State<'_, ResearchTaskState>,
+    draft: ResearchTaskDraft,
+) -> Result<ResearchTaskView, String> {
+    ensure_enabled(&state)?;
+    blocking_task_command(&state, move |state| {
+        state
+            .create_pending_inputs(draft)
+            .map(|task| (&task).into())
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn research_task_edit(
     state: tauri::State<'_, ResearchTaskState>,
@@ -337,6 +352,128 @@ pub async fn research_task_events(
         )
     })
     .await
+}
+
+#[tauri::command]
+pub async fn research_task_observation_call(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    execution_generation: u64,
+    call_id: String,
+) -> Result<Option<model::TaskTranscriptEvent>, String> {
+    blocking_task_command(&state, move |state| {
+        let store = state.store()?;
+        let task = store.require(&task_id)?;
+        store.observation_tool_call(&task.project_id, &task_id, execution_generation, &call_id)
+    })
+    .await
+}
+
+#[cfg(test)]
+mod observation_call_tests {
+    use super::*;
+    use oleafly_research::observations::{content_hash, ReadSource, TaskObservation};
+    use tauri::Manager;
+
+    #[test]
+    fn native_command_reads_the_requested_historical_generation_and_exact_call() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(ResearchTaskState::for_test(
+                directory.path().join("tasks"),
+                1,
+            ))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let state = || app.state::<ResearchTaskState>();
+        let store = state().store().unwrap();
+        let task = store
+            .create(ResearchTaskDraft {
+                project_id: "historical-paper".into(),
+                title: "Historical source".into(),
+                prompt: "Read original event".into(),
+                runtime_id: "fixture".into(),
+                agent_id: "fixture".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.request_start(&task.id).unwrap();
+        let first = store.claim_next().unwrap().unwrap();
+        let call_id = "old-session:step-0:call_0";
+        let event = store
+            .append_event(
+                &task.id,
+                first.execution_generation,
+                &TaskRuntimeEvent::Observation {
+                    observation: TaskObservation::ToolExecution {
+                        call_id: call_id.into(),
+                        name: "read_file".into(),
+                        status: "done".into(),
+                        input_sha256: content_hash(b"results.md"),
+                        output_sha256: content_hash(b"old bytes"),
+                        skill_id: None,
+                        skill_instructions_sha256: None,
+                        actor: None,
+                        source: Some(ReadSource {
+                            path: "results.md".into(),
+                            file_sha256: content_hash(b"old bytes"),
+                            offset: 0,
+                            end_offset: 9,
+                            truncated: false,
+                            snapshot_retained: Some(true),
+                        }),
+                    },
+                },
+            )
+            .unwrap()
+            .unwrap();
+        store
+            .finish_failure(&task.id, first.execution_generation, "next generation")
+            .unwrap();
+        store.retry_with(&task.id, RetryMode::Fresh).unwrap();
+        store.request_start(&task.id).unwrap();
+        let second = store.claim_next().unwrap().unwrap();
+        tauri::async_runtime::block_on(async {
+            assert_eq!(
+                research_task_observation_call(
+                    state(),
+                    task.id.clone(),
+                    first.execution_generation,
+                    call_id.into()
+                )
+                .await
+                .unwrap(),
+                Some(event)
+            );
+            assert!(research_task_observation_call(
+                state(),
+                task.id.clone(),
+                second.execution_generation,
+                call_id.into()
+            )
+            .await
+            .unwrap()
+            .is_none());
+            assert!(research_task_observation_call(
+                state(),
+                task.id.clone(),
+                first.execution_generation,
+                "call_0".into()
+            )
+            .await
+            .unwrap()
+            .is_none());
+            assert!(research_task_observation_call(
+                state(),
+                "missing".into(),
+                first.execution_generation,
+                call_id.into()
+            )
+            .await
+            .is_err());
+        });
+        assert_eq!(store.require(&task.id).unwrap(), second);
+    }
 }
 
 #[tauri::command]
@@ -449,9 +586,10 @@ pub async fn research_task_artifact_preview(
     state: tauri::State<'_, ResearchTaskState>,
     task_id: String,
     path: String,
+    execution_generation: u64,
 ) -> Result<TaskArtifactPreview, String> {
     blocking_task_command(&state, move |state| {
-        preview::artifact_preview(&state.store()?, &task_id, &path)
+        preview::artifact_preview(&state.store()?, &task_id, &path, execution_generation)
     })
     .await
 }
@@ -958,13 +1096,22 @@ mod tests {
                         .unwrap_err(),
                     expected_file
                 );
-                let expected_artifact =
-                    preview::artifact_preview(&state().store().unwrap(), &task.id, path)
-                        .unwrap_err();
+                let expected_artifact = preview::artifact_preview(
+                    &state().store().unwrap(),
+                    &task.id,
+                    path,
+                    retried.execution_generation,
+                )
+                .unwrap_err();
                 assert_eq!(
-                    research_task_artifact_preview(state(), task.id.clone(), path.into())
-                        .await
-                        .unwrap_err(),
+                    research_task_artifact_preview(
+                        state(),
+                        task.id.clone(),
+                        path.into(),
+                        retried.execution_generation
+                    )
+                    .await
+                    .unwrap_err(),
                     expected_artifact
                 );
             }
@@ -975,4 +1122,40 @@ mod tests {
         });
         std::env::remove_var("OLEAFLY_DATA_DIR");
     }
+}
+
+#[tauri::command]
+pub async fn research_task_compiled_pdfs(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    generation: u64,
+) -> Result<Vec<oleafly_research::compiled_artifacts::TaskCompiledArtifact>, String> {
+    blocking_task_command(&state, move |state| {
+        let store = state.store()?;
+        let task = store.require(&task_id)?;
+        if generation > task.execution_generation {
+            return Err("Unknown task generation.".into());
+        }
+        oleafly_research::compiled_artifacts::list(store.root(), &task_id, generation)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_compiled_pdf_read(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    generation: u64,
+    reference: oleafly_research::compiled_artifacts::TaskCompiledArtifact,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = blocking_task_command(&state, move |state| {
+        let store = state.store()?;
+        let task = store.require(&task_id)?;
+        if generation > task.execution_generation {
+            return Err("Unknown task generation.".into());
+        }
+        oleafly_research::compiled_artifacts::read(store.root(), &task_id, generation, &reference)
+    })
+    .await?;
+    Ok(tauri::ipc::Response::new(bytes))
 }

@@ -325,6 +325,7 @@
     "typstFailed": "Typst bu denklemi işleyemedi ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Görevi devret",
     "askAi": "Yapay zekaya sor",
     "paraphrase": "Başka sözcüklerle anlat",
     "improveWriting": "Yazımı iyileştir",

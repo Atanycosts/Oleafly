@@ -321,6 +321,7 @@
     "typstFailed": "Typst 无法渲染此公式（{{detail}}）"
   },
   "selectionActions": {
+    "delegateTask": "委托任务",
     "askAi": "询问 AI",
     "paraphrase": "改写",
     "improveWriting": "改进写作",

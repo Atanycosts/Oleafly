@@ -4,7 +4,7 @@
 //! skill picked in the composer travels as a text block after the user's
 //! message instead of relying on `load_skill`.
 
-use crate::agent::task_runtime::{skill_section, SkillAudience, MAX_SKILL_BYTES};
+use crate::agent::task_runtime::{cli_skill_section, MAX_SKILL_BYTES};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,7 +38,7 @@ pub(super) fn prompt_skill_in(
     if !record.is_available() {
         return Err("This skill is turned off. Turn it on in Settings, AI, Skills.".into());
     }
-    let block = skill_section(&record, SkillAudience::CliAgent);
+    let block = cli_skill_section(&record);
     if block.len() > MAX_SKILL_BYTES {
         return Err("This skill is too long to send with a message.".into());
     }

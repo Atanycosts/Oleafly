@@ -499,7 +499,18 @@ async fn plain_and_oversized_check_items_do_not_claim_verified_findings() {
 #[test]
 fn version_five_migration_keeps_tasks_and_adds_finding_tables() {
     let fixture = Fixture::new();
-    fixture.store.open().unwrap().execute_batch("DROP TABLE research_task_finding_dispositions; DROP TABLE research_task_findings; PRAGMA user_version=5;").unwrap();
+    fixture
+        .store
+        .open()
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE research_task_finding_dispositions;
+             DROP TABLE research_task_findings;
+             ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+             DROP TABLE collaboration_attentions;
+             PRAGMA user_version=5;",
+        )
+        .unwrap();
     let reopened = TaskStore::new(fixture.store.root().to_owned()).unwrap();
     assert_eq!(
         reopened.require(&fixture.task.id).unwrap().title,

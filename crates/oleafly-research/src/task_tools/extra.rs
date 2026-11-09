@@ -76,7 +76,7 @@ impl TaskBinding {
         }
     }
 
-    fn emit(&self, event: TaskRuntimeEvent) {
+    pub(crate) fn emit(&self, event: TaskRuntimeEvent) {
         if let Some(events) = &self.events {
             events(event);
         }
@@ -106,8 +106,9 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
     let mut tools = vec![
         tool(
             "task_observations",
-            "Read this bound task's recorded runtime summary and a bounded page of immutable observation events. Returns the next sequence cursor, baseline, file changes and existing evidence checks. Does not return prompts or transcript text. Only committed observations are visible; query again for newer records.",
+            "Read this bound task's recorded runtime summary. The default detail=summary omits event detail and does not advance after_sequence; its eventsRead field gives the explicit query for a bounded page of immutable observation events. Use detail=events for the complete event view. Neither mode returns prompts or transcript text. Only committed observations are visible; query again for newer records.",
             json!({
+                "detail": {"type": "string", "enum": ["summary", "events"]},
                 "after_sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991_u64},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50},
             }),
@@ -161,6 +162,7 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
             &["id"],
         ),
         tool("cancel_run", "Stop a run.", json!({"id": run_id}), &["id"]),
+        tool("task_pdf_text", "Read page text from a retained task PDF reference: captured generation 0 input or this execution's compiled output. Pass the complete artifact object.", json!({"reference": crate::compiled_artifacts::reference_schema()}), &["reference"]),
         tool("compile", "Build the task workspace with Oleafly's command-line tool and report errors and warnings.", json!({}), &[]),
         tool("project_map", "The project's outline, labels, references and citations, with any that do not resolve.", json!({}), &[]),
         tool(
@@ -267,6 +269,7 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
             &["query"],
         ));
     }
+    tools.extend(super::collaboration::schemas());
     tools
 }
 
@@ -791,6 +794,9 @@ pub async fn call_task_tool(
     args: Value,
     binding: &TaskBinding,
 ) -> Option<Result<Value, String>> {
+    if let Some(result) = super::collaboration::call(name, args.clone(), binding) {
+        return Some(result);
+    }
     let result = match name {
         "task_observations" => task_observations(binding, &args),
         "task_findings" => serde_json::from_value::<crate::findings::FindingQuery>(args)
@@ -830,11 +836,27 @@ pub async fn call_task_tool(
             Ok(id) => binding.services.runs.cancel(&binding.task_id, id).await.map(|()| json!({"stopping": id})),
             Err(error) => Err(error),
         },
+        "task_pdf_text" => async {
+            let reference: crate::compiled_artifacts::TaskCompiledArtifact = serde_json::from_value(args["reference"].clone()).map_err(|e| e.to_string())?;
+            crate::compiled_artifacts::read_for_task(&binding.services.tasks_root, &binding.task_id, binding.generation, &reference)?;
+            let extractor = binding.host.pdf_extractor().ok_or("Task PDF text extraction is unavailable.")?;
+            let pages = extractor.pages(binding.services.tasks_root.join(&reference.path)).await?;
+            Ok(json!({"artifact": reference, "pages": pages}))
+        }.await,
         "compile" => match &binding.services.workspace {
-            Some(workspace) => workspace
-                .compile(binding.execution_root.clone(), binding.project_root.clone())
+            Some(workspace) => async {
+                let task = binding.task()?;
+                let isolation = task.isolation.ok_or("The task has no input revision.")?;
+                workspace
+                .compile_task(crate::compiled_artifacts::TaskCompileRequest {
+                    task_id: binding.task_id.clone(), generation: binding.generation,
+                    tasks_root: binding.services.tasks_root.clone(), execution_root: binding.execution_root.clone(),
+                    source: binding.project_root.clone(),
+                    source_revision: isolation.source_revision,
+                })
                 .await
-                .and_then(|summary| serde_json::to_value(summary).map_err(|error| error.to_string())),
+                .and_then(|summary| serde_json::to_value(summary).map_err(|error| error.to_string()))
+            }.await,
             None => Ok(json!({"ok": false, "skipped": "The command-line tool isn't available."})),
         },
         "project_map" => match &binding.services.workspace {
@@ -928,12 +950,14 @@ fn task_observations(binding: &TaskBinding, args: &Value) -> Result<Value, Strin
         .ok_or("Tool arguments must be an object.")?;
     if fields
         .keys()
-        .any(|key| !matches!(key.as_str(), "after_sequence" | "limit"))
+        .any(|key| !matches!(key.as_str(), "detail" | "after_sequence" | "limit"))
     {
         return Err(
-            "This query uses the bound task; only after_sequence and limit are accepted.".into(),
+            "This query uses the bound task; only detail, after_sequence and limit are accepted."
+                .into(),
         );
     }
+    let detail = observation_detail(fields)?;
     let after = fields
         .get("after_sequence")
         .map(|value| {
@@ -958,12 +982,199 @@ fn task_observations(binding: &TaskBinding, args: &Value) -> Result<Value, Strin
         after,
         limit as usize,
     )?;
-    serde_json::to_value(view).map_err(|error| error.to_string())
+    observation_response(view, detail, after, limit)
+}
+
+fn observation_detail(fields: &serde_json::Map<String, Value>) -> Result<&str, String> {
+    match fields.get("detail") {
+        None => Ok("summary"),
+        Some(Value::String(detail)) if matches!(detail.as_str(), "summary" | "events") => {
+            Ok(detail)
+        }
+        Some(Value::String(_)) => Err("detail must be either summary or events.".into()),
+        Some(_) => Err("detail must be a string.".into()),
+    }
+}
+
+fn observation_response(
+    view: crate::observations::TaskObservationView,
+    detail: &str,
+    after: u64,
+    limit: u64,
+) -> Result<Value, String> {
+    if detail == "events" {
+        return serde_json::to_value(view).map_err(|error| error.to_string());
+    }
+
+    let through = view.page.through_sequence;
+    let mut value = serde_json::to_value(view).map_err(|error| error.to_string())?;
+    if let Some(observation) = value
+        .pointer_mut("/summary/runtime/event/observation")
+        .and_then(Value::as_object_mut)
+    {
+        if let Some(count) = observation
+            .remove("tools")
+            .and_then(|tools| tools.as_array().map(Vec::len))
+        {
+            observation.insert("toolCount".into(), json!(count));
+        }
+    }
+    value["page"] = json!({
+        "nextSequence": after,
+        "throughSequence": through,
+        "hasMore": through > after,
+    });
+    value["eventsRead"] = json!({
+        "detail": "events",
+        "after_sequence": after,
+        "limit": limit,
+    });
+    Ok(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn observation_view() -> crate::observations::TaskObservationView {
+        use crate::model::{ResearchTaskStatus, TaskTranscriptEvent};
+        use crate::observations::{
+            ProvidedTool, ReadSource, TaskObservation, TaskObservationPage, TaskObservationSummary,
+            TaskObservationView,
+        };
+
+        let runtime = TaskTranscriptEvent {
+            task_id: "task-1".into(),
+            execution_generation: 2,
+            sequence: 1,
+            event: TaskRuntimeEvent::Observation {
+                observation: TaskObservation::Runtime {
+                    runtime_id: "builtin".into(),
+                    provider_id: "provider".into(),
+                    model_id: "model".into(),
+                    session_id: "session".into(),
+                    tools: vec![
+                        ProvidedTool {
+                            name: "read_file".into(),
+                            source: "builtin".into(),
+                            schema_sha256: "a".repeat(64),
+                        },
+                        ProvidedTool {
+                            name: "compile".into(),
+                            source: "builtin".into(),
+                            schema_sha256: "b".repeat(64),
+                        },
+                    ],
+                    declared_skills: vec!["build".into()],
+                    injected_skills: Vec::new(),
+                    unavailable: vec!["desktop_apps:disabled".into()],
+                },
+            },
+            created_at: 10,
+        };
+        let execution = TaskTranscriptEvent {
+            task_id: "task-1".into(),
+            execution_generation: 2,
+            sequence: 13,
+            event: TaskRuntimeEvent::Observation {
+                observation: TaskObservation::ToolExecution {
+                    call_id: "session:turn-2:call-1".into(),
+                    name: "read_file".into(),
+                    status: "done".into(),
+                    input_sha256: "c".repeat(64),
+                    output_sha256: "d".repeat(64),
+                    skill_id: None,
+                    skill_instructions_sha256: None,
+                    source: Some(ReadSource {
+                        path: "main.tex".into(),
+                        file_sha256: "e".repeat(64),
+                        offset: 0,
+                        end_offset: 400,
+                        truncated: false,
+                        snapshot_retained: Some(true),
+                    }),
+                    actor: Some("session".into()),
+                },
+            },
+            created_at: 20,
+        };
+
+        TaskObservationView {
+            summary: TaskObservationSummary {
+                task_id: "task-1".into(),
+                project_id: "project-1".into(),
+                execution_generation: 2,
+                status: ResearchTaskStatus::Running,
+                goal: "Check the paper".into(),
+                success_criteria: vec!["Record evidence".into()],
+                runtime: Some(runtime),
+                usage: None,
+                baseline: None,
+                changed_files: Vec::new(),
+                changed_file_count: 0,
+                evidence: None,
+                coverage_gaps: vec!["coverage.example".into()],
+            },
+            page: TaskObservationPage {
+                events: vec![execution],
+                next_sequence: 14,
+                through_sequence: 20,
+                has_more: true,
+            },
+        }
+    }
+
+    #[test]
+    fn observation_summary_keeps_the_cursor_and_omits_event_detail() {
+        let value = observation_response(observation_view(), "summary", 7, 20).unwrap();
+        assert_eq!(value["page"]["nextSequence"], 7);
+        assert_eq!(value["page"]["throughSequence"], 20);
+        assert_eq!(value["page"]["hasMore"], true);
+        assert!(value["page"].get("events").is_none());
+        assert_eq!(value["eventsRead"]["detail"], "events");
+        assert_eq!(value["eventsRead"]["after_sequence"], 7);
+        assert_eq!(value["eventsRead"]["limit"], 20);
+
+        let observation = &value["summary"]["runtime"]["event"]["observation"];
+        assert!(observation.get("tools").is_none());
+        assert_eq!(observation["toolCount"], 2);
+        assert_eq!(observation["declaredSkills"], json!(["build"]));
+        assert_eq!(observation["unavailable"], json!(["desktop_apps:disabled"]));
+    }
+
+    #[test]
+    fn observation_events_preserve_the_complete_bounded_view() {
+        let view = observation_view();
+        let expected = serde_json::to_value(&view).unwrap();
+        let value = observation_response(view, "events", 7, 1).unwrap();
+        assert_eq!(value, expected);
+        assert_eq!(
+            value["summary"]["runtime"]["event"]["observation"]["tools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            value["page"]["events"][0]["event"]["observation"]["outputSha256"],
+            "d".repeat(64)
+        );
+        assert_eq!(
+            value["page"]["events"][0]["event"]["observation"]["source"]["snapshotRetained"],
+            true
+        );
+    }
+
+    #[test]
+    fn observation_detail_defaults_to_summary_and_rejects_unknown_values() {
+        let fields = json!({});
+        assert_eq!(
+            observation_detail(fields.as_object().unwrap()).unwrap(),
+            "summary"
+        );
+        assert!(observation_detail(json!({"detail": "trace"}).as_object().unwrap()).is_err());
+        assert!(observation_detail(json!({"detail": 1}).as_object().unwrap()).is_err());
+    }
 
     #[test]
     fn results_tables_cite_each_run() {

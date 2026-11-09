@@ -48,7 +48,7 @@ describe("TaskFindings", () => {
     fireEvent.click(screen.getByRole("button", { name: en.findings.accept }));
     await waitFor(() => expect(mocks.decide).toHaveBeenCalledWith("task-1",1,"finding-1","accepted","Please correct this number"));
     const next = await screen.findByTestId("task-finding");
-    expect(next).toHaveTextContent(en.findings.stale);
+    await waitFor(() => expect(next).toHaveTextContent(en.findings.stale));
     expect(next).toHaveTextContent(en.findings.accepted);
     expect(next).toHaveTextContent(en.findings.recordedWarning);
     expect(next).toHaveTextContent("Please correct this number");
@@ -111,6 +111,6 @@ describe("TaskFindings", () => {
     render(<TaskFindings taskId="task-1" generation={1} revision={1} />);
     const card = await screen.findByTestId("task-finding");
     expect(screen.getByTestId("task-findings")).toHaveTextContent(en.findings.unretained);
-    expect(within(card).getByText("Showing the latest 1 decisions; the full history is retained.")).toBeInTheDocument();
+    expect(within(card).getByText(en.findings.historyShortened.replace("{{count}}", "1"))).toBeInTheDocument();
   });
 });

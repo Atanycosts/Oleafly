@@ -27,7 +27,7 @@ import {
 import { useFilesStore } from "@/store/files";
 import { decodeAppError, describeError } from "@/lib/app-error";
 
-export type ResearchTaskDetailTab = "activity" | "progress" | "review" | "output";
+export type ResearchTaskDetailTab = "activity" | "progress" | "review" | "output" | "annotations" | "group";
 
 export interface ResearchTaskComposerDraft {
   starterId: string;

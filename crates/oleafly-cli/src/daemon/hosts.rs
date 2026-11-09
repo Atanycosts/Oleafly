@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use oleafly_agent::{AgentEvent, InputTokenSemantics, Usage};
+use oleafly_agent::{AgentEvent, Usage};
 use oleafly_research::builtin::{
     TaskBridge, TaskHost, TaskMcpTool, TaskProvider, UsageSink, WebTools,
 };
@@ -22,6 +22,7 @@ use oleafly_research::runs::SupervisorCommand;
 use oleafly_research::scheduler::TaskRuntimeFuture;
 use oleafly_research::store::TaskStore;
 use oleafly_research::task_tools::extra::TaskBinding;
+use oleafly_research::usage::TaskUsageAggregator;
 use serde_json::{json, Value};
 
 use super::log::HelperLog;
@@ -454,30 +455,8 @@ pub struct SpoolUsage {
 
 #[derive(Default)]
 struct SpoolState {
-    finished: Usage,
-    latest: Option<Usage>,
+    aggregate: TaskUsageAggregator,
     recorded: bool,
-}
-
-fn add(left: Usage, right: Usage) -> Usage {
-    Usage {
-        input: left.input.saturating_add(right.input),
-        output: left.output.saturating_add(right.output),
-        cache_read: match (left.cache_read, right.cache_read) {
-            (None, None) => None,
-            (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
-        },
-        cache_write: match (left.cache_write, right.cache_write) {
-            (None, None) => None,
-            (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
-        },
-        input_semantics: if right.input_semantics == InputTokenSemantics::Unknown {
-            left.input_semantics
-        } else {
-            right.input_semantics
-        },
-        ..Usage::default()
-    }
 }
 
 impl SpoolUsage {
@@ -505,42 +484,63 @@ impl SpoolUsage {
         }
     }
 
-    fn total(state: &SpoolState) -> Usage {
-        state
-            .latest
-            .map_or(state.finished, |latest| add(state.finished, latest))
+    fn cost(&self, usage: &Usage) -> Option<f64> {
+        (usage.reported_input().is_some() && usage.reported_output().is_some())
+            .then(|| self.price.map(|price| price.cost(usage)))
+            .flatten()
     }
 
-    fn cost(&self, usage: &Usage) -> Option<f64> {
-        self.price.map(|price| price.cost(usage))
+    fn update_live(&self, state: &SpoolState) {
+        if let Some(usage) = state.aggregate.total() {
+            if let Some(cost) = self.cost(&usage) {
+                self.live.set(&self.task_id, cost);
+            }
+        }
     }
 }
 
 impl UsageSink for SpoolUsage {
-    fn observe(&self, event: &AgentEvent) {
+    fn begin_turn(&self) {
         let mut state = lock(&self.state);
         if state.recorded {
             return;
         }
-        let usage = match event {
-            AgentEvent::StepStart { step: 0 } => {
-                if let Some(latest) = state.latest.take() {
-                    state.finished = add(state.finished, latest);
-                }
-                return;
-            }
-            AgentEvent::Usage { usage, .. } => usage,
-            _ => return,
-        };
-        if let Some(latest) = state.latest {
-            if usage.input < latest.input || usage.output < latest.output {
-                state.finished = add(state.finished, latest);
-            }
+        state.aggregate.begin_parent_turn();
+        self.update_live(&state);
+    }
+
+    fn observe(&self, event: &AgentEvent) {
+        if !matches!(event, AgentEvent::Usage { .. }) {
+            return;
         }
-        state.latest = Some(*usage);
-        if let Some(cost) = self.cost(&Self::total(&state)) {
-            self.live.set(&self.task_id, cost);
+        let mut state = lock(&self.state);
+        if state.recorded {
+            return;
         }
+        state.aggregate.observe_parent(event);
+        self.update_live(&state);
+    }
+
+    fn register_helper(&self, actor: &str) {
+        let mut state = lock(&self.state);
+        if state.recorded {
+            return;
+        }
+        state.aggregate.register_helper(actor);
+        self.update_live(&state);
+    }
+
+    fn observe_helper(&self, actor: &str, event: &AgentEvent) {
+        let mut state = lock(&self.state);
+        if state.recorded {
+            return;
+        }
+        state.aggregate.observe_helper(actor, event);
+        self.update_live(&state);
+    }
+
+    fn task_usage_snapshot(&self) -> Option<(Option<u64>, Option<u64>)> {
+        lock(&self.state).aggregate.counts()
     }
 
     fn finish(&self, status: &str) {
@@ -549,12 +549,12 @@ impl UsageSink for SpoolUsage {
             return;
         }
         state.recorded = true;
-        let total = Self::total(&state);
+        let aggregate = state.aggregate.total();
         drop(state);
         self.live.clear(&self.task_id);
-        if total.input == 0 && total.output == 0 {
+        let Some(total) = aggregate else {
             return;
-        }
+        };
         let event = UsageSpoolEvent {
             id: usage_spool::event_id("daemon"),
             source: "daemon".into(),
@@ -563,8 +563,8 @@ impl UsageSink for SpoolUsage {
             project_path: None,
             provider: self.provider.clone(),
             model: self.model.clone(),
-            input_tokens: Some(total.input),
-            output_tokens: Some(total.output),
+            input_tokens: total.reported_input(),
+            output_tokens: total.reported_output(),
             cache_read_tokens: total.cache_read,
             cache_write_tokens: total.cache_write,
             cost_usd: self.cost(&total),
@@ -836,6 +836,7 @@ impl TaskHost for DaemonTaskHost {
                     skills: Arc::new(skills),
                     linked: Arc::new(GrantLinkedRoots::new(&grant)),
                     secrets: Arc::new(StoreSecrets::from_config(&config)),
+                    application: None,
                 },
                 task: binding,
             })

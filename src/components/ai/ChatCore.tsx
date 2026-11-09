@@ -37,6 +37,7 @@ import {
 } from "./AssistantShellHeader";
 import { useAgentTargets } from "./use-agent-targets";
 import { useResearchChatActions } from "./use-research-chat-actions";
+import type { AnnotationTarget, TaskAnnotation } from "@/lib/task-collaboration";
 import { agentDelegationPrompt, type DelegationTarget } from "@/lib/agent-mentions";
 import { createResearchWorkspaceTools } from "@/lib/research-workspace-tools";
 import {
@@ -241,6 +242,7 @@ import { resolveResearchToolAliases } from "@/lib/research-tool-aliases";
 import { useAgentTodoStore, type AgentTodo } from "@/store/agent-todos";
 import { useAgentMemoryStore } from "@/store/agent-memory";
 import { useAgentHandoffStore } from "@/store/agent-handoff";
+import { delegationContext, type AssistantDelegation } from "@/lib/assistant-delegation";
 import { useAssistantRuntimeStore } from "@/store/assistant-runtime";
 import { useAcpSessionsStore } from "@/store/acp-sessions";
 import { SessionTranscriptDialog } from "@/components/ai/activity/SessionTranscriptDialog";
@@ -280,7 +282,7 @@ import {
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { cn } from "@/lib/utils";
 import { ChatMinimap } from "@/components/ai/ChatMinimap";
-import { MessageList, type RenderedMessage } from "@/components/ai/MessageList";
+import { CHAT_SCROLL_TO_INDEX_EVENT, MessageList, type RenderedMessage } from "@/components/ai/MessageList";
 import { createLiveMessageStore, textOnlyChange } from "@/components/ai/live-message";
 import {
   deriveProviderState,
@@ -848,9 +850,12 @@ function withStoredToolImage(
 const UsageReportDialog = lazy(() =>
   import("@/components/usage/UsageReport").then((module) => ({ default: module.UsageReportDialog })),
 );
+const ChatAnnotationsDialog = lazy(() =>
+  import("./ChatAnnotationsDialog").then((module) => ({ default: module.ChatAnnotationsDialog })),
+);
 
 export function ChatCore() {
-  const { t } = useTranslation(["common", "ai"]);
+  const { t } = useTranslation(["common", "ai", "researchTools"]);
   const projectId = useFilesStore((s) => s.projectId);
   const researchChatActions = useResearchChatActions(projectId);
   const [transcriptThreadId, setTranscriptThreadId] = useState<string | null>(null);
@@ -923,6 +928,21 @@ export function ChatCore() {
   const removeChat = useChatsStore((s) => s.remove);
   const setActiveChat = useChatsStore((s) => s.setActive);
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
+  const annotationThreadId = activeThreadId ?? activeChat?.threadId ?? null;
+  const [chatAnnotation, setChatAnnotation] = useState<{
+    target: AnnotationTarget;
+    source?: { role: "user" | "assistant"; content: string };
+  } | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a different visible conversation must not submit feedback through the previous conversation's dialog.
+  useEffect(() => { setChatAnnotation(null); }, [projectId, activeChatId]);
+  const annotateChat = (message?: ChatMessage) => {
+    if (!projectId || !annotationThreadId) return;
+    const revision = message?.id ? `message:${message.id}` : message?.turnId ? `turn:${message.turnId}:${message.role}` : null;
+    setChatAnnotation({
+      target: { projectId, taskId: null, objectKind: "thread", objectId: annotationThreadId, objectRevision: revision, path: null },
+      source: message ? { role: message.role, content: message.content } : undefined,
+    });
+  };
   const agentFileChangeTurn = useAgentFileChangesStore((state) =>
     agentFileChangeTurnForChat(state, activeChatId),
   );
@@ -1148,6 +1168,7 @@ export function ChatCore() {
   const [restoringCheckpoint, setRestoringCheckpoint] = useState<string | null>(null);
   const handoffPending = useAgentHandoffStore((s) => s.pendingPrompt);
   const handoffAutoSend = useAgentHandoffStore((s) => s.autoSend);
+  const handoffDelegation = useAgentHandoffStore((s) => s.pendingDelegation);
   const pendingImagesRef = useRef<string[]>([]);
   const lastPartAtRef = useRef<number>(0);
   const [customPrompt, setCustomPrompt] = useState(initialProvider?.state.customPrompt ?? "");
@@ -1929,10 +1950,23 @@ export function ChatCore() {
     options?: {
       approvedPlan?: boolean;
       replay?: { attachments: readonly DraftAttachment[]; commit?: () => Promise<void> | void };
+      delegation?: AssistantDelegation;
     },
   ) => {
-    const { provider, model, providerModelsMap, providerReady, activeProviderName } = pickedModelRef.current;
     const sendComposerId = composerIdRef.current;
+    const delegation = options?.delegation ?? (!queued && !options?.replay
+      ? useComposerDrafts.getState().drafts[sendComposerId]?.delegation
+      : undefined);
+    if (delegation && (delegation.runtimeId !== "builtin" || delegation.projectId !== projectId)) {
+      toast.error(i18n.t(($) => $.ai.toasts.delegationWrongProject));
+      return;
+    }
+    const picked = pickedModelRef.current;
+    const provider = delegation?.agentId ?? picked.provider;
+    const model = delegation?.modelId ?? picked.model;
+    const { providerModelsMap } = picked;
+    const providerReady = delegation ? isProviderConfigured(provider, keysMap, customProviders) : picked.providerReady;
+    const activeProviderName = delegation ? provider : picked.activeProviderName;
     const draft = draftAttachments(sendComposerId);
     if (!options?.replay && !queued && draft.some((item) => item.status === "processing")) return;
     const outgoing: DraftAttachment[] = (
@@ -1944,6 +1978,10 @@ export function ChatCore() {
     sendSequenceRef.current = sendSequence;
     const inputRevision = inputRevisionRef.current;
     if (streaming || activeChatRun()) {
+      if (delegation) {
+        toast.info(i18n.t(($) => $.ai.toasts.delegationWaitingRun));
+        return;
+      }
       if (!queued && !options?.replay && activeChatId) {
         useAgentTurnsStore.getState().queueFollowUp(activeChatId, text, outgoing);
         setInput("");
@@ -2013,7 +2051,7 @@ export function ChatCore() {
       ...runTree.map((entry) => normalizeMentionPath(entry.path)),
       ...delegationTargetsRef.current.map((target) => target.id),
     ]);
-    const mentioned = await mentionAttachments(projectId, text, runTree);
+    const mentioned = delegation ? [] : await mentionAttachments(projectId, text, runTree);
     let runMcpServers: McpAgentServer[] = [];
     try {
       const result = await mcpAgentToolsQueryRef.current.refetch();
@@ -2054,6 +2092,7 @@ export function ChatCore() {
             confirm: () => Promise.resolve(false),
             onImage: () => {},
             runId: () => null,
+            researchScope: { projectId, runtimeId: "builtin", agentId: provider, modelId: model, delegation },
           },
           additions: capacityAdditions,
           excludedNames: excludedToolNames(
@@ -2426,21 +2465,23 @@ ${requestCustomPrompt.trim()}
 USER_CUSTOM_INSTRUCTIONS`
       : "";
 
-    let workspaceCtx = "";
-    try {
-      workspaceCtx = await buildWorkspaceContext();
-    } catch {
-      workspaceCtx = "(workspace context unavailable)";
-    }
-    try {
-      const chunks = await retrieveProjectChunks(runText, { topK: 4 });
-      const rag = formatRagContext(chunks);
-      if (rag) workspaceCtx = `${workspaceCtx}\n\n${rag}`;
-    } catch {
-      /* non-fatal */
+    let workspaceCtx = delegation ? delegationContext(delegation) : "";
+    if (!delegation) {
+      try {
+        workspaceCtx = await buildWorkspaceContext();
+      } catch {
+        workspaceCtx = "(workspace context unavailable)";
+      }
+      try {
+        const chunks = await retrieveProjectChunks(runText, { topK: 4 });
+        const rag = formatRagContext(chunks);
+        if (rag) workspaceCtx = `${workspaceCtx}\n\n${rag}`;
+      } catch {
+        /* non-fatal */
+      }
     }
 
-    const mainDocument = useFilesStore.getState().mainDoc || documentEngine.main_document || "main.tex";
+    const mainDocument = delegation?.mainDocument ?? (useFilesStore.getState().mainDoc || documentEngine.main_document || "main.tex");
     const activeGoalLine = goalPromptLine(useChatGoalStore.getState().goal(projectId));
     const runSkillTools = createLoadSkillTools(
       runSkills,
@@ -2468,6 +2509,7 @@ USER_CUSTOM_INSTRUCTIONS`
         confirm,
         onImage: collectRunImage,
         runId: () => activeRunRequestIdRef.current,
+        researchScope: { projectId: runProjectId, runtimeId: "builtin", agentId: provider, modelId: model, delegation },
       },
       additions: runToolAdditions,
       excludedNames: excludedToolNames(
@@ -3157,12 +3199,32 @@ ${sandboxedCustom}`;
         }
       }
     }
-  }, [streaming, projectId, projectName, currentHead, figureToolsAvailable, engineLoaded, documentEngine, projectKind, openAISettings, flushStreamPatches, updateLast, setMessages, setInput, activeChatId, trackRunRequestId, markRunSteerable, persistDebounced, dropPendingPersist, refreshChatCost]);
+  }, [streaming, projectId, projectName, currentHead, figureToolsAvailable, engineLoaded, documentEngine, projectKind, keysMap, customProviders, openAISettings, flushStreamPatches, updateLast, setMessages, setInput, activeChatId, trackRunRequestId, markRunSteerable, persistDebounced, dropPendingPersist, refreshChatCost]);
 
   const stop = useCallback(() => {
     pendingImagesRef.current = [];
     abortRef.current?.abort();
   }, []);
+
+  const continueFromAnnotation = (annotation: TaskAnnotation) => {
+    if (!annotation.explicitRequest || !activeChatId || annotation.target.projectId !== projectId || annotation.target.objectId !== annotationThreadId) return;
+    const text = `Handle explicitly requested retained annotation ${annotation.id} on ${annotation.target.objectKind}:${annotation.target.objectId} (${annotation.target.objectRevision ?? "current"}). Read its current comment and verified historical source with annotation_context, then record the actual handling result.`;
+    const run = activeChatRun();
+    if (run && run.chatId === activeChatId && run.projectId === projectId) {
+      const turns = useAgentTurnsStore.getState();
+      turns.queueFollowUp(activeChatId, text, []);
+      const queued = useAgentTurnsStore.getState().queuedByChat[activeChatId]?.at(-1);
+      const requestId = activeRunRequestIdRef.current;
+      if (queued && requestId && steerableRunId === requestId) {
+        void steerQueuedFollowUp(requestId, { role: "user", content: [{ type: "text", text }] }, activeChatId, queued.id)
+          .catch((failure: unknown) => { if (!steerRunAlreadyEnded(failure)) toast.error(i18n.t(($) => $.ai.toasts.steerFailed)); });
+      }
+    } else if (!run && !streaming) {
+      // An annotation request uses its own text and does not consume the
+      // user's unsent composer attachments or delegated selection.
+      void send(text, undefined, { replay: { attachments: [] } }).catch((failure: unknown) => toast.error(describeError(failure)));
+    }
+  };
 
   const approvePlan = useCallback(() => {
     if (!activeChatId || streaming || activeChatRun()) return;
@@ -3504,16 +3566,24 @@ ${sandboxedCustom}`;
 
   useEffect(() => {
     if (!handoffPending || streaming || !providerConfigReady) return;
+    if (handoffDelegation && (handoffDelegation.runtimeId !== "builtin" || handoffDelegation.projectId !== projectId)) return;
     if (handoffAutoSend && providerReady && !engineLoaded) return;
     const h = useAgentHandoffStore.getState().consume();
     if (!h) return;
     if (h.images.length) pendingImagesRef.current.push(...h.images);
+    if (h.delegation) {
+      const prompt = appendHandoffPrompt(inputRef.current, h.prompt);
+      setInput(prompt);
+      useComposerDrafts.getState().setDelegation(composerIdRef.current, h.delegation);
+      if (h.autoSend) void send(prompt, undefined, { delegation: h.delegation });
+      return;
+    }
     if (h.autoSend && providerReady) {
       void send(h.prompt);
       return;
     }
     setInput(appendHandoffPrompt(inputRef.current, h.prompt));
-  }, [handoffPending, handoffAutoSend, streaming, providerConfigReady, providerReady, engineLoaded, send, setInput]);
+  }, [handoffPending, handoffAutoSend, handoffDelegation, projectId, streaming, providerConfigReady, providerReady, engineLoaded, send, setInput]);
 
   const prevProjectIdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
@@ -3707,6 +3777,11 @@ ${sandboxedCustom}`;
         leading={shellLeading}
         actions={
           <>
+            {projectId && annotationThreadId ? <Tooltip label={t(($) => $.researchTools.tasks.annotations.chatTitle)}>
+              <Button type="button" variant="ghost" size="xs" aria-label={t(($) => $.researchTools.tasks.annotations.chatTitle)} onClick={() => annotateChat()} className="size-7 shrink-0 p-0 text-muted-foreground hover:text-foreground">
+                <ClipboardCheck className="size-4" />
+              </Button>
+            </Tooltip> : null}
             <Tooltip label={t(($) => $.ai.header.mcpTooltip)}>
               <Button
                 type="button"
@@ -3874,6 +3949,9 @@ ${sandboxedCustom}`;
                     nearBottomRef={nearBottomRef}
                     renderExtras={({ live, isLatestAssistant, msg }) => (
                       <>
+                        {!live && projectId && annotationThreadId && (msg.id || msg.turnId) ? <div className="mt-1 flex justify-end px-1">
+                          <Button type="button" variant="ghost" size="xs" onClick={() => annotateChat(msg)}>{t(($) => $.researchTools.tasks.annotations.annotate)}</Button>
+                        </div> : null}
                         {msg.role === "assistant" && msg.planNote && !live && (
                           <PlanNote note={msg.planNote} />
                         )}
@@ -4552,6 +4630,25 @@ ${sandboxedCustom}`;
         onDelete={deleteChat}
         skipped={skippedOnLoad}
       />
+      {chatAnnotation ? <Suspense fallback={null}>
+        <ChatAnnotationsDialog
+          open
+          target={chatAnnotation.target}
+          source={chatAnnotation.source}
+          onSaved={continueFromAnnotation}
+          onOpenChange={(next) => { if (!next) setChatAnnotation(null); }}
+          onOpenTarget={(target) => {
+            const messageId = target.objectRevision?.startsWith("message:") ? target.objectRevision.slice("message:".length) : null;
+            const index = messageId ? messages.findIndex((message) => message.id === messageId) : -1;
+            if (target.projectId !== projectId || target.objectId !== annotationThreadId || index < 0) {
+              toast.info(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
+              return;
+            }
+            setChatAnnotation(null);
+            requestAnimationFrame(() => scrollRef.current?.dispatchEvent(new CustomEvent(CHAT_SCROLL_TO_INDEX_EVENT, { detail: { index, behavior: "smooth" } })));
+          }}
+        />
+      </Suspense> : null}
       <ConfirmationDialog
         open={replaceConfirm !== null}
         title={t(($) => $.ai.messageActions.replaceTitle)}

@@ -447,3 +447,36 @@ fn child_processes_let_programs_that_posix_spawn_start_helpers() {
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("helper"), "{output}");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn confined_posix_shell_reads_heredocs_without_workspace_root_write_permission() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace.path().canonicalize().unwrap();
+    let allowed = workspace.join("analysis");
+    std::fs::create_dir(&allowed).unwrap();
+    let mut spec = fixture.spec(false);
+    spec.read_write = vec![allowed];
+    let output = shell_command(
+        &spec,
+        "/bin/cat <<'EOF' > analysis/result.txt\nfirst line\nsecond line\nEOF\n",
+    )
+    .unwrap()
+    .output()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("analysis/result.txt")).unwrap(),
+        "first line\nsecond line\n"
+    );
+    let denied = shell_command(&spec, "/bin/echo forbidden > unallowed.txt")
+        .unwrap()
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(!workspace.join("unallowed.txt").exists());
+}

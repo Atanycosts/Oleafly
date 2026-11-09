@@ -9,6 +9,7 @@ use cap_std::fs::{Dir, OpenOptions};
 use oleafly_agent::ToolSchema;
 use serde_json::{json, Value};
 
+pub mod collaboration;
 pub mod command;
 pub mod extra;
 
@@ -203,6 +204,16 @@ impl TaskFiles {
     }
 
     pub fn read_window(&self, value: &str, offset: usize, limit: usize) -> Result<Value, String> {
+        self.read_window_with_source(value, offset, limit)
+            .map(|(window, _)| window)
+    }
+
+    pub fn read_window_with_source(
+        &self,
+        value: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Value, String), String> {
         let content = self.read(value)?;
         if !content.is_char_boundary(offset) {
             return Err("Use an offset from a previous file read.".into());
@@ -213,7 +224,7 @@ impl TaskFiles {
         while !content.is_char_boundary(end) {
             end -= 1;
         }
-        Ok(json!({
+        let window = json!({
             "content": &content[offset..end],
             "path": value,
             "fileSha256": crate::observations::content_hash(content.as_bytes()),
@@ -222,7 +233,8 @@ impl TaskFiles {
             "nextOffset": (end < content.len()).then_some(end),
             "totalBytes": content.len(),
             "truncated": end < content.len(),
-        }))
+        });
+        Ok((window, content))
     }
 
     pub fn write(&self, value: &str, content: &str) -> Result<Value, String> {
@@ -230,6 +242,40 @@ impl TaskFiles {
             return Err("Write no more than 1 MiB in one file operation.".into());
         }
         self.write_bytes(value, content.as_bytes(), MAX_FILE_BYTES)
+    }
+
+    /// The task tool write boundary is shared by persistent members. Compare
+    /// the bytes the member read while holding the same workspace write lock.
+    pub fn write_if_unchanged(
+        &self,
+        value: &str,
+        content: &str,
+        expected: Option<&str>,
+    ) -> Result<Value, String> {
+        let directory = self.root.join(".oleafly");
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(directory.join("task-write.lock"))
+            .map_err(|e| e.to_string())?;
+        fs4::FileExt::lock(&file).map_err(|e| e.to_string())?;
+        let result = (|| {
+            let current = if self.exists(value)? {
+                Some(crate::observations::content_hash(
+                    &self.read_bytes(value, MAX_FILE_BYTES as u64)?,
+                ))
+            } else {
+                None
+            };
+            if current.as_deref() != expected {
+                return Err(format!("The file changed since it was read. Read {value} again and reconcile the proposed change; no content was overwritten."));
+            }
+            self.write(value, content)
+        })();
+        let _ = fs4::FileExt::unlock(&file);
+        result
     }
 
     pub fn write_bytes(
@@ -393,3 +439,5 @@ pub fn text_argument<'a>(args: &'a Value, name: &str) -> Result<&'a str, String>
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod version_tests;

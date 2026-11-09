@@ -11,6 +11,9 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::approvals::ApprovalQueue;
 use crate::budget::{BudgetClock, BudgetClocks, BudgetKind, HARD_STOP_AFTER};
+use crate::collaboration::{
+    ActorKind, GroupActor, GroupObject, GroupSnapshot, MemberDraft, MessageDraft,
+};
 use crate::handoff::{HandoffReason, HandoffRecord, TaskGrant};
 use crate::host::{
     IsolationEnv, Notification, NotificationKind, OwnerKind, ResearchHost, WorkspaceTools,
@@ -223,11 +226,18 @@ pub(crate) struct ResearchTaskStateInner {
 }
 
 #[derive(Clone)]
+struct RunningMember {
+    adapter: Arc<dyn TaskRuntimeAdapter>,
+    session: String,
+}
+
+#[derive(Clone)]
 pub(crate) struct ActiveTask {
     pub(crate) execution_generation: u64,
     pub(crate) session_id: String,
     pub(crate) cancel: CancellationToken,
     pub(crate) adapter: Arc<dyn TaskRuntimeAdapter>,
+    member_runtime: Arc<Mutex<Option<RunningMember>>>,
     pub(crate) runtime_started: Arc<AtomicBool>,
     pub(crate) settled: Arc<AtomicBool>,
     settled_notify: Arc<Notify>,
@@ -238,6 +248,16 @@ pub(crate) struct ActiveTask {
 }
 
 impl ActiveTask {
+    async fn cancel_runtime(&self) -> Result<(), String> {
+        let current = lock(&self.member_runtime)
+            .clone()
+            .unwrap_or_else(|| RunningMember {
+                adapter: self.adapter.clone(),
+                session: self.session_id.clone(),
+            });
+        current.adapter.cancel(current.session).await
+    }
+
     fn lend_slot(&self, parked: &Arc<Semaphore>) -> bool {
         let Ok(lent) = parked.clone().try_acquire_owned() else {
             return false;
@@ -448,6 +468,18 @@ impl ResearchTaskState {
     }
 
     pub fn create(&self, draft: ResearchTaskDraft) -> Result<ResearchTask, String> {
+        self.create_with_inputs(draft, false)
+    }
+
+    pub fn create_pending_inputs(&self, draft: ResearchTaskDraft) -> Result<ResearchTask, String> {
+        self.create_with_inputs(draft, true)
+    }
+
+    fn create_with_inputs(
+        &self,
+        draft: ResearchTaskDraft,
+        pending_inputs: bool,
+    ) -> Result<ResearchTask, String> {
         let host = self.host()?;
         host.admit_project(&draft.project_id)?;
         if !draft.skill_ids.is_empty() {
@@ -458,9 +490,52 @@ impl ResearchTaskState {
         if let Some(brief) = &draft.brief {
             self.check_compute(&brief.compute)?;
         }
-        let task = self.store()?.create(draft)?;
+        let store = self.store()?;
+        let task = if pending_inputs {
+            store.create_pending_inputs(draft)?
+        } else {
+            store.create(draft)?
+        };
         self.emit_task(&task);
         Ok(task)
+    }
+
+    pub fn create_task_group(
+        &self,
+        project: &str,
+        task: Option<&str>,
+        members: &[MemberDraft],
+    ) -> Result<GroupSnapshot, String> {
+        self.host()?.admit_project(project)?;
+        for member in members {
+            self.runtime_for(&member.runtime_id, &member.agent_id)?;
+        }
+        self.store()?.create_task_group(project, task, members)
+    }
+
+    pub fn send_group_message(
+        &self,
+        project: &str,
+        group: &str,
+        draft: &MessageDraft,
+    ) -> Result<crate::collaboration::GroupMessage, String> {
+        self.host()?.require_trusted(project)?;
+        let message = self
+            .store()?
+            .group_message(project, group, &GroupActor::user(), draft)?;
+        self.kick();
+        Ok(message)
+    }
+
+    pub fn submit_annotation(
+        &self,
+        mut draft: crate::annotations::AnnotationDraft,
+    ) -> Result<crate::annotations::Annotation, String> {
+        self.host()?.require_trusted(&draft.target.project_id)?;
+        draft.author = crate::annotations::AnnotationAuthor::user("user");
+        let annotation = self.store()?.submit_task_annotation(&draft)?;
+        self.kick();
+        Ok(annotation)
     }
 
     pub fn edit(&self, task_id: &str, edit: ResearchTaskEdit) -> Result<ResearchTask, String> {
@@ -687,6 +762,7 @@ impl ResearchTaskState {
 
     pub async fn recover_runs(&self, launch: bool) -> Result<(), String> {
         let store = self.store()?;
+        store.recover_member_turns()?;
         for task in store.recover_interrupted()? {
             if task.status == ResearchTaskStatus::Failed {
                 self.emit_task(&task);
@@ -792,6 +868,12 @@ impl ResearchTaskState {
             return Ok(());
         }
         let _scheduling = self.inner.scheduling.lock().await;
+        for task in self.store()?.queue_group_followups()? {
+            self.emit_task(&task);
+        }
+        for task in self.store()?.queue_annotation_followups()? {
+            self.emit_task(&task);
+        }
         loop {
             if self.inner.stopping.load(Ordering::Acquire) {
                 return Ok(());
@@ -806,7 +888,11 @@ impl ResearchTaskState {
                 self.wake_at_next_start(&store);
                 return Ok(());
             };
-            let adapter = match self.runtime_for(&task.runtime_id, &task.agent_id) {
+            // Claim the automatic attempt even if runtime validation fails.
+            let adapter = match store
+                .prepare_task_annotations(&task.id, task.execution_generation)
+                .and_then(|_| self.runtime_for(&task.runtime_id, &task.agent_id))
+            {
                 Ok(adapter) => adapter,
                 Err(error) => {
                     store.finish_failure(&task.id, task.execution_generation, &error)?;
@@ -821,6 +907,7 @@ impl ResearchTaskState {
                 session_id: task.session_id.clone().unwrap_or_default(),
                 cancel: cancel.clone(),
                 adapter: adapter.clone(),
+                member_runtime: Arc::new(Mutex::new(None)),
                 runtime_started: Arc::new(AtomicBool::new(false)),
                 settled: Arc::new(AtomicBool::new(false)),
                 settled_notify: Arc::new(Notify::new()),
@@ -893,7 +980,7 @@ impl ResearchTaskState {
         }
         for task in &active {
             if task.runtime_started.load(Ordering::Acquire) {
-                let _ = task.adapter.cancel(task.session_id.clone()).await;
+                let _ = task.cancel_runtime().await;
             }
         }
         for task in &active {
@@ -967,7 +1054,7 @@ impl ResearchTaskState {
                 }
                 active.cancel.cancel();
                 if active.runtime_started.load(Ordering::Acquire) {
-                    let _ = active.adapter.cancel(active.session_id.clone()).await;
+                    let _ = active.cancel_runtime().await;
                 }
             }
             for (_, active) in &waiting {
@@ -1160,7 +1247,7 @@ impl ResearchTaskState {
         })?;
         active.cancel.cancel();
         let runtime_cancel = if active.runtime_started.load(Ordering::Acquire) {
-            active.adapter.cancel(active.session_id.clone()).await
+            active.cancel_runtime().await
         } else {
             Ok(())
         };
@@ -1337,7 +1424,7 @@ impl ResearchTaskState {
         if plan_phase && brief.permissions.commands == CommandPolicy::Allow {
             brief.permissions.commands = CommandPolicy::Ask;
         }
-        let context = TaskRunContext {
+        let mut context = TaskRunContext {
             task_id: task.id.clone(),
             execution_generation: generation,
             session_id: task.session_id.clone().unwrap_or_default(),
@@ -1345,6 +1432,7 @@ impl ResearchTaskState {
             execution_root: isolation.execution_root.clone(),
             title: task.title.clone(),
             prompt: task.prompt.clone(),
+            annotations: Vec::new(),
             runtime_id: task.runtime_id.clone(),
             agent_id: task.agent_id.clone(),
             model_id: task.model_id.clone(),
@@ -1365,7 +1453,16 @@ impl ResearchTaskState {
                 )
                 .is_none(),
             handoff,
+            collaboration: None,
         };
+        // ACP receives these at its supported prompt boundary; built-in execution
+        // also refreshes newly arriving requests before every provider call.
+        if task.runtime_id != "builtin" {
+            context.annotations = match store.prepare_task_annotations(&task.id, generation) {
+                Ok(annotations) => annotations,
+                Err(error) => return RunEnd::Finished(Err(error)),
+            };
+        }
         let _ = store.clear_pending_start(&task.id, generation);
         self.set_phase(
             store,
@@ -1411,7 +1508,23 @@ impl ResearchTaskState {
             budget_stop.clone(),
         );
         active.runtime_started.store(true, Ordering::Release);
-        let outcome = active.adapter.run(context, run_token.clone(), events).await;
+        let outcome = if store
+            .task_group(&task.project_id, &task.id)
+            .ok()
+            .flatten()
+            .is_some()
+            && !plan_phase
+        {
+            match store.require(&task.id) {
+                Ok(prepared) => {
+                    self.run_task_group(store, &prepared, context, &run_token, active, events)
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            active.adapter.run(context, run_token.clone(), events).await
+        };
         watcher.abort();
         let _ = store.set_active_ms(&task.id, generation, clock.active_ms());
         let closing = recorder.clone();
@@ -1455,6 +1568,268 @@ impl ResearchTaskState {
             None => {}
         }
         RunEnd::Finished(outcome)
+    }
+
+    async fn run_task_group(
+        &self,
+        store: &TaskStore,
+        task: &ResearchTask,
+        base: TaskRunContext,
+        cancel: &CancellationToken,
+        active: &ActiveTask,
+        events: TaskEventSink,
+    ) -> Result<TaskRuntimeOutcome, String> {
+        store.seed_group_work(task)?;
+        let mut total: Option<(Option<u64>, Option<u64>)> = None;
+        let mut summary = String::new();
+        let mut artifacts = Vec::new();
+        loop {
+            if cancel.is_cancelled() {
+                return Err("The task was cancelled.".into());
+            }
+            if self.inner.suspends.requested(&task.id) {
+                break;
+            }
+            if let Some(kind) = self
+                .services()?
+                .clocks
+                .get(&task.id)
+                .and_then(|clock| clock.exhausted())
+            {
+                let reason = match kind {
+                    BudgetKind::Time => StopReason::BudgetTime,
+                    BudgetKind::Cost => StopReason::BudgetCost,
+                    BudgetKind::Runs => StopReason::BudgetRuns,
+                };
+                store.set_stop_reason(&task.id, task.execution_generation, reason)?;
+                break;
+            }
+            let Some(turn) = store.claim_member_turn(task)? else {
+                break;
+            };
+            let mut context = base.clone();
+            context.runtime_id = turn.member.config.runtime_id.clone();
+            context.agent_id = turn.member.config.agent_id.clone();
+            context.model_id = turn.member.config.model_id.clone();
+            context.skill_ids = turn.member.config.skill_ids.clone();
+            context.session_id = turn.execution.session_id.clone();
+            context.resume = None;
+            context.handoff = None;
+            context.collaboration = Some(turn.clone());
+            let adapter = self.runtime_for(&context.runtime_id, &context.agent_id);
+            events(TaskRuntimeEvent::Observation {
+                observation: crate::observations::TaskObservation::Member {
+                    member_id: turn.member.id.clone(),
+                    execution_id: turn.execution.id.clone(),
+                    trigger_ids: turn.work.iter().map(|work| work.id.clone()).collect(),
+                    status: "running".into(),
+                },
+            });
+            events(TaskRuntimeEvent::Status {
+                message: format!(
+                    "{}: {}",
+                    turn.member.config.name, turn.member.config.responsibility
+                ),
+            });
+            let mut pending_snapshot = Vec::new();
+            // Every exit after claiming a member reaches one settlement path. In particular,
+            // a failed workspace scan must not strand a running execution in this process.
+            let outcome: Result<TaskRuntimeOutcome, String> = async {
+                if let Some(isolation) = &task.isolation {
+                    pending_snapshot = isolation::collect_review_changes(isolation, cancel)?;
+                }
+                let adapter = adapter?;
+                let session = context.session_id.clone();
+                *lock(&active.member_runtime) = Some(RunningMember { adapter: adapter.clone(), session: session.clone() });
+                let member_cancel = cancel.child();
+                let running = adapter.run(context, member_cancel.clone(), events.clone());
+                tokio::pin!(running);
+                let result = loop {
+                    tokio::select! {
+                        result = &mut running => break result,
+                        _ = cancel.cancelled() => {
+                            // Drive the run while cancellation waits for its cleanup. Dropping
+                            // an external runtime future alone does not stop that runtime.
+                            let (stopped, _) = tokio::join!(adapter.cancel(session.clone()), &mut running);
+                            break stopped.and(Err("The task was cancelled.".into()));
+                        },
+                        _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                            let routed = task.isolation.as_ref().map(|isolation| {
+                                let changes = isolation::collect_review_changes(isolation, cancel)?;
+                                self.route_file_changes(store, &turn, &changes, &pending_snapshot)?;
+                                Ok::<_, String>(changes)
+                            }).transpose();
+                            match routed {
+                                Ok(Some(changes)) => pending_snapshot = changes,
+                                Ok(None) => {},
+                                Err(error) => {
+                                    member_cancel.cancel();
+                                    let _ = tokio::join!(adapter.cancel(session.clone()), &mut running);
+                                    break Err(error);
+                                }
+                            }
+                        }
+                    }
+                };
+                *lock(&active.member_runtime) = None;
+                result
+            }.await;
+            let budget_end = self
+                .services()?
+                .clocks
+                .get(&task.id)
+                .and_then(|clock| clock.exhausted());
+            if self.inner.suspends.requested(&task.id)
+                || cancel.is_cancelled()
+                || budget_end.is_some()
+            {
+                store.interrupt_member_turn(&turn, outcome.as_ref().ok())?;
+                events(TaskRuntimeEvent::Observation {
+                    observation: crate::observations::TaskObservation::Member {
+                        member_id: turn.member.id.clone(),
+                        execution_id: turn.execution.id.clone(),
+                        trigger_ids: turn.work.iter().map(|work| work.id.clone()).collect(),
+                        status: "interrupted".into(),
+                    },
+                });
+                if let Some(kind) = budget_end {
+                    let reason = match kind {
+                        BudgetKind::Time => StopReason::BudgetTime,
+                        BudgetKind::Cost => StopReason::BudgetCost,
+                        BudgetKind::Runs => StopReason::BudgetRuns,
+                    };
+                    store.set_stop_reason(&task.id, task.execution_generation, reason)?;
+                }
+                if cancel.is_cancelled() {
+                    return Err("The task was cancelled.".into());
+                }
+                break;
+            }
+            let result = match outcome {
+                Ok(result) => result,
+                Err(error) => {
+                    let empty = TaskRuntimeOutcome {
+                        summary: String::new(),
+                        artifacts: Vec::new(),
+                        native_session_id: None,
+                        input_tokens: None,
+                        output_tokens: None,
+                    };
+                    store.finish_member_turn(&turn, &empty, Some(&error))?;
+                    events(TaskRuntimeEvent::Observation {
+                        observation: crate::observations::TaskObservation::Member {
+                            member_id: turn.member.id.clone(),
+                            execution_id: turn.execution.id.clone(),
+                            trigger_ids: turn.work.iter().map(|work| work.id.clone()).collect(),
+                            status: "failed".into(),
+                        },
+                    });
+                    return Err(error);
+                }
+            };
+            let message = store.finish_member_turn(&turn, &result, None)?;
+            summary.push_str(&format!(
+                "\n\n{}: {}",
+                turn.member.config.name, result.summary
+            ));
+            artifacts.extend(result.artifacts.clone());
+            total = Some(match total {
+                None => (result.input_tokens, result.output_tokens),
+                Some((input, output)) => (
+                    input.zip(result.input_tokens).map(|(a, b)| a + b),
+                    output.zip(result.output_tokens).map(|(a, b)| a + b),
+                ),
+            });
+            let actor = GroupActor {
+                kind: ActorKind::Member,
+                id: turn.member.id.clone(),
+                execution_id: Some(turn.execution.id.clone()),
+            };
+            if let Some(isolation) = &task.isolation {
+                self.route_file_changes(
+                    store,
+                    &turn,
+                    &isolation::collect_review_changes(isolation, cancel)?,
+                    &pending_snapshot,
+                )?;
+            }
+            events(TaskRuntimeEvent::Observation {
+                observation: crate::observations::TaskObservation::Member {
+                    member_id: turn.member.id.clone(),
+                    execution_id: turn.execution.id.clone(),
+                    trigger_ids: turn.work.iter().map(|w| w.id.clone()).collect(),
+                    status: "completed".into(),
+                },
+            });
+            store.record_group_event(
+                &task.project_id,
+                &turn.group.id,
+                &format!("execution:{}", turn.execution.id),
+                "member_finished",
+                &GroupObject {
+                    kind: "message".into(),
+                    id: message.id,
+                    revision: None,
+                    path: None,
+                },
+                &actor,
+                &result.summary,
+            )?;
+        }
+        Ok(TaskRuntimeOutcome {
+            summary,
+            artifacts,
+            native_session_id: None,
+            input_tokens: total.and_then(|v| v.0),
+            output_tokens: total.and_then(|v| v.1),
+        })
+    }
+
+    fn route_file_changes(
+        &self,
+        store: &TaskStore,
+        turn: &crate::collaboration::MemberTurn,
+        changes: &[TaskFileChange],
+        previous: &[TaskFileChange],
+    ) -> Result<(), String> {
+        for change in changes.iter().filter(|change| !previous.contains(change)) {
+            let revision = change
+                .after_sha256
+                .clone()
+                .unwrap_or_else(|| "deleted".into());
+            store.record_group_file_change(
+                &turn.group.project_id,
+                &turn.group.id,
+                &GroupObject {
+                    kind: "file".into(),
+                    id: change.path.clone(),
+                    revision: Some(revision),
+                    path: Some(change.path.clone()),
+                },
+            )?;
+        }
+        // A restoration of the task baseline disappears from collect_review_changes.
+        // It is still a real transition from the last observed modified/deleted state.
+        for change in previous
+            .iter()
+            .filter(|old| !changes.iter().any(|current| current.path == old.path))
+        {
+            let revision = change
+                .before_sha256
+                .clone()
+                .unwrap_or_else(|| "deleted".into());
+            store.record_group_file_change(
+                &turn.group.project_id,
+                &turn.group.id,
+                &GroupObject {
+                    kind: "file".into(),
+                    id: change.path.clone(),
+                    revision: Some(revision),
+                    path: Some(change.path.clone()),
+                },
+            )?;
+        }
+        Ok(())
     }
 
     async fn prepare_workspace(
@@ -1820,6 +2195,27 @@ impl ResearchTaskState {
                 }
                 self.refresh_attention();
             }
+            TaskRuntimeEvent::Run {
+                run_id,
+                name,
+                state,
+                exit_code,
+            } if state.is_terminal() => {
+                // Run facts are retained once; each interested member receives its own work.
+                // Consuming wait_runs in one member cannot consume another member's notice.
+                if let Ok(store) = self.store() {
+                    if let Ok(Some(group)) = store.task_group(&task.project_id, &task.id) {
+                        let _ = store.record_group_event(
+                            &task.project_id, &group.id,
+                            &format!("run:{}:{run_id}", task.execution_generation),
+                            "run_finished",
+                            &GroupObject { kind: "run".into(), id: run_id.clone(), revision: Some(task.execution_generation.to_string()), path: None },
+                            &GroupActor { kind: ActorKind::System, id: "run-manager".into(), execution_id: None },
+                            &format!("Run {run_id} ({name}) finished with state {state:?}, exit {exit_code:?}. Query the retained run result before drawing conclusions."),
+                        );
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -2002,5 +2398,7 @@ fn validated_artifacts(
     Ok(artifacts)
 }
 
+#[cfg(test)]
+mod group_tests;
 #[cfg(test)]
 mod tests;

@@ -333,6 +333,7 @@
     "typstFailed": "Typst nie zdołał wyrenderować tego wzoru ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Deleguj zadanie",
     "askAi": "Zapytaj AI",
     "paraphrase": "Parafrazuj",
     "improveWriting": "Ulepsz tekst",

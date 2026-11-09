@@ -1263,7 +1263,9 @@
     "upToDateGeneric": "Du kører den nyeste version af Oleafly",
     "upToDateHeadline": "Du er helt opdateret!",
     "upToDateVersion": "Oleafly v{{version}} er den nyeste version",
-    "viewRelease": "Se udgivelsen"
+    "viewRelease": "Se udgivelsen",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "Vindueskontroller",

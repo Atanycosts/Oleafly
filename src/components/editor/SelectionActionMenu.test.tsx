@@ -1,18 +1,23 @@
 // @vitest-environment jsdom
 
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import en from "@/i18n/locales/en/editor.json" with { type: "json" };
 
 const controller = vi.hoisted(() => ({ getEditorView: vi.fn<() => unknown>(() => null) }));
 const session = vi.hoisted(() => ({ openInlineEditWithInstruction: vi.fn(() => true) }));
 const handoff = vi.hoisted(() => ({ handoffToAssistant: vi.fn() }));
+const delegation = vi.hoisted(() => ({ captureAssistantDelegation: vi.fn(), delegateSelection: vi.fn(), enabled: false }));
 
 vi.mock("@/components/editor/cm/controller", () => controller);
 vi.mock("@/components/editor/cm/inline-ai/openSession", () => session);
 vi.mock("@/features/assistant-handoff", () => handoff);
+vi.mock("@/lib/assistant-delegation-capture", () => ({ captureAssistantDelegation: delegation.captureAssistantDelegation }));
+vi.mock("@/features/selection-delegation", () => ({ delegateSelection: delegation.delegateSelection }));
+vi.mock("@/store/research-tasks-flag", () => ({ useResearchTasksEnabled: () => delegation.enabled }));
 
 import { SelectionActionMenu } from "./SelectionActionMenu";
+import { useAssistantRuntimeStore } from "@/store/assistant-runtime";
 
 const actions = en.selectionActions;
 
@@ -47,6 +52,10 @@ describe("SelectionActionMenu", () => {
     vi.clearAllMocks();
     controller.getEditorView.mockReturnValue(editorView());
     session.openInlineEditWithInstruction.mockReturnValue(true);
+    useAssistantRuntimeStore.setState({ runtime: "built-in", handoffRuntime: null });
+    delegation.enabled = false;
+    delegation.captureAssistantDelegation.mockResolvedValue({ projectId: "paper", path: "main.tex", runtimeId: "builtin" });
+    delegation.delegateSelection.mockResolvedValue({ id: "task" });
   });
 
   it("stays hidden until the editor has a non-empty selection", () => {
@@ -98,7 +107,7 @@ describe("SelectionActionMenu", () => {
     window.removeEventListener("oleafly:ai-selection-action", listener);
   });
 
-  it("hands off to the assistant when no inline session can start", () => {
+  it("hands off to the assistant when no inline session can start", async () => {
     session.openInlineEditWithInstruction.mockReturnValue(false);
     const seen: CustomEvent[] = [];
     const listener = (event: Event) => seen.push(event as CustomEvent);
@@ -107,7 +116,7 @@ describe("SelectionActionMenu", () => {
 
     fireEvent.click(screen.getByText(actions.expand));
 
-    expect(handoff.handoffToAssistant).toHaveBeenCalledOnce();
+    await waitFor(() => expect(handoff.handoffToAssistant).toHaveBeenCalledOnce());
     expect(seen[0].detail.target).toBe("agent");
     window.removeEventListener("oleafly:ai-selection-action", listener);
   });
@@ -162,14 +171,42 @@ describe("SelectionActionMenu", () => {
     window.removeEventListener("oleafly:ai-selection-action", listener);
   });
 
-  it("sends a typed request from the button and hands it off when no inline session starts", () => {
+  it("sends a typed request from the button and hands it off when no inline session starts", async () => {
     session.openInlineEditWithInstruction.mockReturnValue(false);
     openMenu();
 
     fireEvent.change(requestField(), { target: { value: "Translate to French" } });
     fireEvent.click(screen.getByRole("button", { name: en.inlineAi.submit }));
 
-    expect(handoff.handoffToAssistant).toHaveBeenCalledWith("Translate to French:\n\nselected", { autoSend: true });
+    await waitFor(() => expect(handoff.handoffToAssistant).toHaveBeenCalledWith("Translate to French:\n\nselected", {
+      autoSend: true,
+      delegation: { projectId: "paper", path: "main.tex", runtimeId: "builtin" },
+    }));
+  });
+
+  it("keeps ACP requests out of the built-in inline editor", async () => {
+    useAssistantRuntimeStore.setState({ runtime: "acp", handoffRuntime: null });
+    delegation.captureAssistantDelegation.mockResolvedValue({ projectId: "paper", path: "main.tex", runtimeId: "acp" });
+    openMenu();
+    fireEvent.click(screen.getByText(actions.findReferences));
+    await waitFor(() => expect(handoff.handoffToAssistant).toHaveBeenCalledWith(expect.any(String), {
+      autoSend: true, delegation: { projectId: "paper", path: "main.tex", runtimeId: "acp" },
+    }));
+    expect(session.openInlineEditWithInstruction).not.toHaveBeenCalled();
+  });
+
+  it("delegates a background task explicitly and preserves a failed request", async () => {
+    delegation.enabled = true;
+    openMenu();
+    fireEvent.change(requestField(), { target: { value: "Check citations and compile" } });
+    delegation.delegateSelection.mockRejectedValueOnce(new Error("Agent unavailable"));
+    fireEvent.click(screen.getByText(actions.delegateTask));
+    await waitFor(() => expect(delegation.delegateSelection).toHaveBeenCalledOnce());
+    expect(requestField()).toHaveValue("Check citations and compile");
+    fireEvent.click(screen.getByText(actions.delegateTask));
+    await waitFor(() => expect(screen.queryByRole("textbox")).not.toBeInTheDocument());
+    expect(session.openInlineEditWithInstruction).not.toHaveBeenCalled();
+    expect(handoff.handoffToAssistant).not.toHaveBeenCalled();
   });
 
   it("ignores Enter on an empty request or while an input method is composing", () => {

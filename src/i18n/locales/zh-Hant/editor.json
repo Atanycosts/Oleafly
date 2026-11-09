@@ -321,6 +321,7 @@
     "typstFailed": "Typst 無法算繪此方程式（{{detail}}）"
   },
   "selectionActions": {
+    "delegateTask": "委託任務",
     "askAi": "詢問 AI",
     "paraphrase": "改寫",
     "improveWriting": "改善文筆",

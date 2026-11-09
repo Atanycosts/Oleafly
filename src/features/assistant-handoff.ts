@@ -1,4 +1,4 @@
-import { useAgentHandoffStore } from "@/store/agent-handoff";
+import { useAgentHandoffStore, type AssistantHandoffOptions } from "@/store/agent-handoff";
 import { useSettingsStore } from "@/store/settings";
 import { hasConfiguredProvider } from "@/lib/ai-providers";
 import { getConfig } from "@/lib/tauri";
@@ -25,11 +25,12 @@ export async function ensureAiProviderOrOpenSettings(): Promise<boolean> {
 
 export function handoffToAssistant(
   prompt: string,
-  opts?: { autoSend?: boolean; images?: string[] },
+  opts?: AssistantHandoffOptions,
 ) {
   useAgentHandoffStore.getState().handoff(prompt, {
     autoSend: opts?.autoSend ?? false,
     images: opts?.images,
+    delegation: opts?.delegation,
   });
   revealAssistant();
 }

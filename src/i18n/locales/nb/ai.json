@@ -886,6 +886,8 @@
     "chatForked": "Samtalen er forgrenet.",
     "chatForkFailed": "Kunne ikke forgrene denne samtalen.",
     "skillsLoadFailed": "Kunne ikke laste de påslåtte ferdighetene. Prøv igjen.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Kunne ikke laste godkjenningsmodusen.",
     "approvalRulesLoadFailed": "Kunne ikke laste godkjenningsreglene for prosjektet.",
     "restoreFailed": "Kunne ikke gjenopprette: {{error}}",

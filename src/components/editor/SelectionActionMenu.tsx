@@ -10,6 +10,11 @@ import { getEditorView } from "@/components/editor/cm/controller";
 import { openInlineEditWithInstruction } from "@/components/editor/cm/inline-ai/openSession";
 import { handoffToAssistant } from "@/features/assistant-handoff";
 import { i18n } from "@/i18n";
+import { captureAssistantDelegation } from "@/lib/assistant-delegation-capture";
+import { delegateSelection } from "@/features/selection-delegation";
+import { useAssistantRuntimeStore, selectActiveRuntime } from "@/store/assistant-runtime";
+import { useResearchTasksEnabled } from "@/store/research-tasks-flag";
+import { notifyError } from "@/lib/toast";
 
 interface Action {
   id: string;
@@ -88,6 +93,8 @@ export function SelectionActionMenu() {
   const [expanded, setExpanded] = useState(false);
   const [readOnly, setReadOnly] = useState(false);
   const [instruction, setInstruction] = useState("");
+  const [busy, setBusy] = useState(false);
+  const tasksEnabled = useResearchTasksEnabled();
   const containerRef = useRef<HTMLDivElement>(null);
   const instructionRef = useRef<HTMLInputElement>(null);
   const canCommentRef = useRef(canComment);
@@ -173,20 +180,32 @@ export function SelectionActionMenu() {
     setInstruction("");
   };
 
-  const runInstruction = (request: string) => {
+  const runInstruction = async (request: string, delegate = false) => {
+    if (busy) return;
     const prompt = `${request}:\n\n${text}`;
     const view = getEditorView();
     if (view?.state.readOnly) {
       close();
       return;
     }
-    const inline = view ? openInlineEditWithInstruction(view, request) : false;
-    if (!inline) {
-      handoffToAssistant(prompt, { autoSend: true });
+    const acp = selectActiveRuntime(useAssistantRuntimeStore.getState()) === "acp";
+    const inline = !delegate && !acp && view ? openInlineEditWithInstruction(view, request) : false;
+    if (!inline && view) {
+      setBusy(true);
+      try {
+        const delegation = await captureAssistantDelegation(view);
+        if (delegate) await delegateSelection(request, delegation);
+        else handoffToAssistant(prompt, { autoSend: true, delegation });
+      } catch (error) {
+        notifyError("delegate editor selection", error);
+        return;
+      } finally {
+        setBusy(false);
+      }
     }
     window.dispatchEvent(
       new CustomEvent("oleafly:ai-selection-action", {
-        detail: { prompt, target: inline ? "inline" : "agent" },
+        detail: { prompt, target: delegate ? "task" : inline ? "inline" : "agent" },
       }),
     );
     close();
@@ -194,7 +213,7 @@ export function SelectionActionMenu() {
 
   const runTypedInstruction = () => {
     const typed = instruction.trim();
-    if (typed) runInstruction(typed);
+    if (typed) void runInstruction(typed);
   };
 
   return (
@@ -226,19 +245,29 @@ export function SelectionActionMenu() {
               type="button"
               onClick={runTypedInstruction}
               onMouseDown={keepFocus}
-              disabled={!instruction.trim()}
+              disabled={busy || !instruction.trim()}
               aria-label={t(($) => $.editor.inlineAi.submit)}
               className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
             >
               <ArrowUp className="size-3.5" />
             </button>
           </div>
+          {tasksEnabled ? (
+            <MenuRow
+              icon={<MessageSquarePlus className="size-4" />}
+              label={t(($) => $.editor.selectionActions.delegateTask)}
+              disabled={busy || !instruction.trim()}
+              onClick={() => { void runInstruction(instruction.trim(), true); }}
+              onMouseDown={keepFocus}
+            />
+          ) : null}
           {ACTIONS.map((action) => (
             <MenuRow
               key={action.id}
               icon={<action.icon className="size-4" />}
               label={action.label()}
-              onClick={() => runInstruction(action.prompt)}
+              disabled={busy}
+              onClick={() => { void runInstruction(action.prompt); }}
               onMouseDown={keepFocus}
             />
           ))}

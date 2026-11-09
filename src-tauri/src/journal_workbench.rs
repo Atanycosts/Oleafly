@@ -1,3 +1,7 @@
+pub(crate) mod annotations;
+pub(crate) mod sync;
+pub(crate) mod tools;
+
 use crate::proc::NoConsole;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,13 +13,17 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 #[derive(Default)]
-pub struct JournalWorkbenchState(Mutex<Option<Session>>);
+pub struct JournalWorkbenchState(
+    Mutex<Option<Session>>,
+    std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+);
 
-struct Session {
+pub(crate) struct Session {
     child: Child,
     address: String,
     token: String,
     client: reqwest::Client,
+    library_root: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -79,6 +87,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(25))
         .build()
         .map_err(|error| error.to_string())?;
     let session: Value = client
@@ -103,6 +112,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         address: url.to_string(),
         token,
         client,
+        library_root: library_root.to_path_buf(),
     })
 }
 
@@ -136,6 +146,7 @@ async fn request(session: &Session, path: &str, payload: Option<Value>) -> Resul
 
 #[tauri::command]
 pub async fn journal_workbench_connect(
+    app: tauri::AppHandle,
     state: State<'_, JournalWorkbenchState>,
     python: Option<String>,
 ) -> Result<Connection, String> {
@@ -143,11 +154,18 @@ pub async fn journal_workbench_connect(
     let library_root = crate::paths::oleafly_root()?.join("journal-library");
     let mut current = state.0.lock().await;
     if current.is_none() {
-        let session = start(&python, &library_root).await?;
+        std::fs::create_dir_all(&library_root).map_err(|error| error.to_string())?;
+        let session = start(
+            &python,
+            &library_root.canonicalize().map_err(|e| e.to_string())?,
+        )
+        .await?;
         let bytes = serde_json::to_vec(&python).map_err(|error| error.to_string())?;
         crate::sandbox::atomic_write(&runtime_path()?, &bytes)?;
         *current = Some(session);
     }
+    drop(current);
+    start_reconciliation(&app, &state)?;
     Ok(Connection {
         python,
         library_root: library_root.to_string_lossy().into_owned(),
@@ -156,6 +174,7 @@ pub async fn journal_workbench_connect(
 
 #[tauri::command]
 pub async fn journal_workbench_request(
+    app: tauri::AppHandle,
     state: State<'_, JournalWorkbenchState>,
     path: String,
     payload: Option<Value>,
@@ -172,7 +191,20 @@ pub async fn journal_workbench_request(
             "Workbench exited ({status}). Reconnect to continue."
         ));
     }
-    request(session, &path, payload).await
+    let changed = payload.is_some();
+    let result = request(session, &path, payload).await?;
+    drop(current);
+    if changed {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = reconcile_and_schedule(&app).await {
+                let _ = crate::project::append_app_log(format!(
+                    "Workbench committed; task synchronization remains pending: {error}"
+                ));
+            }
+        });
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -199,12 +231,83 @@ pub async fn journal_workbench_link(
 
 #[tauri::command]
 pub async fn journal_research_create(
+    state: State<'_, JournalWorkbenchState>,
     tasks: State<'_, crate::research_tasks::ResearchTaskState>,
     draft: oleafly_research::model::ResearchTaskDraft,
     world_version_id: String,
     check_id: Option<String>,
 ) -> Result<crate::research_tasks::ResearchTaskView, String> {
-    let task = crate::research_tasks::research_task_create(tasks, draft).await?;
+    let current = state.0.lock().await;
+    let session = current.as_ref().ok_or("Connect Workbench first.")?;
+    let query =
+        reqwest::Url::parse_with_params("http://127.0.0.1/", &[("version_id", &world_version_id)])
+            .map_err(|error| error.to_string())?;
+    let query = query.query().expect("version query");
+    let world = request(session, &format!("/api/world?{query}"), None).await?;
+    let review = request(session, &format!("/api/review?{query}"), None).await?;
+    let check = match check_id.clone() {
+        Some(id) => {
+            let query = reqwest::Url::parse_with_params("http://127.0.0.1/", &[("check_id", id)])
+                .map_err(|error| error.to_string())?;
+            let query = query.query().expect("check query");
+            Some(request(session, &format!("/api/check?{query}"), None).await?)
+        }
+        None => None,
+    };
+    let workspace = crate::research_workspace::roots::get_workspace(&draft.project_id)?;
+    let linked = workspace
+        .journal_project_id
+        .ok_or("Link a Workbench manuscript first.")?;
+    let discovery = request(session, "/api/state", None).await?;
+    let project = discovery["projects"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["project_id"] == linked))
+        .ok_or("Linked manuscript missing from this library.")?;
+    if let Some(check) = &check {
+        if check["project_id"] != linked || check["world_version_id"] != world_version_id {
+            return Err(
+                "The selected check does not belong to this manuscript and world version.".into(),
+            );
+        }
+    }
+    let baseline_id = check
+        .as_ref()
+        .and_then(|c| c["baseline_id"].as_str())
+        .or_else(|| project["baseline_id"].as_str())
+        .ok_or("Missing manuscript baseline.")?
+        .to_string();
+    let baseline_url = reqwest::Url::parse_with_params(
+        "http://127.0.0.1/",
+        &[("project_id", &linked), ("baseline_id", &baseline_id)],
+    )
+    .map_err(|error| error.to_string())?;
+    let baseline = request(
+        session,
+        &format!(
+            "/api/manuscript?{}",
+            baseline_url.query().expect("baseline query")
+        ),
+        None,
+    )
+    .await?;
+    let snapshot =
+        serde_json::json!({"world": world, "review": review, "check": check, "baseline": baseline});
+    let input = crate::task_inputs::JournalInput {
+        library_root: session.library_root.to_string_lossy().into_owned(),
+        manuscript_id: Some(linked),
+        world_version_id: world_version_id.clone(),
+        check_id: check_id.clone(),
+        baseline_id,
+        snapshot_sha256: oleafly_research::observations::content_hash(
+            &serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?,
+        ),
+        snapshot,
+    };
+    drop(current);
+    let task =
+        crate::task_inputs::research_task_create_with_inputs(tasks, draft, None, Some(input))
+            .await?;
+
     crate::research_workspace::roots::set_journal_research_task(
         &task.project_id,
         task.id.clone(),
@@ -218,49 +321,27 @@ pub(crate) async fn prepare_research_context(
     app: &tauri::AppHandle,
     context: &oleafly_research::model::TaskRunContext,
 ) -> Result<(), String> {
-    let workspace = crate::research_workspace::roots::get_workspace(&context.project_id)?;
-    let Some(link) = workspace
-        .journal_research
-        .filter(|link| link.task_id == context.task_id)
-    else {
-        return Ok(());
-    };
-    let state = app.state::<JournalWorkbenchState>();
-    let mut current = state.0.lock().await;
-    if current.is_none() {
-        let library = crate::paths::oleafly_root()?.join("journal-library");
-        *current = Some(start(&configured_python()?, &library).await?);
-    }
-    let session = current.as_ref().expect("connected Workbench");
-    let query = reqwest::Url::parse_with_params(
-        "http://127.0.0.1/",
-        &[("version_id", &link.world_version_id)],
-    )
-    .map_err(|error| error.to_string())?;
-    let query = query.query().expect("version query");
-    let world = request(session, &format!("/api/world?{query}"), None).await?;
-    let review = request(session, &format!("/api/review?{query}"), None).await?;
-    let check = match link.check_id {
-        Some(id) => {
-            let query = reqwest::Url::parse_with_params("http://127.0.0.1/", &[("check_id", id)])
-                .map_err(|error| error.to_string())?;
-            let query = query.query().expect("check query");
-            Some(request(session, &format!("/api/check?{query}"), None).await?)
+    crate::task_inputs::prepare(app, context)?;
+    let tasks = app.state::<crate::research_tasks::ResearchTaskState>();
+    let store = tasks.store()?;
+    if crate::task_inputs::journal_input(store.root(), &context.task_id)?.is_some() {
+        let workbench = app.state::<JournalWorkbenchState>();
+        let mut current = workbench.0.lock().await;
+        if current.is_none() {
+            let python = configured_python()?;
+            let root = crate::paths::oleafly_root()?.join("journal-library");
+            *current =
+                Some(start(&python, &root.canonicalize().map_err(|e| e.to_string())?).await?);
         }
-        None => None,
-    };
-    let data = serde_json::to_string_pretty(&serde_json::json!({
-        "world": world, "review": review, "check": check,
-    }))
-    .map_err(|error| error.to_string())?;
-    oleafly_research::task_tools::TaskFiles::open(
-        std::path::Path::new(&context.execution_root),
-        &context.allowed_paths,
-    )?
-    .write(
-        &format!("{}/journal-context.json", context.record_dir),
-        &data,
-    )?;
+        sync::reconcile_task(
+            current.as_ref().expect("connected Workbench"),
+            &store,
+            &context.task_id,
+        )
+        .await?;
+        drop(current);
+        start_reconciliation(app, &workbench)?;
+    }
     Ok(())
 }
 
@@ -329,7 +410,105 @@ pub async fn journal_research_result(
 }
 
 pub fn shutdown(app: &tauri::AppHandle) {
+    if let Ok(mut worker) = app.state::<JournalWorkbenchState>().1.lock() {
+        if let Some(worker) = worker.take() {
+            worker.abort();
+        }
+    }
     if let Ok(mut current) = app.state::<JournalWorkbenchState>().0.try_lock() {
         *current = None;
+    }
+}
+
+/// Reconnect retained task scopes on application restart, even while their
+/// members are idle and the Journal panel has not been opened.
+pub(crate) async fn resume(app: &tauri::AppHandle) -> Result<(), String> {
+    start_reconciliation(app, &app.state::<JournalWorkbenchState>())
+}
+
+fn start_reconciliation(
+    app: &tauri::AppHandle,
+    state: &JournalWorkbenchState,
+) -> Result<(), String> {
+    let mut worker = state.1.lock().map_err(|error| error.to_string())?;
+    if worker.as_ref().is_some_and(|worker| !worker.is_finished()) {
+        return Ok(());
+    }
+    let app = app.clone();
+    *worker = Some(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_error = None;
+        loop {
+            interval.tick().await;
+            let outcome = reconcile_and_schedule(&app).await;
+            match outcome {
+                Ok(()) => last_error = None,
+                Err(error) if last_error.as_ref() != Some(&error) => {
+                    let _ = crate::project::append_app_log(format!(
+                        "Workbench task reconciliation: {error}"
+                    ));
+                    last_error = Some(error);
+                }
+                Err(_) => {}
+            }
+        }
+    }));
+    Ok(())
+}
+
+async fn reconcile_and_schedule(app: &tauri::AppHandle) -> Result<(), String> {
+    let tasks = app.state::<crate::research_tasks::ResearchTaskState>();
+    if !tasks.enabled() {
+        return Ok(());
+    }
+    let store = tasks.store()?;
+    let mut inputs = Vec::new();
+    let mut failures = Vec::new();
+    for task in store.all_tasks()? {
+        match crate::task_inputs::journal_input(store.root(), &task.id) {
+            Ok(Some(_)) => inputs.push(task.id),
+            Ok(None) => {}
+            Err(error) => failures.push(format!("{}: {error}", task.id)),
+        }
+    }
+    if inputs.is_empty() {
+        return if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        };
+    }
+    let workbench = app.state::<JournalWorkbenchState>();
+    let mut current = workbench.0.lock().await;
+    if let Some(session) = current.as_mut() {
+        if session
+            .child
+            .try_wait()
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            *current = None;
+        }
+    }
+    if current.is_none() {
+        let python = configured_python()?;
+        let root = crate::paths::oleafly_root()?.join("journal-library");
+        *current = Some(start(&python, &root.canonicalize().map_err(|e| e.to_string())?).await?);
+    }
+    let session = current.as_ref().expect("connected Workbench");
+    for task_id in inputs {
+        if let Err(error) = sync::reconcile_task(session, &store, &task_id).await {
+            failures.push(format!("{task_id}: {error}"));
+        }
+    }
+    drop(current);
+    // Launch outside the Workbench lock: preparing a member bridge reads the
+    // same application service. The existing scheduler serializes task writes.
+    tasks.launch_ready().await?;
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
     }
 }

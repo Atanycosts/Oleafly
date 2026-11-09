@@ -1243,7 +1243,9 @@
     "upToDateGeneric": "Oleafly 최신 버전을 쓰고 있습니다",
     "upToDateHeadline": "최신 상태입니다!",
     "upToDateVersion": "Oleafly v{{version}}이(가) 최신 버전입니다",
-    "viewRelease": "릴리스 보기"
+    "viewRelease": "릴리스 보기",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "창 제어",

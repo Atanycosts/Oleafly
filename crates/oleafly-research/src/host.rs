@@ -112,15 +112,36 @@ pub struct Notification {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct CompileOutput {
+    pub main_document: String,
+    pub build_directory: PathBuf,
+    pub output: Option<PathBuf>,
+    pub output_id: Option<String>,
+    pub fresh: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CompileSummary {
     pub ok: bool,
     pub errors: u32,
     pub warnings: u32,
     pub log_tail: String,
     pub skipped: Option<String>,
+    /// Compiler-reported output only; this is not a retained task artifact.
+    #[serde(default)]
+    pub build: Option<CompileOutput>,
+    #[serde(default)]
+    pub artifact: Option<crate::compiled_artifacts::TaskCompiledArtifact>,
 }
 
 pub trait WorkspaceTools: Send + Sync {
+    fn compile_task(
+        &self,
+        request: crate::compiled_artifacts::TaskCompileRequest,
+    ) -> TaskRuntimeFuture<CompileSummary> {
+        self.compile(request.execution_root, request.source)
+    }
     fn compile(&self, root: PathBuf, source: Option<PathBuf>) -> TaskRuntimeFuture<CompileSummary>;
     fn project_map(&self, root: PathBuf) -> TaskRuntimeFuture<Value>;
 }
@@ -174,5 +195,33 @@ pub struct NoSecrets;
 impl ConnectorSecrets for NoSecrets {
     fn get(&self, _name: &str) -> Option<zeroize::Zeroizing<String>> {
         None
+    }
+}
+
+#[cfg(test)]
+mod compile_tests {
+    use super::*;
+
+    #[test]
+    fn compile_summaries_read_older_reports_and_use_camel_case_output_fields() {
+        let legacy = serde_json::json!({
+            "ok": true, "errors": 0, "warnings": 0, "logTail": "", "skipped": null
+        });
+        let mut summary: CompileSummary = serde_json::from_value(legacy).unwrap();
+        assert_eq!(summary.build, None);
+        summary.build = Some(CompileOutput {
+            main_document: "main.tex".into(),
+            build_directory: "/task/build".into(),
+            output: Some("/task/build/main.pdf".into()),
+            output_id: Some("compiled-hash".into()),
+            fresh: true,
+        });
+        let value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(value["build"]["mainDocument"], "main.tex");
+        assert_eq!(value["build"]["outputId"], "compiled-hash");
+        assert_eq!(
+            serde_json::from_value::<CompileSummary>(value).unwrap(),
+            summary
+        );
     }
 }

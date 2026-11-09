@@ -898,6 +898,8 @@
     "chatForked": "Discussion dupliquée.",
     "chatForkFailed": "Impossible de dupliquer cette discussion.",
     "skillsLoadFailed": "Impossible de charger les compétences activées. Réessayez.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Impossible de charger le mode d'autorisation.",
     "approvalRulesLoadFailed": "Impossible de charger les règles d'autorisation du projet.",
     "restoreFailed": "Restauration impossible : {{error}}",

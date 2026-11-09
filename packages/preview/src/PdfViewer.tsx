@@ -1130,9 +1130,30 @@ export interface PdfViewerProps {
 export interface PdfViewerHandle {
   gotoPage: (n: number) => void;
   getFitScale: (mode: "width" | "height") => number | null;
+  getTextSelection: () => PdfTextSelection | null;
   findNext: () => void;
   findPrevious: () => void;
   activateOutlineItem: (id: string) => void;
+}
+
+export interface PdfTextSelectionRect {
+  /** Coordinates normalized to the displayed page box, in the range 0..1. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface PdfTextSelectionPage {
+  page: number;
+  rects: PdfTextSelectionRect[];
+}
+
+export interface PdfTextSelection {
+  documentIdentity: string;
+  text: string;
+  pages: PdfTextSelectionPage[];
+  rotation: PdfRotation;
 }
 
 function prefersReducedMotion(): boolean {
@@ -1961,6 +1982,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
       const createLayerNodes = () => {
         const textLayerDiv = document.createElement("div");
         textLayerDiv.className = "textLayer select-text";
+        textLayerDiv.dataset.pdfDocumentIdentity = documentIdentityRef.current;
         textLayerDiv.tabIndex = -1;
         freezePdfLayerScale(textLayerDiv, viewport, geometry);
         const annotationDiv = document.createElement("div");
@@ -2633,6 +2655,60 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
         }
         return null;
       },
+      getTextSelection: () => {
+        const container = containerRef.current;
+        const selection = window.getSelection();
+        if (!container || container.dataset.pdfState !== "ready"
+          || container.dataset.pdfDocumentIdentity !== documentIdentityRef.current
+          || !selection || selection.isCollapsed || !selection.toString().trim()) {
+          return null;
+        }
+        const ranges = Array.from({ length: selection.rangeCount }, (_, index) =>
+          selection.getRangeAt(index),
+        ).filter((range) => {
+          const layerFor = (node: Node) =>
+            (node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement)?.closest(".textLayer");
+          const startLayer = layerFor(range.startContainer);
+          const endLayer = layerFor(range.endContainer);
+          return startLayer instanceof HTMLElement && endLayer instanceof HTMLElement
+            && startLayer.dataset.pdfDocumentIdentity === documentIdentityRef.current
+            && endLayer.dataset.pdfDocumentIdentity === documentIdentityRef.current
+            && container.contains(startLayer) && container.contains(endLayer);
+        });
+        if (!ranges.length) return null;
+
+        const pages = new Map<number, PdfTextSelectionRect[]>();
+        for (const range of ranges) {
+          for (const rect of Array.from(range.getClientRects())) {
+            for (const [page, wrap] of wrapsRef.current) {
+              const pageRect = wrap.getBoundingClientRect();
+              if (!pageRect.width || !pageRect.height) continue;
+              const left = Math.max(rect.left, pageRect.left);
+              const top = Math.max(rect.top, pageRect.top);
+              const right = Math.min(rect.right, pageRect.right);
+              const bottom = Math.min(rect.bottom, pageRect.bottom);
+              if (right <= left || bottom <= top) continue;
+              const pageRects = pages.get(page) ?? [];
+              pageRects.push({
+                x: (left - pageRect.left) / pageRect.width,
+                y: (top - pageRect.top) / pageRect.height,
+                width: (right - left) / pageRect.width,
+                height: (bottom - top) / pageRect.height,
+              });
+              pages.set(page, pageRects);
+            }
+          }
+        }
+        if (!pages.size) return null;
+        return {
+          documentIdentity: documentIdentityRef.current,
+          text: selection.rangeCount === 1
+            ? selection.toString()
+            : ranges.map((range) => range.toString()).join("\n"),
+          pages: [...pages].sort(([a], [b]) => a - b).map(([page, rects]) => ({ page, rects })),
+          rotation: rotationRef.current,
+        };
+      },
       findNext: () =>
         goToSearchIndex(searchActiveIndexRef.current + 1),
       findPrevious: () =>
@@ -3122,6 +3198,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
         ) {
           return;
         }
+        container.dataset.pdfDocumentIdentity = identityAtStart;
         container.dataset.pdfState = "ready";
         onLoadStateChangeRef.current?.({
           status: "ready",

@@ -315,6 +315,8 @@ fn a_store_created_before_owners_gains_the_columns_and_keeps_its_rows() {
         .execute_batch(
             "ALTER TABLE research_tasks DROP COLUMN owner_pid;
              ALTER TABLE research_tasks DROP COLUMN owner_started;
+             ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+             DROP TABLE collaboration_attentions;
              PRAGMA user_version = 0;",
         )
         .unwrap();
@@ -710,6 +712,307 @@ fn a_running_task_cannot_be_deleted_until_it_settles() {
         .unwrap());
     store.delete(&task.id).unwrap();
     assert!(store.require(&task.id).is_err());
+}
+
+#[test]
+fn pending_inputs_survive_reopen_and_only_finalization_releases_start() {
+    let (_temp, store) = store();
+    let root = store.root().to_path_buf();
+    let task = store
+        .create_pending_inputs(draft("paper", "Interrupted PDF preparation"))
+        .unwrap();
+    assert_eq!(task.error.as_deref(), Some(INPUT_INITIALIZATION_INCOMPLETE));
+    assert!(!root
+        .join("task-inputs")
+        .join(format!("{}.json", task.id))
+        .exists());
+    drop(store);
+
+    let store = TaskStore::new(root.clone()).unwrap();
+    store.recover_interrupted().unwrap();
+    assert_eq!(
+        store.request_start(&task.id).unwrap_err(),
+        INPUT_INITIALIZATION_INCOMPLETE
+    );
+    assert!(!store.require(&task.id).unwrap().start_requested);
+    let edit = ResearchTaskEdit {
+        title: task.title.clone(),
+        prompt: "Final request with the retained input reference".into(),
+        runtime_id: task.runtime_id.clone(),
+        agent_id: task.agent_id.clone(),
+        model_id: task.model_id.clone(),
+        ..Default::default()
+    };
+    assert_eq!(
+        store.edit(&task.id, edit.clone()).unwrap_err(),
+        INPUT_INITIALIZATION_INCOMPLETE
+    );
+    assert_eq!(store.require(&task.id).unwrap().prompt, task.prompt);
+
+    // Even a different path setting the scheduler bit cannot bypass the gate.
+    store
+        .open()
+        .unwrap()
+        .execute(
+            "UPDATE research_tasks SET start_requested = 1 WHERE id = ?1",
+            [&task.id],
+        )
+        .unwrap();
+    assert!(store.claim_next().unwrap().is_none());
+    let invalid = ResearchTaskEdit {
+        prompt: "x".repeat(32_001),
+        ..edit.clone()
+    };
+    assert_eq!(
+        store
+            .complete_input_initialization(&task.id, invalid)
+            .unwrap_err(),
+        "Task prompt is too long."
+    );
+    assert!(input_initialization_pending(&store.open().unwrap(), &task.id).unwrap());
+    assert_eq!(
+        store.require(&task.id).unwrap().error.as_deref(),
+        Some(INPUT_INITIALIZATION_INCOMPLETE)
+    );
+    drop(store);
+
+    let store = TaskStore::new(root).unwrap();
+    assert!(store.claim_next().unwrap().is_none());
+    let ready = store
+        .complete_input_initialization(&task.id, edit.clone())
+        .unwrap();
+    assert_eq!(ready.prompt, edit.prompt);
+    assert_eq!(ready.error, None);
+    assert!(!ready.start_requested);
+    assert!(!input_initialization_pending(&store.open().unwrap(), &task.id).unwrap());
+    assert!(store.claim_next().unwrap().is_none());
+    assert!(store
+        .complete_input_initialization(&task.id, edit)
+        .unwrap_err()
+        .contains("no pending"));
+    store.request_start(&task.id).unwrap();
+    assert_eq!(store.claim_next().unwrap().unwrap().id, task.id);
+}
+
+#[test]
+fn pending_input_markers_follow_cancel_delete_and_rollback_without_changing_normal_tasks() {
+    let (_temp, store) = store();
+    let pending = store
+        .create_pending_inputs(draft("paper", "Cancel incomplete input"))
+        .unwrap();
+    store.request_cancel(&pending.id).unwrap();
+    assert_eq!(
+        store.retry_with(&pending.id, RetryMode::Fresh).unwrap_err(),
+        INPUT_INITIALIZATION_INCOMPLETE
+    );
+    let cancelled = store.require(&pending.id).unwrap();
+    assert_eq!(cancelled.status, ResearchTaskStatus::Cancelled);
+    assert!(!cancelled.start_requested);
+    assert!(input_initialization_pending(&store.open().unwrap(), &pending.id).unwrap());
+    store.delete(&pending.id).unwrap();
+    assert!(!input_initialization_pending(&store.open().unwrap(), &pending.id).unwrap());
+    let pending = store
+        .create_pending_inputs(draft("paper", "Rollback incomplete input"))
+        .unwrap();
+    store.rollback_unstarted_task(&pending.id).unwrap();
+    assert!(!input_initialization_pending(&store.open().unwrap(), &pending.id).unwrap());
+
+    let normal = store.create(draft("paper", "Ordinary task")).unwrap();
+    assert_eq!(normal.error, None);
+    let edit = ResearchTaskEdit {
+        title: normal.title.clone(),
+        prompt: "Edited ordinary task".into(),
+        runtime_id: normal.runtime_id.clone(),
+        agent_id: normal.agent_id.clone(),
+        model_id: normal.model_id.clone(),
+        ..Default::default()
+    };
+    assert_eq!(
+        store.edit(&normal.id, edit.clone()).unwrap().prompt,
+        edit.prompt
+    );
+    assert!(!input_initialization_pending(&store.open().unwrap(), &normal.id).unwrap());
+    store.request_start(&normal.id).unwrap();
+    assert_eq!(store.claim_next().unwrap().unwrap().id, normal.id);
+}
+
+#[test]
+fn schema_nine_migrates_input_gate_without_marking_existing_tasks() {
+    let (_temp, store) = store();
+    let task = store
+        .create(draft("paper", "Existing version nine task"))
+        .unwrap();
+    let root = store.root().to_path_buf();
+    store
+        .open()
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE research_task_input_initializations;
+             ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+             DROP TABLE collaboration_attentions;
+             PRAGMA user_version = 9;",
+        )
+        .unwrap();
+    drop(store);
+
+    let store = TaskStore::new(root).unwrap();
+    assert_eq!(
+        schema_version(&store.open().unwrap()).unwrap(),
+        SCHEMA_VERSION
+    );
+    assert_eq!(store.require(&task.id).unwrap(), task);
+    assert!(!input_initialization_pending(&store.open().unwrap(), &task.id).unwrap());
+    store.request_start(&task.id).unwrap();
+    assert_eq!(store.claim_next().unwrap().unwrap().id, task.id);
+}
+
+#[test]
+fn pdf_initialization_rollback_keeps_original_feedback_and_rejects_started_or_used_tasks() {
+    use crate::annotations::{
+        AnnotationAuthor, AnnotationDraft, AnnotationHandlingDraft, AnnotationQuery,
+        AnnotationSourceDraft, AnnotationTarget,
+    };
+
+    let (_temp, store) = store();
+    let source = AnnotationSourceDraft {
+        kind: "pdf_selection".into(),
+        content: "original selection metadata".into(),
+    };
+    let target = AnnotationTarget::new("paper", "pdf_selection", "pdf:selection");
+    let root = store
+        .add_annotation(&AnnotationDraft {
+            source: Some(source.clone()),
+            ..AnnotationDraft::new(
+                target.clone(),
+                AnnotationAuthor::user("user"),
+                "Old feedback",
+            )
+        })
+        .unwrap();
+    let create = |title: &str| {
+        let task = store.create_pending_inputs(draft("paper", title)).unwrap();
+        let child = store
+            .submit_task_annotation(&AnnotationDraft {
+                source: Some(source.clone()),
+                ..AnnotationDraft::new(
+                    target.clone().task(&task.id),
+                    AnnotationAuthor::user("user"),
+                    "Current request",
+                )
+                .reply_to(&root.id)
+                .request()
+            })
+            .unwrap();
+        (task, child)
+    };
+    let (task, child) = create("Failed initialization");
+    store.rollback_unstarted_task(&task.id).unwrap();
+    assert!(store.require(&task.id).is_err());
+    assert!(store.annotation("paper", &child.id).is_err());
+    assert_eq!(store.annotation("paper", &root.id).unwrap(), root);
+    assert_eq!(
+        store
+            .list_annotations(&AnnotationQuery::project("paper"))
+            .unwrap(),
+        vec![root.clone()]
+    );
+    assert!(store.queue_annotation_followups().unwrap().is_empty());
+    let work_count: i64 = store
+        .open()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM research_task_annotation_work WHERE task_id = ?1",
+            [&task.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(work_count, 0);
+    assert!(!input_initialization_pending(&store.open().unwrap(), &task.id).unwrap());
+
+    let (cancelled, child) = create("Cancelled while retaining PDF");
+    store.request_cancel(&cancelled.id).unwrap();
+    store.rollback_unstarted_task(&cancelled.id).unwrap();
+    assert!(store.require(&cancelled.id).is_err());
+    assert!(store.annotation("paper", &child.id).is_err());
+    assert_eq!(store.annotation("paper", &root.id).unwrap(), root);
+
+    let (deleted, child) = create("Deleted while retaining PDF");
+    store.delete(&deleted.id).unwrap();
+    assert!(store.annotation("paper", &child.id).is_err());
+    store.rollback_unstarted_task(&deleted.id).unwrap();
+    assert_eq!(store.annotation("paper", &root.id).unwrap(), root);
+    let work_count: i64 = store
+        .open()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM research_task_annotation_work WHERE task_id IN (?1, ?2)",
+            params![cancelled.id, deleted.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(work_count, 0);
+
+    let (started, child) = create("Requested start");
+    store
+        .complete_input_initialization(
+            &started.id,
+            ResearchTaskEdit {
+                title: started.title.clone(),
+                prompt: started.prompt.clone(),
+                runtime_id: started.runtime_id.clone(),
+                agent_id: started.agent_id.clone(),
+                model_id: started.model_id.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    store.request_start(&started.id).unwrap();
+    assert!(store
+        .rollback_unstarted_task(&started.id)
+        .unwrap_err()
+        .contains("never started"));
+    assert!(store.annotation("paper", &child.id).is_ok());
+    let running = store.claim_next().unwrap().unwrap();
+    assert_eq!(running.id, started.id);
+    assert!(store.rollback_unstarted_task(&started.id).is_err());
+
+    let (prepared, child) = create("Already prepared");
+    store.prepare_task_annotations(&prepared.id, 0).unwrap();
+    assert!(store
+        .rollback_unstarted_task(&prepared.id)
+        .unwrap_err()
+        .contains("history"));
+    assert!(store.annotation("paper", &child.id).is_ok());
+
+    let (handled, child) = create("Already handled");
+    store
+        .record_annotation_handling(
+            "paper",
+            &AnnotationHandlingDraft {
+                annotation_id: child.id.clone(),
+                author: AnnotationAuthor::user("user"),
+                summary: "This work already has a result".into(),
+                result_refs: vec![],
+            },
+        )
+        .unwrap();
+    assert!(store
+        .rollback_unstarted_task(&handled.id)
+        .unwrap_err()
+        .contains("history"));
+    assert!(store.annotation("paper", &child.id).is_ok());
+    store.request_cancel(&handled.id).unwrap();
+    assert!(store
+        .rollback_unstarted_task(&handled.id)
+        .unwrap_err()
+        .contains("history"));
+    store.delete(&handled.id).unwrap();
+    assert!(store.annotation("paper", &child.id).is_ok());
+    assert!(store
+        .rollback_unstarted_task(&handled.id)
+        .unwrap_err()
+        .contains("history"));
+    assert_eq!(store.annotation("paper", &root.id).unwrap(), root);
 }
 
 #[test]
@@ -1646,6 +1949,8 @@ mod handoff {
             .execute_batch(
                 "DROP INDEX research_task_events_kind;
                  ALTER TABLE research_task_events DROP COLUMN kind;
+                 ALTER TABLE collaboration_work DROP COLUMN reasons_json;
+                 DROP TABLE collaboration_attentions;
                  PRAGMA user_version = 3;",
             )
             .unwrap();

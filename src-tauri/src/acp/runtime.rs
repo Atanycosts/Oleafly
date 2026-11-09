@@ -1931,11 +1931,40 @@ impl AcpRuntime {
             .map_err(PromptFailure::into_message)
     }
 
+    pub(crate) async fn prompt_with_sent(
+        self: &Arc<Self>,
+        id: &str,
+        text: String,
+        on_sent: oleafly_acp::client::PromptSent,
+    ) -> Result<SessionSnapshot, String> {
+        self.send_prompt_with_sent(
+            id,
+            PromptInput {
+                text,
+                ..PromptInput::default()
+            },
+            None,
+            Some(on_sent),
+        )
+        .await
+        .map_err(PromptFailure::into_message)
+    }
+
     pub async fn send_prompt(
         self: &Arc<Self>,
         id: &str,
         input: PromptInput,
         skill: Option<PromptSkill>,
+    ) -> Result<SessionSnapshot, PromptFailure> {
+        self.send_prompt_with_sent(id, input, skill, None).await
+    }
+
+    async fn send_prompt_with_sent(
+        self: &Arc<Self>,
+        id: &str,
+        input: PromptInput,
+        skill: Option<PromptSkill>,
+        on_sent: Option<oleafly_acp::client::PromptSent>,
     ) -> Result<SessionSnapshot, PromptFailure> {
         let session = self.get_live(id).await?;
         let _operation = session
@@ -2059,7 +2088,15 @@ impl AcpRuntime {
                 absolute: None,
                 hold: Some(session.pending.subscribe()),
             };
-            session.client.prompt(&native, blocks, timing).await
+            match on_sent {
+                Some(on_sent) => {
+                    session
+                        .client
+                        .prompt_with_sent(&native, blocks, timing, on_sent)
+                        .await
+                }
+                None => session.client.prompt(&native, blocks, timing).await,
+            }
         };
         self.finish_turn(&session, &record, result, turn_copy, started)
             .await

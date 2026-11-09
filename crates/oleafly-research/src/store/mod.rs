@@ -18,16 +18,22 @@ use crate::model::{
 };
 use oleafly_sandbox::process::identity::{ProcessIdentity, ProcessProbe};
 
+mod annotations;
 pub mod approvals;
+pub(crate) mod collaboration;
 mod findings;
 mod observations;
 pub mod runs;
+mod snapshots;
+mod workbench;
 
 const MAX_TASKS_PER_PROJECT: usize = 500;
 pub const MAX_EVENTS_PER_RUN: u64 = 5_000;
 pub const MAX_EVENT_BYTES: usize = 128 * 1024;
 const TEXT_EVENT_KINDS: [&str; 2] = ["text", "reasoning"];
 const EVENT_KIND_COLUMN: &str = "GENERATED ALWAYS AS (json_extract(event_json, '$.kind')) VIRTUAL";
+const INPUT_INITIALIZATION_INCOMPLETE: &str =
+    "Task inputs were not fully prepared. Start again from the original application selection.";
 
 #[derive(Clone)]
 pub struct TaskStore {
@@ -60,6 +66,90 @@ pub struct EventWrite {
     pub event_json: String,
     pub created_at: i64,
     pub replace: bool,
+}
+
+fn delete_task_records_on(transaction: &Transaction<'_>, id: &str) -> Result<(), String> {
+    for statement in [
+        "DELETE FROM research_task_dependencies WHERE task_id = ?1 OR dependency_id = ?1",
+        "DELETE FROM research_task_generations WHERE task_id = ?1",
+        "DELETE FROM research_task_events WHERE task_id = ?1",
+        "DELETE FROM research_tasks WHERE id = ?1",
+    ] {
+        transaction.execute(statement, [id]).map_err(store_error)?;
+    }
+    Ok(())
+}
+
+fn input_initialization_pending(connection: &Connection, id: &str) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM research_task_input_initializations WHERE task_id = ?1)",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(store_error)
+}
+
+fn input_initialization_has_history(connection: &Connection, id: &str) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM research_task_annotation_work
+               WHERE task_id = ?1 AND (prepared_generation IS NOT NULL OR prepared_at IS NOT NULL
+                 OR delivered_generation IS NOT NULL OR delivered_at IS NOT NULL)
+               UNION ALL SELECT 1 FROM research_task_annotations a
+               WHERE a.task_id = ?1 AND (
+                 NOT ((a.object_kind = 'pdf_selection'
+                     AND json_extract(a.annotation_json, '$.source.kind') IS 'pdf_selection')
+                   OR (a.object_kind IN ('journal_rule','journal_source','journal_check','journal_world')
+                     AND json_extract(a.annotation_json, '$.source.kind') IS 'journal_object'))
+                 OR NOT EXISTS (SELECT 1 FROM research_task_annotations parent
+                   WHERE parent.id = json_extract(a.annotation_json, '$.parentId')
+                     AND parent.task_id IS NULL AND parent.project_id = a.project_id
+                     AND parent.object_kind = a.object_kind AND parent.object_id = a.object_id
+                     AND json_extract(parent.annotation_json, '$.target.objectRevision')
+                       IS json_extract(a.annotation_json, '$.target.objectRevision')
+                     AND json_extract(parent.annotation_json, '$.source.kind')
+                       IS json_extract(a.annotation_json, '$.source.kind')
+                     AND json_extract(parent.annotation_json, '$.source.sha256')
+                       IS json_extract(a.annotation_json, '$.source.sha256')))
+               UNION ALL SELECT 1 FROM research_task_annotation_handlings h
+                 JOIN research_task_annotations a ON a.id = h.annotation_id WHERE a.task_id = ?1
+               UNION ALL SELECT 1 FROM research_task_annotation_status_changes s
+                 JOIN research_task_annotations a ON a.id = s.annotation_id WHERE a.task_id = ?1
+               UNION ALL SELECT 1 FROM research_task_distillations d
+                 JOIN research_task_annotations a ON a.id = d.source_annotation_id WHERE a.task_id = ?1
+               UNION ALL SELECT 1 FROM research_task_requirements r
+                 LEFT JOIN research_task_annotations a ON a.id = json_extract(r.requirement_json, '$.sourceAnnotationId')
+                 WHERE r.task_id = ?1 OR a.task_id = ?1
+               UNION ALL SELECT 1 FROM research_task_annotations reply
+                 JOIN research_task_annotations a ON a.id = json_extract(reply.annotation_json, '$.parentId')
+                 WHERE a.task_id = ?1
+               UNION ALL SELECT 1 FROM collaboration_groups WHERE task_id = ?1
+               UNION ALL SELECT 1 FROM research_task_dependencies WHERE dependency_id = ?1
+               UNION ALL SELECT 1 FROM research_task_events WHERE task_id = ?1
+               UNION ALL SELECT 1 FROM research_task_generations WHERE task_id = ?1
+             )",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(store_error)
+}
+
+fn clear_input_annotations_on(transaction: &Transaction<'_>, id: &str) -> Result<(), String> {
+    transaction
+        .execute(
+            "DELETE FROM research_task_annotation_work WHERE task_id = ?1",
+            [id],
+        )
+        .map_err(store_error)?;
+    transaction
+        .execute(
+            "DELETE FROM research_task_annotations WHERE task_id = ?1",
+            [id],
+        )
+        .map_err(store_error)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +275,18 @@ impl TaskStore {
     }
 
     pub fn create(&self, draft: ResearchTaskDraft) -> Result<ResearchTask, String> {
+        self.create_in(draft, false)
+    }
+
+    pub fn create_pending_inputs(&self, draft: ResearchTaskDraft) -> Result<ResearchTask, String> {
+        self.create_in(draft, true)
+    }
+
+    fn create_in(
+        &self,
+        draft: ResearchTaskDraft,
+        pending_inputs: bool,
+    ) -> Result<ResearchTask, String> {
         validate_draft(
             &draft.title,
             &draft.prompt,
@@ -215,8 +317,8 @@ impl TaskStore {
                 "INSERT INTO research_tasks (
                    id, project_id, title, prompt, runtime_id, agent_id, model_id,
                    skill_ids_json, status, created_at, updated_at,
-                   brief_json, record_slug, run_after, keep_running_after_quit
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', ?9, ?9, ?10, ?11, ?12, ?13)",
+                   brief_json, record_slug, run_after, keep_running_after_quit, error
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', ?9, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     id,
                     draft.project_id,
@@ -230,16 +332,44 @@ impl TaskStore {
                     encode_json(&brief)?,
                     slug,
                     draft.run_after,
-                    draft.keep_running_after_quit
+                    draft.keep_running_after_quit,
+                    pending_inputs.then_some(INPUT_INITIALIZATION_INCOMPLETE)
                 ],
             )
             .map_err(store_error)?;
         replace_dependencies(&transaction, &id, &dedupe(draft.dependency_ids))?;
+        if pending_inputs {
+            transaction
+                .execute(
+                    "INSERT INTO research_task_input_initializations (task_id) VALUES (?1)",
+                    [&id],
+                )
+                .map_err(store_error)?;
+        }
         transaction.commit().map_err(store_error)?;
         self.require(&id)
     }
 
     pub fn edit(&self, id: &str, edit: ResearchTaskEdit) -> Result<ResearchTask, String> {
+        self.edit_in(id, edit, false)
+    }
+
+    /// Commit the final prompt and release the durable input preparation gate
+    /// together, after the application has retained every input.
+    pub fn complete_input_initialization(
+        &self,
+        id: &str,
+        edit: ResearchTaskEdit,
+    ) -> Result<ResearchTask, String> {
+        self.edit_in(id, edit, true)
+    }
+
+    fn edit_in(
+        &self,
+        id: &str,
+        edit: ResearchTaskEdit,
+        complete_inputs: bool,
+    ) -> Result<ResearchTask, String> {
         validate_draft(
             &edit.title,
             &edit.prompt,
@@ -263,6 +393,13 @@ impl TaskStore {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
+        let pending_inputs = input_initialization_pending(&transaction, id)?;
+        if pending_inputs && !complete_inputs {
+            return Err(INPUT_INITIALIZATION_INCOMPLETE.into());
+        }
+        if complete_inputs && !pending_inputs {
+            return Err("This task has no pending input initialization.".into());
+        }
         let project_id: String = transaction
             .query_row(
                 "SELECT project_id FROM research_tasks WHERE id = ?1 AND status = 'queued'",
@@ -280,7 +417,9 @@ impl TaskStore {
                    title = ?2, prompt = ?3, runtime_id = ?4, agent_id = ?5,
                    model_id = ?6, skill_ids_json = ?7, updated_at = ?8,
                    brief_json = COALESCE(?9, brief_json), run_after = ?10,
-                   keep_running_after_quit = ?11
+                   keep_running_after_quit = ?11,
+                   error = CASE WHEN ?12 THEN NULL ELSE error END,
+                   start_requested = CASE WHEN ?12 THEN 0 ELSE start_requested END
                  WHERE id = ?1 AND status = 'queued'",
                 params![
                     id,
@@ -293,7 +432,8 @@ impl TaskStore {
                     now_ms(),
                     brief_json,
                     edit.run_after,
-                    edit.keep_running_after_quit
+                    edit.keep_running_after_quit,
+                    complete_inputs
                 ],
             )
             .map_err(store_error)?;
@@ -301,8 +441,17 @@ impl TaskStore {
             return Err("The task changed before it could be edited.".into());
         }
         replace_dependencies(&transaction, id, &dedupe(edit.dependency_ids))?;
+        if complete_inputs {
+            transaction
+                .execute(
+                    "DELETE FROM research_task_input_initializations WHERE task_id = ?1",
+                    [id],
+                )
+                .map_err(store_error)?;
+        }
+        let task = Self::require_on(&transaction, id)?;
         transaction.commit().map_err(store_error)?;
-        self.require(id)
+        Ok(task)
     }
 
     pub fn list(&self, project_id: &str) -> Result<Vec<ResearchTask>, String> {
@@ -346,8 +495,14 @@ impl TaskStore {
     }
 
     pub fn request_start(&self, id: &str) -> Result<ResearchTask, String> {
-        let connection = self.open()?;
-        let stopped: Option<String> = connection
+        let mut connection = self.open()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        if input_initialization_pending(&transaction, id)? {
+            return Err(INPUT_INITIALIZATION_INCOMPLETE.into());
+        }
+        let stopped: Option<String> = transaction
             .query_row(
                 "SELECT required.title FROM research_task_dependencies dependency
                  JOIN research_tasks required ON required.id = dependency.dependency_id
@@ -361,7 +516,7 @@ impl TaskStore {
         if let Some(title) = stopped {
             return Err(format!("Retry \"{title}\" first. This task depends on it."));
         }
-        let updated = connection
+        let updated = transaction
             .execute(
                 "UPDATE research_tasks SET start_requested = 1, updated_at = ?2
                  WHERE id = ?1 AND status = 'queued'",
@@ -371,6 +526,7 @@ impl TaskStore {
         if updated != 1 {
             return Err("Only a queued task can be started.".into());
         }
+        transaction.commit().map_err(store_error)?;
         self.require(id)
     }
 
@@ -387,6 +543,10 @@ impl TaskStore {
                  WHERE task.status = 'queued' AND task.start_requested = 1
                    AND task.owner_kind = ?1
                    AND (task.run_after IS NULL OR task.run_after <= ?2)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM research_task_input_initializations input
+                     WHERE input.task_id = task.id
+                   )
                    AND NOT EXISTS (
                      SELECT 1 FROM research_task_dependencies dependency
                      JOIN research_tasks required ON required.id = dependency.dependency_id
@@ -868,6 +1028,10 @@ impl TaskStore {
         ) {
             return Err("Only a failed or cancelled task can be retried.".into());
         }
+        let connection = self.open()?;
+        if input_initialization_pending(&connection, id)? {
+            return Err(INPUT_INITIALIZATION_INCOMPLETE.into());
+        }
         let pending = match mode {
             RetryMode::Resume => PendingStart::Resume {
                 isolation: Box::new(task.isolation.clone().ok_or_else(|| {
@@ -888,7 +1052,6 @@ impl TaskStore {
             },
         };
         let fresh = mode == RetryMode::Fresh;
-        let connection = self.open()?;
         let updated = connection
             .execute(
                 "UPDATE research_tasks SET status = 'queued', start_requested = 0,
@@ -1046,20 +1209,20 @@ impl TaskStore {
     }
 
     pub fn all_tasks(&self) -> Result<Vec<ResearchTask>, String> {
-        let projects = self
-            .open()?
-            .prepare("SELECT DISTINCT project_id FROM research_tasks")
+        let connection = self.open()?;
+        let rows = connection
+            .prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM research_tasks ORDER BY created_at,id"
+            ))
             .and_then(|mut statement| {
                 statement
-                    .query_map([], |row| row.get::<_, String>(0))?
+                    .query_map([], read_stored_task)?
                     .collect::<Result<Vec<_>, _>>()
             })
             .map_err(store_error)?;
-        let mut tasks = Vec::new();
-        for project in projects {
-            tasks.extend(self.list(&project)?);
-        }
-        Ok(tasks)
+        rows.into_iter()
+            .map(|row| materialize_task(&connection, row))
+            .collect()
     }
 
     pub fn set_active_ms(&self, id: &str, generation: u64, active_ms: u64) -> Result<bool, String> {
@@ -1235,24 +1398,64 @@ impl TaskStore {
                 "\"{title}\" depends on this task and hasn't finished. Cancel it or wait for it to finish."
             ));
         }
-        transaction
-            .execute(
-                "DELETE FROM research_task_dependencies WHERE task_id = ?1 OR dependency_id = ?1",
+        if input_initialization_pending(&transaction, id)? {
+            let task = Self::require_on(&transaction, id)?;
+            if task.execution_generation == 0
+                && !task.start_requested
+                && !input_initialization_has_history(&transaction, id)?
+            {
+                clear_input_annotations_on(&transaction, id)?;
+            }
+        }
+        delete_task_records_on(&transaction, id)?;
+        transaction.commit().map_err(store_error)
+    }
+
+    /// Undo captured-input initialization before it becomes runnable. Ordinary task
+    /// deletion still preserves annotations; only untouched input children of
+    /// a pending initialization belong to this rollback. Cancellation withdraws
+    /// that failed new task as well; an already deleted task is idempotent.
+    pub fn rollback_unstarted_task(&self, id: &str) -> Result<(), String> {
+        let mut connection = self.open()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM research_tasks WHERE id = ?1)",
                 [id],
+                |row| row.get(0),
             )
             .map_err(store_error)?;
-        transaction
-            .execute(
-                "DELETE FROM research_task_generations WHERE task_id = ?1",
-                [id],
+        if !exists {
+            if input_initialization_has_history(&transaction, id)? {
+                return Err(
+                    "This task already has delivery or history and cannot be rolled back.".into(),
+                );
+            }
+            transaction.commit().map_err(store_error)?;
+            return Ok(());
+        }
+        let task = Self::require_on(&transaction, id)?;
+        if !input_initialization_pending(&transaction, id)?
+            || !matches!(
+                task.status,
+                ResearchTaskStatus::Queued | ResearchTaskStatus::Cancelled
             )
-            .map_err(store_error)?;
-        transaction
-            .execute("DELETE FROM research_task_events WHERE task_id = ?1", [id])
-            .map_err(store_error)?;
-        transaction
-            .execute("DELETE FROM research_tasks WHERE id = ?1", [id])
-            .map_err(store_error)?;
+            || task.execution_generation != 0
+            || task.start_requested
+        {
+            return Err(
+                "Only a newly created task that has never started can be rolled back.".into(),
+            );
+        }
+        if input_initialization_has_history(&transaction, id)? {
+            return Err(
+                "This task already has delivery or history and cannot be rolled back.".into(),
+            );
+        }
+        clear_input_annotations_on(&transaction, id)?;
+        delete_task_records_on(&transaction, id)?;
         transaction.commit().map_err(store_error)
     }
 
@@ -2814,7 +3017,7 @@ const BRIEF_SCHEMA_VERSION: i64 = 2;
 const HANDOFF_SCHEMA_VERSION: i64 = 3;
 const EVENT_KIND_SCHEMA_VERSION: i64 = 4;
 const RUN_CONTROL_SCHEMA_VERSION: i64 = 5;
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 13;
 
 fn migrate(connection: &mut Connection) -> Result<(), String> {
     if schema_version(connection)? >= SCHEMA_VERSION {
@@ -2986,6 +3189,51 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
              CREATE INDEX IF NOT EXISTS research_task_finding_dispositions_history
                ON research_task_finding_dispositions(finding_id, sequence);",
         )?;
+    }
+    if version < 7 {
+        upgrade(collaboration::SCHEMA_SQL)?;
+        upgrade(annotations::SCHEMA_SQL)?;
+    }
+    if version < 8 {
+        upgrade(snapshots::SCHEMA_SQL)?;
+    }
+    if version < 9 {
+        let annotation_columns: HashSet<String> = {
+            let mut statement = transaction
+                .prepare("PRAGMA table_info(research_task_annotation_work)")
+                .map_err(store_error)?;
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .and_then(|rows| rows.collect::<Result<HashSet<_>, _>>())
+                .map_err(store_error)?
+        };
+        for name in ["prepared_generation", "prepared_at"] {
+            if !annotation_columns.contains(name) {
+                upgrade(&format!(
+                    "ALTER TABLE research_task_annotation_work ADD COLUMN {name} INTEGER;"
+                ))?;
+            }
+        }
+        upgrade(
+            "UPDATE research_task_annotation_work SET prepared_generation = delivered_generation,
+                 prepared_at = delivered_at WHERE prepared_generation IS NULL;",
+        )?;
+    }
+    if version < 10 {
+        upgrade(
+            "CREATE TABLE IF NOT EXISTS research_task_input_initializations (
+                task_id TEXT PRIMARY KEY REFERENCES research_tasks(id) ON DELETE CASCADE
+             );",
+        )?;
+    }
+    if version < 11 {
+        upgrade(workbench::SCHEMA_SQL)?;
+    }
+    if version < 12 {
+        upgrade(workbench::ORIGINS_SCHEMA_SQL)?;
+    }
+    if version < 13 {
+        upgrade(collaboration::ATTENTION_SCHEMA_SQL)?;
     }
     upgrade(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     transaction.commit().map_err(store_error)

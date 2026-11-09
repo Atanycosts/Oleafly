@@ -326,7 +326,7 @@ fn spooled_usage_carries_cost_from_the_model_entry() {
     };
     sink.observe(&usage(1_000_000, 0));
     assert!((live.get("t1") - 3.0).abs() < 1e-9);
-    sink.observe(&usage(0, 100_000));
+    sink.observe(&usage(1_000_000, 100_000));
     sink.finish("completed");
     sink.finish("completed");
     let events = usage_spool::read_since(data.path(), "t1", 0).unwrap();
@@ -367,8 +367,12 @@ fn a_turn_that_starts_above_the_last_ones_totals_is_still_counted() {
             ..Usage::default()
         })
     };
+    sink.begin_turn();
+    sink.observe(&usage(2_000, 100));
     sink.observe(&AgentEvent::StepStart { step: 0 });
     sink.observe(&usage(5_000, 300));
+    sink.begin_turn();
+    sink.observe(&usage(1_000, 100));
     sink.observe(&AgentEvent::StepStart { step: 0 });
     sink.observe(&usage(6_000, 400));
     sink.observe(&AgentEvent::StepStart { step: 1 });
@@ -387,6 +391,153 @@ fn a_turn_that_starts_above_the_last_ones_totals_is_still_counted() {
         (Some(12_000), Some(800))
     );
     assert!((events[0].cost_usd.unwrap() - expected).abs() < 1e-9);
+}
+
+#[test]
+fn spooled_usage_aggregates_parent_and_helper_cumulative_snapshots() {
+    let data = tempfile::tempdir().unwrap();
+    let log = Arc::new(HelperLog::open(
+        &data.path().join("helper.log"),
+        Vec::new(),
+        false,
+    ));
+    let live = Arc::new(LiveSpend::default());
+    let price = Price::from_entry(&json!({"cost": {"input": 3.0, "output": 15.0}}));
+    let sink = SpoolUsage::new(
+        data.path(),
+        "helper-total",
+        "paper",
+        "anthropic",
+        "claude-fable-5",
+        price,
+        live.clone(),
+        log,
+    );
+    let usage = |input, output| {
+        AgentEvent::usage(Usage {
+            input,
+            output,
+            input_known: Some(true),
+            output_known: Some(true),
+            ..Usage::default()
+        })
+    };
+
+    sink.begin_turn();
+    sink.observe(&usage(100, 10));
+    sink.register_helper("member-session:helper-1");
+    sink.observe_helper(
+        "member-session:helper-1",
+        &AgentEvent::StepStart { step: 0 },
+    );
+    sink.observe_helper("member-session:helper-1", &usage(30, 3));
+    sink.observe(&usage(140, 14));
+
+    assert_eq!(sink.task_usage_snapshot(), Some((Some(170), Some(17))));
+    assert!((live.get("helper-total") - 0.000765).abs() < 1e-9);
+    sink.finish("completed");
+    let events = usage_spool::read_since(data.path(), "helper-total", 0).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        (events[0].input_tokens, events[0].output_tokens),
+        (Some(170), Some(17))
+    );
+    assert!((events[0].cost_usd.unwrap() - 0.000765).abs() < 1e-9);
+}
+
+#[test]
+fn spooled_usage_keeps_reported_zero_and_unknown_distinct_with_helpers() {
+    let data = tempfile::tempdir().unwrap();
+    let log = Arc::new(HelperLog::open(
+        &data.path().join("helper.log"),
+        Vec::new(),
+        false,
+    ));
+    let live = Arc::new(LiveSpend::default());
+    let sink = SpoolUsage::new(
+        data.path(),
+        "helper-unknown",
+        "paper",
+        "anthropic",
+        "claude-fable-5",
+        None,
+        live.clone(),
+        log,
+    );
+    let usage = |input: Option<u64>, output: Option<u64>| {
+        AgentEvent::usage(Usage {
+            input: input.unwrap_or_default() as u32,
+            output: output.unwrap_or_default() as u32,
+            input_known: Some(input.is_some()),
+            output_known: Some(output.is_some()),
+            ..Usage::default()
+        })
+    };
+
+    sink.begin_turn();
+    sink.observe(&usage(Some(0), Some(0)));
+    sink.finish("completed");
+    let zero = usage_spool::read_since(data.path(), "helper-unknown", 0).unwrap();
+    assert_eq!(zero.len(), 1);
+    assert_eq!(
+        (zero[0].input_tokens, zero[0].output_tokens),
+        (Some(0), Some(0))
+    );
+
+    let data = tempfile::tempdir().unwrap();
+    let log = Arc::new(HelperLog::open(
+        &data.path().join("helper.log"),
+        Vec::new(),
+        false,
+    ));
+    let sink = SpoolUsage::new(
+        data.path(),
+        "helper-partial",
+        "paper",
+        "anthropic",
+        "claude-fable-5",
+        None,
+        live.clone(),
+        log,
+    );
+    sink.begin_turn();
+    sink.observe(&usage(Some(12), Some(4)));
+    sink.register_helper("member-session:helper-unknown");
+    sink.observe_helper("member-session:helper-unknown", &usage(None, Some(0)));
+    sink.finish("completed");
+    let partial = usage_spool::read_since(data.path(), "helper-partial", 0).unwrap();
+    assert_eq!(partial.len(), 1);
+    assert_eq!(
+        (partial[0].input_tokens, partial[0].output_tokens),
+        (None, Some(4))
+    );
+    assert_eq!(partial[0].cost_usd, None);
+
+    let data = tempfile::tempdir().unwrap();
+    let log = Arc::new(HelperLog::open(
+        &data.path().join("helper.log"),
+        Vec::new(),
+        false,
+    ));
+    let sink = SpoolUsage::new(
+        data.path(),
+        "helper-unreported",
+        "paper",
+        "anthropic",
+        "claude-fable-5",
+        None,
+        live,
+        log,
+    );
+    sink.begin_turn();
+    sink.finish("completed");
+    let unreported = usage_spool::read_since(data.path(), "helper-unreported", 0).unwrap();
+    assert_eq!(unreported.len(), 1);
+    assert_eq!(
+        (unreported[0].input_tokens, unreported[0].output_tokens),
+        (None, None)
+    );
+    assert_eq!(unreported[0].cost_usd, None);
 }
 
 #[tokio::test]

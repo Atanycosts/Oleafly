@@ -120,6 +120,7 @@ mod storage;
 mod synctex;
 mod system_fonts;
 mod system_integration;
+mod task_inputs;
 mod template_packs;
 mod templates;
 mod terminal;
@@ -265,6 +266,11 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             {
                 let _ = crate::project::append_app_log(format!(
                     "Research task recovery failed: {error}"
+                ));
+            }
+            if let Err(error) = journal_workbench::resume(&handle).await {
+                let _ = crate::project::append_app_log(format!(
+                    "Workbench task reconnection remains pending: {error}"
                 ));
             }
         });
@@ -523,6 +529,9 @@ pub fn run() {
             journal_workbench::journal_workbench_link,
             journal_workbench::journal_research_create,
             journal_workbench::journal_research_result,
+            journal_workbench::annotations::journal_annotation_object,
+            journal_workbench::annotations::journal_annotation_save,
+            journal_workbench::annotations::journal_annotation_request,
             ad_hoc_conversion::convert_ad_hoc,
             typst_render::render_typst_snippet,
             typst_query::typst_document_insights,
@@ -531,18 +540,39 @@ pub fn run() {
             research_tasks::research_tasks_set_enabled,
             research_tasks::research_task_list,
             research_tasks::research_task_create,
+            task_inputs::research_task_create_with_inputs,
+            task_inputs::pdf::research_pdf_selection_save,
+            task_inputs::pdf::research_pdf_selection_read,
+            task_inputs::pdf::research_pdf_selections,
+            task_inputs::pdf::research_task_create_from_pdf_selection,
+            task_inputs::pdf::research_task_pdf_selection,
             research_tasks::research_task_edit,
             research_tasks::research_task_start,
             research_tasks::research_task_cancel,
             research_tasks::research_task_retry,
             research_tasks::research_task_events,
             research_tasks::research_task_observations,
+            research_tasks::research_task_observation_call,
             research_tasks::research_task_findings,
             research_tasks::research_task_finding_decide,
             research_tasks::research_task_finding_source,
             research_tasks::research_task_source_preview,
             research_tasks::research_task_file_preview,
             research_tasks::research_task_artifact_preview,
+            research_tasks::research_task_compiled_pdfs,
+            research_tasks::research_task_compiled_pdf_read,
+            research_tasks::collaboration::research_task_annotations,
+            research_tasks::collaboration::research_object_annotations,
+            research_tasks::collaboration::research_task_annotation_submit,
+            research_tasks::collaboration::research_task_group,
+            research_tasks::collaboration::research_task_group_snapshot,
+            research_tasks::collaboration::research_task_group_create,
+            research_tasks::collaboration::research_task_group_message,
+            research_tasks::collaboration::research_task_group_status,
+            research_tasks::collaboration::research_task_group_member_paused,
+            research_tasks::collaboration::research_task_group_interest,
+            research_tasks::pdf_pages::research_pdf_pages_fetch,
+            research_tasks::pdf_pages::research_pdf_pages_result,
             research_tasks::research_task_apply,
             research_tasks::research_task_accept_result,
             research_tasks::research_task_delete,

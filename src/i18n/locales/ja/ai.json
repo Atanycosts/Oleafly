@@ -874,6 +874,8 @@
     "chatForked": "チャットをフォークしました。",
     "chatForkFailed": "このチャットをフォークできませんでした。",
     "skillsLoadFailed": "有効なスキルを読み込めませんでした。もう一度お試しください。",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "承認モードを読み込めませんでした。",
     "approvalRulesLoadFailed": "プロジェクトの承認ルールを読み込めませんでした。",
     "restoreFailed": "復元できませんでした: {{error}}",

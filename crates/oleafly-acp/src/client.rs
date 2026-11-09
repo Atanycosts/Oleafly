@@ -186,10 +186,14 @@ enum Routed {
 }
 
 type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<Value, RpcError>>>>;
+/// Called after the complete prompt frame is written and flushed. This is a
+/// transport receipt, not acknowledgement that the agent handled the request.
+pub type PromptSent = Box<dyn FnOnce() -> Result<(), RpcError> + Send>;
 
 struct Shared {
     connection: watch::Receiver<Option<ConnectionTo<Agent>>>,
     pending: Pending,
+    prompt_sent: Mutex<HashMap<String, PromptSent>>,
     next_token: AtomicU64,
     route: mpsc::Sender<Routed>,
     stop: watch::Sender<bool>,
@@ -368,6 +372,9 @@ impl Shared {
         if let Ok(mut turns) = self.turn_replies.lock() {
             turns.clear();
         }
+        if let Ok(mut callbacks) = self.prompt_sent.lock() {
+            callbacks.clear();
+        }
     }
 }
 
@@ -485,6 +492,7 @@ impl AcpClient {
         let shared = Arc::new(Shared {
             connection: connection_rx,
             pending: Mutex::new(HashMap::new()),
+            prompt_sent: Mutex::new(HashMap::new()),
             next_token: AtomicU64::new(1),
             route: route_tx.clone(),
             stop: watch::channel(false).0,
@@ -507,8 +515,32 @@ impl AcpClient {
         let mut stop = shared.stop.subscribe();
         let connection_shared = shared.clone();
         let stray = shared.stderr.clone();
+        let sent_shared = shared.clone();
         tokio::spawn(async move {
-            let transport = line_transport(stdout, stdin, move |line: &[u8]| stray.push(line));
+            let transport = line_transport(
+                stdout,
+                stdin,
+                move |line: &[u8]| stray.push(line),
+                move |line| {
+                    let callback = {
+                        let mut callbacks = sent_shared.prompt_sent.lock().map_err(|_| {
+                            std::io::Error::other("The ACP connection is unavailable.")
+                        })?;
+                        if callbacks.is_empty() {
+                            return Ok(());
+                        }
+                        let frame: Value = serde_json::from_str(line)?;
+                        if frame["method"] != "session/prompt" {
+                            return Ok(());
+                        }
+                        callbacks.remove(&frame["id"].to_string())
+                    };
+                    if let Some(callback) = callback {
+                        callback().map_err(|error| std::io::Error::other(error.to_string()))?;
+                    }
+                    Ok(())
+                },
+            );
             let _ = Client
                 .builder()
                 .without_acp_version_guard()
@@ -587,7 +619,7 @@ impl AcpClient {
         method: &str,
         params: Value,
     ) -> Result<(PendingGuard, oneshot::Receiver<Result<Value, RpcError>>), RpcError> {
-        self.send_request_for(method, params, None).await
+        self.send_request_for(method, params, None, None).await
     }
 
     async fn send_request_for(
@@ -595,6 +627,7 @@ impl AcpClient {
         method: &str,
         params: Value,
         turn_of: Option<&str>,
+        on_sent: Option<PromptSent>,
     ) -> Result<(PendingGuard, oneshot::Receiver<Result<Value, RpcError>>), RpcError> {
         if self.shared.is_closed() {
             return Err(RpcError::connection(ErrorKind::NotConnected, ""));
@@ -634,13 +667,28 @@ impl AcpClient {
         let message = UntypedMessage::new(method, params)
             .map_err(|_| RpcError::local("This ACP request could not be encoded."))?;
         let route = self.shared.route.clone();
-        connection
-            .prepare_request(message)
+        let prepared = connection.prepare_request(message);
+        let wire_id = serde_json::to_string(prepared.id())
+            .map_err(|_| RpcError::local("This ACP request could not be encoded."))?;
+        if let Some(callback) = on_sent {
+            self.shared
+                .prompt_sent
+                .lock()
+                .map_err(|_| RpcError::local("The ACP connection is unavailable."))?
+                .insert(wire_id.clone(), callback);
+        }
+        let sent = prepared
             .on_receiving_result(move |result| async move {
                 let _ = route.send(Routed::Reply { token, result }).await;
                 Ok(())
             })
-            .map_err(|_| RpcError::connection(ErrorKind::NotConnected, ""))?;
+            .map_err(|_| RpcError::connection(ErrorKind::NotConnected, ""));
+        if sent.is_err() {
+            if let Ok(mut callbacks) = self.shared.prompt_sent.lock() {
+                callbacks.remove(&wire_id);
+            }
+        }
+        sent?;
         Ok((guard, receiver))
     }
 
@@ -932,7 +980,18 @@ impl AcpClient {
         blocks: Vec<Value>,
         timing: TurnTiming,
     ) -> Result<Value, RpcError> {
-        self.prompt_with(session, blocks, timing, true).await
+        self.prompt_with(session, blocks, timing, true, None).await
+    }
+
+    pub async fn prompt_with_sent(
+        &self,
+        session: &str,
+        blocks: Vec<Value>,
+        timing: TurnTiming,
+        on_sent: PromptSent,
+    ) -> Result<Value, RpcError> {
+        self.prompt_with(session, blocks, timing, true, Some(on_sent))
+            .await
     }
 
     pub async fn prompt_or_cancel(
@@ -941,7 +1000,7 @@ impl AcpClient {
         blocks: Vec<Value>,
         timing: TurnTiming,
     ) -> Result<Value, RpcError> {
-        self.prompt_with(session, blocks, timing, false).await
+        self.prompt_with(session, blocks, timing, false, None).await
     }
 
     fn turn_timed_out(&self, session: &str, stop: bool) {
@@ -958,6 +1017,7 @@ impl AcpClient {
         blocks: Vec<Value>,
         timing: TurnTiming,
         stop_on_timeout: bool,
+        on_sent: Option<PromptSent>,
     ) -> Result<Value, RpcError> {
         let waiter = if self.protocol() == ProtocolVersion::V2 {
             let (sender, receiver) = oneshot::channel();
@@ -977,11 +1037,24 @@ impl AcpClient {
             None
         };
         let ends_turn = waiter.is_none().then_some(session);
+        let (on_sent, sent_receipt) = match on_sent {
+            Some(callback) => {
+                let (sender, receiver) = oneshot::channel();
+                let on_sent: PromptSent = Box::new(move || {
+                    let result = callback();
+                    let _ = sender.send(result.clone());
+                    result
+                });
+                (Some(on_sent), Some(receiver))
+            }
+            None => (None, None),
+        };
         let (_guard, reply) = self
             .send_request_for(
                 "session/prompt",
                 json!({"sessionId": session, "prompt": blocks}),
                 ends_turn,
+                on_sent,
             )
             .await?;
         let receiver = async {
@@ -989,6 +1062,11 @@ impl AcpClient {
                 Ok(result) => result?,
                 Err(_) => return Err(self.disconnected_before_reply()),
             };
+            if let Some(receipt) = sent_receipt {
+                receipt
+                    .await
+                    .map_err(|_| self.disconnected_before_reply())??;
+            }
             match waiter {
                 None => Ok(accepted),
                 Some((ended, _waiter_guard)) => {

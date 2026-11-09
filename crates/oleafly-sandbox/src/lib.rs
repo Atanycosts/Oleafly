@@ -341,9 +341,21 @@ pub fn shell_command(
     {
         command(
             spec,
-            Path::new("/bin/sh"),
+            system_shell(),
             &[OsString::from("-c"), OsString::from(text)],
         )
+    }
+}
+
+/// The system POSIX shell for confined Unix commands. Apple's Bash 3.2 ignores
+/// TMPDIR for here-documents and falls back to the working directory when its
+/// system temp folders are not writable. Dash handles them without widening
+/// the task's file grants.
+pub fn system_shell() -> &'static Path {
+    if cfg!(target_os = "macos") {
+        Path::new("/bin/dash")
+    } else {
+        Path::new("/bin/sh")
     }
 }
 

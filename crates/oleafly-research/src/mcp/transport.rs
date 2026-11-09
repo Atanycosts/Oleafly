@@ -30,6 +30,7 @@ pub(super) async fn serve(
     services: BridgeServices,
     task: Option<TaskBinding>,
 ) -> Result<ScopedResearchMcp, String> {
+    tools::validate_application_registration(&services, task.as_ref())?;
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .map_err(|_| "The research tool server could not start.".to_string())?;
@@ -148,6 +149,26 @@ pub(super) async fn call(
                     Some(result) => tools::payload(result?),
                     None => Err("This tool is not available in the research session.".into()),
                 }
+            }
+        };
+    }
+    if let Some(application) = context.services.application.as_ref().filter(|application| {
+        application
+            .definitions()
+            .iter()
+            .any(|tool| tool.name == name)
+    }) {
+        let _permit = context
+            .slots
+            .try_acquire()
+            .map_err(|_| "The research session is busy or has closed.".to_string())?;
+        let mut stopped = context.shutdown.clone();
+        let operation = application.call(name.into(), arguments.clone());
+        return tokio::select! {
+            biased;
+            _ = stopped.wait_for(|closed| *closed) => Err("This research session has closed.".into()),
+            result = tokio::time::timeout(CALL_TIMEOUT, operation) => {
+                tools::payload(result.map_err(|_| "The research tool timed out. Try a narrower request.".to_string())??)
             }
         };
     }

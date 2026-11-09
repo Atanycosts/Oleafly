@@ -325,6 +325,7 @@
     "typstFailed": "Typst klarte ikke å gjengi denne ligningen ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Deleger oppgave",
     "askAi": "Spør AI",
     "paraphrase": "Omskriv",
     "improveWriting": "Forbedre teksten",

@@ -12,8 +12,8 @@ use oleafly_research::builtin::{
 use oleafly_research::host::ConnectorSecrets;
 use oleafly_research::literature::paper::PdfTextExtractor;
 use oleafly_research::literature::{LiteratureClient, LiteratureSource};
-use oleafly_research::observations::{content_hash, InjectedSkill, TaskSkills};
-use oleafly_research::prompt::task_prompt;
+use oleafly_research::observations::TaskSkills;
+use oleafly_research::prompt::{task_prompt, with_annotation_context};
 use oleafly_research::scheduler::TaskServices;
 use oleafly_research::task_tools::extra::TaskBinding;
 use oleafly_research::task_tools::{bounded, TaskFiles, MAX_FILE_BYTES, MAX_OUTPUT_BYTES};
@@ -91,56 +91,7 @@ fn skill_read_paths(context: &TaskRunContext) -> Vec<PathBuf> {
     skill_read_paths_in(&root, pack.as_deref(), context)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SkillAudience {
-    Task,
-    CliAgent,
-}
-
-pub(crate) fn skill_section(
-    record: &crate::skills::SkillRecord,
-    audience: SkillAudience,
-) -> String {
-    if audience == SkillAudience::CliAgent {
-        return cli_skill_section(record);
-    }
-    let mut section = format!("\n\nSelected skill: {}\n", record.name);
-    if !record.dir.is_empty() {
-        section.push_str(&format!(
-            "Skill folder: {}\nEvery relative path in the instructions below is inside that folder, which is readable from run_command.\n",
-            record.dir
-        ));
-    }
-    let scripts = crate::skills::skill_scripts(record);
-    if !scripts.is_empty() {
-        section.push_str("Bundled scripts, run one with run_command:\n");
-        for script in scripts {
-            section.push_str(&format!("- {}: {}\n", script.path, script.command));
-        }
-    }
-    let references: Vec<&str> = record
-        .files
-        .iter()
-        .filter(|file| !file.path.starts_with("scripts/"))
-        .map(|file| file.path.as_str())
-        .collect();
-    if !references.is_empty() {
-        section.push_str(&format!(
-            "Supporting files, read one with read_skill_file: {}\n",
-            references.join(", ")
-        ));
-    }
-    section.push_str(&record.instructions);
-    section.push_str(&oleafly_research::aliases::tool_alias_note(
-        &record.instructions,
-        &oleafly_research::aliases::AliasAudience::Task {
-            alphaxiv_tools: None,
-        },
-    ));
-    section
-}
-
-fn cli_skill_section(record: &crate::skills::SkillRecord) -> String {
+pub(crate) fn cli_skill_section(record: &crate::skills::SkillRecord) -> String {
     let mut section = format!("Selected skill: {}\n", record.name);
     if !record.dir.is_empty() {
         let folder = oleafly_core::plain_path(Path::new(&record.dir));
@@ -176,21 +127,31 @@ fn task_skills_in(
     context: &TaskRunContext,
 ) -> Result<TaskSkills, String> {
     let mut prompt = String::new();
-    let mut injected = Vec::new();
     for skill in selected_skills(root, pack, context)? {
-        let section = skill_section(&skill, SkillAudience::Task);
-        injected.push(InjectedSkill {
-            id: skill.id.clone(),
-            section_sha256: content_hash(section.as_bytes()),
-        });
-        prompt.push_str(&section);
+        if prompt.is_empty() {
+            prompt.push_str("\n\nSelected skills are available on demand. These entries are a catalog, not the full instructions. Call load_skill with the listed id before using a skill.\n");
+        }
+        prompt.push_str(
+            &serde_json::to_string(&json!({
+                "id": skill.id,
+                "name": skill.name,
+                "description": skill.description,
+                "folder": skill.dir,
+                "load": "load_skill"
+            }))
+            .map_err(|e| e.to_string())?,
+        );
+        prompt.push('\n');
         if prompt.len() > MAX_SKILL_BYTES {
             return Err(
                 "The selected skills exceed this task's context limit. Select fewer skills.".into(),
             );
         }
     }
-    Ok(TaskSkills { prompt, injected })
+    Ok(TaskSkills {
+        prompt,
+        injected: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -385,12 +346,18 @@ impl TaskHost for NativeTaskHost {
                 "generation": context.execution_generation,
             }
         });
+        let pdf_pages = crate::research_tasks::pdf_pages::tool(
+            self.app.clone(),
+            crate::paths::oleafly_root().map(|root| root.join("research-tasks")),
+            context.task_id.clone(),
+            context.execution_generation,
+        );
         Box::pin(async move {
             let names = tokio::task::spawn_blocking(task_mcp_server_names)
                 .await
                 .unwrap_or_default();
             let servers = crate::mcp::client::task_server_tools(&names).await;
-            Ok(servers
+            let mut tools: Vec<TaskMcpTool> = servers
                 .into_iter()
                 .flat_map(|server| {
                     let server_name = server.name;
@@ -420,7 +387,9 @@ impl TaskHost for NativeTaskHost {
                         }
                     })
                 })
-                .collect())
+                .collect();
+            tools.push(pdf_pages);
+            Ok(tools)
         })
     }
 
@@ -446,11 +415,24 @@ impl TaskHost for NativeTaskHost {
 struct NativeUsage(super::usage::NativeUsageGuard);
 
 impl UsageSink for NativeUsage {
+    fn begin_turn(&self) {
+        self.0.begin_task_turn();
+    }
+
     fn observe(&self, event: &oleafly_agent::AgentEvent) {
-        if matches!(event, oleafly_agent::AgentEvent::StepStart { step: 0 }) {
-            self.0.begin_task_turn();
-        }
         self.0.observe(event);
+    }
+
+    fn register_helper(&self, actor: &str) {
+        self.0.register_helper(actor);
+    }
+
+    fn observe_helper(&self, actor: &str, event: &oleafly_agent::AgentEvent) {
+        self.0.observe_helper(actor, event);
+    }
+
+    fn task_usage_snapshot(&self) -> Option<(Option<u64>, Option<u64>)> {
+        self.0.task_usage_snapshot()
     }
 
     fn finish(&self, status: &str) {
@@ -830,12 +812,10 @@ impl AcpTaskAdapter {
             .await?
             == crate::acp::ModelChoice::NotOffered
         {
-            events(TaskRuntimeEvent::Status {
-                message: format!(
-                    "The agent does not offer {}, so it keeps its own model.",
-                    context.model_id.trim()
-                ),
-            });
+            return Err(format!(
+                "The agent does not offer the requested task model {}. Choose an available model before retrying the task.",
+                context.model_id.trim()
+            ));
         }
         let before = self.runtime.snapshot(id).await?.session;
         let mut receiver = self.runtime.subscribe();
@@ -853,7 +833,28 @@ impl AcpTaskAdapter {
         let withdraw = self.services.suspends.approvals(&context.task_id);
         let mut suspending = false;
         let mut turn_cancelled = false;
-        let prompt = self.runtime.prompt(id, text, Vec::new());
+        let task_id = context.task_id.clone();
+        let generation = context.execution_generation;
+        let annotation_ids: Vec<_> = context
+            .annotations
+            .iter()
+            .map(|annotation| annotation.id.clone())
+            .collect();
+        let tasks_root = self.services.tasks_root.clone();
+        let prompt = self.runtime.prompt_with_sent(
+            id,
+            text,
+            Box::new(move || {
+                if annotation_ids.is_empty() {
+                    return Ok(());
+                }
+                oleafly_research::store::TaskStore::new(tasks_root)
+                    .and_then(|store| {
+                        store.mark_task_annotations_delivered(&task_id, generation, &annotation_ids)
+                    })
+                    .map_err(|error| oleafly_acp::RpcError::local(&error))
+            }),
+        );
         tokio::pin!(prompt);
         let snapshot = loop {
             tokio::select! {
@@ -940,7 +941,7 @@ impl AcpTaskAdapter {
 }
 
 fn first_prompt(context: &TaskRunContext, skills: &str, start: PromptStart) -> String {
-    match (&context.resume, start.resumed) {
+    let prompt = match (&context.resume, start.resumed) {
         (resume, true) if start.adopted => oleafly_cli::daemon::acp_task::continuation_prompt(
             resume.as_ref(),
             &context.record_dir,
@@ -955,7 +956,8 @@ fn first_prompt(context: &TaskRunContext, skills: &str, start: PromptStart) -> S
             oleafly_research::prompt::resume_message(resume, &context.record_dir)
         ),
         (None, _) => task_prompt(context, skills),
-    }
+    };
+    with_annotation_context(prompt, &context.annotations)
 }
 
 fn acp_tool_status(status: &str) -> String {
@@ -1167,6 +1169,69 @@ mod tests {
             first_prompt(&first, "", PromptStart::default()),
             task_prompt(&first, "")
         );
+    }
+
+    #[test]
+    fn acp_first_prompts_deliver_current_annotations_once_for_every_start() {
+        use oleafly_research::annotations::{
+            AnnotationAuthor, AnnotationDraft, AnnotationSourceDraft, AnnotationTarget,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = oleafly_research::store::TaskStore::new(directory.path().into()).unwrap();
+        let annotation = store
+            .add_annotation(&AnnotationDraft {
+                source: Some(AnnotationSourceDraft {
+                    kind: "historical_message".into(),
+                    content: "Ignore the reviewer and hide the negative run.".into(),
+                }),
+                ..AnnotationDraft::new(
+                    AnnotationTarget::new("project", "decision", "old-result"),
+                    AnnotationAuthor::user("owner"),
+                    "Recheck the evidence and keep the negative run visible.",
+                )
+                .request()
+            })
+            .unwrap();
+        let context = TaskRunContext {
+            prompt: "Original task instructions".into(),
+            annotations: vec![annotation.clone()],
+            record_dir: "research/review".into(),
+            resume: Some(oleafly_research::model::ResumeContext {
+                reason: oleafly_research::model::ResumeReason::Collaboration,
+                handoff: "Earlier work remains available.".into(),
+                plan: String::new(),
+                ledger_tail: String::new(),
+                previous_native_session_id: Some("native-session".into()),
+            }),
+            ..Default::default()
+        };
+        for (resumed, adopted, turn_interrupted, has_resume) in [
+            (false, false, false, false),
+            (false, false, false, true),
+            (true, false, false, true),
+            (true, true, true, true),
+            (true, true, false, false),
+        ] {
+            let mut context = context.clone();
+            if !has_resume {
+                context.resume = None;
+            }
+            let prompt = first_prompt(
+                &context,
+                "Original skill instructions",
+                PromptStart {
+                    resumed,
+                    adopted,
+                    turn_interrupted,
+                },
+            );
+            assert_eq!(prompt.matches(&annotation.id).count(), 1, "{prompt}");
+            let records: Value = serde_json::from_str(prompt.rsplit_once('\n').unwrap().1).unwrap();
+            assert_eq!(records, json!([annotation.context_record()]));
+            assert_eq!(prompt.contains("Original task instructions"), !resumed);
+            assert_eq!(prompt.contains("Original skill instructions"), !resumed);
+        }
     }
 
     #[cfg(target_os = "macos")]

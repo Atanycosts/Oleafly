@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   acpPrompt: vi.fn(),
   acpSteer: vi.fn(),
   acpStart: vi.fn(),
+  acpSetModel: vi.fn(),
+  acpSetConfigOption: vi.fn(),
   acpSnapshot: vi.fn(),
   acpEvents: vi.fn(),
   acpDisconnect: vi.fn(),
@@ -25,6 +27,8 @@ vi.mock("@/lib/acp", async (original) => ({
   acpPrompt: mocks.acpPrompt,
   acpSteer: mocks.acpSteer,
   acpStart: mocks.acpStart,
+  acpSetModel: mocks.acpSetModel,
+  acpSetConfigOption: mocks.acpSetConfigOption,
   acpSnapshot: mocks.acpSnapshot,
   acpEvents: mocks.acpEvents,
   acpDisconnect: mocks.acpDisconnect,
@@ -338,6 +342,37 @@ describe("the send queue", () => {
 });
 
 describe("sending a prompt", () => {
+  it("applies the frozen model before sending a delegated prompt even after a UI project switch", async () => {
+    const controls = { modelId: "later", modelConfigId: null, models: [{ modelId: "frozen", name: "Frozen" }, { modelId: "later", name: "Later" }] };
+    reset([session("s", { controls })]);
+    mocks.files = { projectId: "other-project", tree: [] };
+    mocks.acpSetModel.mockResolvedValue(snapshot(session("s", { controls: { ...controls, modelId: "frozen" } })));
+    mocks.acpPrompt.mockResolvedValue(snapshot(session("s", { status: "running", lastSequence: 1 })));
+    const delegated = draft("Review", { delegation: {
+      projectId: "p", path: "original.tex", mainDocument: "main.tex", selection: { from: 0, to: 4, text: "text" },
+      sourceContent: "text", sourceSha256: "source", diskSha256: "disk", editorDocVersion: 1,
+      runtimeId: "acp", agentId: "agent", modelId: "frozen",
+    } });
+    await expect(useAcpSessionsStore.getState().sendPrompt("p", "s", delegated)).resolves.toBe(true);
+    expect(mocks.acpSetModel).toHaveBeenCalledWith("p", "s", "frozen");
+    expect(mocks.toPromptInput).toHaveBeenCalledWith(delegated, expect.objectContaining({ projectId: "p" }), null);
+    expect(mocks.acpPrompt).toHaveBeenCalledWith("p", "s", input("Review"));
+  });
+
+  it("keeps a queued delegation failed instead of sending with an unavailable frozen model", async () => {
+    const delegated = draft("Review", { delegation: {
+      projectId: "p", path: "original.tex", mainDocument: "main.tex", selection: { from: 0, to: 4, text: "text" },
+      sourceContent: "text", sourceSha256: "source", diskSha256: "disk", editorDocVersion: 1,
+      runtimeId: "acp", agentId: "agent", modelId: "missing",
+    } });
+    mocks.acpSnapshot.mockResolvedValue(snapshot(session("s")));
+    useAcpSessionsStore.getState().enqueue("s", delegated);
+    await useAcpSessionsStore.getState().dispatchQueued("p", "s");
+    expect(mocks.acpPrompt).not.toHaveBeenCalled();
+    expect(useAcpSessionsStore.getState().queues.s[0]).toMatchObject({ failed: true, delegation: delegated.delegation });
+    expect(useAcpSessionsStore.getState().sessionErrors.s).toContain("selected for this delegation is unavailable");
+  });
+
   it("sends the prepared input and clears the project's error", async () => {
     useAcpSessionsStore.getState().setError("p", "old error");
     mocks.acpPrompt.mockResolvedValue(snapshot(session("s", { status: "running", lastSequence: 3 })));

@@ -1263,7 +1263,9 @@
     "upToDateGeneric": "Je gebruikt de nieuwste versie van Oleafly",
     "upToDateHeadline": "Je bent helemaal bij!",
     "upToDateVersion": "Oleafly v{{version}} is de nieuwste versie",
-    "viewRelease": "Release bekijken"
+    "viewRelease": "Release bekijken",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "Vensterknoppen",

@@ -3,6 +3,7 @@ use std::future::Future;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -36,6 +37,38 @@ use crate::task_tools::{
 };
 
 type TokenCounts = (Option<u64>, Option<u64>);
+type HelperUsageObserver = Arc<dyn Fn(&str, &AgentEvent) + Send + Sync>;
+
+fn observe_task_usage(
+    sink: &dyn UsageSink,
+    observed: &Mutex<Option<TokenCounts>>,
+    events: &TaskEventSink,
+    update: impl FnOnce(),
+    fallback: Option<TokenCounts>,
+) {
+    // Serialize updates from parent and concurrent helpers together with their
+    // published snapshot, so a delayed callback cannot overwrite a newer total.
+    let mut current = lock(observed);
+    update();
+    let Some(counts) = sink.task_usage_snapshot().or(fallback) else {
+        return;
+    };
+    if *current == Some(counts) {
+        return;
+    }
+    *current = Some(counts);
+    let (input_tokens, output_tokens) = counts;
+    events(TaskRuntimeEvent::Usage {
+        input_tokens,
+        output_tokens,
+    });
+    events(TaskRuntimeEvent::Observation {
+        observation: TaskObservation::Usage {
+            input_tokens,
+            output_tokens,
+        },
+    });
+}
 
 #[cfg(not(test))]
 const TASK_MAX_STEPS: u32 = 2_000;
@@ -80,7 +113,13 @@ pub struct TaskProvider {
 }
 
 pub trait UsageSink: Send + Sync {
+    fn begin_turn(&self) {}
     fn observe(&self, event: &AgentEvent);
+    fn register_helper(&self, _actor: &str) {}
+    fn observe_helper(&self, _actor: &str, _event: &AgentEvent) {}
+    fn task_usage_snapshot(&self) -> Option<(Option<u64>, Option<u64>)> {
+        None
+    }
     fn finish(&self, status: &str);
 }
 
@@ -234,10 +273,186 @@ struct ToolScope {
     plan_phase: bool,
     children: Arc<tokio::sync::Semaphore>,
     provider: Arc<(reqwest::Client, oleafly_agent::Resolved)>,
-    usage: Arc<dyn Fn(&AgentEvent) + Send + Sync>,
+    usage_register_helper: Arc<dyn Fn(&str) + Send + Sync>,
+    usage_helper: HelperUsageObserver,
+    catalog: Arc<Vec<ToolSchema>>,
+    selected: Mutex<BTreeSet<String>>,
+    touched: Mutex<BTreeSet<String>>,
+    targets: Vec<crate::annotations::AnnotationTarget>,
+    read_versions: Mutex<HashMap<String, String>>,
+    attention_error: Mutex<Option<String>>,
+    member_turn: bool,
+    helper_sequence: AtomicU64,
+    agent_turn_sequence: AtomicU64,
+    session_id: String,
+    skill_bytes: u64,
 }
 
 impl ToolScope {
+    fn record_attention(&self, path: &str, hash: &str, relation: &str, call_id: &str) {
+        if !self.member_turn {
+            return;
+        }
+        let result = (|| {
+            let path = crate::task_tools::relative_path(path, false)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let object = crate::collaboration::GroupObject {
+                kind: "file".into(),
+                id: path.clone(),
+                revision: Some(hash.into()),
+                path: Some(path),
+            };
+            crate::store::TaskStore::new(self.binding.services.tasks_root.clone())?
+                .record_member_attention(
+                    &self.binding.task_id,
+                    self.binding.generation,
+                    &object,
+                    relation,
+                    call_id,
+                )
+        })();
+        if let Err(error) = result {
+            let message = format!("The {relation} operation completed, but its member relationship could not be retained: {error}");
+            *lock(&self.attention_error) = Some(message.clone());
+            self.binding.emit(TaskRuntimeEvent::Status { message });
+        }
+    }
+
+    fn read_file_source(&self, path: &str, offset: usize, limit: usize) -> Result<Value, String> {
+        let (mut result, source_content) =
+            self.files.read_window_with_source(path, offset, limit)?;
+        let source_hash = result["fileSha256"]
+            .as_str()
+            .ok_or("The task file has no content hash.")?
+            .to_owned();
+        let snapshot_retained =
+            crate::store::TaskStore::new(self.binding.services.tasks_root.clone())?
+                .retain_file_snapshot(
+                    &self.binding.task_id,
+                    self.binding.generation,
+                    path,
+                    &source_hash,
+                    source_content.as_bytes(),
+                )?;
+        result["sourceSnapshotRetained"] = json!(snapshot_retained);
+        Ok(result)
+    }
+
+    fn prepare_request(
+        &self,
+        request: &mut CompletionRequest,
+        base_suffix: &str,
+    ) -> Result<(), String> {
+        if let Some(error) = lock(&self.attention_error).as_ref() {
+            return Err(error.clone());
+        }
+        let selected = lock(&self.selected);
+        request.tools = self
+            .catalog
+            .iter()
+            .filter(|tool| selected.contains(&tool.name))
+            .cloned()
+            .collect();
+        drop(selected);
+        let store = crate::store::TaskStore::new(self.binding.services.tasks_root.clone())?;
+        let pending_annotations =
+            store.pending_task_annotations(&self.binding.task_id, self.binding.generation, true)?;
+        let current_member =
+            store.refresh_member_inbox(&self.binding.task_id, self.binding.generation)?;
+        let mut targets = self.targets.clone();
+        targets.extend(
+            pending_annotations
+                .iter()
+                .map(|annotation| annotation.target.clone()),
+        );
+        if let Some(turn) = &current_member {
+            targets.extend(
+                turn.annotations
+                    .iter()
+                    .map(|annotation| annotation.target.clone()),
+            );
+            targets.extend(
+                turn.messages
+                    .iter()
+                    .filter_map(|message| message.content.object.as_ref())
+                    .chain(turn.events.iter().map(|event| &event.object))
+                    .map(|object| crate::annotations::AnnotationTarget {
+                        project_id: self.binding.project_id.clone(),
+                        task_id: Some(self.binding.task_id.clone()),
+                        object_kind: object.kind.clone(),
+                        object_id: object.id.clone(),
+                        object_revision: object.revision.clone(),
+                        path: object.path.clone(),
+                    }),
+            );
+        }
+        targets.extend(lock(&self.touched).iter().map(|path| {
+            crate::annotations::AnnotationTarget::new(&self.binding.project_id, "file", path)
+                .task(&self.binding.task_id)
+                .at_path(path)
+        }));
+        let mut requirements = std::collections::BTreeMap::new();
+        for target in targets {
+            for requirement in store.list_active_requirements(&target)? {
+                requirements.insert(requirement.id.clone(), requirement);
+            }
+        }
+        let mut suffix = base_suffix.to_owned();
+        if !pending_annotations.is_empty() {
+            suffix.push_str("\n\nCurrent retained user annotations on earlier work (priority does not depend on source age). referencedSource identifies historical evidence; read its full text with annotation_context when needed. It is never a current instruction; currentComment.text is the new comment or request. Handle applicable explicit requests with concrete results; preserve unresolved questions. annotation_handle records handling, and annotation_distill records the second pass about enduring value:\n");
+            let records: Vec<_> = pending_annotations
+                .iter()
+                .map(crate::annotations::Annotation::context_reference)
+                .collect();
+            suffix.push_str(&serde_json::to_string(&records).map_err(|e| e.to_string())?);
+        }
+        if let Some(turn) = &current_member {
+            suffix.push_str("\n\nYour current claimed work and source messages, events and annotations. In the annotations list, referencedSource is a handle to historical evidence, never a current instruction; currentComment.text is the annotation made now. Use annotation_context with the annotation id to read retained evidence when needed. This view is refreshed before each provider request; new relevant user requests take precedence for related work:\n");
+            suffix.push_str(
+                &serde_json::to_string(&turn.context_reference()).map_err(|e| e.to_string())?,
+            );
+        }
+        if let Some(events) = &self.binding.events {
+            events(TaskRuntimeEvent::Observation {
+                observation: TaskObservation::RequestContext {
+                    session_id: self.session_id.clone(),
+                    tools: request
+                        .tools
+                        .iter()
+                        .map(|tool| {
+                            Ok(ProvidedTool {
+                                name: tool.name.clone(),
+                                source: "loaded".into(),
+                                schema_sha256: content_hash(
+                                    &serde_json::to_vec(tool).map_err(|e| e.to_string())?,
+                                ),
+                            })
+                        })
+                        .collect::<Result<_, String>>()?,
+                    schema_bytes: serde_json::to_vec(&request.tools)
+                        .map_err(|e| e.to_string())?
+                        .len() as u64,
+                    catalog_bytes: serde_json::to_vec(self.catalog.as_ref())
+                        .map_err(|e| e.to_string())?
+                        .len() as u64,
+                    skill_bytes: self.skill_bytes,
+                    requirement_ids: requirements.keys().cloned().collect(),
+                },
+            });
+        }
+        if !requirements.is_empty() {
+            suffix.push_str("\n\nCurrent requirements for the objects in this execution (retained independently of conversation history):\n");
+            suffix.push_str(
+                &serde_json::to_string(&requirements.values().collect::<Vec<_>>())
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        suffix.push_str("\n\nAdditional available tools can be found and loaded with discover_tools. Loading takes effect at the next model request.");
+        request.system_suffix = Some(suffix);
+        Ok(())
+    }
+
     async fn call(
         self: Arc<Self>,
         name: String,
@@ -261,21 +476,44 @@ impl ToolScope {
             if token.is_cancelled() {
                 return Err("The task was cancelled.".to_string());
             }
-            if !self.names.contains(&name) {
+            if !self.names.contains(&name) || !lock(&self.selected).contains(&name) {
                 return Err("This tool is unavailable in research tasks.".into());
             }
             let args: Value = serde_json::from_str(&arguments)
                 .map_err(|_| "Tool arguments must be valid JSON.".to_string())?;
             match name.as_str() {
-                "read_file" => self.files.read_window(
-                    text_argument(&args, "path")?,
-                    args["offset"].as_u64().unwrap_or(0) as usize,
-                    args["limit"].as_u64().unwrap_or(MAX_OUTPUT_BYTES as u64) as usize,
-                ),
-                "write_file" => self.files.write(
-                    text_argument(&args, "path")?,
-                    text_argument(&args, "content")?,
-                ),
+                "discover_tools" => {
+                    let query=args["query"].as_str().unwrap_or("").to_lowercase();
+                    let matches=self.catalog.iter().filter(|tool|query.is_empty() || format!("{} {}",tool.name,tool.description).to_lowercase().contains(&query)).take(20).cloned().collect::<Vec<_>>();
+                    if args["load"].as_bool().unwrap_or(true){let mut selected=lock(&self.selected);for tool in &matches{selected.insert(tool.name.clone());}}
+                    Ok(json!({"tools":matches,"loaded":args["load"].as_bool().unwrap_or(true)}))
+                }
+                "read_file" => {
+                    let path = text_argument(&args, "path")?;
+                    let result = self.read_file_source(
+                        path,
+                        args["offset"].as_u64().unwrap_or(0) as usize,
+                        args["limit"].as_u64().unwrap_or(MAX_OUTPUT_BYTES as u64) as usize,
+                    )?;
+                    lock(&self.touched).insert(path.into());
+                    Ok(result)
+                },
+                "write_file" => {
+                    let path=text_argument(&args,"path")?;
+                    let newly_touched=lock(&self.touched).insert(path.into());
+                    let target=crate::annotations::AnnotationTarget::new(&self.binding.project_id,"file",path).task(&self.binding.task_id).at_path(path);
+                    let requirements=crate::store::TaskStore::new(self.binding.services.tasks_root.clone())?.list_active_requirements(&target)?;
+                    if newly_touched && !requirements.is_empty() {return Err(format!("Review the current requirements before this write: {}. The next request also includes them.",serde_json::to_string(&requirements).map_err(|e|e.to_string())?));}
+                    if self.member_turn {
+                        let expected=lock(&self.read_versions).get(path).cloned();
+                        if expected.is_none() && self.files.exists(path)? {return Err("Read the current file before editing it so the write can compare its version.".into());}
+                        let mut result=self.files.write_if_unchanged(path,text_argument(&args,"content")?,expected.as_deref())?;
+                        let hash=content_hash(text_argument(&args,"content")?.as_bytes());
+                        lock(&self.read_versions).insert(path.into(),hash.clone());
+                        result["fileSha256"]=json!(hash);
+                        Ok(result)
+                    }else{self.files.write(path,text_argument(&args,"content")?)}
+                },
                 "list_files" => self
                     .files
                     .list(args["path"].as_str().unwrap_or(""))
@@ -318,7 +556,14 @@ impl ToolScope {
             }
         }
         .await;
-        output(result)
+        if self.mcp.contains_key(&name) {
+            match result {
+                Ok(result) => mcp_output(&result),
+                Err(error) => output(Err(error)),
+            }
+        } else {
+            output(result)
+        }
     }
 }
 
@@ -352,6 +597,12 @@ async fn spawn_child(
         scope.children.clone().try_acquire_owned().map_err(|_| {
             "Three helpers are already working. Wait for one to finish.".to_string()
         })?;
+    let helper_id = format!(
+        "{}:helper-{}",
+        scope.session_id,
+        scope.helper_sequence.fetch_add(1, Ordering::Relaxed) + 1
+    );
+    (scope.usage_register_helper)(&helper_id);
     let record = scope.binding.record_dir.clone();
     let writable = Arc::new(TaskFiles::open(
         &scope.binding.execution_root,
@@ -403,7 +654,7 @@ async fn spawn_child(
                 let args: Value = serde_json::from_str(&call.arguments)
                     .map_err(|_| "Tool arguments must be valid JSON.".to_string())?;
                 match call.name.as_str() {
-                    "read_file" => scope.files.read_window(
+                    "read_file" => scope.read_file_source(
                         text_argument(&args, "path")?,
                         args["offset"].as_u64().unwrap_or(0) as usize,
                         args["limit"].as_u64().unwrap_or(MAX_OUTPUT_BYTES as u64) as usize,
@@ -429,7 +680,11 @@ async fn spawn_child(
         })
     });
     let (client, resolved) = (&scope.provider.0, &scope.provider.1);
-    let usage = scope.usage.clone();
+    let usage = scope.usage_helper.clone();
+    let helper_actor = helper_id.clone();
+    let observer_scope = scope.clone();
+    let mut helper_step = 0u64;
+    let mut calls: HashMap<String, (String, String)> = HashMap::new();
     let outcome = oleafly_agent::run_agent_with_pipeline(
         client,
         resolved,
@@ -445,7 +700,82 @@ async fn spawn_child(
         },
         None,
         runner,
-        move |event| usage(&event),
+        move |event| {
+            match &event {
+                AgentEvent::StepStart { .. } => helper_step += 1,
+                AgentEvent::ToolCallStart { id, name } => {
+                    calls.insert(id.clone(), (name.clone(), String::new()));
+                }
+                AgentEvent::ToolRequest {
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    calls.insert(id.clone(), (name.clone(), arguments.clone()));
+                    if name == "read_file" {
+                        observer_scope.binding.emit(TaskRuntimeEvent::Observation {
+                            observation: TaskObservation::ToolRequested {
+                                call_id: format!("{helper_actor}:turn-{helper_step}:{id}"),
+                                name: name.clone(),
+                                input_sha256: content_hash(arguments.as_bytes()),
+                                actor: Some(helper_actor.clone()),
+                            },
+                        });
+                    }
+                }
+                AgentEvent::ToolCallEnd { id, arguments } => {
+                    if let Some((name, input)) = calls.get_mut(id) {
+                        *input = arguments.clone();
+                        if name == "read_file" {
+                            observer_scope.binding.emit(TaskRuntimeEvent::Observation {
+                                observation: TaskObservation::ToolRequested {
+                                    call_id: format!("{helper_actor}:turn-{helper_step}:{id}"),
+                                    name: name.clone(),
+                                    input_sha256: content_hash(arguments.as_bytes()),
+                                    actor: Some(helper_actor.clone()),
+                                },
+                            });
+                        }
+                    }
+                }
+                AgentEvent::ToolOutcome { id, output } => {
+                    if let Some((name, arguments)) = calls.remove(id) {
+                        if name == "read_file" {
+                            let status = tool_result_status(output);
+                            let source = (status == "done")
+                                .then(|| serde_json::from_str::<Value>(output).ok())
+                                .flatten()
+                                .and_then(|value| {
+                                    Some(ReadSource {
+                                        path: value["path"].as_str()?.into(),
+                                        file_sha256: value["fileSha256"].as_str()?.into(),
+                                        offset: value["offset"].as_u64()? as usize,
+                                        end_offset: value["endOffset"].as_u64()? as usize,
+                                        truncated: value["truncated"].as_bool()?,
+                                        snapshot_retained: value["sourceSnapshotRetained"]
+                                            .as_bool(),
+                                    })
+                                });
+                            observer_scope.binding.emit(TaskRuntimeEvent::Observation {
+                                observation: TaskObservation::ToolExecution {
+                                    call_id: format!("{helper_actor}:turn-{helper_step}:{id}"),
+                                    name,
+                                    status: status.into(),
+                                    input_sha256: content_hash(arguments.as_bytes()),
+                                    output_sha256: content_hash(output.as_bytes()),
+                                    skill_id: None,
+                                    skill_instructions_sha256: None,
+                                    source,
+                                    actor: Some(helper_actor.clone()),
+                                },
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+            usage(&helper_actor, &event);
+        },
     )
     .await
     .map_err(|error| format!("The helper stopped: {error}"))?;
@@ -471,6 +801,44 @@ fn registry(names: &BTreeSet<String>, mcp: &HashMap<String, TaskMcpTool>) -> Too
         registry.register_trusted(name, tool);
     }
     registry
+}
+
+fn initial_task_tool(name: &str, group: bool) -> bool {
+    matches!(
+        name,
+        "discover_tools"
+            | "spawn_agent"
+            | "read_file"
+            | "write_file"
+            | "list_files"
+            | "search_project"
+            | "run_command"
+            | "start_run"
+            | "wait_runs"
+            | "run_status"
+            | "compile"
+            | "project_map"
+            | "load_skill"
+            | "read_skill_file"
+            | "update_todos"
+            | "get_todos"
+            | "literature_search"
+            | "read_paper"
+            | "web_search"
+            | "web_fetch"
+            | "desktop_apps"
+            | "task_observations"
+            | "annotation_context"
+            | "annotation_create"
+    ) || (group
+        && matches!(
+            name,
+            "group_context"
+                | "group_message"
+                | "group_interest"
+                | "annotation_handle"
+                | "annotation_distill"
+        ))
 }
 
 fn watch_time(
@@ -642,6 +1010,13 @@ impl BuiltinTaskAdapter {
             resolved,
             usage,
         } = self.host.provider(context.clone()).await?;
+        if let Some(turn) = &context.collaboration {
+            crate::store::TaskStore::new(self.services.tasks_root.clone())?.bind_member_provider(
+                &turn.execution.id,
+                &resolved.provider_id,
+                &resolved.model_id,
+            )?;
+        }
         if let Some(effort) = brief.reasoning_effort {
             if !oleafly_agent::effort_choices(
                 &resolved.provider_id,
@@ -712,7 +1087,18 @@ impl BuiltinTaskAdapter {
                 mcp.insert(tool.schema.name.clone(), tool);
             }
         }
+        tools.push(ToolSchema {name:"discover_tools".into(),description:"Find and load additional application, research, group or annotation tools by name or a topic. Loaded schemas are provided at the next model request.".into(),input_schema:json!({"type":"object","properties":{"query":{"type":"string"},"load":{"type":"boolean"}},"additionalProperties":false})});
         let names: BTreeSet<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+        let selected: BTreeSet<String> = tools
+            .iter()
+            .filter(|tool| initial_task_tool(&tool.name, context.collaboration.is_some()))
+            .map(|tool| tool.name.clone())
+            .collect();
+        let provided = tools
+            .iter()
+            .filter(|tool| selected.contains(&tool.name))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut unavailable = Vec::new();
         if !context.desktop_apps {
             unavailable.push("desktop_apps:disabled".into());
@@ -729,7 +1115,7 @@ impl BuiltinTaskAdapter {
                 provider_id: resolved.provider_id.clone(),
                 model_id: resolved.model_id.clone(),
                 session_id: context.session_id.clone(),
-                tools: tools
+                tools: provided
                     .iter()
                     .map(|tool| {
                         Ok(ProvidedTool {
@@ -766,7 +1152,45 @@ impl BuiltinTaskAdapter {
         events(runtime_event);
         let tool_registry = registry(&names, &mcp);
         let jobs = Arc::new(CommandJobs::default());
-        let usage_sink = usage.clone();
+        let mut targets = vec![crate::annotations::AnnotationTarget::new(
+            &context.project_id,
+            "task",
+            &context.task_id,
+        )
+        .task(&context.task_id)];
+        if let Some(turn) = &context.collaboration {
+            targets.extend(
+                turn.annotations
+                    .iter()
+                    .map(|annotation| annotation.target.clone()),
+            );
+            targets.extend(
+                turn.messages
+                    .iter()
+                    .filter_map(|message| message.content.object.as_ref())
+                    .map(|object| crate::annotations::AnnotationTarget {
+                        project_id: context.project_id.clone(),
+                        task_id: Some(context.task_id.clone()),
+                        object_kind: object.kind.clone(),
+                        object_id: object.id.clone(),
+                        object_revision: object.revision.clone(),
+                        path: object.path.clone(),
+                    }),
+            );
+            targets.extend(
+                turn.events
+                    .iter()
+                    .map(|event| crate::annotations::AnnotationTarget {
+                        project_id: context.project_id.clone(),
+                        task_id: Some(context.task_id.clone()),
+                        object_kind: event.object.kind.clone(),
+                        object_id: event.object.id.clone(),
+                        object_revision: event.object.revision.clone(),
+                        path: event.object.path.clone(),
+                    }),
+            );
+        }
+        let observed_usage = Arc::new(Mutex::new(None));
         let scope = Arc::new(ToolScope {
             files,
             jobs: jobs.clone(),
@@ -794,11 +1218,49 @@ impl BuiltinTaskAdapter {
             plan_phase: context.plan_phase,
             children: Arc::new(tokio::sync::Semaphore::new(CHILDREN_AT_ONCE)),
             provider: Arc::new((client.clone(), resolved.clone())),
-            usage: Arc::new(move |event| usage_sink.observe(event)),
+            usage_register_helper: {
+                let usage_sink = usage.clone();
+                let observed_usage = observed_usage.clone();
+                let events = events.clone();
+                Arc::new(move |actor| {
+                    observe_task_usage(
+                        usage_sink.as_ref(),
+                        &observed_usage,
+                        &events,
+                        || usage_sink.register_helper(actor),
+                        None,
+                    );
+                })
+            },
+            usage_helper: {
+                let usage_sink = usage.clone();
+                let observed_usage = observed_usage.clone();
+                let events = events.clone();
+                Arc::new(move |actor, event| {
+                    observe_task_usage(
+                        usage_sink.as_ref(),
+                        &observed_usage,
+                        &events,
+                        || usage_sink.observe_helper(actor, event),
+                        None,
+                    );
+                })
+            },
+            catalog: Arc::new(tools.clone()),
+            selected: Mutex::new(selected),
+            touched: Mutex::new(BTreeSet::new()),
+            targets,
+            read_versions: Mutex::new(HashMap::new()),
+            member_turn: context.collaboration.is_some(),
+            attention_error: Mutex::new(None),
+            helper_sequence: AtomicU64::new(0),
+            agent_turn_sequence: AtomicU64::new(0),
+            session_id: context.session_id.clone(),
+            skill_bytes: skills.prompt.len() as u64,
         });
         let mut template =
             CompletionRequest::prompt(task_prompt(&context, &skills.prompt), String::new());
-        template.tools = tools;
+        template.tools = provided;
         template.effort = brief.reasoning_effort;
         let suspend = self.services.suspends.token(&context.task_id);
         let restored = self.restored_conversation(&context, &resolved, &events);
@@ -810,10 +1272,19 @@ impl BuiltinTaskAdapter {
             Some(snapshot) => (snapshot.messages, snapshot.waiting_for_runs),
             None => (vec![Message::user(first_message(&context))], false),
         };
+        let messages = if let Some(turn) = &context.collaboration {
+            let store = crate::store::TaskStore::new(self.services.tasks_root.clone())?;
+            let mut saved = store
+                .member_conversation(&turn.member.id, &context.runtime_id, &resolved.model_id)?
+                .unwrap_or_default();
+            saved.push(Message::user(first_message(&context)));
+            saved
+        } else {
+            messages
+        };
         events(TaskRuntimeEvent::SessionBound {
             native_session_id: context.session_id.clone(),
         });
-        let observed_usage = Arc::new(Mutex::new(None));
         let mut turns = TurnLoop {
             adapter: self,
             context: &context,
@@ -847,11 +1318,15 @@ impl BuiltinTaskAdapter {
             turns.wrap_up_turn().await;
         }
         let summary = turns.summary;
+        if let Some(turn) = &context.collaboration {
+            crate::store::TaskStore::new(self.services.tasks_root.clone())?
+                .save_member_conversation(&turn.execution.id, &turns.messages)?;
+        }
         let was_cancelled = cancel.is_cancelled();
         cancel.cancel();
         jobs.finish().await;
         bridge.shutdown().await;
-        let observed = *lock(&observed_usage);
+        let observed = usage.task_usage_snapshot().or(*lock(&observed_usage));
         let outcome = |summary: String| TaskRuntimeOutcome {
             summary,
             artifacts: Vec::new(),
@@ -891,6 +1366,7 @@ impl BuiltinTaskAdapter {
         request: CompletionRequest,
         config: RunConfig,
         registry: &ToolRegistry,
+        scope: &Arc<ToolScope>,
         token: &CancellationToken,
         suspend: Option<&CancellationToken>,
         runner: ToolRunner,
@@ -901,8 +1377,18 @@ impl BuiltinTaskAdapter {
         // run_agent reports a cumulative snapshot for one turn. Wake-ups and
         // wrap-up are separate turns within the same execution generation.
         let previous = *lock(observed);
+        observe_task_usage(
+            usage.as_ref(),
+            observed,
+            events,
+            || usage.begin_turn(),
+            None,
+        );
+        let observed_usage = observed.clone();
         let mut calls: HashMap<String, (String, String)> = HashMap::new();
-        oleafly_agent::run_agent_with_pipeline(
+        let mut event_namespace = String::new();
+        let base_suffix = request.system_suffix.clone().unwrap_or_default();
+        let outcome = oleafly_agent::run_agent_with_pipeline(
             client,
             resolved,
             request,
@@ -910,13 +1396,55 @@ impl BuiltinTaskAdapter {
             ToolPipeline {
                 token: token.clone(),
                 suspend: suspend.cloned(),
+                prepare_request: Some({
+                    let scope = scope.clone();
+                    Arc::new(move |request| {
+                        scope
+                            .prepare_request(request, &base_suffix)
+                            .map_err(oleafly_agent::AgentError::Decode)
+                    })
+                }),
                 ..ToolPipeline::from_registry(registry.clone())
             },
             None,
             runner,
-            |event| {
-                usage.observe(&event);
+            move |event| {
+                let fallback = match &event {
+                    AgentEvent::Usage {
+                        usage: reported, ..
+                    } => {
+                        let add = |prior: Option<u64>, current: Option<u32>| match previous {
+                            None => current.map(u64::from),
+                            Some(_) => prior.zip(current).map(|(a, b)| a + u64::from(b)),
+                        };
+                        Some((
+                            add(
+                                previous.and_then(|counts| counts.0),
+                                reported.reported_input(),
+                            ),
+                            add(
+                                previous.and_then(|counts| counts.1),
+                                reported.reported_output(),
+                            ),
+                        ))
+                    }
+                    _ => None,
+                };
+                observe_task_usage(
+                    usage.as_ref(),
+                    &observed_usage,
+                    events,
+                    || usage.observe(&event),
+                    fallback,
+                );
                 match &event {
+                    AgentEvent::StepStart { .. } => {
+                        event_namespace = format!(
+                            "{}:turn-{}",
+                            scope.session_id,
+                            scope.agent_turn_sequence.fetch_add(1, Ordering::Relaxed) + 1
+                        );
+                    }
                     AgentEvent::ToolCallStart { id, name } => {
                         calls.insert(id.clone(), (name.clone(), String::new()));
                     }
@@ -928,9 +1456,10 @@ impl BuiltinTaskAdapter {
                         calls.insert(id.clone(), (name.clone(), arguments.clone()));
                         events(TaskRuntimeEvent::Observation {
                             observation: TaskObservation::ToolRequested {
-                                call_id: id.clone(),
+                                call_id: format!("{event_namespace}:{id}"),
                                 name: name.clone(),
                                 input_sha256: content_hash(arguments.as_bytes()),
+                                actor: Some(scope.session_id.clone()),
                             },
                         });
                     }
@@ -939,9 +1468,10 @@ impl BuiltinTaskAdapter {
                             *input = arguments.clone();
                             events(TaskRuntimeEvent::Observation {
                                 observation: TaskObservation::ToolRequested {
-                                    call_id: id.clone(),
+                                    call_id: format!("{event_namespace}:{id}"),
                                     name: name.clone(),
                                     input_sha256: content_hash(arguments.as_bytes()),
+                                    actor: Some(scope.session_id.clone()),
                                 },
                             });
                         }
@@ -982,14 +1512,36 @@ impl BuiltinTaskAdapter {
                                         offset: value["offset"].as_u64()? as usize,
                                         end_offset: value["endOffset"].as_u64()? as usize,
                                         truncated: value["truncated"].as_bool()?,
+                                        snapshot_retained: value["sourceSnapshotRetained"]
+                                            .as_bool(),
                                     })
                                 })
                             } else {
                                 None
                             };
+                            if status == "done"
+                                && matches!(name.as_str(), "read_file" | "write_file")
+                            {
+                                if let Some(value) = value {
+                                    if let (Some(path), Some(hash)) =
+                                        (value["path"].as_str(), value["fileSha256"].as_str())
+                                    {
+                                        if name == "read_file" {
+                                            lock(&scope.read_versions)
+                                                .insert(path.into(), hash.into());
+                                        }
+                                        scope.record_attention(
+                                            path,
+                                            hash,
+                                            if name == "read_file" { "read" } else { "wrote" },
+                                            &format!("{event_namespace}:{id}"),
+                                        );
+                                    }
+                                }
+                            }
                             events(TaskRuntimeEvent::Observation {
                                 observation: TaskObservation::ToolExecution {
-                                    call_id: id.clone(),
+                                    call_id: format!("{event_namespace}:{id}"),
                                     name,
                                     status: status.into(),
                                     input_sha256: content_hash(arguments.as_bytes()),
@@ -997,51 +1549,40 @@ impl BuiltinTaskAdapter {
                                     skill_id,
                                     skill_instructions_sha256,
                                     source,
+                                    actor: Some(scope.session_id.clone()),
                                 },
                             });
                         }
                     }
                     _ => {}
                 }
-                if let AgentEvent::Usage { usage, .. } = &event {
-                    let add = |prior: Option<u64>, current: Option<u32>| match previous {
-                        None => current.map(u64::from),
-                        Some(_) => prior.zip(current).map(|(a, b)| a + u64::from(b)),
-                    };
-                    let input_tokens =
-                        add(previous.and_then(|counts| counts.0), usage.reported_input());
-                    let output_tokens = add(
-                        previous.and_then(|counts| counts.1),
-                        usage.reported_output(),
-                    );
-                    let counts = Some((input_tokens, output_tokens));
-                    let changed = *lock(observed) != counts;
-                    *lock(observed) = counts;
-                    events(TaskRuntimeEvent::Usage {
-                        input_tokens,
-                        output_tokens,
-                    });
-                    if changed {
-                        events(TaskRuntimeEvent::Observation {
-                            observation: TaskObservation::Usage {
-                                input_tokens,
-                                output_tokens,
-                            },
-                        });
-                    }
+                if matches!(event, AgentEvent::Usage { .. }) {
                     return;
                 }
-                if let Some(event) = builtin_event(event) {
+                if let Some(mut event) = builtin_event(event) {
+                    if let TaskRuntimeEvent::Tool {
+                        call_id: Some(id), ..
+                    } = &mut event
+                    {
+                        *id = format!("{event_namespace}:{id}");
+                    }
                     events(event);
                 }
             },
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        if let Some(error) = lock(&scope.attention_error).as_ref() {
+            return Err(error.clone());
+        }
+        Ok(outcome)
     }
 }
 
 fn first_message(context: &TaskRunContext) -> String {
+    if let Some(turn) = &context.collaboration {
+        return format!("Continue as {} on the current work supplied by the runtime. Read relevant evidence, communicate through group_message, and leave concrete results. Finish when the current work is complete; the runtime dispatches further messages or changes.", turn.member.config.name);
+    }
     match &context.resume {
         Some(resume) => {
             let message = resume_message(resume, &context.record_dir);
@@ -1101,6 +1642,7 @@ impl TurnLoop<'_> {
                     ..RunConfig::default()
                 },
                 self.registry,
+                self.scope,
                 &turn,
                 Some(self.suspend),
                 runner,
@@ -1115,6 +1657,7 @@ impl TurnLoop<'_> {
         }
         if let Ok(outcome) = &outcome {
             if outcome.suspended {
+                self.messages = outcome.history.clone();
                 return ControlFlow::Break(
                     adapter
                         .save_conversation(context, self.resolved, outcome.history.clone(), false)
@@ -1202,6 +1745,7 @@ impl TurnLoop<'_> {
                     ..RunConfig::default()
                 },
                 self.registry,
+                self.scope,
                 &wrap_token,
                 None,
                 tool_runner(self.scope, &wrap_token),

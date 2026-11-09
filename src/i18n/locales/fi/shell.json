@@ -1263,7 +1263,9 @@
     "upToDateGeneric": "Käytössä on Oleaflyn uusin versio",
     "upToDateHeadline": "Kaikki on ajan tasalla!",
     "upToDateVersion": "Oleafly v{{version}} on uusin versio",
-    "viewRelease": "Katso julkaisu"
+    "viewRelease": "Katso julkaisu",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "Ikkunan hallinta",

@@ -1283,7 +1283,9 @@
     "upToDateGeneric": "Vous utilisez la dernière version d'Oleafly",
     "upToDateHeadline": "Vous êtes à jour !",
     "upToDateVersion": "Oleafly v{{version}} est la dernière version",
-    "viewRelease": "Voir la version"
+    "viewRelease": "Voir la version",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "Commandes de la fenêtre",

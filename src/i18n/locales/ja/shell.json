@@ -1243,7 +1243,9 @@
     "upToDateGeneric": "最新バージョンの Oleafly を使っています",
     "upToDateHeadline": "最新の状態です",
     "upToDateVersion": "Oleafly v{{version}} が最新バージョンです",
-    "viewRelease": "リリースを見る"
+    "viewRelease": "リリースを見る",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "ウィンドウの操作",

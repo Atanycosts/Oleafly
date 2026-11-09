@@ -874,6 +874,8 @@
     "chatForked": "채팅을 포크했습니다.",
     "chatForkFailed": "이 채팅을 포크하지 못했습니다.",
     "skillsLoadFailed": "켜 놓은 스킬을 불러오지 못했습니다. 다시 시도하세요.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "승인 모드를 불러오지 못했습니다.",
     "approvalRulesLoadFailed": "프로젝트 승인 규칙을 불러오지 못했습니다.",
     "restoreFailed": "복원하지 못했습니다: {{error}}",

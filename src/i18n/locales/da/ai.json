@@ -886,6 +886,8 @@
     "chatForked": "Chatten er forgrenet.",
     "chatForkFailed": "Kunne ikke forgrene denne chat.",
     "skillsLoadFailed": "Kunne ikke indlæse de aktive færdigheder. Prøv igen.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Kunne ikke indlæse godkendelsestilstanden.",
     "approvalRulesLoadFailed": "Kunne ikke indlæse projektets godkendelsesregler.",
     "restoreFailed": "Kunne ikke gendanne: {{error}}",

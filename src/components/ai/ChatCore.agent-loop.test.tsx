@@ -6,11 +6,13 @@ import type { ApprovalMode } from "@oleafly/ai-tools";
 import type { ModelMessage, ToolSet } from "@/lib/chat-types";
 import type { AppConfig, ModelProbe, StoredModel } from "@/lib/tauri";
 import type { ChatMessage, StoredChat } from "@/store/chats";
+import type { AssistantDelegation } from "@/lib/assistant-delegation";
 import enAi from "@/i18n/locales/en/ai.json" with { type: "json" };
 import workflowRules from "../../../crates/oleafly-agent/src/workflow.md?raw";
 
 interface HarnessOptions {
   system: string;
+  providerOverride?: { provider_id: string; model_id: string };
   messages: ModelMessage[];
   tools: ToolSet;
   onRequestId?: (requestId: string) => void;
@@ -646,7 +648,7 @@ beforeEach(() => {
   mocks.agentThreadRead.mockReset().mockResolvedValue([]);
   mocks.acpOpen.mockReset().mockResolvedValue(undefined);
   useAssistantRuntimeStore.setState({ runtime: "built-in", handoffRuntime: null });
-  useAgentHandoffStore.setState({ pendingPrompt: null, autoSend: false, pendingImages: [] });
+  useAgentHandoffStore.setState({ pendingPrompt: null, autoSend: false, pendingImages: [], pendingDelegation: null });
   mocks.agentThreadArchive.mockReset().mockResolvedValue(true);
   mocks.agentThreadFork.mockReset().mockResolvedValue("thread-forked");
   mocks.agentThreadRollback.mockReset().mockResolvedValue([]);
@@ -4782,6 +4784,54 @@ describe("ChatCore failure notices", () => {
     });
     expect(mocks.runs[0].options.takePendingImages()).toEqual([image]);
     await act(async () => finishRun(0, "Fixed"));
+  });
+
+  it("sends a frozen handoff with its original model, file and main document after navigation", async () => {
+    const projectId = useFilesStore.getState().projectId;
+    if (!projectId) throw new Error("Fixture project missing");
+    const delegation: AssistantDelegation = {
+      projectId, path: "chapters/original.tex", mainDocument: "original-main.tex",
+      selection: { from: 10, to: 18, text: "original" }, sourceContent: "Full original source",
+      sourceSha256: "source-hash", diskSha256: "disk-hash", editorDocVersion: 3,
+      runtimeId: "builtin", agentId: "openai", modelId: "gpt-4o-mini",
+    };
+    useFilesStore.setState({ engineLoaded: false });
+    await renderChat();
+    act(() => useAgentHandoffStore.getState().handoff("Review this selection", { autoSend: true, delegation }));
+    act(() => useFilesStore.setState({ activePath: "later.tex", mainDoc: "later-main.tex", engineLoaded: true }));
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+    expect(mocks.runs[0].options.providerOverride).toEqual({ provider_id: "openai", model_id: "gpt-4o-mini" });
+    expect(mocks.runs[0].options.system).toContain("Main document: original-main.tex");
+    expect(mocks.runs[0].options.system).toContain('"path":"chapters/original.tex"');
+    expect(mocks.runs[0].options.system).toContain('"sourceSha256":"source-hash"');
+    expect(mocks.runs[0].options.system).not.toContain("Full original source");
+    expect(mocks.buildWorkspaceContext).not.toHaveBeenCalled();
+    expect(mocks.retrieveProjectChunks).not.toHaveBeenCalled();
+    await act(async () => finishRun(0, "Reviewed"));
+  });
+
+  it("preserves a frozen draft until its project is open and uses it on manual send", async () => {
+    const projectId = useFilesStore.getState().projectId;
+    if (!projectId) throw new Error("Fixture project missing");
+    const delegation: AssistantDelegation = {
+      projectId, path: "original.tex", mainDocument: "original-main.tex",
+      selection: { from: 0, to: 8, text: "original" }, sourceContent: "original",
+      sourceSha256: "source", diskSha256: "disk", editorDocVersion: 3,
+      runtimeId: "builtin", agentId: "openai", modelId: "gpt-4o-mini",
+    };
+    useFilesStore.setState({ projectId: "other-project" });
+    await renderChat();
+    act(() => useAgentHandoffStore.getState().handoff("Review original", { autoSend: false, delegation }));
+    expect(useAgentHandoffStore.getState().pendingDelegation?.projectId).toBe(projectId);
+    expect(mocks.runs).toHaveLength(0);
+    act(() => useFilesStore.setState({ projectId, activePath: "other.tex", mainDoc: "other-main.tex" }));
+    await waitFor(() => expect(useAgentHandoffStore.getState().pendingPrompt).toBeNull());
+    expect(Object.values(useComposerDrafts.getState().drafts).some((draft) => draft.delegation?.path === "original.tex")).toBe(true);
+    pressComposerKey("Enter");
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+    expect(mocks.runs[0].options.providerOverride?.model_id).toBe("gpt-4o-mini");
+    expect(mocks.runs[0].options.system).toContain('"path":"original.tex"');
+    await act(async () => finishRun(0, "Reviewed"));
   });
 
   it("still drafts a handoff into the composer while the engine loads", async () => {

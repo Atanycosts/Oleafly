@@ -1,14 +1,17 @@
 import { create } from "zustand";
 import type { DraftAttachment } from "@/components/ai/composer/types";
+import type { AssistantDelegation } from "@/lib/assistant-delegation";
 
 export interface ComposerDraft {
   text: string;
   attachments: readonly DraftAttachment[];
+  delegation?: AssistantDelegation;
 }
 
 interface ComposerDraftsState {
   drafts: Readonly<Record<string, ComposerDraft>>;
   setText(composerId: string, text: string): void;
+  setDelegation(composerId: string, delegation: AssistantDelegation | undefined): void;
   addAttachments(composerId: string, items: readonly DraftAttachment[]): void;
   updateAttachment(composerId: string, id: string, patch: Partial<DraftAttachment>): boolean;
   removeAttachments(composerId: string, ids: readonly string[]): void;
@@ -25,7 +28,7 @@ function withDraft(
   composerId: string,
   draft: ComposerDraft,
 ): Readonly<Record<string, ComposerDraft>> {
-  if (!draft.text && draft.attachments.length === 0) {
+  if (!draft.text && draft.attachments.length === 0 && !draft.delegation) {
     if (!(composerId in drafts)) return drafts;
     const { [composerId]: _removed, ...rest } = drafts;
     return rest;
@@ -39,8 +42,13 @@ export const useComposerDrafts = create<ComposerDraftsState>()((set, get) => ({
     set((state) => {
       const current = state.drafts[composerId] ?? EMPTY_DRAFT;
       if (current.text === text) return state;
-      return { drafts: withDraft(state.drafts, composerId, { ...current, text }) };
+      return { drafts: withDraft(state.drafts, composerId, { ...current, text, ...(text ? {} : { delegation: undefined }) }) };
     });
+  },
+  setDelegation(composerId, delegation) {
+    set((state) => ({
+      drafts: withDraft(state.drafts, composerId, { ...(state.drafts[composerId] ?? EMPTY_DRAFT), delegation }),
+    }));
   },
   addAttachments(composerId, items) {
     if (items.length === 0) return;
@@ -108,6 +116,7 @@ export const useComposerDrafts = create<ComposerDraftsState>()((set, get) => ({
         drafts: withDraft(rest, toId, {
           text: [moved.text, target.text].filter(Boolean).join("\n\n"),
           attachments: [...moved.attachments.filter((item) => !known.has(item.id)), ...target.attachments],
+          delegation: moved.delegation ?? target.delegation,
         }),
       };
     });

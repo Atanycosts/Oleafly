@@ -25,6 +25,7 @@ import {
   CheckCircle2,
   FileText,
   Minus,
+  MessageSquarePlus,
   PanelTopOpen,
   Play,
   Sparkles,
@@ -100,6 +101,9 @@ import {
   sessionZoomByProject,
 } from "./preview-zoom";
 import { Spinner } from "@/components/ui/spinner";
+import type { FrozenPdfSelection } from "@/lib/pdf-selection";
+
+const PdfSelectionDialog = lazy(() => import("./PdfSelectionDialog").then((module) => ({ default: module.PdfSelectionDialog })));
 
 interface PreviewDocument {
   bytes: Uint8Array;
@@ -731,6 +735,7 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
   const zenLogsShown = useRef(false);
   const tourTabRef = useRef<"pdf" | "logs" | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
+  const [pdfSelection, setPdfSelection] = useState<{ projectId: string; frozen: FrozenPdfSelection | null } | null>(null);
   const [saveName, setSaveName] = useState("");
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -806,6 +811,7 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
     setRotation(0);
     setRotationPending(false);
     setScreenReaderMode(false);
+    setPdfSelection(null);
     setHasRendered(false);
   }, [projectId]);
 
@@ -1288,6 +1294,19 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
       )}
 
       {tab === "pdf" && (
+        <>
+        {projectId && !isImage && <Tooltip label={t(($) => $.preview.selection.title)}>
+          <Button variant="ghost" size="icon" className="size-7" aria-label={t(($) => $.preview.selection.title)}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              const selection = pdfRef.current?.getTextSelection();
+              const frozen = selection && viewerDocument && selection.documentIdentity === viewerDocument.identity ? {
+                projectId, mainDocument: viewerDocument.checkpoint?.mainDocument ?? mainDoc,
+                checkpoint: viewerDocument.checkpoint, selection, bytes: viewerDocument.bytes.slice(),
+              } : null;
+              setPdfSelection({ projectId, frozen });
+            }}><MessageSquarePlus className="size-3.5" /></Button>
+        </Tooltip>}
         <PdfToolbarControls
           isImage={isImage} hasDocument={!!shownBytes} numPages={numPages}
           page={page} pageInput={pageInput} setPageInput={setPageInput} jumpToPage={jumpToPage}
@@ -1327,6 +1346,7 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
             })
           }
         />
+        </>
       )}
     </div>
   );
@@ -1580,6 +1600,9 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
 
       <SavePreviewDialog saveOpen={saveOpen} closeSave={closeSave} isImage={isImage} pdfIsStale={pdfIsStale}
         saveName={saveName} setSaveName={setSaveName} saving={saving} hasDocument={!!displayedBytes} submitSavePdf={submitSavePdf} />
+      {pdfSelection && pdfSelection.projectId === projectId && <Suspense fallback={null}>
+        <PdfSelectionDialog projectId={pdfSelection.projectId} frozen={pdfSelection.frozen} onClose={() => setPdfSelection(null)} />
+      </Suspense>}
     </div>
   );
 }

@@ -56,6 +56,8 @@ import enAi from "@/i18n/locales/en/ai.json" with { type: "json" };
 import { APP_ERROR_PREFIX } from "@/lib/app-error";
 import { acpComposerId, useAcpSessionsStore } from "@/store/acp-sessions";
 import { useComposerDrafts } from "@/store/composer-drafts";
+import { useAgentHandoffStore } from "@/store/agent-handoff";
+import type { AssistantDelegation } from "@/lib/assistant-delegation";
 import { useSettingsStore } from "@/store/settings";
 import { SaveFlushError, useFilesStore } from "@/store/files";
 import { AssistantShellAcpActions } from "@/components/ai/AssistantShellAcpActions";
@@ -92,6 +94,7 @@ beforeEach(() => {
   emit = () => { throw new Error("The native event listener is not attached"); };
   useAcpSessionsStore.setState({ catalog: [], sessions: {}, events: {}, permissions: {}, activeByProject: { paper: "saved" }, composers: {}, errors: {} });
   useComposerDrafts.setState({ drafts: {} });
+  useAgentHandoffStore.setState({ pendingPrompt: null, autoSend: false, pendingImages: [], pendingDelegation: null });
   vi.mocked(acpCatalog).mockResolvedValue([agent()]);
   vi.mocked(acpSessions).mockImplementation(async () => Object.values(snapshots).map((value) => value.session));
   vi.mocked(acpSnapshot).mockImplementation(async (_project, id) => {
@@ -141,6 +144,48 @@ function permission(overrides: Partial<AcpPermission> = {}): AcpPermission {
 }
 
 describe("ACP assistant acceptance", () => {
+  it("consumes a delegated selection using its frozen project, model and exact original selection", async () => {
+    const delegation: AssistantDelegation = {
+      projectId: "paper", path: "original.tex", mainDocument: "original-main.tex",
+      selection: { from: 10, to: 18, text: "original" }, sourceContent: "FULL SOURCE EXCLUDED",
+      sourceSha256: "source-hash", diskSha256: "disk-hash", editorDocVersion: 4,
+      runtimeId: "acp", agentId: "fixture", modelId: "chosen",
+    };
+    vi.mocked(acpSetModel).mockResolvedValue({ session: session("saved", { controls: { ...session().controls, modelId: "chosen" } }), permissions: [] });
+    vi.mocked(acpPrompt).mockResolvedValue({ session: session("saved", { status: "running", lastSequence: 1 }), permissions: [] });
+    render(<AcpWorkspaceAssistant projectId="paper" />);
+    await waitFor(() => expect(acpEvents).toHaveBeenCalledWith("paper", "saved", 0));
+    act(() => {
+      useFilesStore.setState({ projectId: "later-project", activePath: "later.tex", mainDoc: "later-main.tex" });
+      useAgentHandoffStore.getState().handoff("Review original", { autoSend: true, delegation });
+    });
+    await waitFor(() => expect(acpPrompt).toHaveBeenCalledOnce());
+    expect(acpSetModel).toHaveBeenCalledWith("paper", "saved", "chosen");
+    expect(acpPrompt).toHaveBeenCalledWith("paper", "saved", expect.objectContaining({
+      text: expect.stringContaining('"sourceSha256":"source-hash"'),
+      selections: [{ path: "original.tex", text: "original" }],
+    }));
+    expect(vi.mocked(acpPrompt).mock.calls[0][2].text).not.toContain("FULL SOURCE EXCLUDED");
+    expect(useAgentHandoffStore.getState().pendingPrompt).toBeNull();
+  });
+
+  it("restores an unavailable delegated agent's draft without choosing another agent", async () => {
+    render(<AcpWorkspaceAssistant projectId="paper" />);
+    await waitFor(() => expect(acpEvents).toHaveBeenCalledWith("paper", "saved", 0));
+    const delegation: AssistantDelegation = {
+      projectId: "paper", path: "original.tex", mainDocument: "main.tex",
+      selection: { from: 0, to: 4, text: "text" }, sourceContent: "text",
+      sourceSha256: "source", diskSha256: "disk", editorDocVersion: 1,
+      runtimeId: "acp", agentId: "missing-agent", modelId: "chosen",
+    };
+    act(() => useAgentHandoffStore.getState().handoff("Review original", { autoSend: true, delegation }));
+    await waitFor(() => expect(useAcpSessionsStore.getState().errors.paper).toContain("selected for this delegation is unavailable"));
+    expect(useAcpSessionsStore.getState().composers.paper.agentId).toBe("missing-agent");
+    expect(useComposerDrafts.getState().drafts[acpComposerId("paper", "missing-agent")]).toMatchObject({ text: "Review original", delegation });
+    expect(acpStart).not.toHaveBeenCalled();
+    expect(acpPrompt).not.toHaveBeenCalled();
+  });
+
   it("says external agents need a trusted folder before the user picks one", async () => {
     useFolderAccessStore.getState().reset("paper");
     useFolderAccessStore.setState({

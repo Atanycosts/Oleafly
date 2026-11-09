@@ -886,6 +886,8 @@
     "chatForked": "Keskustelu haaroitettiin.",
     "chatForkFailed": "Tätä keskustelua ei voitu haaroittaa.",
     "skillsLoadFailed": "Käytössä olevia taitoja ei voitu ladata. Yritä uudelleen.",
+    "delegationWrongProject": "The delegated selection is attached to its original project and agent. Open that project to send it.",
+    "delegationWaitingRun": "The delegated selection is kept in the draft. Send it after the current run finishes.",
     "approvalModeLoadFailed": "Hyväksyntätilaa ei voitu ladata.",
     "approvalRulesLoadFailed": "Projektin hyväksyntäsääntöjä ei voitu ladata.",
     "restoreFailed": "Palautus ei onnistunut: {{error}}",

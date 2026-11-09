@@ -64,6 +64,7 @@ describe("research starter task integration", () => {
       permissions: { network: false, commands: "allow", desktopApps: false },
       budget: { wallClockMinutes: 120, usdCap: null, maxRuns: null, runTimeoutMinutes: 60 },
       profile: "analysis",
+      reasoningEffort: null,
       compute: { executor: "local", target: null, resources: null },
     });
   });

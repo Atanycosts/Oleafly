@@ -1,6 +1,9 @@
 export {
   PdfViewer,
   type PdfViewerHandle,
+  type PdfTextSelection,
+  type PdfTextSelectionPage,
+  type PdfTextSelectionRect,
   type PdfViewerProps,
   type PdfLayout,
   type PdfRotation,

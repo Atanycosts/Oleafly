@@ -325,6 +325,7 @@
     "typstFailed": "Typst couldn't render this equation ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Delegate task",
     "askAi": "Ask AI",
     "paraphrase": "Paraphrase",
     "improveWriting": "Improve Writing",

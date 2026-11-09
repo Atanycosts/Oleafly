@@ -12,6 +12,7 @@ import { retrieveProjectChunks } from "@/lib/ai-rag";
 import { verifyCitation } from "@/lib/research-literature";
 import {
   createResearchTask,
+  createDelegatedResearchTask,
   defaultBrief,
   listResearchTasks,
   startResearchTask,
@@ -19,14 +20,27 @@ import {
 } from "@/lib/research-tasks";
 import { useFilesStore } from "@/store/files";
 import { researchTasksEnabled } from "@/store/research-tasks-flag";
+import type { AssistantDelegation } from "@/lib/assistant-delegation";
 
 const MAX_SUMMARY = 2_000;
 export const TASKS_OFF =
   "Research tasks are turned off. They are experimental in this version; the user can turn them on under Settings, Research, at their own risk.";
 const MAX_DEFAULT_GOAL = 2_000;
 
-function openProject(): string {
-  const projectId = useFilesStore.getState().projectId;
+export interface ResearchToolScope {
+  projectId: string | null;
+  runtimeId?: "builtin" | "acp";
+  agentId?: string;
+  modelId?: string;
+  delegation?: AssistantDelegation;
+}
+
+interface ResearchToolOptions {
+  confirm?: ConfirmFn;
+  researchScope?: ResearchToolScope;
+}
+
+function openProject(projectId: string | null): string {
   if (!projectId) throw new Error("Open a project first.");
   return projectId;
 }
@@ -70,16 +84,19 @@ function taskStatus(task: ResearchTask) {
   };
 }
 
-const HOST: ResearchToolsHost & ResearchTaskToolsHost = {
+function researchHost(scope: ResearchToolScope): ResearchToolsHost & ResearchTaskToolsHost {
+  return {
   searchLiterature: (query, { limit, sources }) =>
     invoke("literature_search_all", { query: { query, limit, sources: sources ?? [] } }),
   verifyCitation,
   retrieveProjectChunks,
   createResearchTask: async (input) => {
     if (!researchTasksEnabled()) throw new Error(TASKS_OFF);
-    const projectId = openProject();
+    const projectId = openProject(scope.projectId);
     const config = await getConfig();
-    const agent = await builtinTaskAgent(config);
+    const agent = scope.agentId
+      ? { agentId: scope.agentId, modelId: scope.modelId ?? "" }
+      : await builtinTaskAgent(config);
     const brief = defaultBrief(input.brief.goal ?? defaultGoal(input.prompt));
     brief.successCriteria = input.brief.successCriteria ?? [];
     brief.reviewPlanFirst = input.brief.reviewPlanFirst ?? false;
@@ -87,34 +104,41 @@ const HOST: ResearchToolsHost & ResearchTaskToolsHost = {
     brief.permissions.network = input.brief.network ?? false;
     brief.budget.wallClockMinutes =
       input.brief.timeBudgetMinutes ?? config.research_time_budget_minutes ?? brief.budget.wallClockMinutes;
-    let task = await createResearchTask({
+    const draft = {
       projectId,
       title: input.title,
       prompt: input.prompt,
-      runtimeId: "builtin",
+      runtimeId: scope.runtimeId ?? "builtin",
       agentId: agent.agentId,
       modelId: agent.modelId,
       skillIds: input.skillIds,
       dependencyIds: [],
       brief,
-    });
+    };
+    let task = scope.delegation
+      ? await createDelegatedResearchTask(draft, scope.delegation)
+      : await createResearchTask(draft);
     if (input.start) task = await startResearchTask(task.id);
     return { id: task.id, title: task.title, status: task.status };
   },
   researchTaskStatus: async (id) => {
-    const tasks = await listResearchTasks(openProject());
+    const tasks = await listResearchTasks(openProject(scope.projectId));
     if (id) {
       const task = tasks.find((candidate) => candidate.id === id);
       return task ? taskStatus(task) : { error: "No task with that id in this project." };
     }
     return { tasks: tasks.slice(0, 10).map(taskStatus) };
   },
-};
-
-export function createResearchAiTools(opts?: { confirm?: ConfirmFn }) {
-  return { ...createResearchTools(HOST, opts), ...createResearchTaskAiTools(opts) };
+  };
 }
 
-export function createResearchTaskAiTools(opts?: { confirm?: ConfirmFn }) {
-  return researchTasksEnabled() ? createResearchTaskTools(HOST, opts) : {};
+export function createResearchAiTools(opts?: ResearchToolOptions) {
+  const scope = opts?.researchScope ?? { projectId: useFilesStore.getState().projectId };
+  const host = researchHost(scope);
+  return { ...createResearchTools(host, opts), ...(researchTasksEnabled() ? createResearchTaskTools(host, opts) : {}) };
+}
+
+export function createResearchTaskAiTools(opts?: ResearchToolOptions) {
+  const scope = opts?.researchScope ?? { projectId: useFilesStore.getState().projectId };
+  return researchTasksEnabled() ? createResearchTaskTools(researchHost(scope), opts) : {};
 }

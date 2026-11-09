@@ -82,6 +82,19 @@ where
             result.history = request.messages;
             return Ok(result);
         }
+        if let Some(prepare) = &pipeline.prepare_request {
+            prepare(&mut request)?;
+            ensure_budget(
+                client,
+                resolved,
+                &mut request,
+                config,
+                pipeline,
+                &mut ledger,
+                &mut on_event,
+            )
+            .await?;
+        }
         on_event(AgentEvent::StepStart { step });
         let outcome = stream_step_with_compaction(
             client,

@@ -1303,7 +1303,9 @@
     "upToDateGeneric": "Používáte nejnovější verzi Oleafly",
     "upToDateHeadline": "Máte vše aktuální!",
     "upToDateVersion": "Oleafly v{{version}} je nejnovější verze",
-    "viewRelease": "Zobrazit vydání"
+    "viewRelease": "Zobrazit vydání",
+    "localBuild": "Local Workbench build",
+    "localBuildHelp": "This application includes local Workbench integration. Update it from the local checkout. Official Oleafly releases do not include these changes."
   },
   "windowControls": {
     "group": "Ovládání okna",

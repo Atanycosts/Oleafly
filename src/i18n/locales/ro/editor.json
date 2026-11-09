@@ -329,6 +329,7 @@
     "typstFailed": "Typst nu a putut afișa această ecuație ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Deleagă sarcina",
     "askAi": "Întreabă AI",
     "paraphrase": "Parafrazează",
     "improveWriting": "Îmbunătățește scrierea",

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { BookOpenCheck, FileUp, Play, RefreshCw, Sparkles } from "lucide-react";
 import { SidebarPanelHeader } from "@/components/layout/SidebarSection";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,6 +11,7 @@ import { ensureAiProviderOrOpenSettings, handoffToAssistant } from "@/features/a
 import { useFilesStore } from "@/store/files";
 import { getResearchWorkspace } from "@/lib/research-workspace";
 import { pickOpenPaths } from "@/lib/tauri";
+import type { AnnotationTarget } from "@/lib/task-collaboration";
 import {
   capturedJournalFile,
   formatJournalValue as formatGeometry,
@@ -20,6 +22,8 @@ import {
   journalRequest,
   journalUnitScale,
   linkJournalProject,
+  loadJournalTarget,
+  type JournalAnnotationObject,
   type JournalCheck,
   type JournalConnection,
   type JournalDiff,
@@ -33,6 +37,8 @@ import {
   type ManuscriptRead,
 } from "@/lib/journal-workbench";
 import { JournalResearchPanel } from "./JournalResearchPanel";
+import { JournalAnnotations } from "./JournalAnnotations";
+import { JournalObjectView } from "./JournalObjectView";
 
 const selectClass = "h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-xs";
 const panelClass = "space-y-3 rounded-lg border border-sidebar-border p-3";
@@ -82,9 +88,17 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
   const [componentJson, setComponentJson] = useState("");
   const [comparison, setComparison] = useState<{ from: string; diff: JournalDiff } | null>(null);
   const [notice, setNotice] = useState<"researchChecked" | "researchAdopted" | "versionCreated" | null>(null);
+  const [referencedObject, setReferencedObject] = useState<JournalAnnotationObject | null>(null);
   const project = snapshot.projects.find((item) => item.project_id === linkedId) ?? null;
   const visibleCheck = check?.world_version_id === world?.version_id ? check : null;
   const bindingCurrent = project?.binding?.baseline_id === project?.baseline_id;
+  const annotationReference = (kind: "rule" | "source" | "check" | "world", objectId: string) => ({
+    libraryRoot: connection?.libraryRoot ?? "", workbenchProjectId: linkedId ?? "", kind, objectId,
+    worldVersionId: world?.version_id ?? "", checkId: visibleCheck?.check_id ?? null,
+  });
+  const openAnnotationTarget = (target: AnnotationTarget) => {
+    void perform(async () => { setReferencedObject(await loadJournalTarget(target)); });
+  };
 
   async function perform(operation: () => Promise<void>) {
     setBusy(true);
@@ -555,6 +569,10 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   <p className="mt-1 break-all font-mono">{visibleCheck.check_id}</p>
                   <p className="break-all font-mono">{visibleCheck.baseline_id}</p>
                 </details>
+                {connection && linkedId && <details className="text-xs">
+                  <summary>{text.annotations.title}</summary>
+                  <div className="mt-3"><JournalAnnotations projectId={projectId} reference={annotationReference("check", visibleCheck.check_id)} onOpenTarget={openAnnotationTarget} /></div>
+                </details>}
               </section>
             )}
             {world && (
@@ -601,7 +619,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   {(visibleCheck?.coverage_gaps ?? world?.coverage_gaps ?? []).map((gap) => (
                     <li key={`${gap.code}-${gap.locator}-${gap.message}`}>
                       <span>{journalMessage(gap.message)}</span>
-                      {gap.locator && <code className="block break-all text-[10px]">{gap.locator}</code>}
+                      {gap.locator && <code className="block break-all text-[0.625rem]">{gap.locator}</code>}
                     </li>
                   ))}
                 </ul>
@@ -692,6 +710,10 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   </ul>
                 </details>
               )}
+              {connection && linkedId && <details className="rounded-md border p-3 text-sm">
+                <summary>{text.annotations.title}</summary>
+                <div className="mt-3"><JournalAnnotations projectId={projectId} reference={annotationReference("rule", rule.rule_id)} onOpenTarget={openAnnotationTarget} /></div>
+              </details>}
               {visibleCheck?.validity === "STALE" && (
                 <p className="text-sm text-amber-600 dark:text-amber-400">{text.staleHelp}</p>
               )}
@@ -902,6 +924,10 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 </p>
               )}
               <code className="block break-all text-xs">{selectedFragment.locator}</code>
+              {connection && linkedId && <details>
+                <summary>{text.annotations.title}</summary>
+                <div className="mt-3"><JournalAnnotations projectId={projectId} reference={annotationReference("source", selectedFragment.fragment_id)} onOpenTarget={openAnnotationTarget} /></div>
+              </details>}
               {sourcePage && (
                 <div className="relative">
                   <img
@@ -954,9 +980,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   </dl>
                   <details className="mt-2 text-xs">
                     <summary>{text.sourceData}</summary>
-                    <pre className="overflow-x-auto whitespace-pre-wrap break-all">
-                      {JSON.stringify(item.content, null, 2)}
-                    </pre>
+                    <CodeBlock code={JSON.stringify(item.content, null, 2)} preClassName="whitespace-pre-wrap break-all" />
                   </details>
                 </div>
               ))}
@@ -965,6 +989,12 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
               </p>
             </section>
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={referencedObject !== null} onOpenChange={(open) => { if (!open) setReferencedObject(null); }}>
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+          <DialogHeader><DialogTitle>{text.annotations.original}</DialogTitle><DialogDescription>{text.annotations.originalHelp}</DialogDescription></DialogHeader>
+          {referencedObject && <JournalObjectView object={referencedObject} />}
         </DialogContent>
       </Dialog>
       <Dialog

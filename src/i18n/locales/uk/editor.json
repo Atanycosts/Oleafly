@@ -333,6 +333,7 @@
     "typstFailed": "Typst не зміг відобразити це рівняння ({{detail}})"
   },
   "selectionActions": {
+    "delegateTask": "Делегувати завдання",
     "askAi": "Запитати ШІ",
     "paraphrase": "Перефразувати",
     "improveWriting": "Покращити текст",

@@ -1,11 +1,16 @@
 import { createServer, type Server } from "node:http";
 
+type SequenceArgs = Record<string, unknown> | ((request: Record<string, unknown>) => Record<string, unknown>);
+type ScriptedReply = string | { name: string; args: Record<string, unknown> };
+
 export interface MockAiServer {
   url: string;
   close: () => Promise<void>;
   setReply: (text: string) => void;
   setStreamDelay: (milliseconds: number) => void;
   setToolCall: (call: { name: string; args: Record<string, unknown>; then: string } | null) => void;
+  setToolSequence: (calls: Array<{ name: string; args: SequenceArgs }>, then: string) => void;
+  setResponder: (respond: (request: Record<string, unknown>) => ScriptedReply) => void;
   requestCount: () => number;
   requestBodies: () => string[];
   resetRequests: () => void;
@@ -15,6 +20,9 @@ export async function startMockAiServer(): Promise<MockAiServer> {
   let reply = "MOCKREPLY";
   let streamDelay = 0;
   let toolCall: { name: string; args: Record<string, unknown>; then: string } | null = null;
+  let sequence: Array<{ name: string; args: SequenceArgs }> | null = null;
+  let sequenceReply = "";
+  let respond: ((request: Record<string, unknown>) => ScriptedReply) | null = null;
   let requests = 0;
   let bodies: string[] = [];
 
@@ -135,21 +143,26 @@ export async function startMockAiServer(): Promise<MockAiServer> {
             usage: { prompt_tokens: u.p, completion_tokens: u.c, total_tokens: u.p + u.c },
           });
 
-        if (toolCall && !hasToolResult) {
+        const request = JSON.parse(body);
+        const toolResults = (request.messages ?? []).filter((message: { role?: string }) => message.role === "tool").length;
+        const scripted = respond?.(request);
+        const next = sequence?.[toolResults];
+        const call = respond ? (typeof scripted === "string" ? null : scripted) : next ?? (hasToolResult ? null : toolCall);
+        if (call) {
           chunk({
             tool_calls: [
               {
                 index: 0,
-                id: "call_mock",
+                id: `call_mock_${toolResults}`,
                 type: "function",
-                function: { name: toolCall.name, arguments: JSON.stringify(toolCall.args) },
+                function: { name: call.name, arguments: JSON.stringify(typeof call.args === "function" ? call.args(request) : call.args) },
               },
             ],
           });
           chunk({}, "tool_calls");
           usage({ p: 11, c: 7 });
         } else {
-          const text = toolCall && hasToolResult ? toolCall.then : reply;
+          const text = typeof scripted === "string" ? scripted : sequence ? sequenceReply : toolCall && hasToolResult ? toolCall.then : reply;
           for (const piece of text.match(/[\s\S]{1,4}/g) ?? [text]) {
             chunk({ content: piece });
           }
@@ -181,7 +194,11 @@ export async function startMockAiServer(): Promise<MockAiServer> {
     },
     setToolCall: (c) => {
       toolCall = c;
+      sequence = null;
+      respond = null;
     },
+    setToolSequence: (calls, then) => { sequence = calls; sequenceReply = then; toolCall = null; respond = null; },
+    setResponder: (responder) => { respond = responder; sequence = null; toolCall = null; },
     requestCount: () => requests,
     requestBodies: () => [...bodies],
     resetRequests: () => {

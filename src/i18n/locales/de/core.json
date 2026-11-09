@@ -475,7 +475,14 @@
   },
   "skillGroups": {
     "shelf": "Fachregal",
-    "user": "Ihre Skills"
+    "user": "Ihre Skills",
+    "research": "Research",
+    "authoring": "Authoring",
+    "figures": "Figures",
+    "review": "Review",
+    "submission": "Submission",
+    "communication": "Communication",
+    "tooling": "Tooling"
   },
   "tagged": {
     "compileFailed": "Das getaggte Kompilieren ist fehlgeschlagen. Prüfen Sie die Engine und versuchen Sie es erneut.",
@@ -605,5 +612,167 @@
     "failed": "Bild zu Typst ist fehlgeschlagen: {{detail}}",
     "copied": "Typst-Quelltext kopiert",
     "notInserted": "Die aktive Datei hat sich geändert, deshalb wurde der Typst-Code nicht eingefügt. Kopieren Sie ihn und fügen Sie ihn dort ein, wo Sie ihn haben möchten."
+  },
+  "bundledSkills": {
+    "citation-management": {
+      "name": "citation-management",
+      "description": "Find papers, verify citation metadata and generate BibTeX or Hayagriva references."
+    },
+    "desktop-apps": {
+      "name": "Computer Use",
+      "description": "Work in authorized desktop apps and websites when no connected tool can finish the operation."
+    },
+    "experimental-design": {
+      "name": "experimental-design",
+      "description": "Plan controls, randomization, groups and replication before collecting data."
+    },
+    "exploratory-data-analysis": {
+      "name": "exploratory-data-analysis",
+      "description": "Inspect scientific data for structure, missing values, outliers and possible leakage."
+    },
+    "hypothesis-generation": {
+      "name": "hypothesis-generation",
+      "description": "Turn observations into testable hypotheses, competing explanations and measurement plans."
+    },
+    "import-refine": {
+      "name": "Import refine",
+      "description": "Clean up imported Word, Markdown or PDF projects, including structure, equations and citations."
+    },
+    "literature-review": {
+      "name": "literature-review",
+      "description": "Search academic databases and synthesize research with verified citations."
+    },
+    "oleafly-cli": {
+      "name": "oleafly-cli",
+      "description": "Use the command line to build projects, inspect errors, export documents and manage citations."
+    },
+    "oleafly-data-analysis": {
+      "name": "Data analysis",
+      "description": "Analyze project data with existing scripts and connect results to the manuscript."
+    },
+    "oleafly-development": {
+      "name": "oleafly-development",
+      "description": "Implement, debug, refactor or review software using existing contracts and focused verification."
+    },
+    "oleafly-experiment-loop": {
+      "name": "oleafly-experiment-loop",
+      "description": "Run comparisons and reproduction studies, record results and choose the next useful experiment."
+    },
+    "oleafly-figure-prep": {
+      "name": "Figure prep",
+      "description": "Create and arrange publication figures, diagrams, captions and cross references."
+    },
+    "oleafly-latex-build": {
+      "name": "Build and fix",
+      "description": "Diagnose and fix LaTeX or Typst compilation, font, citation and layout problems."
+    },
+    "oleafly-literature-sweep": {
+      "name": "oleafly-literature-sweep",
+      "description": "Find and read related papers, verify references and build a sourced reading list."
+    },
+    "oleafly-manuscript-scaffold": {
+      "name": "Manuscript scaffold",
+      "description": "Create manuscript sections and references for the target journal or conference."
+    },
+    "oleafly-pre-submission": {
+      "name": "oleafly-pre-submission",
+      "description": "Check formatting, anonymity, page limits, references and the source package before submission."
+    },
+    "oleafly-related-work": {
+      "name": "oleafly-related-work",
+      "description": "Organize prior studies by theme and draft related work using verified project citations."
+    },
+    "oleafly-research-loop": {
+      "name": "oleafly-research-loop",
+      "description": "Coordinate research writing across stages and choose specialist skills for each task."
+    },
+    "oleafly-response-letter": {
+      "name": "oleafly-response-letter",
+      "description": "Write point by point reviewer responses tied to changes in the manuscript."
+    },
+    "oleafly-review-manuscript": {
+      "name": "oleafly-review-manuscript",
+      "description": "Review methods, claims, statistics, figures and citations with specific revision advice."
+    },
+    "oleafly-slides-and-posters": {
+      "name": "oleafly-slides-and-posters",
+      "description": "Turn the manuscript into a timed research talk or a conference poster."
+    },
+    "oleafly-verify-claims": {
+      "name": "oleafly-verify-claims",
+      "description": "Check each claim against its sources and identify missing or overstated support."
+    },
+    "openresearch": {
+      "name": "OpenResearch (orx)",
+      "description": "Use orx to search papers, run experiments and bring recorded results into the manuscript."
+    },
+    "paper-lookup": {
+      "name": "paper-lookup",
+      "description": "Find papers, preprints, citations and open access full text with reproducible search provenance."
+    },
+    "pdf-to-latex": {
+      "name": "PDF to LaTeX",
+      "description": "Reconstruct a PDF as editable LaTeX and verify its sections, equations, figures and citations."
+    },
+    "peer-review": {
+      "name": "peer-review",
+      "description": "Assess methods, evidence, reproducibility and reporting to prepare a constructive review."
+    },
+    "pptx-posters": {
+      "name": "pptx-posters",
+      "description": "Create editable scientific posters with correct print sizes, readable content and sound file structure."
+    },
+    "research-grants": {
+      "name": "research-grants",
+      "description": "Draft research proposals, budgets, innovation and impact statements for funding agencies."
+    },
+    "research-lookup": {
+      "name": "research-lookup",
+      "description": "Find and verify papers and background evidence for a manuscript or research brief."
+    },
+    "scholar-evaluation": {
+      "name": "scholar-evaluation",
+      "description": "Evaluate scholarly works with traceable evidence and qualitative development advice."
+    },
+    "scientific-brainstorming": {
+      "name": "scientific-brainstorming",
+      "description": "Generate and compare research directions, assumptions, evidence and validation paths."
+    },
+    "scientific-critical-thinking": {
+      "name": "scientific-critical-thinking",
+      "description": "Assess scientific claims and evidence for bias, confounding and design problems."
+    },
+    "scientific-schematics": {
+      "name": "scientific-schematics",
+      "description": "Create scientific architecture, process, pathway and system diagrams."
+    },
+    "scientific-slides": {
+      "name": "scientific-slides",
+      "description": "Organize slides, narrative and timing for research talks, defenses and seminars."
+    },
+    "scientific-visualization": {
+      "name": "scientific-visualization",
+      "description": "Create accurate, readable scientific charts with uncertainty, accessible color and export checks."
+    },
+    "scientific-writing": {
+      "name": "scientific-writing",
+      "description": "Draft and revise scientific manuscripts while keeping claims, data and references consistent."
+    },
+    "statistical-analysis": {
+      "name": "statistical-analysis",
+      "description": "Choose statistical methods, check assumptions and report effect sizes and confidence intervals."
+    },
+    "statistical-power": {
+      "name": "statistical-power",
+      "description": "Plan sample sizes, statistical power or minimum detectable effects for a study."
+    },
+    "template-generate": {
+      "name": "Reusable template",
+      "description": "Turn the current document into a reusable template with its required layout and supporting files."
+    },
+    "venue-templates": {
+      "name": "venue-templates",
+      "description": "Select submission templates and check the formatting rules of the target journal or conference."
+    }
   }
 }

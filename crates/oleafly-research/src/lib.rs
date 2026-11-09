@@ -1,8 +1,11 @@
 pub mod aliases;
+pub mod annotations;
 pub mod approvals;
 pub mod budget;
 pub mod builtin;
 pub mod citation;
+pub mod collaboration;
+pub mod compiled_artifacts;
 pub mod conversation;
 pub mod evidence;
 pub mod findings;
@@ -25,6 +28,8 @@ pub mod store;
 pub mod task_tools;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod usage;
+pub mod workbench;
 
 pub use oleafly_sandbox::profile::RunProfile;
 pub use scheduler::{

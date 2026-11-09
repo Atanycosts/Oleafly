@@ -874,6 +874,8 @@
     "chatForked": "对话已分叉。",
     "chatForkFailed": "无法分叉此对话。",
     "skillsLoadFailed": "无法加载已启用的技能。请重试。",
+    "delegationWrongProject": "委托选区仍绑定原项目和 Agent，请打开原项目后发送。",
+    "delegationWaitingRun": "委托选区已保留在草稿中，请在当前运行结束后发送。",
     "approvalModeLoadFailed": "无法加载审批模式。",
     "approvalRulesLoadFailed": "无法加载项目审批规则。",
     "restoreFailed": "无法恢复：{{error}}",

@@ -299,7 +299,7 @@ pub async fn execute_command(
             tokio::process::Command::from(std_command)
         }
         (None, Some(temp)) => sandbox_task_command_with_reads(
-            Path::new("/bin/sh"),
+            oleafly_sandbox::system_shell(),
             &["-c".into(), text.into()],
             Path::new(&context.execution_root),
             &context.allowed_paths,
@@ -367,4 +367,49 @@ pub async fn execute_command(
         "output":String::from_utf8_lossy(&output), "exitCode":status.or(reaped).and_then(|value| value.code()),
         "truncated":truncated, "timedOut":timed_out, "cancelled":cancelled,
     }))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn heredocs_work_with_scoped_task_writes_in_both_home_modes() {
+        let source = tempfile::tempdir().unwrap();
+        let home_root = tempfile::tempdir().unwrap();
+        let external = source.path().join("outside.txt");
+        std::fs::write(&external, "original outside file").unwrap();
+        let workspace = source.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("analysis")).unwrap();
+        let script = "/bin/cat <<'EOF' > analysis/heredoc.txt\nline one\nline two\nEOF\n";
+        for home in [None, Some(home_root.path().join("task-home"))] {
+            let context = CommandContext {
+                execution_root: workspace.to_string_lossy().into_owned(),
+                allowed_paths: vec!["analysis".into()],
+                home,
+                ..Default::default()
+            };
+            let result = execute_command(&context, script, CancellationToken::new())
+                .await
+                .unwrap();
+            assert_eq!(result["exitCode"], 0, "{result}");
+            assert_eq!(
+                std::fs::read_to_string(workspace.join("analysis/heredoc.txt")).unwrap(),
+                "line one\nline two\n"
+            );
+            let denied = execute_command(
+                &context,
+                "/bin/echo forbidden > unallowed.txt; /bin/echo forbidden > ../outside.txt",
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_ne!(denied["exitCode"], 0, "{denied}");
+            assert!(!workspace.join("unallowed.txt").exists());
+            assert_eq!(
+                std::fs::read_to_string(&external).unwrap(),
+                "original outside file"
+            );
+        }
+    }
 }

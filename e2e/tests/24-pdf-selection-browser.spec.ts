@@ -74,6 +74,20 @@ async function dragAcrossProductionPdf(page: Page) {
     );
   });
 
+  const selected = await page.evaluate(() => window.readPdfSelection());
+  expect(selected?.documentIdentity).toBe("selection-fixture");
+  expect(selected?.text).toBe(await page.evaluate(() => window.getSelection()?.toString()));
+  expect(selected?.text).toContain("Cross-span start");
+  expect(selected?.text).toContain("and reaches another line");
+  expect(selected?.pages.map((entry) => entry.page)).toEqual([1]);
+  expect(selected?.pages[0].rects.length).toBeGreaterThan(0);
+  for (const rect of selected?.pages[0].rects ?? []) {
+    expect(rect.x).toBeGreaterThanOrEqual(0);
+    expect(rect.y).toBeGreaterThanOrEqual(0);
+    expect(rect.x + rect.width).toBeLessThanOrEqual(1.000001);
+    expect(rect.y + rect.height).toBeLessThanOrEqual(1.000001);
+  }
+
   const result = await page.evaluate(() => {
     const layer = document.querySelector(".textLayer");
     const pdfPage = document.querySelector<HTMLElement>("[data-page='1']");

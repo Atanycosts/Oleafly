@@ -852,6 +852,64 @@ async fn observation_tool_uses_its_binding_and_refuses_caller_supplied_scope() {
 }
 
 #[tokio::test]
+async fn observation_summary_leaves_unseen_events_for_exact_readback() {
+    let task = tool_task(ResearchBrief::default());
+    let hash = crate::observations::content_hash(b"retained tool result");
+    let row = task
+        .store
+        .append_event(
+            &task.task.id,
+            task.binding.generation,
+            &TaskRuntimeEvent::Observation {
+                observation: crate::observations::TaskObservation::ToolExecution {
+                    call_id: "member:turn-1:call-7".into(),
+                    name: "read_file".into(),
+                    status: "done".into(),
+                    input_sha256: "a".repeat(64),
+                    output_sha256: hash,
+                    skill_id: None,
+                    skill_instructions_sha256: None,
+                    source: None,
+                    actor: Some("member-session".into()),
+                },
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let summary = task.call("task_observations", json!({})).await.unwrap();
+    assert_eq!(summary["page"]["nextSequence"], 0);
+    assert!(summary["page"]["hasMore"].as_bool().unwrap());
+    let original = task
+        .store
+        .observations(
+            &task.task.project_id,
+            &task.task.id,
+            task.binding.generation,
+            0,
+            20,
+        )
+        .unwrap();
+    let full = task
+        .call("task_observations", summary["eventsRead"].clone())
+        .await
+        .unwrap();
+    assert_eq!(full, serde_json::to_value(&original).unwrap());
+    assert!(original.page.events.contains(&row));
+    assert_eq!(
+        summary["page"]["throughSequence"],
+        original.page.through_sequence
+    );
+    let next = task
+        .call(
+            "task_observations",
+            json!({"after_sequence":full["page"]["nextSequence"]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(next["page"]["hasMore"], false);
+}
+
+#[tokio::test]
 async fn finding_query_is_read_only_and_uses_only_its_bound_task() {
     let mut task = tool_task(ResearchBrief::default());
     let page = task.call("task_findings", json!({})).await.unwrap();
