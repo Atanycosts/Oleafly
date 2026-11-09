@@ -174,6 +174,15 @@ where
             &mut on_event,
         )
         .await?;
+        if pipeline
+            .suspend
+            .as_ref()
+            .is_some_and(crate::tasks::CancellationToken::is_cancelled)
+        {
+            result.suspended = true;
+            result.history = request.messages;
+            return Ok(result);
+        }
         if !has_next_step {
             continue;
         }
@@ -1700,6 +1709,43 @@ mod tests {
                 matches!(last.content[0], ContentPart::ToolResult { ref output, .. } if output == "contents")
             );
             assert_eq!(outcome.history.len(), 3);
+        }
+
+        #[tokio::test]
+        async fn a_suspend_on_the_last_allowed_step_is_not_a_step_limit_failure() {
+            let script = serve(vec![(
+                "200 OK",
+                "text/event-stream",
+                tool_call_stream("read_file"),
+            )]);
+            let suspend = CancellationToken::new();
+            let signal = suspend.clone();
+            let runner: ToolRunner = Arc::new(move |_| {
+                signal.cancel();
+                Box::pin(async { ToolOutput::text("contents") })
+            });
+            let outcome = crate::run::run_agent_with_pipeline(
+                &reqwest::Client::new(),
+                &resolved(script.address),
+                CompletionRequest::prompt("system", "read the file"),
+                &RunConfig {
+                    max_steps: 1,
+                    ..RunConfig::default()
+                },
+                ToolPipeline {
+                    suspend: Some(suspend),
+                    ..ToolPipeline::default()
+                },
+                None,
+                runner,
+                |_| {},
+            )
+            .await
+            .unwrap();
+            assert!(outcome.suspended);
+            assert!(!outcome.stopped_at_cap);
+            assert_eq!(outcome.history.len(), 3);
+            assert_eq!(script.requests.lock().unwrap().len(), 1);
         }
 
         #[tokio::test]

@@ -90,6 +90,7 @@ impl Fixture {
             .finish_member_turn(
                 turn,
                 &TaskRuntimeOutcome {
+                    waiting_for_reply: false,
                     summary: "Completed the fixture work".into(),
                     artifacts: Vec::new(),
                     native_session_id: None,
@@ -166,6 +167,20 @@ fn file(revision: &str) -> GroupObject {
         revision: Some(revision.into()),
         path: Some("main.tex".into()),
     }
+}
+
+fn file_at(path: impl Into<String>, revision: &str) -> GroupObject {
+    let path = path.into();
+    GroupObject {
+        kind: "file".into(),
+        id: path.clone(),
+        revision: Some(revision.into()),
+        path: Some(path),
+    }
+}
+
+fn record_file(task: &ResearchTask, name: &str, revision: &str) -> GroupObject {
+    file_at(format!("{}/{name}", task.record_dir()), revision)
 }
 
 fn target() -> AnnotationTarget {
@@ -416,6 +431,207 @@ fn plain_annotation_feedback_does_not_route_from_attention_but_mentions_still_do
     assert_eq!(work.len(), 1);
     assert_eq!(work[0].member_id, methods);
     assert_eq!(reason_kinds(work[0]), BTreeSet::from(["mention"]));
+}
+
+#[test]
+fn own_coordination_updates_suppress_only_implicit_attention_routing() {
+    let fixture = Fixture::new();
+    let methods = fixture.member("Methods");
+    let handoff_h1 = record_file(&fixture.task, "handoff.md", "H1");
+    let plan_h1 = record_file(&fixture.task, "plan.md", "P1");
+
+    let turn = fixture.begin_turn(&fixture.task, methods, "Update the task record");
+    fixture.record_attention(&fixture.task, &handoff_h1, "read", "read-handoff-H1");
+    fixture.record_attention(&fixture.task, &plan_h1, "wrote", "write-plan-P1");
+    fixture.finish_turn(&turn);
+    let before = fixture.snapshot();
+
+    let handoff_h2 = record_file(&fixture.task, "handoff.md", "H2");
+    let plan_h2 = record_file(&fixture.task, "plan.md", "P2");
+    assert!(fixture.event("handoff-H2", &handoff_h2).is_empty());
+    assert!(fixture.event("plan-P2", &plan_h2).is_empty());
+
+    let after = fixture.snapshot();
+    assert_eq!(
+        after
+            .events
+            .iter()
+            .map(|event| event.object.path.as_deref().unwrap())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            handoff_h2.path.as_deref().unwrap(),
+            plan_h2.path.as_deref().unwrap(),
+        ])
+    );
+    assert_eq!(after.attentions, before.attentions);
+    assert!(after.work.iter().all(|work| work.cause_kind != "event"));
+}
+
+#[test]
+fn explicit_interests_and_non_coordination_files_still_route() {
+    let fixture = Fixture::new();
+    let methods = fixture.member("Methods");
+    let handoff_h1 = record_file(&fixture.task, "handoff.md", "H1");
+    let plan_h1 = record_file(&fixture.task, "plan.md", "P1");
+    fixture
+        .store
+        .set_member_interest(
+            "paper",
+            fixture.id(),
+            &MemberInterest {
+                member_id: methods.into(),
+                kind: InterestKind::Path,
+                value: handoff_h1.path.clone().unwrap(),
+            },
+            true,
+        )
+        .unwrap();
+    fixture
+        .store
+        .set_member_interest(
+            "paper",
+            fixture.id(),
+            &MemberInterest {
+                member_id: methods.into(),
+                kind: InterestKind::Object,
+                value: format!("file:{}", plan_h1.id),
+            },
+            true,
+        )
+        .unwrap();
+    let event_interest = MemberInterest {
+        member_id: methods.into(),
+        kind: InterestKind::Event,
+        value: "file_changed".into(),
+    };
+    fixture
+        .store
+        .set_member_interest("paper", fixture.id(), &event_interest, true)
+        .unwrap();
+
+    let handoff_h2 = record_file(&fixture.task, "handoff.md", "H2");
+    let plan_h2 = record_file(&fixture.task, "plan.md", "P2");
+    assert_eq!(
+        fixture.event("handoff-H2", &handoff_h2),
+        vec![methods.to_string()]
+    );
+    assert_eq!(
+        fixture.event("plan-P2", &plan_h2),
+        vec![methods.to_string()]
+    );
+    let snapshot = fixture.snapshot();
+    let event_work = snapshot
+        .work
+        .iter()
+        .filter(|work| work.cause_kind == "event")
+        .collect::<Vec<_>>();
+    assert_eq!(event_work.len(), 2);
+    assert_eq!(
+        reason_kinds(event_work[0]),
+        BTreeSet::from(["interest_event", "interest_path"])
+    );
+    assert_eq!(
+        reason_kinds(event_work[1]),
+        BTreeSet::from(["interest_event", "interest_object"])
+    );
+
+    fixture
+        .store
+        .set_member_interest("paper", fixture.id(), &event_interest, false)
+        .unwrap();
+    let ledger_h1 = record_file(&fixture.task, "ledger.tsv", "L1");
+    let brief_h1 = record_file(&fixture.task, "brief.md", "B1");
+    let notes_h1 = record_file(&fixture.task, "notes.md", "N1");
+    let evidence_h1 = record_file(&fixture.task, "evidence.md", "E1");
+    let other_handoff_h1 = file_at("research/another-task/handoff.md", "O1");
+    let attention_turn = fixture.begin_turn(&fixture.task, methods, "Read task evidence");
+    for (object, source) in [
+        (&ledger_h1, "read-ledger-L1"),
+        (&brief_h1, "read-brief-B1"),
+        (&notes_h1, "read-notes-N1"),
+        (&evidence_h1, "read-evidence-E1"),
+        (&other_handoff_h1, "read-other-handoff-O1"),
+    ] {
+        fixture.record_attention(&fixture.task, object, "read", source);
+    }
+    fixture.finish_turn(&attention_turn);
+
+    for (key, object) in [
+        ("ledger-L2", file_at(ledger_h1.path.unwrap(), "L2")),
+        ("brief-B2", file_at(brief_h1.path.unwrap(), "B2")),
+        ("notes-N2", file_at(notes_h1.path.unwrap(), "N2")),
+        ("evidence-E2", file_at(evidence_h1.path.unwrap(), "E2")),
+        (
+            "other-handoff-O2",
+            file_at(other_handoff_h1.path.unwrap(), "O2"),
+        ),
+    ] {
+        assert_eq!(fixture.event(key, &object), vec![methods.to_string()]);
+        let snapshot = fixture.snapshot();
+        let work = snapshot
+            .work
+            .iter()
+            .find(|work| {
+                work.cause_kind == "event"
+                    && snapshot
+                        .events
+                        .iter()
+                        .any(|event| event.id == work.cause_id && event.object.path == object.path)
+            })
+            .unwrap();
+        assert_eq!(reason_kinds(work), BTreeSet::from(["read"]));
+    }
+}
+
+#[test]
+fn explicit_annotations_on_coordination_files_keep_high_priority_routing() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator");
+    let handoff = record_file(&fixture.task, "handoff.md", "H1");
+    let plan = record_file(&fixture.task, "plan.md", "P1");
+
+    for (object, body) in [
+        (&handoff, "Recheck the handoff decision."),
+        (&plan, "Reconsider the current plan."),
+    ] {
+        let annotation = fixture
+            .store
+            .group_annotation(
+                fixture.id(),
+                &AnnotationDraft::new(
+                    AnnotationTarget::new("paper", "file", &object.id)
+                        .task(&fixture.task.id)
+                        .revision(object.revision.clone().unwrap())
+                        .at_path(object.path.clone().unwrap()),
+                    AnnotationAuthor::user("human"),
+                    body,
+                )
+                .request(),
+            )
+            .unwrap();
+        let snapshot = fixture.snapshot();
+        let work = annotation_work(&snapshot, &annotation.id);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].member_id, coordinator);
+        assert_eq!(work[0].priority, 100);
+        assert_eq!(reason_kinds(work[0]), BTreeSet::from(["coordinator"]));
+    }
+
+    let plain = fixture
+        .store
+        .group_annotation(
+            fixture.id(),
+            &AnnotationDraft::new(
+                AnnotationTarget::new("paper", "file", &plan.id)
+                    .task(&fixture.task.id)
+                    .revision("P2")
+                    .at_path(plan.path.clone().unwrap()),
+                AnnotationAuthor::user("human"),
+                "This plan is clear.",
+            ),
+        )
+        .unwrap();
+    assert!(annotation_work(&fixture.snapshot(), &plain.id).is_empty());
 }
 
 #[test]

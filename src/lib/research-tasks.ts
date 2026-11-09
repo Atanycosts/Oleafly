@@ -365,7 +365,7 @@ export type TaskObservation =
   | { type: "toolRequested"; callId: string; name: string; inputSha256: string; actor?: string | null }
   | { type: "toolExecution"; callId: string; name: string; status: string; inputSha256: string; outputSha256: string;
       skillId: string | null; skillInstructionsSha256: string | null;
-      source: { path: string; fileSha256: string; offset: number; endOffset: number; truncated: boolean; snapshotRetained: boolean | null } | null;
+      source: { path: string; fileSha256: string; offset: number; endOffset: number; truncated: boolean; snapshotRetained: boolean | null; pdf?: { path: string; sha256: string; pageCount: number; pageStart: number | null; pageEnd: number | null } | null } | null;
       actor?: string | null }
   | { type: "usage"; inputTokens: number | null; outputTokens: number | null };
 

@@ -7,7 +7,7 @@ import { loadResearchTaskObservations, previewResearchTaskSource, type TaskObser
 
 type Execution = Extract<TaskObservation, { type: "toolExecution" }>;
 
-function SourceRead({ taskId, generation, row, source }: Readonly<{ taskId: string; generation: number; row: TaskTranscriptEvent; source: NonNullable<Execution["source"]> }>) {
+export function TaskSourceRead({ taskId, generation, row, source }: Readonly<{ taskId: string; generation: number; row: TaskTranscriptEvent; source: NonNullable<Execution["source"]> }>) {
   const { t } = useTranslation(["common", "researchTools"]);
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +28,10 @@ function SourceRead({ taskId, generation, row, source }: Readonly<{ taskId: stri
   return <div className="space-y-1">
     <p className="break-all">{t(($) => $.researchTools.tasks.observations.sourceRange, { path: source.path, start: source.offset, end: source.endOffset })}{source.truncated ? ` · ${t(($) => $.researchTools.tasks.observations.partial)}` : ""}</p>
     <p className="text-xs text-muted-foreground">{retention}</p>
+    {source.pdf ? <div className="break-all text-xs text-muted-foreground" data-testid="pdf-read-source">
+      <p>{source.pdf.path}{source.pdf.pageStart !== null ? ` · ${t(($) => $.researchTools.tasks.detail.compiledPdfPage, { page: source.pdf.pageStart })}${source.pdf.pageEnd !== source.pdf.pageStart ? ` – ${source.pdf.pageEnd}` : ""}` : ""}</p>
+      <p className="font-mono">{`PDF SHA-256 ${source.pdf.sha256}`}</p>
+    </div> : null}
     <Button variant="outline" size="xs" disabled={loading} onClick={() => void preview()}>{t(($) => $.researchTools.tasks.observations.openSource)}</Button>
     {error ? <p role="alert" className="text-destructive">{error}</p> : null}
     {text !== null ? <CopyableBlock source={text}><pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2">{text}</pre></CopyableBlock> : null}
@@ -166,7 +170,7 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
             <p className="break-all text-muted-foreground">#{request.sequence}{row && row.sequence !== request.sequence ? ` → #${row.sequence}` : ""} · {callId}</p>
             <Button variant="outline" size="xs" disabled={!availableCalls.has(callId)} onClick={() => onOpenCall(callId)}>{t(($) => $.researchTools.tasks.observations.openCall)}</Button>
             {result?.skillId ? <p>{t(($) => $.researchTools.tasks.observations.loadedSkill)}: {result.skillId} · {result.skillInstructionsSha256 ? t(($) => $.researchTools.tasks.observations.returned) : t(($) => $.researchTools.tasks.observations.noSkillBody)}</p> : null}
-            {result?.source && row ? <SourceRead key={`${row.executionGeneration}:${row.sequence}`} taskId={taskId} generation={generation} row={row} source={result.source} /> : null}
+            {result?.source && row ? <TaskSourceRead key={`${row.executionGeneration}:${row.sequence}`} taskId={taskId} generation={generation} row={row} source={result.source} /> : null}
             <details><summary>{"SHA-256"}</summary><p className="break-all">{inputSha256}</p>{result ? <p className="break-all">{result.outputSha256}</p> : null}{result?.skillInstructionsSha256 ? <p className="break-all">{result.skillInstructionsSha256}</p> : null}</details>
           </li>;
         })}</ol>

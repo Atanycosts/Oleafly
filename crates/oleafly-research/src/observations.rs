@@ -100,6 +100,18 @@ pub struct ReadSource {
     /// Whether exact file bytes were retained in TaskStore when this read completed.
     #[serde(default)]
     pub snapshot_retained: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf: Option<Box<PdfReadSource>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfReadSource {
+    pub path: String,
+    pub sha256: String,
+    pub page_count: usize,
+    pub page_start: Option<usize>,
+    pub page_end: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

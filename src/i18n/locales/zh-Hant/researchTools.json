@@ -591,12 +591,14 @@
       "attentionHandled": "Handled",
       "sourceInspect": "Read source record",
       "sourceLoading": "Loading source record…",
-      "sourceExecutionUnavailable": "The reason execution is not present in the current 100-execution snapshot.",
-      "sourceRecordUnavailable": "The source record was not returned.",
+      "sourceExecutionUnavailable": "對應的執行記錄無法使用。",
+      "sourceRecordUnavailable": "對應的來源記錄無法使用。",
       "sourceGeneration": "Execution generation {{generation}}",
       "sourceMetadataOnly": "This view shows the stored observation record, hashes, and source locator. Plaintext output is not retained here.",
       "annotationSource": "Original annotation",
-      "handlingSource": "Handling result"
+      "handlingSource": "Handling result",
+      "loadEarlierEvents": "載入更早事件",
+      "loadEarlierExecutions": "載入更早執行"
     }
   },
   "tools": {

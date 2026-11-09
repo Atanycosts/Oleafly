@@ -5,7 +5,7 @@ license: MIT
 compatibility: Needs network approval for literature_search and verify_citation. The vendored paper-lookup and citation-management scripts need Python 3.11 or newer on the login shell PATH.
 allowed-tools: literature_search read_paper verify_citation alphaxiv_search alphaxiv_paper_content project_library_search project_map search_project read_file write_file replace_in_file create_file compile update_todos remember_note load_skill read_skill_file run_command
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
   skill-author: "Oleafly"
   oleafly:
     tier: native
@@ -53,7 +53,7 @@ Set the plan with `update_todos`, one item per step below, the first `in_progres
 
 Two calls, both cheap, both of which change what you search for.
 
-`project_library_search` with `{"query": "<the research question>"}` searches the project's own sections, notes and `.bib` entries. The user may already have half of this.
+Use `project_library_search` when offered. In a ResearchTask, use `search_project` with distinctive literal terms and `read_file` on the results. Check existing library and task `papers/` records before creating more source notes.
 
 `project_map` with `{}` returns `bibKeys` (every entry the bibliography defines) and `unresolvedCites` (keys the document cites with no entry). If `unresolvedCites` is non empty, those keys are the real job: the user needs those specific papers found, not a general sweep. Say so and work that list first.
 
@@ -120,7 +120,7 @@ Rank what you keep and stop between 5 and 15 papers. Aim for coverage of the arg
 
 An abstract is not the paper. Before you rely on a paper for a claim, read it.
 
-When `read_paper` is offered, call it for the top 3 to 5 papers: `{"doi": "10.1145/3292500.3330701"}`, `{"arxiv": "2410.16464"}` or `{"url": "https://..."}` for an open-access PDF, or `{"path": "<pdf in the project>"}`. It saves the PDF and its text under the task's `papers/` folder and returns the text with `[p. N]` page anchors. Long papers come back in windows; pass `offset` from `next_offset` to read on.
+When `read_paper` is offered, call it for the top 3 to 5 papers: `{"doi": "10.1145/3292500.3330701"}`, `{"arxiv": "2410.16464"}` or `{"url": "https://..."}` for an open-access PDF, or `{"path": "<pdf in the project>"}`. It saves the PDF and its text under the task's `papers/` folder and returns the text with `[p. N]` page anchors. Long papers come back in windows. Pass `nextOffset` as `offset` to read on. Keep the returned source hash, byte range, PDF identity and page range with quoted evidence. A metadata lookup does not mean the full text was read.
 
 Quote only what you read, and put the page anchor next to every quote in `sources.md` and the source notes. Without `read_paper`, say that the notes rest on abstracts.
 
@@ -139,9 +139,9 @@ If `project_map` gave you `bibKeys`, also check whether your intended key is alr
 
 ## Step 7. Verify and get canonical BibTeX
 
-`verify_citation` with `{"doi": "10.1145/3292500.3330701"}` resolves the DOI and returns the publisher's own BibTeX. This is the only entry you write.
+Use `verify_citation` with DOI and expected title to check their identity. When it returns BibTeX, inspect and use that record. A DOI-only result proves resolution, not a title match or support for a claim.
 
-With no DOI, call `verify_citation` with `{"title": "<exact title>"}`. It searches Crossref and reports whether a matching record exists. A `verified: false` result means you do not have a citation. Drop the paper from the list or mark its status `to read` with a note that it could not be verified. Never hand write an entry for it.
+With no DOI, use `verify_citation` with the exact title. A title search returns matching metadata and may omit BibTeX. If it provides a DOI, verify that DOI with the title to obtain its entry. Otherwise retain verified source metadata and the missing-export limitation. A failed index lookup is unverified, not proof that a paper is fabricated.
 
 Preprints often have no Crossref record. For an arXiv paper, use the arXiv id as the identifier, note `doi: none` in the source note, and say in the reading list that it is a preprint. Do not construct a DOI for it.
 
@@ -157,11 +157,11 @@ Use an existing retained PDF when available. Otherwise save a downloaded PDF bes
 
 ## Step 9. Append to the bibliography, carefully
 
-Never overwrite a `.bib` file. Read it, then append.
+Preserve every existing bibliography entry. Read the current file before appending.
 
-1. `read_file` with `{"path": "<the bib path>"}`. If it is long, read the tail with `{"path": "...", "offset": <total_lines - 40>}`.
-2. Append with `replace_in_file`, anchoring on a string you just read. Anchoring on the last entry's closing brace is fragile when that brace is not unique, so anchor on the last entry's key line instead and put the new entries after the whole entry you matched.
-3. When the file does not exist yet, `write_file` is correct. When it does, `write_file` on it is a mistake, because it replaces every entry the user already had.
+1. Read the bibliography with the host's `read_file` schema. In a ResearchTask, offsets and limits are UTF-8 bytes starting at 0. Continue with `nextOffset` until null. Ordinary chat may expose line-based reads.
+2. In ordinary chat, use `replace_in_file` when offered with a unique anchor from the current read. In a ResearchTask, read the complete current bibliography and use `write_file` to save the amended content. Do not assume a line-based or replacement tool exists.
+3. `write_file` replaces the whole file. When using it, include all existing entries and the additions. Read and preserve the existing content, including unrelated entries.
 
 Write one entry per paper, in the order you kept them. Keep the entry as `verify_citation` returned it, changing only the citation key to the project's scheme.
 
@@ -179,7 +179,7 @@ If the file already exists, `read_file` it first and merge. New rows are added, 
 
 `compile` with `{}`. Then `project_map` with `{}` and confirm `unresolvedCites` is empty, or at least no longer contains anything you were asked to fix.
 
-A `.bib` entry with a syntax error takes the whole bibliography down, so a green compile is the check that the entries you appended are well formed. If `compile` fails, `get_log` with `{}`, fix the entry, compile again. Do not report the sweep as done on a red build.
+A `.bib` entry with a syntax error takes the whole bibliography down, so a green compile is the check that the entries you appended are well formed. If `compile` fails, read its diagnostics and any offered log tool, fix the entry, then compile again. Do not report the sweep as done on a red build.
 
 ## Step 12. Hand off
 

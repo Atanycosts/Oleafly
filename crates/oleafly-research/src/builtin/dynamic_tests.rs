@@ -5,6 +5,214 @@ use crate::annotations::{
 };
 use crate::collaboration::{GroupActor, MemberDraft, MessageDraft, WorkStatus};
 
+struct PaperPages;
+
+#[tokio::test]
+async fn a_colleague_request_yields_after_the_batch_and_resumes_with_the_reply() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("main.tex"), "supported manuscript").unwrap();
+    let tasks = root.path().join("tasks");
+    let task = running_task(&tasks, "local");
+    let store = TaskStore::new(tasks.clone()).unwrap();
+    let group = store
+        .create_task_group(
+            "project",
+            Some(&task.id),
+            &[true, false].map(|coordinator| MemberDraft {
+                name: if coordinator {
+                    "Coordinator"
+                } else {
+                    "Evidence"
+                }
+                .into(),
+                responsibility: "Check the actual source".into(),
+                runtime_id: "builtin".into(),
+                agent_id: "openai".into(),
+                model_id: "test".into(),
+                coordinator,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let coordinator = group
+        .members
+        .iter()
+        .find(|member| member.config.coordinator)
+        .unwrap();
+    let reviewer = group
+        .members
+        .iter()
+        .find(|member| !member.config.coordinator)
+        .unwrap();
+    store
+        .group_message(
+            "project",
+            &group.group.id,
+            &GroupActor::user(),
+            &MessageDraft {
+                body: "Revise with independent evidence".into(),
+                recipients: vec![coordinator.id.clone()],
+                request_work: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let reviewer_id = reviewer.id.clone();
+    let provider = Scripted::start(script(move |request, _| {
+        if tool_outputs(request).is_empty() {
+            return tool_delta(vec![
+                ("group_message", json!({"body":"Check the supporting passage", "recipients":[reviewer_id], "requestWork":true})),
+                ("read_file", json!({"path":"main.tex"})),
+            ]);
+        }
+        assert!(request.to_string().contains("The global-token count must stay bounded"));
+        assert!(tool_outputs(request).iter().any(|output| output.contains("supported manuscript")));
+        text_reply("Incorporated the colleague's actual source correction.")
+    })).await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&tasks));
+    let cancel = CancellationToken::new();
+    let first = store.claim_member_turn(&task).unwrap().unwrap();
+    let mut context = task_context(&task, &workspace);
+    context.allowed_paths = vec!["main.tex".into()];
+    context.collaboration = Some(first.clone());
+    context.session_id = first.execution.session_id.clone();
+    let outcome = within(adapter.run(context.clone(), cancel.clone(), event_log().1))
+        .await
+        .unwrap();
+    assert_eq!(
+        provider.requests().len(),
+        1,
+        "no second provider request before the colleague runs"
+    );
+    assert!(outcome.summary.contains("Waiting for the reply"));
+    assert!(!cancel.is_cancelled());
+    assert!(!adapter.services.suspends.requested(&task.id));
+    store.finish_member_turn(&first, &outcome, None).unwrap();
+    let evidence = store.claim_member_turn(&task).unwrap().unwrap();
+    assert_eq!(evidence.member.id, reviewer.id);
+    store
+        .finish_member_turn(
+            &evidence,
+            &TaskRuntimeOutcome {
+                waiting_for_reply: false,
+                summary: "The global-token count must stay bounded".into(),
+                artifacts: vec![],
+                native_session_id: None,
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+            },
+            None,
+        )
+        .unwrap();
+    let resumed = store.claim_member_turn(&task).unwrap().unwrap();
+    assert_eq!(resumed.member.id, coordinator.id);
+    context.session_id = resumed.execution.session_id.clone();
+    context.collaboration = Some(resumed);
+    let outcome = within(adapter.run(context, cancel, event_log().1))
+        .await
+        .unwrap();
+    assert_eq!(provider.requests().len(), 2);
+    assert!(outcome.summary.contains("Incorporated"));
+}
+
+#[async_trait::async_trait]
+impl PdfTextExtractor for PaperPages {
+    async fn pages(&self, _path: PathBuf) -> Result<Vec<String>, String> {
+        Ok(vec![
+            "First paper evidence".into(),
+            "Second page conditions".into(),
+        ])
+    }
+}
+
+#[tokio::test]
+async fn parent_and_helper_paper_reads_keep_final_sources_and_actor_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("analysis")).unwrap();
+    std::fs::write(workspace.join("analysis/paper.pdf"), b"%PDF-paper-fixture").unwrap();
+    let tasks = root.path().join("tasks");
+    let task = running_task(&tasks, "local");
+    let provider = Scripted::start(script(|request, _| {
+        let count = tool_outputs(request).len();
+        if is_helper(request) {
+            return match count {
+                0 => tool_delta(vec![(
+                    "read_paper",
+                    json!({"path":"analysis/paper.pdf","max_chars":1000}),
+                )]),
+                _ => text_reply("Read both paper pages."),
+            };
+        }
+        match count {
+            0 => tool_delta(vec![("discover_tools", json!({"query":"read_paper"}))]),
+            1 => tool_delta(vec![(
+                "read_paper",
+                json!({"path":"analysis/paper.pdf","max_chars":1000}),
+            )]),
+            2 => tool_delta(vec![(
+                SPAWN_AGENT,
+                json!({"brief":"Independently read analysis/paper.pdf using read_paper."}),
+            )]),
+            _ => text_reply("Compared the retained paper passages."),
+        }
+    }))
+    .await;
+    let mut host = fixture_host(root.path(), provider.url.clone()).await;
+    Arc::get_mut(&mut host).unwrap().pdf = Some(Arc::new(PaperPages));
+    let adapter = BuiltinTaskAdapter::new(host, services(&tasks));
+    let (events, sink) = event_log();
+    let mut context = task_context(&task, &workspace);
+    context.allowed_paths = vec!["analysis".into(), "research".into()];
+    within(adapter.run(context, CancellationToken::new(), sink))
+        .await
+        .unwrap();
+    let store = TaskStore::new(tasks).unwrap();
+    let events = lock(&events);
+    let reads: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            TaskRuntimeEvent::Observation {
+                observation:
+                    TaskObservation::ToolExecution {
+                        name,
+                        status,
+                        source: Some(source),
+                        actor,
+                        ..
+                    },
+            } if name == "read_paper" && status == "done" => Some((source, actor)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reads.len(), 2);
+    assert_ne!(reads[0].1, reads[1].1);
+    assert!(reads
+        .iter()
+        .any(|(_, actor)| actor.as_deref().unwrap().contains(":helper-1")));
+    for (source, _) in reads {
+        assert_eq!(source.snapshot_retained, Some(true));
+        assert_eq!(source.pdf.as_ref().unwrap().page_start, Some(1));
+        assert_eq!(source.pdf.as_ref().unwrap().page_end, Some(2));
+        let bytes = store
+            .file_snapshot(
+                &task.id,
+                task.execution_generation,
+                &source.path,
+                &source.file_sha256,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            &bytes[source.offset..source.end_offset],
+            b"[p. 1]\nFirst paper evidence\n\n[p. 2]\nSecond page conditions\n\n"
+        );
+    }
+}
+
 #[tokio::test]
 async fn only_final_successful_managed_file_operations_create_member_attention() {
     let root = tempfile::tempdir().unwrap();

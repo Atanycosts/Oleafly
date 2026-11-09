@@ -9,14 +9,15 @@ use sha2::{Digest, Sha256};
 
 use super::sources::{arxiv_id, normalize_doi};
 use super::LiteratureClient;
+use crate::observations::{content_hash, PdfReadSource, ReadSource};
 use crate::task_tools::TaskFiles;
 
 const MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 const MAX_LOCAL_BYTES: u64 = 100 * 1024 * 1024;
-const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TEXT_BYTES: usize = crate::task_tools::MAX_FILE_BYTES;
 const MAX_PAGES: usize = 300;
 pub const DEFAULT_WINDOW_CHARS: usize = 20_000;
-const MAX_WINDOW_BYTES: usize = 48 * 1024;
+const MAX_WINDOW_BYTES: usize = 32 * 1024;
 const EXTRACT_LIMIT: Duration = Duration::from_secs(60);
 const DOWNLOAD_LIMIT: Duration = Duration::from_secs(120);
 const UA: &str = "Oleafly/0.4 (https://github.com/Oleafly/Oleafly; paper reader)";
@@ -54,6 +55,23 @@ pub struct PaperText {
     pub text: String,
     pub next_offset: Option<usize>,
     pub stored: Vec<String>,
+    pub source: ReadSource,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperCache {
+    pdf_sha256: String,
+    text_sha256: String,
+    pages: usize,
+    page_offsets: Vec<usize>,
+    title: Option<String>,
+    source_url: Option<String>,
+}
+
+pub struct PageText {
+    pub text: String,
+    pub page_offsets: Vec<usize>,
 }
 
 #[async_trait::async_trait]
@@ -82,32 +100,85 @@ fn url_key(url: &str) -> String {
     format!("url_{}", &digest[..12])
 }
 
-fn window(text: &str, offset: usize, max_chars: usize) -> Result<(String, Option<usize>), String> {
+pub fn window(
+    text: &str,
+    offset: usize,
+    max_chars: usize,
+) -> Result<(String, Option<usize>), String> {
     if offset > text.len() || !text.is_char_boundary(offset) {
         return Err("Use an offset from a previous read.".into());
     }
     let rest = &text[offset..];
-    let mut end = rest
-        .char_indices()
-        .nth(max_chars.clamp(1, DEFAULT_WINDOW_CHARS * 3))
-        .map(|(at, _)| at)
-        .unwrap_or(rest.len())
-        .min(MAX_WINDOW_BYTES);
-    while !rest.is_char_boundary(end) {
-        end -= 1;
+    let mut end = 0;
+    let mut wire_bytes = 0;
+    for character in rest
+        .chars()
+        .take(max_chars.clamp(1, DEFAULT_WINDOW_CHARS * 3))
+    {
+        let escaped_bytes = match character {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
+            '\u{00}'..='\u{1f}' => 6,
+            _ => character.len_utf8(),
+        };
+        if wire_bytes + escaped_bytes > MAX_WINDOW_BYTES {
+            break;
+        }
+        wire_bytes += escaped_bytes;
+        end += character.len_utf8();
     }
     let next = (offset + end < text.len()).then_some(offset + end);
     Ok((rest[..end].to_owned(), next))
 }
 
-pub fn anchored_text(pages: &[String]) -> String {
+pub fn read_source(
+    path: String,
+    pdf_path: String,
+    pdf_bytes: &[u8],
+    page_count: usize,
+    text: &str,
+    page_offsets: &[usize],
+    range: std::ops::Range<usize>,
+) -> ReadSource {
+    let std::ops::Range {
+        start: offset,
+        end: end_offset,
+    } = range;
+    let page_at = |at| {
+        page_offsets
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, start)| **start <= at)
+            .map(|(index, _)| index + 1)
+    };
+    ReadSource {
+        path,
+        file_sha256: content_hash(text.as_bytes()),
+        offset,
+        end_offset,
+        truncated: end_offset < text.len(),
+        snapshot_retained: None,
+        pdf: Some(Box::new(PdfReadSource {
+            path: pdf_path,
+            sha256: content_hash(pdf_bytes),
+            page_count,
+            page_start: page_at(offset),
+            page_end: page_at(end_offset.saturating_sub(1).max(offset)),
+        })),
+    }
+}
+
+pub fn anchored_text(pages: &[String]) -> PageText {
     let mut text = String::new();
+    let mut page_offsets = Vec::new();
+    const STOP: &str = "[Oleafly stopped here: the extracted text reached its 1 MiB limit.]\n";
     for (index, page) in pages.iter().take(MAX_PAGES).enumerate() {
         let block = format!("[p. {}]\n{}\n\n", index + 1, page.trim());
-        if text.len() + block.len() > MAX_TEXT_BYTES {
-            text.push_str("[Oleafly stopped here: the text is longer than 2 MB.]\n");
-            return text;
+        if text.len() + block.len() > MAX_TEXT_BYTES - STOP.len() {
+            text.push_str(STOP);
+            return PageText { text, page_offsets };
         }
+        page_offsets.push(text.len());
         text.push_str(&block);
     }
     if pages.len() > MAX_PAGES {
@@ -116,7 +187,7 @@ pub fn anchored_text(pages: &[String]) -> String {
             pages.len()
         ));
     }
-    text
+    PageText { text, page_offsets }
 }
 
 async fn download(url: &str) -> Result<Vec<u8>, String> {
@@ -394,93 +465,129 @@ pub async fn read_paper(
     let papers = format!("{record_dir}/papers");
     let text_path = format!("{papers}/{key}.txt");
     let pdf_path = format!("{papers}/{key}.pdf");
-    if files.exists(&text_path)? {
-        let text = files.read(&text_path)?;
-        let (window, next_offset) = window(&text, offset, max_chars)?;
-        return Ok(PaperText {
-            pages: text.matches("[p. ").count(),
-            key,
-            title,
-            source_url,
-            text: window,
-            next_offset,
-            stored: Vec::new(),
-        });
+    let cache_path = format!("{papers}/{key}.json");
+    let cached_pdf = files
+        .exists(&pdf_path)?
+        .then(|| files.read_bytes(&pdf_path, MAX_LOCAL_BYTES))
+        .transpose()?;
+    if let Some(bytes) = &cached_pdf {
+        let cached: Option<PaperCache> = files
+            .read(&cache_path)
+            .ok()
+            .and_then(|value| serde_json::from_str(&value).ok());
+        if let Some(cached) = cached {
+            if cached.pdf_sha256 == content_hash(bytes) && files.exists(&text_path)? {
+                let text = files.read(&text_path)?;
+                if cached.text_sha256 == content_hash(text.as_bytes()) {
+                    let (window, next_offset) = window(&text, offset, max_chars)?;
+                    let source = read_source(
+                        text_path,
+                        pdf_path,
+                        bytes,
+                        cached.pages,
+                        &text,
+                        &cached.page_offsets,
+                        offset..offset + window.len(),
+                    );
+                    return Ok(PaperText {
+                        key,
+                        title: cached.title,
+                        source_url: cached.source_url,
+                        pages: cached.pages,
+                        text: window,
+                        next_offset,
+                        stored: Vec::new(),
+                        source,
+                    });
+                }
+            }
+        }
     }
-    let (bytes, title, source_url, stored_pdf) = match request {
-        PaperRequest::Path { path, root_id } => {
-            let bytes = match (root_id, linked_base) {
-                (Some(_), Some(base)) => {
-                    let relative = crate::task_tools::relative_path(&path, false)?;
-                    let file = base.join(relative);
-                    let real = file
-                        .canonicalize()
-                        .map_err(|_| "The PDF is not in that data folder.".to_string())?;
-                    if !real.starts_with(base.canonicalize().map_err(|error| error.to_string())?) {
-                        return Err("The PDF is not in that data folder.".into());
+    let (bytes, title, source_url) = if let Some(bytes) = cached_pdf {
+        (bytes, title, source_url)
+    } else {
+        match request {
+            PaperRequest::Path { path, root_id } => {
+                let bytes = match (root_id, linked_base) {
+                    (Some(_), Some(base)) => {
+                        let relative = crate::task_tools::relative_path(&path, false)?;
+                        let file = base.join(relative);
+                        let real = file
+                            .canonicalize()
+                            .map_err(|_| "The PDF is not in that data folder.".to_string())?;
+                        if !real
+                            .starts_with(base.canonicalize().map_err(|error| error.to_string())?)
+                        {
+                            return Err("The PDF is not in that data folder.".into());
+                        }
+                        if tokio::fs::metadata(&real)
+                            .await
+                            .map(|metadata| metadata.len())
+                            .unwrap_or(0)
+                            > MAX_LOCAL_BYTES
+                        {
+                            return Err(TOO_LARGE_LOCAL.into());
+                        }
+                        tokio::fs::read(real)
+                            .await
+                            .map_err(|error| format!("The PDF could not be read: {error}"))?
                     }
-                    if tokio::fs::metadata(&real)
-                        .await
-                        .map(|metadata| metadata.len())
-                        .unwrap_or(0)
-                        > MAX_LOCAL_BYTES
-                    {
-                        return Err(TOO_LARGE_LOCAL.into());
+                    (Some(_), None) => {
+                        return Err("That data folder isn't linked to this project.".into())
                     }
-                    tokio::fs::read(real)
-                        .await
-                        .map_err(|error| format!("The PDF could not be read: {error}"))?
-                }
-                (Some(_), None) => {
-                    return Err("That data folder isn't linked to this project.".into())
-                }
-                (None, _) => files.read_bytes(&path, MAX_LOCAL_BYTES).map_err(|error| {
-                    if error.contains("too large") {
-                        TOO_LARGE_LOCAL.to_string()
-                    } else {
-                        error
-                    }
-                })?,
-            };
-            (bytes, None, None, false)
-        }
-        PaperRequest::Doi { doi } => {
-            let doi = normalize_doi(&doi).unwrap_or(doi);
-            let (url, title) = open_access_pdf(client, &doi).await?;
-            (download(&url).await?, title, Some(url), true)
-        }
-        PaperRequest::Arxiv { .. } | PaperRequest::Url { .. } => {
-            let url = source_url.clone().unwrap_or_default();
-            (download(&url).await?, title, source_url, true)
+                    (None, _) => files.read_bytes(&path, MAX_LOCAL_BYTES).map_err(|error| {
+                        if error.contains("too large") {
+                            TOO_LARGE_LOCAL.to_string()
+                        } else {
+                            error
+                        }
+                    })?,
+                };
+                (bytes, None, None)
+            }
+            PaperRequest::Doi { doi } => {
+                let doi = normalize_doi(&doi).unwrap_or(doi);
+                let (url, title) = open_access_pdf(client, &doi).await?;
+                (download(&url).await?, title, Some(url))
+            }
+            PaperRequest::Arxiv { .. } | PaperRequest::Url { .. } => {
+                let url = source_url.clone().unwrap_or_default();
+                (download(&url).await?, title, source_url)
+            }
         }
     };
     if !bytes.starts_with(b"%PDF") {
         return Err("That file isn't a PDF.".into());
     }
     let mut stored = Vec::new();
-    if stored_pdf {
-        files.write_bytes(&pdf_path, &bytes, MAX_DOWNLOAD_BYTES)?;
-        stored.push(pdf_path.clone());
-    }
-    let extract_from = if stored_pdf {
-        files.root.join(&pdf_path)
-    } else {
-        let scratch =
-            std::env::temp_dir().join(format!("oleafly-paper-{}.pdf", rand::random::<u64>()));
-        tokio::fs::write(&scratch, &bytes)
-            .await
-            .map_err(|error| error.to_string())?;
-        scratch
-    };
-    let pages = extract(&bytes, extract_from.clone(), extractor).await;
-    if !stored_pdf {
-        let _ = tokio::fs::remove_file(&extract_from).await;
-    }
-    let pages = pages?;
-    let text = anchored_text(&pages);
+    files.write_bytes(&pdf_path, &bytes, MAX_LOCAL_BYTES as usize)?;
+    stored.push(pdf_path.clone());
+    let pages = extract(&bytes, files.root.join(&pdf_path), extractor).await?;
+    let PageText { text, page_offsets } = anchored_text(&pages);
     files.write(&text_path, &text)?;
-    stored.push(text_path);
+    stored.push(text_path.clone());
+    files.write(
+        &cache_path,
+        &serde_json::to_string(&PaperCache {
+            pdf_sha256: content_hash(&bytes),
+            text_sha256: content_hash(text.as_bytes()),
+            pages: pages.len(),
+            page_offsets: page_offsets.clone(),
+            title: title.clone(),
+            source_url: source_url.clone(),
+        })
+        .map_err(|error| error.to_string())?,
+    )?;
     let (window, next_offset) = window(&text, offset, max_chars)?;
+    let source = read_source(
+        text_path,
+        pdf_path,
+        &bytes,
+        pages.len(),
+        &text,
+        &page_offsets,
+        offset..offset + window.len(),
+    );
     Ok(PaperText {
         key,
         title,
@@ -489,6 +596,7 @@ pub async fn read_paper(
         text: window,
         next_offset,
         stored,
+        source,
     })
 }
 
@@ -499,7 +607,7 @@ mod tests {
     #[test]
     fn page_anchors_and_limits() {
         let pages: Vec<String> = (0..302).map(|index| format!("Page text {index}")).collect();
-        let text = anchored_text(&pages);
+        let text = anchored_text(&pages).text;
         assert!(text.starts_with("[p. 1]\nPage text 0"));
         assert!(text.contains("[p. 300]"));
         assert!(!text.contains("[p. 301]"));
@@ -510,10 +618,10 @@ mod tests {
     fn windows_continue_where_they_stopped() {
         let text = "é".repeat(30_000);
         let (first, next) = window(&text, 0, 20_000).unwrap();
-        assert_eq!(first.chars().count(), 20_000);
+        assert_eq!(first.chars().count(), MAX_WINDOW_BYTES / 2);
         let next = next.unwrap();
         let (second, last) = window(&text, next, 20_000).unwrap();
-        assert_eq!(second.chars().count(), 10_000);
+        assert_eq!(format!("{first}{second}"), text);
         assert_eq!(last, None);
         assert!(window(&text, 1, 10).is_err());
     }
@@ -777,7 +885,10 @@ mod tests {
         .unwrap();
         assert_eq!(paper.key, "file_research_paper.pdf-d0cb6c00");
         assert_eq!(paper.pages, 2);
-        assert_eq!(paper.stored, vec![TEXT_PATH.to_owned()]);
+        assert_eq!(
+            paper.stored,
+            vec![TEXT_PATH.replace(".txt", ".pdf"), TEXT_PATH.to_owned()]
+        );
         assert_eq!(
             paper.text,
             "[p. 1]\nFirst page text\n\n[p. 2]\nSecond page text\n\n"
@@ -787,10 +898,16 @@ mod tests {
             std::fs::read_to_string(root.path().join(TEXT_PATH)).unwrap(),
             paper.text
         );
-        assert!(!root
+        assert!(root
             .path()
             .join("research/r-0000/papers/file_research_paper.pdf-d0cb6c00.pdf")
             .exists());
+        assert_eq!(paper.source.pdf.as_ref().unwrap().page_start, Some(1));
+        assert_eq!(paper.source.pdf.as_ref().unwrap().page_end, Some(2));
+        assert_eq!(
+            paper.source.file_sha256,
+            content_hash(paper.text.as_bytes())
+        );
 
         let window = read_paper(
             &client,
@@ -808,6 +925,7 @@ mod tests {
         assert!(window.stored.is_empty());
         assert_eq!(window.pages, 2);
         assert_eq!(window.text, "[p. 1]\nFir");
+        assert_eq!(window.source.pdf.as_ref().unwrap().page_end, Some(1));
         let rest = read_paper(
             &client,
             workspace_paper(),
@@ -821,6 +939,65 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(format!("{}{}", window.text, rest.text), paper.text);
+        assert_eq!(rest.source.offset, window.next_offset.unwrap());
+        assert_eq!(rest.source.pdf.as_ref().unwrap().page_start, Some(1));
+        assert_eq!(rest.source.pdf.as_ref().unwrap().page_end, Some(2));
+    }
+
+    #[test]
+    fn windows_fit_escaped_json_and_reassemble_every_byte() {
+        let PageText { text, page_offsets } =
+            anchored_text(&["\"\\\n🍃\u{0}".repeat(12_000), "Final evidence".into()]);
+        let mut offset = 0;
+        let mut recovered = String::new();
+        loop {
+            let (part, next) = window(&text, offset, 48_000).unwrap();
+            assert!(serde_json::to_string(&part).unwrap().len() <= MAX_WINDOW_BYTES + 2);
+            assert!(!part.is_empty());
+            let source = read_source(
+                "paper.txt".into(),
+                "paper.pdf".into(),
+                b"%PDF",
+                2,
+                &text,
+                &page_offsets,
+                offset..offset + part.len(),
+            );
+            assert_eq!(&text[source.offset..source.end_offset], part);
+            assert!(source.pdf.unwrap().page_start.is_some());
+            recovered.push_str(&part);
+            match next {
+                Some(next) => offset = next,
+                None => break,
+            }
+        }
+        assert_eq!(recovered, text);
+        assert!(window("é", 1, 10).is_err());
+        assert!(window("é", 3, 10).is_err());
+    }
+
+    #[test]
+    fn literal_page_markers_in_the_body_do_not_change_source_pages() {
+        let PageText { text, page_offsets } = anchored_text(&[
+            "Actual first page\n[p. 99]\nStill the first page".into(),
+            "Actual second page\n[p. 1]\nStill the second page".into(),
+        ]);
+        for (needle, page) in [("Still the first", 1), ("Still the second", 2)] {
+            let offset = text.find(needle).unwrap();
+            let source = read_source(
+                "paper.txt".into(),
+                "paper.pdf".into(),
+                b"%PDF",
+                2,
+                &text,
+                &page_offsets,
+                offset..offset + needle.len(),
+            );
+            let pdf = source.pdf.unwrap();
+            assert_eq!(pdf.page_start, Some(page));
+            assert_eq!(pdf.page_end, Some(page));
+        }
+        assert!(text.contains("[p. 99]\n"));
     }
 
     #[tokio::test]
@@ -860,6 +1037,24 @@ mod tests {
             "[p. 1]\nGraph networks\n\n",
         )
         .unwrap();
+        std::fs::write(
+            papers.join("arxiv_2410.16464-c1be2607.pdf"),
+            one_page_pdf("Graph networks"),
+        )
+        .unwrap();
+        let cache = PaperCache {
+            pdf_sha256: content_hash(&one_page_pdf("Graph networks")),
+            text_sha256: content_hash(b"[p. 1]\nGraph networks\n\n"),
+            pages: 1,
+            page_offsets: vec![0],
+            title: None,
+            source_url: Some("https://arxiv.org/pdf/2410.16464".into()),
+        };
+        std::fs::write(
+            papers.join("arxiv_2410.16464-c1be2607.json"),
+            serde_json::to_vec(&cache).unwrap(),
+        )
+        .unwrap();
         let files = TaskFiles::open(root.path(), &["research".to_owned()]).unwrap();
         let client = LiteratureClient::new(root.path().join("cache.sqlite3"));
         let paper = read_paper(
@@ -883,6 +1078,56 @@ mod tests {
         );
         assert_eq!(paper.text, "[p. 1]\nGraph networks\n\n");
         assert_eq!((paper.pages, paper.stored.len()), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn cache_keeps_real_page_count_and_rebuilds_text_that_no_longer_matches() {
+        let (root, files) = workspace_with_pdf(&one_page_pdf("Oleafly"));
+        let client = LiteratureClient::new(root.path().join("cache.sqlite3"));
+        let viewer = bridge(Ok((0..302).map(|index| format!("Page {index}")).collect()));
+        let first = read_paper(
+            &client,
+            workspace_paper(),
+            &files,
+            RECORD,
+            None,
+            Some(&viewer),
+            0,
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.pages, 302);
+        let second = read_paper(
+            &client,
+            workspace_paper(),
+            &files,
+            RECORD,
+            None,
+            Some(&viewer),
+            first.next_offset.unwrap(),
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.pages, first.pages);
+        assert_eq!(second.source.pdf.as_ref().unwrap().page_count, 302);
+        assert_eq!(viewer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        files.write(TEXT_PATH, "Altered extraction").unwrap();
+        let refreshed = read_paper(
+            &client,
+            workspace_paper(),
+            &files,
+            RECORD,
+            None,
+            Some(&viewer),
+            0,
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(refreshed.text, first.text);
+        assert_eq!(viewer.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

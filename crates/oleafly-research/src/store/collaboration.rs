@@ -94,6 +94,160 @@ fn execution_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemberExecution> {
     })
 }
 const EXECUTION_COLUMNS:&str="id,group_id,member_id,task_generation,session_id,runtime_id,agent_id,model_id,provider_id,status,input_tokens,output_tokens,started_at,finished_at";
+const GROUP_UI_PAGE_SIZE: usize = 100;
+
+fn event_on(connection: &Connection, group: &str, id: &str) -> Result<Option<GroupEvent>, String> {
+    connection
+        .query_row(
+            "SELECT rowid,event_json FROM collaboration_events WHERE id=?1 AND group_id=?2",
+            params![id, group],
+            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(store_error)?
+        .map(|(sequence, json)| {
+            let mut event: GroupEvent = decode_json(&json, "group event")?;
+            event.sequence = sequence;
+            Ok(event)
+        })
+        .transpose()
+}
+
+fn event_page_on(
+    connection: &Connection,
+    group: &str,
+    before_sequence: Option<u64>,
+    limit: usize,
+) -> Result<GroupEventPage, String> {
+    let limit = limit.clamp(1, GROUP_UI_PAGE_SIZE);
+    let rows = connection
+        .prepare(
+            "SELECT rowid,event_json FROM collaboration_events
+             WHERE group_id=?1 AND (?2 IS NULL OR rowid<?2)
+             ORDER BY rowid DESC LIMIT ?3",
+        )
+        .and_then(|mut query| {
+            query
+                .query_map(params![group, before_sequence, (limit + 1) as i64], |row| {
+                    Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(store_error)?;
+    let has_more = rows.len() > limit;
+    let mut events = rows
+        .into_iter()
+        .take(limit)
+        .map(|(sequence, json)| {
+            let mut event: GroupEvent = decode_json(&json, "group event")?;
+            event.sequence = sequence;
+            Ok(event)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    events.reverse();
+    Ok(GroupEventPage { events, has_more })
+}
+
+fn event_after_page_on(
+    connection: &Connection,
+    group: &str,
+    after_sequence: u64,
+    limit: usize,
+) -> Result<GroupEventPage, String> {
+    let limit = limit.clamp(1, GROUP_UI_PAGE_SIZE);
+    let rows = connection
+        .prepare(
+            "SELECT rowid,event_json FROM collaboration_events
+             WHERE group_id=?1 AND rowid>?2
+             ORDER BY rowid LIMIT ?3",
+        )
+        .and_then(|mut query| {
+            query
+                .query_map(params![group, after_sequence, (limit + 1) as i64], |row| {
+                    Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(store_error)?;
+    let has_more = rows.len() > limit;
+    let events = rows
+        .into_iter()
+        .take(limit)
+        .map(|(sequence, json)| {
+            let mut event: GroupEvent = decode_json(&json, "group event")?;
+            event.sequence = sequence;
+            Ok(event)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(GroupEventPage { events, has_more })
+}
+
+fn execution_page_on(
+    connection: &Connection,
+    group: &str,
+    before_started_at: Option<i64>,
+    before_id: Option<&str>,
+    limit: usize,
+) -> Result<GroupExecutionPage, String> {
+    if before_started_at.is_some() != before_id.is_some() {
+        return Err("An execution cursor needs both its start time and stable ID.".into());
+    }
+    let limit = limit.clamp(1, GROUP_UI_PAGE_SIZE);
+    let executions = connection
+        .prepare(&format!(
+            "SELECT {EXECUTION_COLUMNS} FROM collaboration_executions
+             WHERE group_id=?1
+               AND (?2 IS NULL OR started_at<?2 OR (started_at=?2 AND id<?3))
+             ORDER BY started_at DESC,id DESC LIMIT ?4"
+        ))
+        .and_then(|mut query| {
+            query
+                .query_map(
+                    params![group, before_started_at, before_id, (limit + 1) as i64],
+                    execution_row,
+                )?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(store_error)?;
+    let has_more = executions.len() > limit;
+    let executions = executions.into_iter().take(limit).collect::<Vec<_>>();
+    Ok(GroupExecutionPage {
+        executions,
+        has_more,
+    })
+}
+
+fn execution_after_page_on(
+    connection: &Connection,
+    group: &str,
+    after_started_at: i64,
+    after_id: &str,
+    limit: usize,
+) -> Result<GroupExecutionPage, String> {
+    let limit = limit.clamp(1, GROUP_UI_PAGE_SIZE);
+    let executions = connection
+        .prepare(&format!(
+            "SELECT {EXECUTION_COLUMNS} FROM collaboration_executions
+             WHERE group_id=?1
+               AND (started_at>?2 OR (started_at=?2 AND id>?3))
+             ORDER BY started_at,id LIMIT ?4"
+        ))
+        .and_then(|mut query| {
+            query
+                .query_map(
+                    params![group, after_started_at, after_id, (limit + 1) as i64],
+                    execution_row,
+                )?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(store_error)?;
+    let has_more = executions.len() > limit;
+    let executions = executions.into_iter().take(limit).collect::<Vec<_>>();
+    Ok(GroupExecutionPage {
+        executions,
+        has_more,
+    })
+}
 
 pub(super) fn insert_work_on(
     tx: &Transaction<'_>,
@@ -347,14 +501,16 @@ fn member_turn_on(
         match item.cause_kind.as_str() {
             "message" => messages.push(message_on(connection, &group.id, &item.cause_id)?),
             "event" => {
-                let json: String = connection
+                let (sequence, json): (u64, String) = connection
                     .query_row(
-                        "SELECT event_json FROM collaboration_events WHERE id=?1 AND group_id=?2",
+                        "SELECT rowid,event_json FROM collaboration_events WHERE id=?1 AND group_id=?2",
                         params![item.cause_id, group.id],
-                        |r| r.get(0),
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .map_err(store_error)?;
-                events.push(decode_json(&json, "group event")?);
+                let mut event: GroupEvent = decode_json(&json, "group event")?;
+                event.sequence = sequence;
+                events.push(event);
             }
             "annotation" => {
                 let json:String=connection.query_row("SELECT annotation_json FROM research_task_annotations WHERE id=?1 AND project_id=?2",params![item.cause_id,group.project_id],|r|r.get(0)).map_err(store_error)?;
@@ -388,6 +544,7 @@ pub(super) fn record_group_event_on(
     let g = group_on(tx, project, group)?;
     validate_actor(tx, group, actor)?;
     let event = GroupEvent {
+        sequence: 0,
         id: fresh_id("event"),
         group_id: group.into(),
         kind: kind.into(),
@@ -401,17 +558,30 @@ pub(super) fn record_group_event_on(
     if g.status != GroupStatus::Closed {
         let interests = interests_on(tx, group)?;
         let attentions = attention::list_on(tx, group)?;
+        let coordination_update = if kind == "file_changed" && object.kind == "file" {
+            match (&g.task_id, &object.path) {
+                (Some(task), Some(path)) => crate::record::is_coordination_file(
+                    &TaskStore::require_on(tx, task)?.record_slug,
+                    path,
+                ),
+                _ => false,
+            }
+        } else {
+            false
+        };
         for member in members_on(tx, group)? {
             if member.id == actor.id {
                 continue;
             }
             let mut reasons = interest_reasons(&member.id, &interests, kind, object);
-            reasons.extend(attention::matching_reasons(
-                &member.id,
-                &attentions,
-                object,
-                true,
-            ));
+            if !coordination_update {
+                reasons.extend(attention::matching_reasons(
+                    &member.id,
+                    &attentions,
+                    object,
+                    true,
+                ));
+            }
             if !reasons.is_empty() {
                 insert_work_on(tx, group, &member.id, "event", &event.id, 25, &reasons)?;
                 routed.push(member.id);
@@ -661,30 +831,194 @@ impl TaskStore {
         let messages = ids
             .into_iter()
             .map(|mid| message_on(&tx, id, &mid))
-            .collect::<Result<Vec<_>, _>>()?;
-        let executions=tx.prepare(&format!("SELECT {EXECUTION_COLUMNS} FROM collaboration_executions WHERE group_id=?1 ORDER BY started_at DESC LIMIT 100")).and_then(|mut q|q.query_map([id],execution_row)?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?;
+            .collect::<Result<Vec<_>, String>>()?;
+        let executions=tx.prepare(&format!("SELECT {EXECUTION_COLUMNS} FROM collaboration_executions WHERE group_id=?1 ORDER BY started_at DESC,id DESC")).and_then(|mut q|q.query_map([id],execution_row)?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?;
+        let events = tx
+            .prepare(
+                "SELECT rowid,event_json FROM collaboration_events WHERE group_id=?1 ORDER BY rowid",
+            )
+            .and_then(|mut q| {
+                q.query_map([id], |r| {
+                    Ok((r.get::<_, u64>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(store_error)?
+            .into_iter()
+            .map(|(sequence, json)| {
+                let mut event: GroupEvent = decode_json(&json, "group event")?;
+                event.sequence = sequence;
+                Ok(event)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(GroupSnapshot {
             next_sequence: messages.last().map_or(after, |m| m.sequence),
             members: members_on(&tx, id)?,
             interests: interests_on(&tx, id)?,
             attentions: attention::list_on(&tx, id)?,
             messages,
-            events: tx
-                .prepare(
-                    "SELECT event_json FROM collaboration_events WHERE group_id=?1 ORDER BY rowid",
-                )
-                .and_then(|mut q| {
-                    q.query_map([id], |r| r.get::<_, String>(0))?
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .map_err(store_error)?
-                .into_iter()
-                .map(|json| decode_json(&json, "group event"))
-                .collect::<Result<Vec<_>, _>>()?,
+            events,
             work: work_on(&tx, id)?,
             executions,
+            events_has_more: false,
+            executions_has_more: false,
             group,
         })
+    }
+
+    /// The panel needs a bounded first view. Runtime tools keep using
+    /// `group_snapshot`, whose complete execution history is part of their
+    /// observable context. Historical records outside this page are resolved
+    /// through the exact lookup and keyset page methods below.
+    pub fn group_ui_snapshot(
+        &self,
+        project: &str,
+        task: &str,
+        id: &str,
+        after: u64,
+    ) -> Result<GroupSnapshot, String> {
+        let mut c = self.open()?;
+        let tx = c.transaction().map_err(store_error)?;
+        let group = group_on(&tx, project, id)?;
+        if group.task_id.as_deref() != Some(task) {
+            return Err("This task group belongs to another task.".into());
+        }
+        let ids = tx
+            .prepare(
+                "SELECT id FROM collaboration_messages
+                 WHERE group_id=?1 AND sequence>?2 ORDER BY sequence LIMIT 100",
+            )
+            .and_then(|mut query| {
+                query
+                    .query_map(params![id, after], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(store_error)?;
+        let messages = ids
+            .into_iter()
+            .map(|message_id| message_on(&tx, id, &message_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let events = event_page_on(&tx, id, None, GROUP_UI_PAGE_SIZE)?;
+        let executions = execution_page_on(&tx, id, None, None, GROUP_UI_PAGE_SIZE)?;
+        Ok(GroupSnapshot {
+            next_sequence: messages.last().map_or(after, |message| message.sequence),
+            members: members_on(&tx, id)?,
+            interests: interests_on(&tx, id)?,
+            attentions: attention::list_on(&tx, id)?,
+            messages,
+            events: events.events,
+            work: work_on(&tx, id)?,
+            executions: executions.executions,
+            events_has_more: events.has_more,
+            executions_has_more: executions.has_more,
+            group,
+        })
+    }
+
+    pub fn group_events_page(
+        &self,
+        project: &str,
+        task: &str,
+        group: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<GroupEventPage, String> {
+        let connection = self.open()?;
+        let group_record = group_on(&connection, project, group)?;
+        if group_record.task_id.as_deref() != Some(task) {
+            return Err("This task group belongs to another task.".into());
+        }
+        event_page_on(&connection, group, before_sequence, limit)
+    }
+
+    pub fn group_executions_page(
+        &self,
+        project: &str,
+        task: &str,
+        group: &str,
+        before_started_at: Option<i64>,
+        before_id: Option<&str>,
+        limit: usize,
+    ) -> Result<GroupExecutionPage, String> {
+        let connection = self.open()?;
+        let group_record = group_on(&connection, project, group)?;
+        if group_record.task_id.as_deref() != Some(task) {
+            return Err("This task group belongs to another task.".into());
+        }
+        execution_page_on(&connection, group, before_started_at, before_id, limit)
+    }
+
+    pub fn group_events_after_page(
+        &self,
+        project: &str,
+        task: &str,
+        group: &str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<GroupEventPage, String> {
+        let connection = self.open()?;
+        let group_record = group_on(&connection, project, group)?;
+        if group_record.task_id.as_deref() != Some(task) {
+            return Err("This task group belongs to another task.".into());
+        }
+        event_after_page_on(&connection, group, after_sequence, limit)
+    }
+
+    pub fn group_executions_after_page(
+        &self,
+        project: &str,
+        task: &str,
+        group: &str,
+        after_started_at: i64,
+        after_id: &str,
+        limit: usize,
+    ) -> Result<GroupExecutionPage, String> {
+        let connection = self.open()?;
+        let group_record = group_on(&connection, project, group)?;
+        if group_record.task_id.as_deref() != Some(task) {
+            return Err("This task group belongs to another task.".into());
+        }
+        execution_after_page_on(&connection, group, after_started_at, after_id, limit)
+    }
+
+    pub fn group_event(
+        &self,
+        project: &str,
+        task: &str,
+        group: &str,
+        id: &str,
+    ) -> Result<Option<GroupEvent>, String> {
+        let connection = self.open()?;
+        let group_record = group_on(&connection, project, group)?;
+        if group_record.task_id.as_deref() != Some(task) {
+            return Err("This task group belongs to another task.".into());
+        }
+        event_on(&connection, group, id)
+    }
+
+    pub fn group_execution(
+        &self,
+        project: &str,
+        task: &str,
+        group: &str,
+        id: &str,
+    ) -> Result<Option<MemberExecution>, String> {
+        let connection = self.open()?;
+        let group_record = group_on(&connection, project, group)?;
+        if group_record.task_id.as_deref() != Some(task) {
+            return Err("This task group belongs to another task.".into());
+        }
+        connection
+            .query_row(
+                &format!(
+                    "SELECT {EXECUTION_COLUMNS} FROM collaboration_executions
+                     WHERE id=?1 AND group_id=?2"
+                ),
+                params![id, group],
+                execution_row,
+            )
+            .optional()
+            .map_err(store_error)
     }
     pub fn group_message(
         &self,
@@ -881,7 +1215,7 @@ impl TaskStore {
             finished_at: None,
         };
         tx.execute("INSERT INTO collaboration_executions(id,group_id,member_id,task_generation,session_id,runtime_id,agent_id,model_id,status,started_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'running',?9)",params![execution.id,group_id,member_id,task.execution_generation,execution.session_id,execution.runtime_id,execution.agent_id,execution.model_id,execution.started_at]).map_err(store_error)?;
-        tx.execute("UPDATE collaboration_work SET status='\"running\"',execution_id=?3,updated_at=?4 WHERE group_id=?1 AND member_id=?2 AND status='\"pending\"'",params![group_id,member_id,execution.id,now_ms()]).map_err(store_error)?;
+        tx.execute("UPDATE collaboration_work SET status='\"running\"',execution_id=?3,updated_at=?4 WHERE group_id=?1 AND member_id=?2 AND status IN ('\"pending\"','\"waiting\"')",params![group_id,member_id,execution.id,now_ms()]).map_err(store_error)?;
         let turn = member_turn_on(&tx, group, member, execution)?;
         tx.commit().map_err(store_error)?;
         Ok(Some(turn))
@@ -899,6 +1233,8 @@ impl TaskStore {
         let group = group_on(&tx, &turn.group.project_id, &turn.group.id)?;
         let status = if error.is_some() {
             "failed"
+        } else if outcome.waiting_for_reply {
+            "waiting"
         } else {
             "completed"
         };
@@ -911,19 +1247,67 @@ impl TaskStore {
             id: turn.member.id.clone(),
             execution_id: Some(turn.execution.id.clone()),
         };
+        let claimed = member_turn_on(
+            &tx,
+            group.clone(),
+            turn.member.clone(),
+            turn.execution.clone(),
+        )?;
+        let body = error.map(str::to_owned).unwrap_or_else(|| {
+            if outcome.summary.trim().is_empty() {
+                "Execution finished without a text summary.".into()
+            } else {
+                outcome.summary.clone()
+            }
+        });
+        let requests: Vec<_> = claimed
+            .messages
+            .iter()
+            .filter(|message| {
+                !outcome.waiting_for_reply
+                    && message.content.request_work
+                    && message.author.kind == ActorKind::Member
+                    && message.author.id != turn.member.id
+            })
+            .map(|message| {
+                let replied: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM collaboration_messages m
+                     WHERE m.group_id=?1 AND json_extract(m.author_json,'$.executionId')=?2
+                       AND json_extract(m.content_json,'$.replyTo')=?3
+                       AND json_extract(m.content_json,'$.requestWork')=0
+                       AND json_extract(m.content_json,'$.body')=?5
+                       AND EXISTS(SELECT 1 FROM json_each(m.content_json,'$.recipients') r WHERE r.value=?4))",
+                    params![group.id, turn.execution.id, message.id, message.author.id, body],
+                    |row| row.get(0),
+                ).map_err(store_error)?;
+                Ok((message, replied))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+            .into_iter()
+            .filter_map(|(message, replied)| (!replied).then_some(message))
+            .collect();
+        let mut recipients: Vec<_> = requests
+            .iter()
+            .map(|message| message.author.id.clone())
+            .collect();
+        recipients.sort();
+        recipients.dedup();
         let content = MessageDraft {
-            body: error.map(str::to_owned).unwrap_or_else(|| {
-                if outcome.summary.trim().is_empty() {
-                    "Execution finished without a text summary.".into()
-                } else {
-                    outcome.summary.clone()
-                }
-            }),
+            body,
+            recipients,
+            reply_to: (requests.len() == 1).then(|| requests[0].id.clone()),
             request_work: false,
             ..Default::default()
         };
         let message = insert_message_on(&tx, &group, &actor, &content)?;
-        tx.execute("UPDATE collaboration_work SET status=?2,result_message_id=?3,updated_at=?4 WHERE execution_id=?1 AND status='\"running\"'",params![turn.execution.id,encode_json(&if error.is_some(){WorkStatus::Failed}else{WorkStatus::Completed})?,message.id,now_ms()]).map_err(store_error)?;
+        let work_status = if error.is_some() {
+            WorkStatus::Failed
+        } else if outcome.waiting_for_reply {
+            WorkStatus::Waiting
+        } else {
+            WorkStatus::Completed
+        };
+        tx.execute("UPDATE collaboration_work SET status=?2,result_message_id=?3,updated_at=?4 WHERE execution_id=?1 AND status='\"running\"'",params![turn.execution.id,encode_json(&work_status)?,message.id,now_ms()]).map_err(store_error)?;
         tx.commit().map_err(store_error)?;
         Ok(message)
     }
@@ -1000,6 +1384,13 @@ impl TaskStore {
     }
     pub fn group_has_pending(&self, group: &str) -> Result<bool, String> {
         self.open()?.query_row("SELECT EXISTS(SELECT 1 FROM collaboration_work w JOIN collaboration_members m ON m.id=w.member_id JOIN collaboration_groups g ON g.id=w.group_id WHERE w.group_id=?1 AND w.status='\"pending\"' AND m.paused=0 AND g.status='open')",[group],|r|r.get(0)).map_err(store_error)
+    }
+
+    pub(crate) fn message_has_work(&self, group: &str, message: &str) -> Result<bool, String> {
+        self.open()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM collaboration_work WHERE group_id=?1 AND cause_kind='message' AND cause_id=?2)",
+            params![group, message], |row| row.get(0),
+        ).map_err(store_error)
     }
     pub fn seed_group_work(&self, task: &ResearchTask) -> Result<(), String> {
         let Some(group) = self.task_group(&task.project_id, &task.id)? else {

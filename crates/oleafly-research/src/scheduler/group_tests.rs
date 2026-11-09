@@ -178,6 +178,7 @@ fn complete(turn: StartedTurn, summary: &str, input: u64, output: u64) {
             native_session_id: None,
             input_tokens: Some(input),
             output_tokens: Some(output),
+            waiting_for_reply: false,
         }))
         .unwrap();
 }
@@ -406,19 +407,45 @@ async fn first_generation_routes_real_file_change_to_an_unmentioned_member_and_b
         2,
     );
 
-    // Explorer was not named in the delegation. Its path responsibility must be
-    // enough for the first generation's actual file revision to wake it.
+    // Completing Methods returns its result to the coordinator before the
+    // lower-priority file-change event wakes Explorer.
     let third = fixture.next().await;
     let turn = third.context.collaboration.as_ref().unwrap();
-    assert_eq!(turn.member.id, explorer);
+    assert_eq!(turn.member.id, coordinator);
+    assert_eq!(turn.messages.len(), 1);
+    assert_eq!(turn.messages[0].author.id, methods);
+    assert_eq!(
+        turn.messages[0].content.reply_to.as_deref(),
+        Some(delegation.id.as_str())
+    );
+    assert!(!turn.messages[0].content.request_work);
     assert_eq!(third.context.execution_generation, 1);
+    assert!(Arc::ptr_eq(
+        &shared_clock,
+        &fixture
+            .state
+            .services()
+            .unwrap()
+            .clocks
+            .get(&fixture.task.id)
+            .unwrap()
+    ));
+    complete(third, "Reviewed the checked evidence", 30, 3);
+
+    // Explorer was not named in the delegation. Its path responsibility must be
+    // enough for the first generation's actual file revision to wake it.
+    let fourth = fixture.next().await;
+    let turn = fourth.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.id, explorer);
+    assert_eq!(fourth.context.execution_generation, 1);
     assert!(turn.messages.is_empty());
     assert_eq!(turn.events.len(), 1);
     assert_eq!(turn.events[0].kind, "file_changed");
     assert_eq!(turn.events[0].object.path.as_deref(), Some("main.tex"));
     assert!(turn.events[0].object.revision.is_some());
     assert_eq!(
-        std::fs::read_to_string(Path::new(&third.context.execution_root).join("main.tex")).unwrap(),
+        std::fs::read_to_string(Path::new(&fourth.context.execution_root).join("main.tex"))
+            .unwrap(),
         REVISED
     );
     assert!(Arc::ptr_eq(
@@ -436,7 +463,7 @@ async fn first_generation_routes_real_file_change_to_an_unmentioned_member_and_b
         .group_message(
             "paper",
             &fixture.group.group.id,
-            &actor(&third.context),
+            &actor(&fourth.context),
             &MessageDraft {
                 body: "The counterexample is retained; compare its scope with the main result."
                     .into(),
@@ -447,17 +474,17 @@ async fn first_generation_routes_real_file_change_to_an_unmentioned_member_and_b
         .unwrap();
     assert_eq!(reply.content.recipients, vec![coordinator.clone()]);
     complete(
-        third,
+        fourth,
         "Verified the changed manuscript and proposed a comparison",
-        30,
-        3,
+        40,
+        4,
     );
 
-    let fourth = fixture.next().await;
-    let turn = fourth.context.collaboration.as_ref().unwrap();
+    let fifth = fixture.next().await;
+    let turn = fifth.context.collaboration.as_ref().unwrap();
     assert_eq!(turn.member.id, coordinator);
     assert_eq!(turn.messages, vec![reply]);
-    assert_eq!(fourth.context.execution_generation, 1);
+    assert_eq!(fifth.context.execution_generation, 1);
     assert!(Arc::ptr_eq(
         &shared_clock,
         &fixture
@@ -469,17 +496,17 @@ async fn first_generation_routes_real_file_change_to_an_unmentioned_member_and_b
             .unwrap()
     ));
     complete(
-        fourth,
+        fifth,
         "Integrated the checked revision and comparison",
-        40,
-        4,
+        50,
+        5,
     );
 
     let finished = settled(&fixture.state, &fixture.task.id).await;
     assert_eq!(finished.execution_generation, 1);
     let result = finished.result.unwrap();
-    assert_eq!(result.input_tokens, Some(100));
-    assert_eq!(result.output_tokens, Some(10));
+    assert_eq!(result.input_tokens, Some(150));
+    assert_eq!(result.output_tokens, Some(15));
     assert!(result
         .changed_files
         .iter()
@@ -489,7 +516,7 @@ async fn first_generation_routes_real_file_change_to_an_unmentioned_member_and_b
         ORIGINAL
     );
     let snapshot = fixture.snapshot();
-    assert_eq!(snapshot.executions.len(), 4);
+    assert_eq!(snapshot.executions.len(), 5);
     assert!(snapshot
         .executions
         .iter()

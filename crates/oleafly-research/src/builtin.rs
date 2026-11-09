@@ -262,6 +262,22 @@ fn output(result: Result<Value, String>) -> ToolOutput {
     })
 }
 
+fn output_source(name: &str, value: &Value) -> Option<ReadSource> {
+    match name {
+        "read_file" => {
+            let mut source = value.clone();
+            source["snapshotRetained"] = value["sourceSnapshotRetained"].clone();
+            serde_json::from_value(source).ok()
+        }
+        "read_paper" | "task_pdf_text" => serde_json::from_value(value["source"].clone()).ok(),
+        _ => None,
+    }
+}
+
+fn is_source_read(name: &str) -> bool {
+    matches!(name, "read_file" | "read_paper" | "task_pdf_text")
+}
+
 struct ToolScope {
     files: Arc<TaskFiles>,
     jobs: Arc<CommandJobs>,
@@ -282,6 +298,8 @@ struct ToolScope {
     read_versions: Mutex<HashMap<String, String>>,
     attention_error: Mutex<Option<String>>,
     member_turn: bool,
+    member_yield: CancellationToken,
+    yielded_message: Mutex<Option<String>>,
     helper_sequence: AtomicU64,
     agent_turn_sequence: AtomicU64,
     session_id: String,
@@ -617,7 +635,12 @@ async fn spawn_child(
     tools.extend(
         task_tool_schemas(&scope.binding.brief, false)
             .into_iter()
-            .filter(|tool| tool.name == "literature_search" || tool.name == "read_paper"),
+            .filter(|tool| {
+                matches!(
+                    tool.name.as_str(),
+                    "literature_search" | "read_paper" | "verify_citation" | "task_pdf_text"
+                )
+            }),
     );
     let names: BTreeSet<String> = tools.iter().map(|tool| tool.name.clone()).collect();
     let mut request = CompletionRequest::prompt(
@@ -712,7 +735,7 @@ async fn spawn_child(
                     arguments,
                 } => {
                     calls.insert(id.clone(), (name.clone(), arguments.clone()));
-                    if name == "read_file" {
+                    if is_source_read(name) {
                         observer_scope.binding.emit(TaskRuntimeEvent::Observation {
                             observation: TaskObservation::ToolRequested {
                                 call_id: format!("{helper_actor}:turn-{helper_step}:{id}"),
@@ -726,7 +749,7 @@ async fn spawn_child(
                 AgentEvent::ToolCallEnd { id, arguments } => {
                     if let Some((name, input)) = calls.get_mut(id) {
                         *input = arguments.clone();
-                        if name == "read_file" {
+                        if is_source_read(name) {
                             observer_scope.binding.emit(TaskRuntimeEvent::Observation {
                                 observation: TaskObservation::ToolRequested {
                                     call_id: format!("{helper_actor}:turn-{helper_step}:{id}"),
@@ -740,22 +763,12 @@ async fn spawn_child(
                 }
                 AgentEvent::ToolOutcome { id, output } => {
                     if let Some((name, arguments)) = calls.remove(id) {
-                        if name == "read_file" {
+                        if is_source_read(&name) {
                             let status = tool_result_status(output);
                             let source = (status == "done")
                                 .then(|| serde_json::from_str::<Value>(output).ok())
                                 .flatten()
-                                .and_then(|value| {
-                                    Some(ReadSource {
-                                        path: value["path"].as_str()?.into(),
-                                        file_sha256: value["fileSha256"].as_str()?.into(),
-                                        offset: value["offset"].as_u64()? as usize,
-                                        end_offset: value["endOffset"].as_u64()? as usize,
-                                        truncated: value["truncated"].as_bool()?,
-                                        snapshot_retained: value["sourceSnapshotRetained"]
-                                            .as_bool(),
-                                    })
-                                });
+                                .and_then(|value| output_source(&name, &value));
                             observer_scope.binding.emit(TaskRuntimeEvent::Observation {
                                 observation: TaskObservation::ToolExecution {
                                     call_id: format!("{helper_actor}:turn-{helper_step}:{id}"),
@@ -1191,6 +1204,7 @@ impl BuiltinTaskAdapter {
             );
         }
         let observed_usage = Arc::new(Mutex::new(None));
+        let suspend = self.services.suspends.token(&context.task_id);
         let scope = Arc::new(ToolScope {
             files,
             jobs: jobs.clone(),
@@ -1252,6 +1266,8 @@ impl BuiltinTaskAdapter {
             targets,
             read_versions: Mutex::new(HashMap::new()),
             member_turn: context.collaboration.is_some(),
+            member_yield: suspend.child(),
+            yielded_message: Mutex::new(None),
             attention_error: Mutex::new(None),
             helper_sequence: AtomicU64::new(0),
             agent_turn_sequence: AtomicU64::new(0),
@@ -1262,7 +1278,6 @@ impl BuiltinTaskAdapter {
             CompletionRequest::prompt(task_prompt(&context, &skills.prompt), String::new());
         template.tools = provided;
         template.effort = brief.reasoning_effort;
-        let suspend = self.services.suspends.token(&context.task_id);
         let restored = self.restored_conversation(&context, &resolved, &events);
         let summary = restored
             .as_ref()
@@ -1329,6 +1344,7 @@ impl BuiltinTaskAdapter {
         let observed = usage.task_usage_snapshot().or(*lock(&observed_usage));
         let outcome = |summary: String| TaskRuntimeOutcome {
             summary,
+            waiting_for_reply: lock(&scope.yielded_message).is_some(),
             artifacts: Vec::new(),
             native_session_id: Some(context.session_id.clone()),
             input_tokens: observed.and_then(|usage: TokenCounts| usage.0),
@@ -1504,18 +1520,8 @@ impl BuiltinTaskAdapter {
                                         .map(|text| content_hash(text.as_bytes()))
                                 })
                                 .flatten();
-                            let source = if name == "read_file" && status == "done" {
-                                value.and_then(|value| {
-                                    Some(ReadSource {
-                                        path: value["path"].as_str()?.into(),
-                                        file_sha256: value["fileSha256"].as_str()?.into(),
-                                        offset: value["offset"].as_u64()? as usize,
-                                        end_offset: value["endOffset"].as_u64()? as usize,
-                                        truncated: value["truncated"].as_bool()?,
-                                        snapshot_retained: value["sourceSnapshotRetained"]
-                                            .as_bool(),
-                                    })
-                                })
+                            let source = if status == "done" {
+                                value.and_then(|value| output_source(&name, value))
                             } else {
                                 None
                             };
@@ -1536,6 +1542,39 @@ impl BuiltinTaskAdapter {
                                             if name == "read_file" { "read" } else { "wrote" },
                                             &format!("{event_namespace}:{id}"),
                                         );
+                                    }
+                                }
+                            }
+                            if status == "done" && name == "group_message" && scope.member_turn {
+                                if let Some(message) = value.and_then(|value| {
+                                    serde_json::from_value::<crate::collaboration::GroupMessage>(
+                                        value.clone(),
+                                    )
+                                    .ok()
+                                }) {
+                                    if message.content.request_work
+                                        && !message.content.recipients.is_empty()
+                                    {
+                                        match crate::store::TaskStore::new(
+                                            scope.binding.services.tasks_root.clone(),
+                                        )
+                                        .and_then(
+                                            |store| {
+                                                store.message_has_work(
+                                                    &message.group_id,
+                                                    &message.id,
+                                                )
+                                            },
+                                        ) {
+                                            Ok(true) => {
+                                                *lock(&scope.yielded_message) = Some(message.id);
+                                                scope.member_yield.cancel();
+                                            }
+                                            Ok(false) => {}
+                                            Err(error) => {
+                                                *lock(&scope.attention_error) = Some(error)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1644,7 +1683,7 @@ impl TurnLoop<'_> {
                 self.registry,
                 self.scope,
                 &turn,
-                Some(self.suspend),
+                Some(&self.scope.member_yield),
                 runner,
                 self.events,
                 self.usage,
@@ -1656,8 +1695,23 @@ impl TurnLoop<'_> {
             return ControlFlow::Break(Err("The task was cancelled.".into()));
         }
         if let Ok(outcome) = &outcome {
-            if outcome.suspended {
+            if outcome.suspended
+                || (outcome.error.is_none()
+                    && self.scope.member_yield.is_cancelled()
+                    && lock(&self.scope.yielded_message).is_some())
+            {
                 self.messages = outcome.history.clone();
+                if !self.suspend.is_cancelled() {
+                    if let Some(message) = lock(&self.scope.yielded_message).as_ref() {
+                        self.summary = format!(
+                            "Requested colleague work in message {message}. Waiting for the reply before continuing."
+                        );
+                        (self.events)(TaskRuntimeEvent::Status {
+                            message: self.summary.clone(),
+                        });
+                        return ControlFlow::Break(Ok(None));
+                    }
+                }
                 return ControlFlow::Break(
                     adapter
                         .save_conversation(context, self.resolved, outcome.history.clone(), false)

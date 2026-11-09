@@ -4,7 +4,7 @@
   "packs": [
     {
       "id": "research-core",
-      "version": "2026.10.19.435d6a6c",
+      "version": "2026.10.19.d0a7d67f",
       "kind": "bundled"
     }
   ],
@@ -178,8 +178,8 @@
       "description": "Turn a research question into an annotated reading list with provenance. Use when the user asks to find papers, gather background, collect sources, or fill out a bibliography. Searches literature APIs, reads selected papers, verifies BibTeX, and reuses existing source records or creates source notes when needed.",
       "phase": "research",
       "license": "MIT",
-      "version": "1.2.0",
-      "bytes": 27523,
+      "version": "1.3.0",
+      "bytes": 28169,
       "files": 5,
       "pack": "research-core"
     },
@@ -222,8 +222,8 @@
       "description": "Coordinate research writing across several stages in Oleafly. Use when the work needs a project-wide plan or help choosing specialist skills; focused tasks can use a specialist directly.",
       "phase": "research",
       "license": "MIT",
-      "version": "1.2.0",
-      "bytes": 23048,
+      "version": "1.3.0",
+      "bytes": 23698,
       "files": 7,
       "pack": "research-core"
     },
@@ -266,8 +266,8 @@
       "description": "Audit a section claim by claim and report which statements the cited sources actually support. Use when the user asks to check citations, verify claims, or find unsupported or overstated statements. Maintains a claim record with evidence and proposed fixes, reusing the project's existing record or research/claims.md.",
       "phase": "review",
       "license": "MIT",
-      "version": "1.1.0",
-      "bytes": 20078,
+      "version": "1.2.0",
+      "bytes": 20830,
       "files": 4,
       "pack": "research-core"
     },

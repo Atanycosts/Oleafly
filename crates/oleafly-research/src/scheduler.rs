@@ -1543,6 +1543,7 @@ impl ResearchTaskState {
                 let _ = store.set_stop_reason(&task.id, generation, reason);
                 if outcome.is_err() {
                     return RunEnd::Finished(Ok(TaskRuntimeOutcome {
+                        waiting_for_reply: false,
                         summary: String::new(),
                         artifacts: Vec::new(),
                         native_session_id: None,
@@ -1709,6 +1710,7 @@ impl ResearchTaskState {
                 Ok(result) => result,
                 Err(error) => {
                     let empty = TaskRuntimeOutcome {
+                        waiting_for_reply: false,
                         summary: String::new(),
                         artifacts: Vec::new(),
                         native_session_id: None,
@@ -1758,25 +1760,33 @@ impl ResearchTaskState {
                     member_id: turn.member.id.clone(),
                     execution_id: turn.execution.id.clone(),
                     trigger_ids: turn.work.iter().map(|w| w.id.clone()).collect(),
-                    status: "completed".into(),
+                    status: if result.waiting_for_reply {
+                        "waiting"
+                    } else {
+                        "completed"
+                    }
+                    .into(),
                 },
             });
-            store.record_group_event(
-                &task.project_id,
-                &turn.group.id,
-                &format!("execution:{}", turn.execution.id),
-                "member_finished",
-                &GroupObject {
-                    kind: "message".into(),
-                    id: message.id,
-                    revision: None,
-                    path: None,
-                },
-                &actor,
-                &result.summary,
-            )?;
+            if !result.waiting_for_reply {
+                store.record_group_event(
+                    &task.project_id,
+                    &turn.group.id,
+                    &format!("execution:{}", turn.execution.id),
+                    "member_finished",
+                    &GroupObject {
+                        kind: "message".into(),
+                        id: message.id,
+                        revision: None,
+                        path: None,
+                    },
+                    &actor,
+                    &result.summary,
+                )?;
+            }
         }
         Ok(TaskRuntimeOutcome {
+            waiting_for_reply: false,
             summary,
             artifacts,
             native_session_id: None,

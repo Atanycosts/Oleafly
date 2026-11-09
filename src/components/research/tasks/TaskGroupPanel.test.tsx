@@ -2,13 +2,13 @@ import { JSDOM } from "jsdom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { researchTaskFixture } from "./tests/task-fixtures";
 import type { TaskObservation, TaskTranscriptEvent } from "@/lib/research-tasks";
-import type { AnnotationContext, GroupSnapshot, TaskAnnotation } from "@/lib/task-collaboration";
-const api = vi.hoisted(() => ({ loadTaskGroup: vi.fn(), loadTaskGroupMessages: vi.fn(), createTaskGroup: vi.fn(), sendGroupMessage: vi.fn(), setTaskGroupStatus: vi.fn(), setGroupMemberPaused: vi.fn(), setGroupMemberInterest: vi.fn(), loadTaskAnnotations: vi.fn() }));
+import type { AnnotationContext, GroupEvent, GroupSnapshot, MemberExecution, TaskAnnotation } from "@/lib/task-collaboration";
+const api = vi.hoisted(() => ({ loadTaskGroup: vi.fn(), loadTaskGroupMessages: vi.fn(), loadTaskGroupEventsPage: vi.fn(), loadTaskGroupExecutionsPage: vi.fn(), loadTaskGroupEventsAfter: vi.fn(), loadTaskGroupExecutionsAfter: vi.fn(), loadTaskGroupEvent: vi.fn(), loadTaskGroupExecution: vi.fn(), createTaskGroup: vi.fn(), sendGroupMessage: vi.fn(), setTaskGroupStatus: vi.fn(), setGroupMemberPaused: vi.fn(), setGroupMemberInterest: vi.fn(), loadTaskAnnotations: vi.fn() }));
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/lib/task-collaboration", () => api);
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (selector: (v: unknown) => unknown) => selector({ common: { actions: { copy: "Copy", copied: "Copied" } }, researchTools: { tasks: { group: new Proxy({}, { get: (_, key) => String(key) }), annotations: { resultRefs: "resultRefs" } } } }) }) }));
+vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (selector: (v: unknown) => unknown) => selector({ common: { actions: { copy: "Copy", copied: "Copied" } }, researchTools: { tasks: { group: new Proxy({}, { get: (_, key) => String(key) }), annotations: { resultRefs: "resultRefs" }, observations: new Proxy({}, { get: (_, key) => String(key) }) } } }) }) }));
 let Panel: typeof import("./TaskGroupPanel").TaskGroupPanel;
 let testing: typeof import("@testing-library/react");
 beforeAll(async () => {
@@ -22,6 +22,12 @@ beforeEach(() => {
   vi.resetAllMocks();
   api.loadTaskGroup.mockResolvedValue(null);
   api.loadTaskGroupMessages.mockResolvedValue(snapshot());
+  api.loadTaskGroupEventsPage.mockResolvedValue({ events: [], hasMore: false });
+  api.loadTaskGroupExecutionsPage.mockResolvedValue({ executions: [], hasMore: false });
+  api.loadTaskGroupEventsAfter.mockResolvedValue({ events: [], hasMore: false });
+  api.loadTaskGroupExecutionsAfter.mockResolvedValue({ executions: [], hasMore: false });
+  api.loadTaskGroupEvent.mockResolvedValue(null);
+  api.loadTaskGroupExecution.mockResolvedValue(null);
   api.loadTaskAnnotations.mockResolvedValue(annotationContext());
   native.invoke.mockResolvedValue(null);
 });
@@ -63,6 +69,44 @@ function annotationContext(): AnnotationContext {
 }
 function observationRow(sequence: number, observation: TaskObservation, executionGeneration = 7): TaskTranscriptEvent {
   return { taskId: "t1", executionGeneration, sequence, createdAt: sequence, event: { kind: "observation", observation } };
+}
+function eventRecord(sequence: number): GroupEvent {
+  return {
+    sequence,
+    id: `event-${sequence}`,
+    groupId: "g1",
+    kind: "file_changed",
+    object: { kind: "file", id: `notes-${sequence}.md`, revision: String(sequence), path: `notes-${sequence}.md` },
+    author: { kind: "member", id: "m1", executionId: `execution-${sequence}` },
+    detail: `Event ${sequence}`,
+    createdAt: sequence,
+  };
+}
+function executionRecord(startedAt: number): MemberExecution {
+  return {
+    id: `execution-${String(startedAt).padStart(3, "0")}`,
+    groupId: "g1",
+    memberId: "m1",
+    taskGeneration: 2,
+    sessionId: `session-${startedAt}`,
+    runtimeId: "builtin",
+    agentId: "agent",
+    modelId: "model",
+    providerId: "provider",
+    status: "completed",
+    inputTokens: startedAt,
+    outputTokens: startedAt,
+    startedAt,
+    finishedAt: startedAt + 1,
+  };
+}
+function emptyIncremental(loaded: GroupSnapshot): GroupSnapshot {
+  return {
+    ...loaded,
+    messages: [],
+    events: [],
+    executions: [],
+  };
 }
 function sourceSnapshot(): GroupSnapshot {
   const base = attributedSnapshot();
@@ -130,8 +174,8 @@ function attributedSnapshot(): GroupSnapshot {
       { id: "w2", groupId: "g1", memberId: "m2", causeKind: "event", causeId: "e2", priority: 1, status: "pending", executionId: null, resultMessageId: null, reasons: [], createdAt: 2, updatedAt: 2 },
     ],
     events: [
-      { id: "e1", groupId: "g1", kind: "file_changed", object: { kind: "file", id: "notes.md", revision: "4", path: "notes.md" }, author: { kind: "member", id: "m2", executionId: "x2" }, detail: "Workspace revision 4 was written.", createdAt: 2 },
-      { id: "e2", groupId: "g1", kind: "file_changed", object: { kind: "file", id: "budget.csv", revision: "2", path: "budget.csv" }, author: { kind: "member", id: "m1", executionId: "x1" }, detail: "A managed write changed the budget.", createdAt: 3 },
+      { sequence: 1, id: "e1", groupId: "g1", kind: "file_changed", object: { kind: "file", id: "notes.md", revision: "4", path: "notes.md" }, author: { kind: "member", id: "m2", executionId: "x2" }, detail: "Workspace revision 4 was written.", createdAt: 2 },
+      { sequence: 2, id: "e2", groupId: "g1", kind: "file_changed", object: { kind: "file", id: "budget.csv", revision: "2", path: "budget.csv" }, author: { kind: "member", id: "m1", executionId: "x1" }, detail: "A managed write changed the budget.", createdAt: 3 },
     ],
     attentions: [
       { memberId: "m1", object: { kind: "file", id: "notes.md", revision: "4", path: "notes.md" }, relation: "read", sourceId: "read-1", executionId: "x1", updatedAt: 2 },
@@ -190,7 +234,7 @@ describe("TaskGroupPanel", () => {
   const view = testing.render(<Panel task={task} agents={agents} />);
   await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
   testing.fireEvent.click(view.getByText("refresh"));
-  await testing.waitFor(() => expect(api.loadTaskGroupMessages).toHaveBeenCalledWith("p1", "g1", 1));
+  await testing.waitFor(() => expect(api.loadTaskGroupMessages).toHaveBeenCalledWith("p1", "t1", "g1", 1));
   expect(api.loadTaskGroup).toHaveBeenCalledTimes(1);
   expect(view.getAllByText("Returned evidence").length).toBe(2);
  });
@@ -242,6 +286,7 @@ describe("TaskGroupPanel", () => {
       source: { path: "notes.md", fileSha256: "read-source-hash", offset: 0, endOffset: 12, truncated: false, snapshotRetained: true },
       actor: "tool-helper",
     }, 2))
+    .mockResolvedValueOnce({ text: "old retained source", source: {} })
     .mockResolvedValueOnce(observationRow(3, {
       type: "toolExecution",
       callId: "call-write",
@@ -262,12 +307,15 @@ describe("TaskGroupPanel", () => {
   expect(testing.within(work).getByText((_, element) => element?.tagName === "PRE" && element.textContent?.includes("read-source-hash") === true)).toBeTruthy();
   expect(testing.within(work).getByText((_, element) => element?.tagName === "PRE" && element.textContent?.includes("notes.md") === true)).toBeTruthy();
   expect(testing.within(work).getByText((_, element) => element?.tagName === "PRE" && element.textContent?.includes("tool-helper") === true)).toBeTruthy();
-  expect(testing.within(work).getByText("sourceMetadataOnly")).toBeTruthy();
+  expect(testing.within(work).queryByText("sourceMetadataOnly")).toBeNull();
+  testing.fireEvent.click(testing.within(work).getByText("openSource"));
+  await testing.waitFor(() => expect(testing.within(work).getByText("old retained source")).toBeTruthy());
+  expect(native.invoke).toHaveBeenNthCalledWith(2, "research_task_source_preview", { taskId: "t1", executionGeneration: 2, sequence: 2 });
   expect(testing.within(work).queryByText("member: m1")).toBeNull();
 
   testing.fireEvent.click(testing.within(work).getByTestId("source-w-source-wrote"));
-  await testing.waitFor(() => expect(native.invoke).toHaveBeenCalledTimes(2));
-  expect(native.invoke).toHaveBeenNthCalledWith(2, "research_task_observation_call", { taskId: "t1", executionGeneration: 2, callId: "call-write" });
+  await testing.waitFor(() => expect(native.invoke).toHaveBeenCalledTimes(3));
+  expect(native.invoke).toHaveBeenNthCalledWith(3, "research_task_observation_call", { taskId: "t1", executionGeneration: 2, callId: "call-write" });
   expect(testing.within(work).getByText((_, element) => element?.tagName === "PRE" && element.textContent?.includes("call-write") === true)).toBeTruthy();
  });
 
@@ -310,6 +358,193 @@ describe("TaskGroupPanel", () => {
   testing.fireEvent.click(testing.within(secondWork).getByTestId("source-w-source-wrote"));
   await testing.waitFor(() => expect(testing.within(secondWork).getByText("sourceRecordUnavailable")).toBeTruthy());
   expect(native.invoke).toHaveBeenCalledWith("research_task_observation_call", { taskId: "t1", executionGeneration: 2, callId: "call-write" });
+ });
+
+ it("resolves an execution outside the loaded window by stable identity", async () => {
+  const outside = sourceSnapshot();
+  outside.executions = [];
+  api.loadTaskGroup.mockResolvedValue(outside);
+  api.loadTaskGroupExecution.mockResolvedValue({ id: "x1", groupId: "g1", memberId: "m1", taskGeneration: 2, sessionId: "session-1", runtimeId: "builtin", agentId: "agent", modelId: "model", providerId: "provider", status: "completed", inputTokens: 1, outputTokens: 1, startedAt: 1, finishedAt: 2 });
+  native.invoke.mockResolvedValueOnce(observationRow(2, {
+    type: "toolExecution",
+    callId: "call-read",
+    name: "read_file",
+    status: "done",
+    inputSha256: "read-input",
+    outputSha256: "read-output",
+    skillId: null,
+    skillInstructionsSha256: null,
+    source: { path: "notes.md", fileSha256: "historical-read-hash", offset: 0, endOffset: 12, truncated: false, snapshotRetained: true },
+    actor: null,
+  }, 2));
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-w-source");
+  testing.fireEvent.click(testing.within(work).getByTestId("source-w-source-read"));
+  await testing.waitFor(() => expect(api.loadTaskGroupExecution).toHaveBeenCalledWith("p1", "t1", "g1", "x1"));
+  await testing.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("research_task_observation_call", { taskId: "t1", executionGeneration: 2, callId: "call-read" }));
+  expect(testing.within(work).getByText((_, element) => element?.tagName === "PRE" && element.textContent?.includes("historical-read-hash") === true)).toBeTruthy();
+ });
+
+ it("merges an empty incremental poll without clearing loaded history", async () => {
+  const loaded = sourceSnapshot();
+  loaded.executionsHasMore = true;
+  loaded.eventsHasMore = true;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  const incremental = snapshot();
+  incremental.messages = [];
+  incremental.work = loaded.work;
+  incremental.executions = [];
+  incremental.events = [];
+  incremental.nextSequence = loaded.nextSequence;
+  api.loadTaskGroupMessages.mockResolvedValue(incremental);
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByText(/Workspace revision 4 was written\./)).toBeTruthy());
+  testing.fireEvent.click(view.getByText("refresh"));
+  await testing.waitFor(() => expect(api.loadTaskGroupMessages).toHaveBeenCalledWith("p1", "t1", "g1", loaded.nextSequence));
+  expect(view.getByText(/Workspace revision 4 was written\./)).toBeTruthy();
+  expect(view.getByText(/x1 · Reviewer/)).toBeTruthy();
+ });
+
+ it("loads every event and execution added beyond the latest incremental window", async () => {
+  const loaded = attributedSnapshot();
+  loaded.events = Array.from({ length: 100 }, (_, index) => eventRecord(index + 1));
+  loaded.executions = Array.from({ length: 100 }, (_, index) => executionRecord(index + 1));
+  loaded.eventsHasMore = true;
+  loaded.executionsHasMore = true;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  const callback = vi.fn();
+  const view = testing.render(<Panel task={task} agents={agents} onSnapshot={callback} />);
+  await testing.waitFor(() => expect(callback).toHaveBeenCalledTimes(2));
+
+  api.loadTaskGroupMessages.mockClear();
+  api.loadTaskGroupEventsAfter.mockReset();
+  api.loadTaskGroupExecutionsAfter.mockReset();
+  callback.mockClear();
+  api.loadTaskGroupMessages.mockResolvedValue({
+    ...emptyIncremental(loaded),
+    events: Array.from({ length: 100 }, (_, index) => eventRecord(index + 151)),
+    executions: Array.from({ length: 100 }, (_, index) => executionRecord(index + 151)),
+  });
+  api.loadTaskGroupEventsAfter.mockImplementation(async (_projectId, _taskId, _groupId, afterSequence) => {
+    if (afterSequence === 100) return { events: Array.from({ length: 100 }, (_, index) => eventRecord(index + 101)), hasMore: true };
+    if (afterSequence === 200) return { events: Array.from({ length: 50 }, (_, index) => eventRecord(index + 201)), hasMore: false };
+    throw new Error(`Unexpected event cursor ${afterSequence}`);
+  });
+  api.loadTaskGroupExecutionsAfter.mockImplementation(async (_projectId, _taskId, _groupId, afterStartedAt) => {
+    if (afterStartedAt === 100) return { executions: Array.from({ length: 100 }, (_, index) => executionRecord(index + 101)), hasMore: true };
+    if (afterStartedAt === 200) return { executions: Array.from({ length: 50 }, (_, index) => executionRecord(index + 201)), hasMore: false };
+    throw new Error(`Unexpected execution cursor ${afterStartedAt}`);
+  });
+
+  testing.fireEvent.click(view.getByText("refresh"));
+  await testing.waitFor(() => expect(callback.mock.calls.at(-1)?.[0].events).toHaveLength(250));
+  const final = callback.mock.calls.at(-1)?.[0] as GroupSnapshot;
+  expect(final.events?.map(event => event.sequence)).toEqual(Array.from({ length: 250 }, (_, index) => index + 1));
+  expect(final.executions.map(execution => execution.startedAt)).toEqual(Array.from({ length: 250 }, (_, index) => 250 - index));
+  expect(api.loadTaskGroupEventsAfter).toHaveBeenNthCalledWith(1, "p1", "t1", "g1", 100);
+  expect(api.loadTaskGroupEventsAfter).toHaveBeenNthCalledWith(2, "p1", "t1", "g1", 200);
+  expect(api.loadTaskGroupExecutionsAfter).toHaveBeenNthCalledWith(1, "p1", "t1", "g1", 100, "execution-100");
+  expect(api.loadTaskGroupExecutionsAfter).toHaveBeenNthCalledWith(2, "p1", "t1", "g1", 200, "execution-200");
+ });
+
+ it("updates a loaded execution from the incremental window without treating it as history", async () => {
+  const loaded = attributedSnapshot();
+  const running = executionRecord(100);
+  running.status = "running";
+  running.inputTokens = null;
+  running.outputTokens = null;
+  running.finishedAt = null;
+  loaded.executions = [running];
+  loaded.executionsHasMore = true;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  const callback = vi.fn();
+  const view = testing.render(<Panel task={task} agents={agents} onSnapshot={callback} />);
+  await testing.waitFor(() => expect(callback).toHaveBeenCalledTimes(2));
+  expect(view.getByText(/execution-100 · Reviewer .* running · \?\/\?/)).toBeTruthy();
+
+  callback.mockClear();
+  api.loadTaskGroupExecutionsAfter.mockClear();
+  api.loadTaskGroupMessages.mockResolvedValue({
+    ...emptyIncremental(loaded),
+    executions: [{ ...running, status: "completed", inputTokens: 10, outputTokens: 20, finishedAt: 101 }],
+  });
+  testing.fireEvent.click(view.getByText("refresh"));
+
+  await testing.waitFor(() => expect(view.getByText(/execution-100 · Reviewer .* completed · 10\/20/)).toBeTruthy());
+  const final = callback.mock.calls.at(-1)?.[0] as GroupSnapshot;
+  expect(final.executions).toEqual([expect.objectContaining({ id: "execution-100", status: "completed", inputTokens: 10, outputTokens: 20, finishedAt: 101 })]);
+  expect(final.executionsHasMore).toBe(true);
+  expect(api.loadTaskGroupExecutionsAfter).toHaveBeenCalledWith("p1", "t1", "g1", 100, "execution-100");
+ });
+
+ it("bootstraps executions from the beginning when the initial window was empty", async () => {
+  const loaded = attributedSnapshot();
+  loaded.executions = [];
+  loaded.executionsHasMore = false;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  const callback = vi.fn();
+  const view = testing.render(<Panel task={task} agents={agents} onSnapshot={callback} />);
+  await testing.waitFor(() => expect(callback).toHaveBeenCalledTimes(2));
+
+  callback.mockClear();
+  api.loadTaskGroupExecutionsAfter.mockReset();
+  api.loadTaskGroupMessages.mockResolvedValue({
+    ...emptyIncremental(loaded),
+    executions: Array.from({ length: 100 }, (_, index) => executionRecord(index + 51)),
+  });
+  api.loadTaskGroupExecutionsAfter.mockImplementation(async (_projectId, _taskId, _groupId, afterStartedAt) => {
+    if (afterStartedAt === 0) return { executions: Array.from({ length: 100 }, (_, index) => executionRecord(index + 1)), hasMore: true };
+    if (afterStartedAt === 100) return { executions: Array.from({ length: 50 }, (_, index) => executionRecord(index + 101)), hasMore: false };
+    throw new Error(`Unexpected execution cursor ${afterStartedAt}`);
+  });
+
+  testing.fireEvent.click(view.getByText("refresh"));
+  await testing.waitFor(() => expect(callback.mock.calls.at(-1)?.[0].executions).toHaveLength(150));
+  const final = callback.mock.calls.at(-1)?.[0] as GroupSnapshot;
+  expect(final.executions.map(execution => execution.startedAt)).toEqual(Array.from({ length: 150 }, (_, index) => 150 - index));
+  expect(final.executionsHasMore).toBe(false);
+  expect(api.loadTaskGroupExecutionsAfter).toHaveBeenNthCalledWith(1, "p1", "t1", "g1", 0, "");
+  expect(api.loadTaskGroupExecutionsAfter).toHaveBeenNthCalledWith(2, "p1", "t1", "g1", 100, "execution-100");
+ });
+
+ it("preserves an older history page loaded while refresh pagination is in flight", async () => {
+  const loaded = attributedSnapshot();
+  loaded.events = [eventRecord(100), eventRecord(101)];
+  loaded.eventsHasMore = true;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  const callback = vi.fn();
+  const view = testing.render(<Panel task={task} agents={agents} onSnapshot={callback} />);
+  await testing.waitFor(() => expect(callback).toHaveBeenCalledTimes(2));
+
+  let resolveAfter!: (page: { events: GroupEvent[]; hasMore: boolean }) => void;
+  let resolveOlder!: (page: { events: GroupEvent[]; hasMore: boolean }) => void;
+  api.loadTaskGroupMessages.mockClear();
+  api.loadTaskGroupEventsPage.mockClear();
+  api.loadTaskGroupEventsAfter.mockReset();
+  callback.mockClear();
+  api.loadTaskGroupMessages.mockResolvedValue({
+    ...emptyIncremental(loaded),
+    messages: [{ ...snapshot().messages[0], id: "msg-poll", sequence: 2, body: "Poll completed" }],
+    nextSequence: 2,
+  });
+  api.loadTaskGroupEventsAfter.mockImplementation(() => new Promise(done => { resolveAfter = done; }));
+  api.loadTaskGroupEventsPage.mockImplementationOnce(() => new Promise(done => { resolveOlder = done; }));
+
+  testing.fireEvent.click(view.getByText("refresh"));
+  await testing.waitFor(() => expect(api.loadTaskGroupEventsAfter).toHaveBeenCalledWith("p1", "t1", "g1", 101));
+  testing.fireEvent.click(view.getByText("loadEarlierEvents"));
+  await testing.waitFor(() => expect(api.loadTaskGroupEventsPage).toHaveBeenCalledWith("p1", "t1", "g1", 100));
+  await testing.act(async () => resolveOlder({ events: [eventRecord(99)], hasMore: false }));
+  await testing.waitFor(() => expect(callback.mock.calls.at(-1)?.[0].events).toHaveLength(3));
+  await testing.act(async () => resolveAfter({ events: [], hasMore: false }));
+
+  await testing.waitFor(() => {
+    const current = callback.mock.calls.at(-1)?.[0] as GroupSnapshot | undefined;
+    expect(current?.messages.some(message => message.id === "msg-poll")).toBe(true);
+  });
+  const final = callback.mock.calls.at(-1)?.[0] as GroupSnapshot;
+  expect(final.events?.map(event => event.sequence)).toEqual([99, 100, 101]);
+  expect(final.eventsHasMore).toBe(false);
  });
 
  it("shows source read errors and ignores late exact calls after switching tasks", async () => {

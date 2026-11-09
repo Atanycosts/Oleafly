@@ -969,7 +969,7 @@ export function TaskDetailDialog({
         const snapshot = await loadTaskGroup(task.projectId, task.id);
         const sequence = Number(target.objectRevision?.replace(/^sequence:/, ""));
         if (!snapshot || !Number.isSafeInteger(sequence) || sequence < 1) throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
-        const page = await loadTaskGroupMessages(task.projectId, snapshot.group.id, sequence - 1);
+        const page = await loadTaskGroupMessages(task.projectId, task.id, snapshot.group.id, sequence - 1);
         const message = page.messages.find((entry) => entry.id === target.objectId && entry.sequence === sequence);
         if (!message) throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
         if (request === referenceRequest.current) setReferencePreview({ target, message });

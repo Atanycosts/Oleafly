@@ -5,7 +5,7 @@ license: MIT
 compatibility: Works in any Oleafly project. Stages that compile need a document engine (LaTeX, Typst or Markdown). Handoffs to vendored skills need Python 3.11 or newer on the login shell PATH.
 allowed-tools: update_todos get_todos list_notes remember_note project_map list_files search_project read_file compile load_skill read_skill_file run_command spawn_agent wait_agent close_agent
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
   skill-author: "Oleafly"
   oleafly:
     tier: native
@@ -105,7 +105,8 @@ Use the tools offered by the current host. `load_skill` returns a skill's direct
 files and runnable script commands; scripts use absolute paths inside that directory.
 Check a script's runtime requirements when needed. For long experiments, use the task's
 `start_run` and `wait_runs` when available. Independent reading can be delegated with
-`spawn_agent`; collect results with `wait_agent` and release agents with `close_agent`.
+`spawn_agent`. ResearchTask helpers return within that call and have a `brief` schema.
+Ordinary chat agents use `wait_agent` and `close_agent`. Use the offered schemas.
 
 Compile when changing the manuscript's build inputs. Questions, source searches and
 standalone analysis do not require a document build. Report the requested result and any

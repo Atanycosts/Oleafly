@@ -24,7 +24,7 @@ figures/                   figures the document includes
 
 `research/` and `review/` are working directories. Nothing in them is included by the document, so they never affect the build. Keep them out of the compile path.
 
-Create a directory with `create_file` and `{"path": "research/sources", "is_dir": true}`. Creating a nested path creates the parents.
+Use `create_file` for directories only when that tool is offered. ResearchTask `write_file` creates parents for an allowed nested file. Create directories only when the requested artifact needs them.
 
 ## Citation keys
 

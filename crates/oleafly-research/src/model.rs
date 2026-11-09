@@ -870,6 +870,9 @@ pub enum TaskRuntimeEvent {
 #[serde(rename_all = "camelCase")]
 pub struct TaskRuntimeOutcome {
     pub summary: String,
+    /// This member yielded to colleague work; its claimed causes remain open.
+    #[serde(default)]
+    pub waiting_for_reply: bool,
     #[serde(default)]
     pub artifacts: Vec<TaskArtifact>,
     pub native_session_id: Option<String>,

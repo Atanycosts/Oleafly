@@ -134,7 +134,7 @@ test("historical journal feedback creates an explicit task and links real busine
     expect(results[6].check.check_id).toBeTruthy();
     expect(results[6].check.world_version_id).toBe(reference.worldVersionId);
     expect(results[6].latexApplicability.status).toBe("not_checked");
-    expect(JSON.stringify(results[11].pages)).toContain("JOURNAL-REVIEWED-TASK-COPY");
+    expect(results[11].text).toContain("JOURNAL-REVIEWED-TASK-COPY");
     expect(task.result?.changedFiles.some(file=>file.path==="main.tex")).toBe(true);
     expect(await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m=>m.readFileContent(${scriptValue(projectId)},'main.tex'))`)).toBe(source);
     const annotations = await page.evaluate<AnnotationContext>(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m=>m.loadTaskAnnotations(${scriptValue(projectId)},${scriptValue(task.id)}))`);
