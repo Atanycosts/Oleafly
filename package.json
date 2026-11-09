@@ -40,6 +40,7 @@
     "typst-toolchain:test": "node --test scripts/typst/build-toolchain-catalog.node-tests.mjs",
     "preview": "vite preview",
     "tauri": "node scripts/tauri-sandbox.mjs",
+    "workbench:setup": "node scripts/setup-workbench.mjs",
     "lint": "biome lint src packages",
     "lint:fix": "biome lint --write src packages",
     "test": "vitest run --maxWorkers=4",

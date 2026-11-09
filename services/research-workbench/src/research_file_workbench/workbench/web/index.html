@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>科研文件工作台</title>
+    <link rel="stylesheet" href="/app.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <svg hidden aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4.5v11M4.5 10h11"/></symbol>
+      <symbol id="i-minus" viewBox="0 0 20 20"><path d="M4.5 10h11"/></symbol>
+      <symbol id="i-x" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></symbol>
+      <symbol id="i-search" viewBox="0 0 20 20"><circle cx="9" cy="9" r="5.5"/><path d="M13.2 13.2L17 17"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 20 20"><path d="M16 8A6.2 6.2 0 0 0 4.6 6.2M4 12a6.2 6.2 0 0 0 11.4 1.8"/><path d="M16 3.5V8h-4.5M4 16.5V12h4.5"/></symbol>
+      <symbol id="i-import" viewBox="0 0 20 20"><path d="M10 3v8.5M6.5 8L10 11.5 13.5 8M4 16.5h12"/></symbol>
+      <symbol id="i-check" viewBox="0 0 20 20"><path d="M10 2.5l6 2v4.8c0 3.9-2.4 6.4-6 8-3.6-1.6-6-4.1-6-8V4.5z"/><path d="M7.2 9.8l2 2 3.6-3.9"/></symbol>
+      <symbol id="i-doc" viewBox="0 0 20 20"><path d="M5 2.5h6.5L15 6v11.5H5z"/><path d="M11.5 2.5V6H15"/></symbol>
+      <symbol id="i-map" viewBox="0 0 20 20"><circle cx="5" cy="5" r="2.2"/><circle cx="15" cy="5" r="2.2"/><circle cx="10" cy="15" r="2.2"/><path d="M6.8 6.4l2.3 6.4M13.2 6.4l-2.3 6.4M7.2 5h5.6"/></symbol>
+      <symbol id="i-book" viewBox="0 0 20 20"><path d="M3 4.5c2.2-1.1 4.8-1.1 7 .2 2.2-1.3 4.8-1.3 7-.2v11.4c-2.2-1.1-4.8-1.1-7 .2-2.2-1.3-4.8-1.3-7-.2z"/><path d="M10 4.7v11.6"/></symbol>
+      <symbol id="i-history" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M10 6.2V10l2.8 1.9"/></symbol>
+      <symbol id="i-target" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><circle cx="10" cy="10" r="1.8"/><path d="M10 1.5v3M10 15.5v3M1.5 10h3M15.5 10h3"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 20 20"><path d="M5 15L15 5M8 5h7v7"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 20 20"><rect x="4.5" y="9" width="11" height="7.5" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></symbol>
+      <symbol id="i-file" viewBox="0 0 20 20"><path d="M5 2.5h6.5L15 6v11.5H5z"/><path d="M11.5 2.5V6H15M7.5 10h5M7.5 13h5"/></symbol>
+    </svg>
+    <div class="app-shell">
+      <aside class="navigation" aria-label="期刊资料库">
+        <a class="brand" href="/" aria-label="科研文件工作台首页"><span class="brand-mark" aria-hidden="true">研</span><span class="brand-copy">科研文件<span>工 作 台</span></span></a>
+        <div class="nav-heading"><span>我的期刊</span><span id="journal-count" class="nav-count">0</span></div>
+        <button id="new-world" aria-label="导入期刊" class="button button-outline nav-create" type="button"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>导入期刊</span></button>
+        <nav id="world-list" class="world-list" aria-label="已导入期刊"></nav>
+        <div class="nav-bottom"><div id="connection-status" class="local-indicator"><span aria-hidden="true"></span><span>正在连接</span></div><button id="refresh-state" class="text-button" type="button"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> 刷新工作区</button></div>
+      </aside>
+      <main id="main" class="main-workspace" aria-busy="true">
+        <header class="topbar"><div class="workspace-title">科研文件工作台</div><span class="readonly-label"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>原件只读保留</span></header>
+        <div id="global-error" class="notice notice-error" role="alert" hidden><span id="global-error-text"></span><button id="retry-load" type="button" class="text-button">重新加载</button></div>
+        <div id="success-message" role="status" hidden></div>
+        <div id="activity" class="activity" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="activity-label"></span></div>
+        <section class="project-strip" aria-label="论文与期刊">
+          <div class="project-field"><label for="project-select">论文</label><select id="project-select"><option value="">尚未导入论文</option></select></div>
+          <button id="import-project" class="button button-outline" type="button"><svg class="icon" aria-hidden="true"><use href="#i-import"/></svg>导入论文</button>
+          <div class="strip-divider" aria-hidden="true"></div>
+          <div class="project-field"><label for="journal-select">对照期刊</label><select id="journal-select"><option value="">先选择期刊</option></select></div>
+          <span id="binding-label" class="binding-chip"></span>
+          <div class="project-actions"><button id="bind-world" class="button button-outline" type="button" disabled>使用此期刊</button><button id="run-check" class="button button-primary" type="button" disabled><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>检查论文</button></div>
+        </section>
+        <nav class="workspace-tabs" aria-label="工作区视图"><button id="workspace-tab-map" class="workspace-tab" type="button" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-map"/></svg>地图</button><button id="workspace-tab-manuscript" class="workspace-tab" type="button"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>稿件阅读</button><button id="workspace-tab-history" class="workspace-tab" type="button"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>项目记录</button></nav>
+        <section id="journal-workspace" class="journal-workspace">
+          <header class="world-header"><div><h1 id="world-title">从一本期刊开始</h1><p id="world-scope" class="world-description">导入期刊资料，逐条核对论文的页面要求。</p></div><div id="world-version-controls" class="version-controls" hidden><label for="world-version">版本</label><select id="world-version"></select><button id="compare-worlds" class="text-button" type="button">比较版本</button></div></header>
+          <div id="update-notice" class="notice notice-warning" hidden><div><strong>有更新的期刊资料</strong><p id="update-description"></p></div><button id="view-update" class="text-button" type="button">查看更新</button></div>
+          <div id="binding-mismatch" class="notice notice-neutral" hidden><span>当前查看的版本与论文使用的检查依据不同。</span><button id="view-bound-world" class="text-button" type="button">返回论文依据</button></div>
+          <div id="check-summary" class="check-summary" hidden></div>
+          <section id="map-view" aria-label="规则地图">
+            <div class="map-toolbar"><div class="map-tools"><div class="segmented-control" role="group" aria-label="地图切换"><button id="map-view-journal" type="button" aria-pressed="true">期刊要求</button><button id="map-view-manuscript" type="button" aria-pressed="false">论文实况</button></div><label class="search-field"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><span class="sr-only">搜索规则</span><input id="rule-search" type="search" placeholder="查找要求或来源" autocomplete="off"></label><div class="segmented-control" role="group" aria-label="规则筛选"><button id="filter-all" type="button" aria-pressed="true">全部</button><button id="filter-issues" type="button" aria-pressed="false">待核对</button></div></div></div>
+            <div id="world-empty" class="empty-state large-empty"><div class="empty-art" aria-hidden="true"><span></span><span></span><span></span></div><h2>从一本期刊开始</h2><p>导入模板或投稿指南，逐条核对页面要求。</p><button id="empty-import-world" class="button button-primary" type="button"><svg class="icon" aria-hidden="true"><use href="#i-import"/></svg>导入期刊资料</button></div>
+            <div id="manuscript-empty" class="empty-state large-empty" hidden><div class="empty-art" aria-hidden="true"><span></span><span></span><span></span></div><h2>论文的实况地图</h2><p>导入论文并对照期刊检查，不匹配处会在这里亮起。</p><button id="empty-import-project" class="button button-primary" type="button"><svg class="icon" aria-hidden="true"><use href="#i-import"/></svg>导入论文</button></div>
+            <div id="rule-map" class="rule-map" hidden>
+              <div class="map-caption"><div id="map-breadcrumb" class="map-breadcrumb" aria-label="地图层级"></div><div class="map-zoom" role="group" aria-label="地图缩放"><button id="map-zoom-out" class="icon-button" type="button" aria-label="缩小地图"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button><button id="map-reset" class="text-button" type="button"><svg class="icon" aria-hidden="true"><use href="#i-target"/></svg> 居中</button><button id="map-zoom-in" class="icon-button" type="button" aria-label="放大地图"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button></div></div>
+              <div id="bubble-canvas" class="bubble-canvas"><div id="page-bubbles" class="bubble-scene"></div><p id="empty-filter" class="empty-filter" hidden></p><div id="bubble-popover" class="bubble-popover" hidden></div></div>
+              <div class="map-foot"><span id="page-zone-state" class="muted"></span><div class="map-legend" id="map-legend" aria-label="检查图例"></div></div>
+              <div id="component-list" class="component-list" aria-label="要求类别"></div>
+              <details id="coverage-section" class="coverage-section" hidden><summary>查看未能覆盖的来源</summary><ul id="coverage-gaps"></ul></details>
+              <footer class="board-footer"><span id="check-scope" class="muted">对照范围：页面设置</span><button id="download-check" class="text-button" type="button" disabled>导出检查记录 <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></button></footer>
+            </div>
+          </section>
+          <aside id="inspector" class="detail-drawer" aria-label="要求详情" tabindex="-1" hidden>
+            <div class="drawer-head"><span class="drawer-title">要求详情</span><button id="close-inspector" class="icon-button" type="button" aria-label="关闭详情面板"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+            <nav id="review-breadcrumb" class="review-breadcrumb" aria-label="审查层级"></nav>
+            <div id="inspector-empty" class="empty-state"><p>从地图中选择一条要求。</p></div>
+            <div id="rule-detail" class="detail-stack" hidden>
+              <section class="review-column question-column" aria-label="要求详情">
+                <div class="column-heading"><span class="column-number">01</span><h2>要求详情</h2></div>
+                <div class="detail-title"><h3 id="detail-label"></h3><span id="detail-verdict" class="status-badge"></span></div>
+                <div class="effective-value"><span>要求值</span><strong id="detail-expected"></strong></div>
+                <div class="detail-basis"><span id="detail-basis" class="small-badge"></span><span id="detail-validity" class="muted"></span></div>
+                <dl id="status-axes" class="status-axes"></dl>
+                <details id="revise-details" class="revise-details"><summary>确认或修正这条要求</summary><div class="revise-form-body"><form id="revise-form"><label for="revise-expected" id="revise-value-label">要求值</label><input id="revise-expected" type="number" min="0" step="any" required><label for="revise-reason">确认依据 <span class="required">*</span></label><textarea id="revise-reason" rows="3" required placeholder="填写采用或修正的理由，会随新版本一起保留。"></textarea><p id="revise-error" class="inline-error" role="alert" hidden></p><button id="submit-revise" type="submit" class="button button-outline">保存新版本</button></form></div></details>
+                <section id="rule-limits-section" class="detail-limits" hidden><h4>需要留意</h4><ul id="rule-limits"></ul></section>
+                <div class="section-heading"><h3>同类要求</h3><button id="back-to-map" class="text-button" type="button">收起</button></div><div id="rule-neighbors" class="rule-neighbors"></div>
+              </section>
+              <section class="review-column sources-column" aria-label="要求出处">
+                <div class="column-heading"><span class="column-number">02</span><h2>要求出处</h2><span id="evidence-count" class="muted"></span></div>
+                <div id="rule-evidence"></div>
+                <section id="source-fragments" class="source-fragments" hidden><div class="section-heading"><h3 id="fragment-heading">来源片段</h3><button id="close-fragments" class="text-button" type="button">收起</button></div><div id="fragment-context"></div><div id="fragment-items"></div></section>
+                <section id="related-section" class="related-section" hidden><div class="section-heading"><h3>表达相近的要求</h3><span>按用词相近程度排列</span></div><div id="related-rules"></div></section>
+              </section>
+              <section class="review-column observations-column" aria-label="论文情况">
+                <div class="column-heading"><span class="column-number">03</span><h2>论文情况</h2></div>
+                <div class="section-heading"><h3>稿件观察</h3><span id="finding-count" class="muted"></span></div><div id="rule-findings"></div>
+                <button id="open-manuscript" class="button button-outline open-manuscript" type="button">到稿件阅读中核对</button>
+                <section id="disposition-section" class="disposition-section" hidden><h4>处理意见</h4><label class="sr-only" for="disposition-note">处理备注</label><textarea id="disposition-note" rows="3" placeholder="记录核对说明或暂缓原因，原检查结论不受影响。"></textarea><div class="disposition-actions"><button id="save-note" type="button" class="button button-outline">保存备注</button><button id="defer-rule" type="button" class="button button-quiet">暂缓处理</button></div><p id="disposition-error" class="inline-error" role="alert" hidden></p><div id="disposition-history"></div></section>
+              </section>
+            </div>
+          </aside>
+        </section>
+        <section id="manuscript-workspace" class="document-workspace" aria-label="稿件阅读" hidden><header class="view-header"><h1 id="manuscript-title">查看论文中的每个对象</h1><button id="reload-manuscript" class="text-button" type="button"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> 重新读取</button></header><div id="manuscript-content"></div></section>
+        <section id="history-workspace" class="history-workspace" aria-label="项目记录" hidden><header class="view-header"><h1>项目记录</h1></header><div id="history-content"></div></section>
+      </main>
+    </div>
+
+    <dialog id="world-dialog" class="dialog world-dialog" aria-labelledby="world-dialog-title">
+      <form id="world-form" novalidate>
+        <div class="dialog-heading"><div><p class="eyebrow">期刊资料</p><h2 id="world-dialog-title">导入期刊资料</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭导入期刊窗口"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+        <p class="dialog-intro">添加模板或投稿指南，并说明每份资料的用途。原始文件会原样保留。</p>
+        <div class="form-grid"><label>期刊名称 <span class="required">*</span><input id="journal-name" name="journal_name" required autocomplete="off" placeholder="例如 International Journal of …"></label><label>文章类型<select id="article-type" name="article_type"><option value="research_article">研究论文</option><option value="review_article">综述论文</option><option value="short_communication">短篇论文</option></select></label><label>投稿阶段<select id="submission-stage" name="stage"><option value="initial_submission">首次投稿</option><option value="revision">修回稿</option><option value="accepted_manuscript">录用稿</option></select></label><label>语言<select id="world-language" name="language"><option value="en">英文</option><option value="zh">中文</option></select></label></div>
+        <details class="coverage-section"><summary>已有规则组件或同名期刊</summary><label class="form-label">期刊代号<input id="journal-code" autocomplete="off" pattern="[a-z][a-z0-9]*(?:-[a-z0-9]+)*" placeholder="例如 ijam"><span class="field-help">组件文件指定的期刊代号；普通导入可留空。</span></label></details>
+        <div class="source-picker"><div><h3>来源文件 <span class="required">*</span></h3><p>模板 DOCX · 指南 TXT / MD / DOCX / PDF · JSON 规则组件</p></div><label class="button button-outline file-button"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>添加文件<input id="world-files" type="file" accept=".docx,.txt,.md,.pdf,.json" multiple></label></div>
+        <div id="source-list" class="source-list"><p class="source-empty">添加文件后，为每个文件选择用途。</p></div>
+        <p id="world-form-error" class="inline-error" role="alert" hidden></p>
+        <div class="dialog-footer"><span><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>原件保留在本地</span><button id="submit-world" class="button button-primary" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-import"/></svg>导入资料</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="project-dialog" class="dialog compact-dialog" aria-labelledby="project-dialog-title"><form id="project-form" novalidate><div class="dialog-heading"><div><p class="eyebrow">论文</p><h2 id="project-dialog-title">导入论文</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭导入论文窗口"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></div><p class="dialog-intro">选择要检查的 DOCX 文件，原始文件会原样保留。</p><label class="form-label">论文名称 <span class="required">*</span><input id="project-name" required autocomplete="off" placeholder="便于辨认的论文名称"></label><label class="form-label">DOCX 文件 <span class="required">*</span><input id="project-file" type="file" accept=".docx" required></label><p id="project-file-name" class="file-chosen" hidden></p><p id="project-form-error" class="inline-error" role="alert" hidden></p><div class="dialog-footer"><span><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>原件保留在本地</span><button id="submit-project" class="button button-primary" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-import"/></svg>导入论文</button></div></form></dialog>
+
+    <dialog id="diff-dialog" class="dialog diff-dialog" aria-labelledby="diff-dialog-title"><div class="dialog-heading"><div><p class="eyebrow">期刊资料</p><h2 id="diff-dialog-title">比较期刊版本</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭版本比较"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></div><p class="dialog-intro">查看两个版本之间要求与依据的变化。</p><div class="diff-selectors"><label>原版本<select id="diff-from"></select></label><span aria-hidden="true">→</span><label>比较版本<select id="diff-to"></select></label><button id="run-diff" class="button button-outline" type="button">比较</button></div><p id="diff-error" class="inline-error" role="alert" hidden></p><div id="diff-results" class="diff-results"></div></dialog>
+    <div id="screen-reader-status" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

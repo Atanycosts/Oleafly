@@ -1,0 +1,228 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-regions-fields",
+  "artifact_id": "fixture-docx-s1-regions-fields",
+  "artifact_sha256": "4542a04586ffa3e9a563d24f14ba0da7960c5d5f8e8d913905263f7b05b05515",
+  "annotator": "independent-fixture-audit",
+  "review_status": "reviewed",
+  "objects": [
+    {
+      "annotation_id": "rfw-fx-rf-body-001",
+      "region": "body",
+      "kind": "paragraph",
+      "locator": "word/document.xml body paragraph 2 containing RFW-FX-RF-BODY-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-rf-textbox-001",
+      "region": "textbox",
+      "kind": "textbox",
+      "locator": "word/document.xml body paragraph 3; VML v:shape/v:textbox/w:txbxContent containing RFW-FX-RF-TEXTBOX-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [],
+      "limitations": [
+        "The marker also appears in the surrounding paragraph; structure distinguishes the textbox copy."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-rf-header-001",
+      "region": "header",
+      "kind": "header",
+      "locator": "word/header1.xml paragraph containing RFW-FX-RF-HEADER-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rId9->header1.xml"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-rf-footer-001",
+      "region": "footer",
+      "kind": "footer",
+      "locator": "word/footer1.xml paragraph containing RFW-FX-RF-FOOTER-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rId10->footer1.xml"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-rf-footnote-ref-001",
+      "region": "body",
+      "kind": "footnote_reference",
+      "locator": "word/document.xml body paragraph 4; w:footnoteReference w:id=2 after RFW-FX-RF-FOOTNOTE-REF-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rIdRfwFootnotes->footnotes.xml",
+        "w:footnoteReference@w:id=2->word/footnotes.xml w:footnote@w:id=2"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-rf-footnote-body-001",
+      "region": "footnote",
+      "kind": "footnote",
+      "locator": "word/footnotes.xml w:footnote w:id=2 containing RFW-FX-RF-FOOTNOTE-BODY-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/document.xml w:footnoteReference@w:id=2"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-rf-endnote-ref-001",
+      "region": "body",
+      "kind": "endnote_reference",
+      "locator": "word/document.xml body paragraph 5; w:endnoteReference w:id=2 after RFW-FX-RF-ENDNOTE-REF-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rIdRfwEndnotes->endnotes.xml",
+        "w:endnoteReference@w:id=2->word/endnotes.xml w:endnote@w:id=2"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-rf-endnote-body-001",
+      "region": "endnote",
+      "kind": "endnote",
+      "locator": "word/endnotes.xml w:endnote w:id=2 containing RFW-FX-RF-ENDNOTE-BODY-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/document.xml w:endnoteReference@w:id=2"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-rf-hidden-text-001",
+      "region": "body",
+      "kind": "hidden_text",
+      "locator": "word/document.xml body paragraph 6; w:rPr/w:vanish run containing RFW-FX-RF-HIDDEN-TEXT-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [],
+      "limitations": [
+        "Hidden source text is intentionally omitted from the reviewed PDF; no page mapping is claimed."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-rf-revision-001",
+      "region": "body",
+      "kind": "revision",
+      "locator": "word/document.xml body paragraph 7; w:del w:id=100 and w:ins w:id=101 following RFW-FX-RF-REVISION-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "w:del@w:id=100 contains RFW-FX-RF-REVISION-DELETED-001",
+        "w:ins@w:id=101 contains RFW-FX-RF-REVISION-INSERTED-001"
+      ],
+      "limitations": [
+        "Page appearance is bound to the pinned WPS revision-display behavior."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-rf-comment-anchor-001",
+      "region": "body",
+      "kind": "comment_anchor",
+      "locator": "word/document.xml body paragraph 8; commentRangeStart/commentRangeEnd/commentReference w:id=0 around RFW-FX-RF-COMMENT-ANCHOR-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rId11->comments.xml",
+        "comment anchor w:id=0->word/comments.xml w:comment@w:id=0 containing RFW-FX-RF-COMMENT-BODY-001"
+      ],
+      "limitations": [
+        "The PDF proves rendered markup presence, not comment metadata semantics."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-rf-inline-omml-001",
+      "region": "body",
+      "kind": "inline_equation",
+      "locator": "word/document.xml body paragraph 9; inline m:oMath following RFW-FX-RF-INLINE-OMML-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [],
+      "limitations": [
+        "Visual review confirms a visible inline equation; mathematical semantics are outside this fixture review."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-rf-display-omml-001",
+      "region": "body",
+      "kind": "display_equation",
+      "locator": "word/document.xml body paragraph 10; m:oMathPara/m:oMath following RFW-FX-RF-DISPLAY-OMML-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [],
+      "limitations": [
+        "Visual review confirms a visible display equation; mathematical semantics are outside this fixture review."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-rf-nested-field-001",
+      "region": "body",
+      "kind": "nested_field",
+      "locator": "word/document.xml body paragraph 11; outer IF field containing nested MERGEFIELD RFW_VALUE, fldChar sequence begin/begin/separate/end/separate/end",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "Nested MERGEFIELD result participates in the enclosing IF field result 'nested result'."
+      ],
+      "limitations": [
+        "The PDF proves the exported result, not that another renderer will refresh the fields identically."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-rf-zotero-field-001",
+      "region": "body",
+      "kind": "zotero_field",
+      "locator": "word/document.xml body paragraph 12; ADDIN ZOTERO_ITEM CSL_CITATION field with result [Fixture Citation]",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [],
+      "limitations": [
+        "This synthetic field is not evidence of a live Zotero database or citation refresh."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-rf-xref-result-001",
+      "region": "body",
+      "kind": "cross_reference",
+      "locator": "word/document.xml body paragraph 14; REF RFW_XREF_TARGET_001 \\h field with result RFW-FX-RF-XREF-TARGET-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "REF target->body paragraph 13 bookmarkStart w:name=RFW_XREF_TARGET_001"
+      ],
+      "limitations": [
+        "The PDF proves the exported field result, not cross-editor refresh behavior."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-rf-external-link-001",
+      "region": "body",
+      "kind": "external_target",
+      "locator": "word/document.xml body paragraph 15; w:hyperlink r:id=rIdRfwExternal001 containing RFW-FX-RF-EXTERNAL-LINK-001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rIdRfwExternal001->https://example.invalid/rfw-fixture/external-target-001 TargetMode=External"
+      ],
+      "limitations": [
+        "The external target is intentionally not contacted; availability is not claimed."
+      ]
+    }
+  ],
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent direct ZIP/OOXML package inspection plus page-image review of the fixed WPS PDF; package and page claims remain separate"
+}

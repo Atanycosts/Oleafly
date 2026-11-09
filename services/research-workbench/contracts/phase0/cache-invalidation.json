@@ -1,0 +1,41 @@
+{
+  "contract_version": "1.0.0",
+  "result_types": [
+    {
+      "result_type": "package_inventory",
+      "depends_on": ["source_artifact_hash", "inventory_tool_version", "inventory_options"],
+      "must_not_depend_on": ["journal_rule_version", "render_font_set"]
+    },
+    {
+      "result_type": "structural_index",
+      "depends_on": ["source_artifact_hash", "parser_version", "parser_options"],
+      "must_not_depend_on": ["journal_rule_version", "render_font_set"]
+    },
+    {
+      "result_type": "rendered_pages",
+      "depends_on": ["source_artifact_hash", "renderer_executable_hash", "renderer_settings", "font_set_hash"],
+      "must_not_depend_on": ["journal_rule_version"]
+    },
+    {
+      "result_type": "page_mapping",
+      "depends_on": ["structural_index_id", "rendered_pdf_hash", "mapping_method_version"],
+      "must_not_depend_on": ["journal_rule_version"]
+    },
+    {
+      "result_type": "rule_check",
+      "depends_on": ["evidence_versions", "rule_pack_version", "checker_version", "applicable_author_decisions"],
+      "must_not_depend_on": ["unrelated_renderer_configuration"]
+    },
+    {
+      "result_type": "task_material_directory",
+      "depends_on": ["baseline_id", "task_scope", "selection_method_version", "access_scope"],
+      "must_not_depend_on": ["unrelated_author_decisions"]
+    }
+  ],
+  "rules": [
+    "A cache hit proves identity and applicability, not factual correctness.",
+    "Insufficient dependency or coverage metadata prevents reuse.",
+    "A corrected tool or method version invalidates dependent results even when source bytes are unchanged.",
+    "Persistent evidence and handoff records are not CacheEntry objects."
+  ]
+}

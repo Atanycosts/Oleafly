@@ -1,0 +1,54 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-broken-relationships",
+  "source_artifact_sha256": "8f6d29885162ba526a520ea06846781c3069ec41181029913a3e77994d98d20c",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "pdf_sha256": "9b8640cf92312801fc3c321b311ee8a197e87ba3338c4f2cd4f013ffd42448ec",
+  "review_status": "reviewed",
+  "mappings": [
+    {
+      "annotation_id": "broken-missing-rid-page-001",
+      "object_annotation_id": "rfw-fx-br-missing-rid-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The missing-rId fixture marker and fallback text are visible on page 1.",
+      "limitations": [
+        "Visual evidence does not prove the missing relationship; package inspection does."
+      ]
+    },
+    {
+      "annotation_id": "broken-missing-target-page-001",
+      "object_annotation_id": "rfw-fx-br-missing-target-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The missing-internal-target fixture marker is visible on page 1.",
+      "limitations": [
+        "The absent internal target is not visually observable; package inspection proves it."
+      ]
+    },
+    {
+      "annotation_id": "broken-external-page-001",
+      "object_annotation_id": "rfw-fx-br-missing-external-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The external-dependency marker is visible on page 1.",
+      "limitations": [
+        "The external target is not contacted; visual evidence does not establish availability."
+      ]
+    }
+  ],
+  "limitations": [
+    "The intentionally broken package rendered fallback markers, but visual evidence does not prove relationship failure semantics.",
+    "The external URI was not contacted and availability is not inferred.",
+    "Microsoft Word cross-rendering is unverified because Word is unavailable locally."
+  ],
+  "reviewed_by": "independent-fixture-audit",
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent page-image inspection bound to the fixed PDF hash and WPS profile"
+}

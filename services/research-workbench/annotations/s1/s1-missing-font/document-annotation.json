@@ -1,0 +1,36 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-missing-font",
+  "artifact_id": "fixture-docx-s1-missing-font",
+  "artifact_sha256": "c81ca07a2f38c1d7e981913ae06f936fce88c6ac5592ef6489db48f9854e6cb5",
+  "annotator": "independent-fixture-audit",
+  "review_status": "reviewed",
+  "objects": [
+    {
+      "annotation_id": "rfw-fx-mf-control-001",
+      "region": "body",
+      "kind": "font_control",
+      "locator": "word/document.xml body paragraph 2; w:rFonts ascii/hAnsi=Arial containing RFW-FX-MF-CONTROL-001 ABC xyz 012345",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-mf-missing-001",
+      "region": "body",
+      "kind": "missing_font",
+      "locator": "word/document.xml body paragraph 3; w:rFonts ascii/hAnsi/eastAsia='RFW Fixture Missing Font 2026' containing RFW-FX-MF-MISSING-001 ABC xyz 012345",
+      "expected_support": "register_and_render",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "declared font name is absent from the pinned render environment; WPS substitutes a visible fallback on page 1"
+      ],
+      "limitations": [
+        "The exact substitute font is not identified; Microsoft Word rendering is unverified."
+      ]
+    }
+  ],
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent direct ZIP/OOXML package inspection plus page-image review of the fixed WPS PDF; package and page claims remain separate"
+}

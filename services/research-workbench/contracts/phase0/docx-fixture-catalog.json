@@ -1,0 +1,387 @@
+{
+  "contract_version": "1.0.0",
+  "generator": "tools/fixture_building/build_docx_fixtures.py",
+  "fixtures": [
+    {
+      "sample_id": "s1-regions-fields",
+      "artifact_id": "fixture-docx-s1-regions-fields",
+      "relative_path": "normal/s1-regions-fields/s1-regions-fields.docx",
+      "sha256": "4542a04586ffa3e9a563d24f14ba0da7960c5d5f8e8d913905263f7b05b05515",
+      "group_id": "regions-and-text+equations-and-fields",
+      "cases": [
+        {
+          "case_id": "body",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "textbox",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "header",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "footer",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "footnote",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "endnote",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "hidden_text",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "revision",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "comment",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "inline_omml",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "display_omml",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "nested_field",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "zotero_field",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "cross_reference",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "external_target",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        }
+      ],
+      "generation_status": "generated",
+      "annotation_status": "reviewed",
+      "annotation_relative_path": "annotations/s1/s1-regions-fields/document-annotation.json",
+      "limitations": []
+    },
+    {
+      "sample_id": "s1-sections-layout",
+      "artifact_id": "fixture-docx-s1-sections-layout",
+      "relative_path": "normal/s1-sections-layout/s1-sections-layout.docx",
+      "sha256": "5efae02dc0c52b523ea85cc9bc2f61b96511f9fef7da026533baa42c3b78770a",
+      "group_id": "pages-and-formatting",
+      "cases": [
+        {
+          "case_id": "a4",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "other_page_size",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "portrait_landscape",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "section",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "two_column",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "page_break",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "column_break",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "style_inheritance",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "numbering",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        }
+      ],
+      "generation_status": "generated",
+      "annotation_status": "reviewed",
+      "annotation_relative_path": "annotations/s1/s1-sections-layout/document-annotation.json",
+      "limitations": [
+        "Current PDF and page-image provenance is registered in reports/phase0/fixture-render-catalog.json; this fixture directory does not contain separate current render-record.json and page-record.json files."
+      ]
+    },
+    {
+      "sample_id": "s1-figures-tables",
+      "artifact_id": "fixture-docx-s1-figures-tables",
+      "relative_path": "normal/s1-figures-tables/s1-figures-tables.docx",
+      "sha256": "49107368b3b1ce80d6b042abe935425c76a4ea8638afed900d9c1704f6fd8dcc",
+      "group_id": "figures-and-tables",
+      "cases": [
+        {
+          "case_id": "inline_drawing",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "floating_figure",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "text_wrap",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "multi_page_table",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "merged_cell",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "repeated_header",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "caption",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": [
+            "Caption paragraphs use the native Caption style but do not contain a SEQ field; automatic numbering is not claimed."
+          ]
+        }
+      ],
+      "generation_status": "generated",
+      "annotation_status": "reviewed",
+      "annotation_relative_path": "annotations/s1/s1-figures-tables/document-annotation.json",
+      "limitations": [
+        "Current PDF and page-image provenance is registered in reports/phase0/fixture-render-catalog.json; this fixture directory does not contain separate current render-record.json and page-record.json files."
+      ]
+    },
+    {
+      "sample_id": "s1-embedded-objects",
+      "artifact_id": "fixture-docx-s1-embedded-objects",
+      "relative_path": "normal/s1-embedded-objects/s1-embedded-objects.docx",
+      "sha256": "c35e900292cce6aef20aedd1fb0deb4df95be15b014dba8cbf08343e0bd01d8d",
+      "group_id": "complex-and-unknown",
+      "cases": [
+        {
+          "case_id": "unknown_extension",
+          "implementation_status": "generated",
+          "expected_support": "register_and_render",
+          "limitations": []
+        },
+        {
+          "case_id": "unknown_namespace",
+          "implementation_status": "generated",
+          "expected_support": "register_and_render",
+          "limitations": []
+        },
+        {
+          "case_id": "embedded_chart",
+          "implementation_status": "unsupported",
+          "expected_support": "declared_unsupported",
+          "limitations": [
+            "No verified native generator is available in Phase 0; no text placeholder is counted as the object."
+          ]
+        },
+        {
+          "case_id": "ole",
+          "implementation_status": "unsupported",
+          "expected_support": "declared_unsupported",
+          "limitations": [
+            "No verified native generator is available in Phase 0; no text placeholder is counted as the object."
+          ]
+        },
+        {
+          "case_id": "group_drawing",
+          "implementation_status": "unsupported",
+          "expected_support": "declared_unsupported",
+          "limitations": [
+            "No verified native generator is available in Phase 0; no text placeholder is counted as the object."
+          ]
+        }
+      ],
+      "generation_status": "partial",
+      "annotation_status": "reviewed",
+      "annotation_relative_path": "annotations/s1/s1-embedded-objects/document-annotation.json",
+      "limitations": [
+        "No verified native generator is available in Phase 0; no text placeholder is counted as the object."
+      ]
+    },
+    {
+      "sample_id": "s1-broken-relationships",
+      "artifact_id": "fixture-docx-s1-broken-relationships",
+      "relative_path": "faults/s1-broken-relationships/s1-broken-relationships.docx",
+      "sha256": "8f6d29885162ba526a520ea06846781c3069ec41181029913a3e77994d98d20c",
+      "group_id": "complex-and-unknown+failure-and-access",
+      "cases": [
+        {
+          "case_id": "missing_relationship",
+          "implementation_status": "generated",
+          "expected_support": "declared_unsupported",
+          "limitations": []
+        },
+        {
+          "case_id": "missing_internal_target",
+          "implementation_status": "generated",
+          "expected_support": "declared_unsupported",
+          "limitations": []
+        },
+        {
+          "case_id": "missing_external_dependency",
+          "implementation_status": "generated",
+          "expected_support": "declared_unsupported",
+          "limitations": []
+        }
+      ],
+      "generation_status": "generated",
+      "annotation_status": "reviewed",
+      "annotation_relative_path": "annotations/s1/s1-broken-relationships/document-annotation.json",
+      "limitations": [
+        "The intentionally broken package has reviewed page fallback evidence, but relationship failures are established by package inspection rather than visual appearance."
+      ]
+    },
+    {
+      "sample_id": "s1-missing-font",
+      "artifact_id": "fixture-docx-s1-missing-font",
+      "relative_path": "environment/s1-missing-font/s1-missing-font.docx",
+      "sha256": "c81ca07a2f38c1d7e981913ae06f936fce88c6ac5592ef6489db48f9854e6cb5",
+      "group_id": "failure-and-access",
+      "cases": [
+        {
+          "case_id": "missing_font",
+          "implementation_status": "generated",
+          "expected_support": "explicit_partial_or_failure",
+          "limitations": []
+        }
+      ],
+      "generation_status": "generated",
+      "annotation_status": "reviewed",
+      "annotation_relative_path": "annotations/s1/s1-missing-font/document-annotation.json",
+      "limitations": []
+    },
+    {
+      "sample_id": "s1-pagination-ambiguity",
+      "artifact_id": "fixture-docx-s1-pagination-ambiguity",
+      "relative_path": "normal/s1-pagination-ambiguity/s1-pagination-ambiguity.docx",
+      "sha256": "aff77e49a43a13d0bd944b4176ede04cf73297d0db171bb04ad3a65ea570ec19",
+      "group_id": "failure-and-access",
+      "cases": [
+        {
+          "case_id": "long_document_pagination",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        },
+        {
+          "case_id": "duplicate_text_mapping",
+          "implementation_status": "generated",
+          "expected_support": "required_structural_result",
+          "limitations": []
+        }
+      ],
+      "generation_status": "generated",
+      "annotation_status": "reviewed",
+      "annotation_relative_path": "annotations/s1/s1-pagination-ambiguity/document-annotation.json",
+      "limitations": [
+        "The reviewed pinned WPS render contains 14 pages; page mappings bind to PDF hash ecd63652f8113eb858400e8a6789b284b8e6f44b530427b8197a52538efe2152."
+      ]
+    }
+  ],
+  "non_docx_scenarios": [
+    {
+      "scenario_id": "renderer-unavailable",
+      "source_sample_id": "s1-regions-fields",
+      "execution_status": "not_executed",
+      "expected_result": "explicit_renderer_unavailable"
+    },
+    {
+      "scenario_id": "render-failure",
+      "source_sample_id": "s1-regions-fields",
+      "execution_status": "not_executed",
+      "expected_result": "explicit_render_failure"
+    },
+    {
+      "scenario_id": "bypass-attempt",
+      "source_sample_id": "s1-regions-fields",
+      "execution_status": "not_executed",
+      "expected_result": "access_denied_without_content_disclosure"
+    }
+  ]
+}

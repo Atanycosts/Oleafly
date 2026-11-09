@@ -1,0 +1,43 @@
+{
+  "contract_version": "1.0.0",
+  "fixtures": [
+    {
+      "fixture_id": "source-catalog-all-required-present",
+      "phase": "phase0",
+      "expected_verdict": "pass",
+      "expected_missing_ids": []
+    },
+    {
+      "fixture_id": "english-baseline-does-not-use-chinese-pdf",
+      "phase": "phase0",
+      "expected_verdict": "pass",
+      "forbidden_mapping": ["ijam-english-working-docx", "chinese-historical-review-pdf"]
+    },
+    {
+      "fixture_id": "legacy-doc-is-not-s1-docx",
+      "phase": "phase0",
+      "expected_verdict": "pass",
+      "artifact_id": "ijam-legacy-word-template",
+      "expected_phase": "S2A"
+    },
+    {
+      "fixture_id": "pinned-renderer-profile",
+      "phase": "phase0",
+      "expected_verdict": "pass",
+      "profile_id": "wps-writer-12.1.0.28505"
+    },
+    {
+      "fixture_id": "missing-word-is-explicit",
+      "phase": "phase0",
+      "expected_verdict": "pass",
+      "profile_id": "microsoft-word-local",
+      "expected_status": "unavailable"
+    },
+    {
+      "fixture_id": "fixture-groups-reviewed-with-evidence",
+      "phase": "phase0",
+      "expected_verdict": "pass",
+      "expected_annotation_status": "reviewed"
+    }
+  ]
+}

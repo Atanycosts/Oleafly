@@ -1,0 +1,98 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-figures-tables",
+  "source_artifact_sha256": "49107368b3b1ce80d6b042abe935425c76a4ea8638afed900d9c1704f6fd8dcc",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "pdf_sha256": "3174c4aa7cc36bea04658ed332044f8555fdab1a92f87e2ae380398133648a04",
+  "review_status": "reviewed",
+  "mappings": [
+    {
+      "annotation_id": "figures-inline-page-001",
+      "object_annotation_id": "rfw-fx-ft-inline-image-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Inline image is visible without clipping on page 1.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "figures-floating-page-001",
+      "object_annotation_id": "rfw-fx-ft-floating-image-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Floating image and surrounding square-wrapped text are visible without overlap on page 1.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "figures-header-pages-001",
+      "object_annotation_id": "rfw-fx-ft-table-header-001",
+      "page_numbers": [
+        1,
+        2,
+        3
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The table header is visibly repeated on all three table pages.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "figures-table-pages-001",
+      "object_annotation_id": "rfw-fx-ft-table-row-001",
+      "page_numbers": [
+        1,
+        2,
+        3
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The 55-row table spans pages 1-3; row 019 crosses the page 1/page 2 boundary and the remaining rows continue without clipping.",
+      "limitations": [
+        "Page breaks are specific to this PDF hash and render profile."
+      ]
+    },
+    {
+      "annotation_id": "figures-merged-page-001",
+      "object_annotation_id": "rfw-fx-ft-merged-cell-001",
+      "page_numbers": [
+        3
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The merged-cell table is visible on page 3.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "figures-caption-page-001",
+      "object_annotation_id": "rfw-fx-ft-figure-caption-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Figure caption marker is visible below the inline figure on page 1.",
+      "limitations": [
+        "Automatic numbering is not claimed because no SEQ field exists."
+      ]
+    },
+    {
+      "annotation_id": "tables-caption-page-001",
+      "object_annotation_id": "rfw-fx-ft-table-caption-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "Table caption marker is visible immediately before the table on page 1.",
+      "limitations": [
+        "Automatic numbering is not claimed because no SEQ field exists."
+      ]
+    }
+  ],
+  "limitations": [
+    "Page boundaries and row continuation bind to the fixed WPS PDF hash and render profile.",
+    "Caption automatic numbering is not claimed because the fixture contains no SEQ fields.",
+    "Microsoft Word cross-rendering is unverified because Word is unavailable locally."
+  ],
+  "reviewed_by": "independent-fixture-audit",
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent page-image inspection bound to the fixed PDF hash and WPS profile"
+}

@@ -1,0 +1,80 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-pagination-ambiguity",
+  "artifact_id": "fixture-docx-s1-pagination-ambiguity",
+  "artifact_sha256": "aff77e49a43a13d0bd944b4176ede04cf73297d0db171bb04ad3a65ea570ec19",
+  "annotator": "independent-fixture-audit",
+  "review_status": "reviewed",
+  "objects": [
+    {
+      "annotation_id": "rfw-fx-pa-p0001",
+      "region": "body",
+      "kind": "pagination_anchor",
+      "locator": "word/document.xml body paragraph 2 containing RFW-FX-PA-P0001",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "first deterministic paragraph->reviewed PDF page 1"
+      ],
+      "limitations": [
+        "Page number binds to the reviewed WPS PDF hash and render profile."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-pa-p0320",
+      "region": "body",
+      "kind": "pagination_anchor",
+      "locator": "word/document.xml body paragraph 327 containing RFW-FX-PA-P0320",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "last deterministic paragraph->reviewed PDF page 14"
+      ],
+      "limitations": [
+        "Page number binds to the reviewed WPS PDF hash and render profile."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-pa-duplicate-text",
+      "region": "body",
+      "kind": "duplicate_text",
+      "locator": "The identical marker RFW-FX-PA-DUPLICATE-TEXT occurs in word/header1.xml and in word/document.xml body paragraphs 47 and 240.",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "body occurrence A is bracketed by body paragraphs 46/48 and maps to reviewed PDF page 2",
+        "body occurrence B is bracketed by body paragraphs 239/241 and maps to reviewed PDF page 10",
+        "header occurrence repeats on all 14 reviewed PDF pages"
+      ],
+      "limitations": [
+        "Text alone is ambiguous; region and adjacent anchors are required for a stable mapping."
+      ]
+    },
+    {
+      "annotation_id": "rfw-fx-pa-dup-a-before-001",
+      "region": "body",
+      "kind": "adjacent_anchor",
+      "locator": "word/document.xml body paragraph 46 immediately before duplicate body paragraph 47",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "RFW-FX-PA-DUP-A-BEFORE-001->duplicate occurrence A->RFW-FX-PA-DUP-A-AFTER-001 on reviewed PDF page 2"
+      ],
+      "limitations": []
+    },
+    {
+      "annotation_id": "rfw-fx-pa-dup-b-before-001",
+      "region": "body",
+      "kind": "adjacent_anchor",
+      "locator": "word/document.xml body paragraph 239 immediately before duplicate body paragraph 240",
+      "expected_support": "required_structural_result",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "RFW-FX-PA-DUP-B-BEFORE-001->duplicate occurrence B->RFW-FX-PA-DUP-B-AFTER-001 on reviewed PDF page 10"
+      ],
+      "limitations": []
+    }
+  ],
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent direct ZIP/OOXML package inspection plus page-image review of the fixed WPS PDF; package and page claims remain separate"
+}

@@ -1,0 +1,745 @@
+{
+  "contract_version": "s1-handoff-acceptance-1.0.0",
+  "specification_phase": "phase0",
+  "target_phase": "S1",
+  "validation_scope": "acceptance_specification_only",
+  "implementation_status": "planned",
+  "requirement_refs": [
+    "13.7",
+    "15"
+  ],
+  "material_directory": {
+    "baseline_id": "baseline-a",
+    "selection_method_version": "selection-a",
+    "materials": [
+      {
+        "material_id": "body-target",
+        "artifact_version_id": "source-a",
+        "relation": "target_region",
+        "available": true,
+        "authorized": true
+      },
+      {
+        "material_id": "body-neighbor",
+        "artifact_version_id": "source-a",
+        "relation": "neighbor",
+        "available": true,
+        "authorized": true
+      },
+      {
+        "material_id": "figure-page",
+        "artifact_version_id": "render-a",
+        "relation": "explicit_relation",
+        "available": true,
+        "authorized": true
+      },
+      {
+        "material_id": "missing-reference",
+        "artifact_version_id": "source-a",
+        "relation": "explicit_relation",
+        "available": false,
+        "authorized": true
+      },
+      {
+        "material_id": "restricted-note",
+        "artifact_version_id": "source-a",
+        "relation": "explicit_relation",
+        "available": true,
+        "authorized": false
+      }
+    ],
+    "cases": [
+      {
+        "fixture_id": "materials-directory-does-not-read",
+        "input": {
+          "response_kind": "directory",
+          "returned_material_ids": []
+        },
+        "expected": {
+          "entry_ids": [
+            "body-target",
+            "body-neighbor",
+            "figure-page"
+          ],
+          "missing_ids": [
+            "missing-reference"
+          ],
+          "unread_ids": [
+            "body-target",
+            "body-neighbor",
+            "figure-page"
+          ],
+          "actual_read_ids": [],
+          "forbidden_ids": [
+            "restricted-note"
+          ],
+          "expected_verdict": "partial"
+        }
+      },
+      {
+        "fixture_id": "materials-content-page-records-exact-read",
+        "input": {
+          "response_kind": "content",
+          "returned_material_ids": [
+            "body-target"
+          ]
+        },
+        "expected": {
+          "entry_ids": [
+            "body-target",
+            "body-neighbor",
+            "figure-page"
+          ],
+          "missing_ids": [
+            "missing-reference"
+          ],
+          "unread_ids": [
+            "body-neighbor",
+            "figure-page"
+          ],
+          "actual_read_ids": [
+            "body-target"
+          ],
+          "forbidden_ids": [
+            "restricted-note"
+          ],
+          "expected_verdict": "partial"
+        }
+      },
+      {
+        "fixture_id": "materials-continuation-retains-version",
+        "input": {
+          "response_kind": "content",
+          "returned_material_ids": [
+            "body-neighbor"
+          ]
+        },
+        "expected": {
+          "entry_ids": [
+            "body-target",
+            "body-neighbor",
+            "figure-page"
+          ],
+          "missing_ids": [
+            "missing-reference"
+          ],
+          "unread_ids": [
+            "body-target",
+            "figure-page"
+          ],
+          "actual_read_ids": [
+            "body-neighbor"
+          ],
+          "forbidden_ids": [
+            "restricted-note"
+          ],
+          "expected_verdict": "partial"
+        }
+      }
+    ]
+  },
+  "reading_bookmarks": {
+    "baseline_id": "baseline-a",
+    "task_id": "task-a",
+    "read_record_id": "read-a",
+    "material_ids": [
+      "body-target",
+      "body-neighbor"
+    ],
+    "actual_read_ids": [
+      "body-target"
+    ],
+    "retained_ids": [
+      "source-a",
+      "evidence-a",
+      "read-a"
+    ],
+    "cases": [
+      {
+        "fixture_id": "bookmark-actual-read",
+        "input": {
+          "operation": "save",
+          "current_baseline_id": "baseline-a",
+          "claimed_read_ids": [
+            "body-target"
+          ]
+        },
+        "expected": {
+          "expected_verdict": "accepted",
+          "bookmark_baseline_id": "baseline-a",
+          "validity": "CURRENT",
+          "actual_read_ids": [
+            "body-target"
+          ],
+          "unread_ids": [
+            "body-neighbor"
+          ],
+          "retained_ids": [
+            "source-a",
+            "evidence-a",
+            "read-a"
+          ],
+          "bookmark_exists": true
+        }
+      },
+      {
+        "fixture_id": "bookmark-unread-claim",
+        "input": {
+          "operation": "save",
+          "current_baseline_id": "baseline-a",
+          "claimed_read_ids": [
+            "body-target",
+            "body-neighbor"
+          ]
+        },
+        "expected": {
+          "expected_verdict": "rejected",
+          "bookmark_baseline_id": "baseline-a",
+          "validity": "CURRENT",
+          "actual_read_ids": [
+            "body-target"
+          ],
+          "unread_ids": [
+            "body-neighbor"
+          ],
+          "retained_ids": [
+            "source-a",
+            "evidence-a",
+            "read-a"
+          ],
+          "bookmark_exists": false
+        }
+      },
+      {
+        "fixture_id": "bookmark-baseline-change",
+        "input": {
+          "operation": "read",
+          "current_baseline_id": "baseline-b",
+          "claimed_read_ids": [
+            "body-target"
+          ]
+        },
+        "expected": {
+          "expected_verdict": "accepted",
+          "bookmark_baseline_id": "baseline-a",
+          "validity": "STALE",
+          "actual_read_ids": [
+            "body-target"
+          ],
+          "unread_ids": [
+            "body-neighbor"
+          ],
+          "retained_ids": [
+            "source-a",
+            "evidence-a",
+            "read-a"
+          ],
+          "bookmark_exists": true
+        }
+      },
+      {
+        "fixture_id": "bookmark-delete-preserves-records",
+        "input": {
+          "operation": "delete",
+          "current_baseline_id": "baseline-a",
+          "claimed_read_ids": [
+            "body-target"
+          ]
+        },
+        "expected": {
+          "expected_verdict": "accepted",
+          "bookmark_baseline_id": "baseline-a",
+          "validity": "CURRENT",
+          "actual_read_ids": [
+            "body-target"
+          ],
+          "unread_ids": [
+            "body-neighbor"
+          ],
+          "retained_ids": [
+            "source-a",
+            "evidence-a",
+            "read-a"
+          ],
+          "bookmark_exists": false
+        }
+      }
+    ]
+  },
+  "author_decisions": {
+    "decisions": [
+      {
+        "decision_id": "document-term",
+        "scope": "DOCUMENT",
+        "project_id": "project-a",
+        "document_id": "document-a",
+        "language": "en",
+        "confirmed": true
+      },
+      {
+        "decision_id": "project-goal",
+        "scope": "PROJECT",
+        "project_id": "project-a",
+        "document_id": null,
+        "language": "en",
+        "confirmed": true
+      },
+      {
+        "decision_id": "other-document-term",
+        "scope": "DOCUMENT",
+        "project_id": "project-a",
+        "document_id": "document-b",
+        "language": "en",
+        "confirmed": true
+      },
+      {
+        "decision_id": "other-project-goal",
+        "scope": "PROJECT",
+        "project_id": "project-b",
+        "document_id": null,
+        "language": "en",
+        "confirmed": true
+      },
+      {
+        "decision_id": "other-language-term",
+        "scope": "DOCUMENT",
+        "project_id": "project-a",
+        "document_id": "document-a",
+        "language": "zh",
+        "confirmed": true
+      },
+      {
+        "decision_id": "unconfirmed-suggestion",
+        "scope": "DOCUMENT",
+        "project_id": "project-a",
+        "document_id": "document-a",
+        "language": "en",
+        "confirmed": false
+      }
+    ],
+    "cases": [
+      {
+        "fixture_id": "decisions-scope-and-confirmation",
+        "input": {
+          "operation": "list",
+          "project_id": "project-a",
+          "document_id": "document-a",
+          "language": "en",
+          "actor_kind": "ordinary_client",
+          "requested_scope": "DOCUMENT"
+        },
+        "expected": {
+          "expected_verdict": "accepted",
+          "visible_decision_ids": [
+            "document-term",
+            "project-goal"
+          ],
+          "creates_author_decision": false,
+          "creates_semantic_pass": false
+        }
+      },
+      {
+        "fixture_id": "decisions-client-cannot-confirm",
+        "input": {
+          "operation": "confirm",
+          "project_id": "project-a",
+          "document_id": "document-a",
+          "language": "en",
+          "actor_kind": "ordinary_client",
+          "requested_scope": "DOCUMENT"
+        },
+        "expected": {
+          "expected_verdict": "rejected",
+          "visible_decision_ids": [],
+          "creates_author_decision": false,
+          "creates_semantic_pass": false
+        }
+      },
+      {
+        "fixture_id": "decisions-local-scope-not-s1",
+        "input": {
+          "operation": "confirm",
+          "project_id": "project-a",
+          "document_id": "document-a",
+          "language": "en",
+          "actor_kind": "trusted_user",
+          "requested_scope": "LOCAL"
+        },
+        "expected": {
+          "expected_verdict": "rejected",
+          "visible_decision_ids": [],
+          "creates_author_decision": false,
+          "creates_semantic_pass": false
+        }
+      },
+      {
+        "fixture_id": "decisions-trusted-document-confirmation",
+        "input": {
+          "operation": "confirm",
+          "project_id": "project-a",
+          "document_id": "document-a",
+          "language": "en",
+          "actor_kind": "trusted_user",
+          "requested_scope": "DOCUMENT"
+        },
+        "expected": {
+          "expected_verdict": "accepted",
+          "visible_decision_ids": [],
+          "creates_author_decision": true,
+          "creates_semantic_pass": false
+        }
+      }
+    ]
+  },
+  "cache_validity": {
+    "entries": [
+      {
+        "cache_entry_id": "package-index",
+        "result_type": "package_inventory",
+        "dependency_keys": [
+          "source_artifact_hash",
+          "inventory_tool_version",
+          "inventory_options"
+        ],
+        "coverage": [
+          "body"
+        ]
+      },
+      {
+        "cache_entry_id": "structure-index",
+        "result_type": "structural_index",
+        "dependency_keys": [
+          "source_artifact_hash",
+          "parser_version",
+          "parser_options"
+        ],
+        "coverage": [
+          "body"
+        ]
+      },
+      {
+        "cache_entry_id": "render-pages",
+        "result_type": "rendered_pages",
+        "dependency_keys": [
+          "source_artifact_hash",
+          "renderer_executable_hash",
+          "renderer_settings",
+          "font_set_hash"
+        ],
+        "coverage": [
+          "body"
+        ]
+      },
+      {
+        "cache_entry_id": "page-mapping",
+        "result_type": "page_mapping",
+        "dependency_keys": [
+          "structural_index_id",
+          "rendered_pdf_hash",
+          "mapping_method_version"
+        ],
+        "coverage": [
+          "body"
+        ]
+      },
+      {
+        "cache_entry_id": "material-directory",
+        "result_type": "task_material_directory",
+        "dependency_keys": [
+          "baseline_id",
+          "task_scope",
+          "selection_method_version",
+          "access_scope"
+        ],
+        "coverage": [
+          "body"
+        ]
+      }
+    ],
+    "cases": [
+      {
+        "fixture_id": "cache-unchanged-hit",
+        "input": {
+          "changed_dependencies": [],
+          "missing_dependencies": [],
+          "requested_coverage": [
+            "body"
+          ],
+          "dependency_completeness": "complete",
+          "fallback_scope": []
+        },
+        "expected": {
+          "expected_impacted_ids": [],
+          "expected_preserved_ids": [
+            "package-index",
+            "structure-index",
+            "render-pages",
+            "page-mapping",
+            "material-directory"
+          ],
+          "expected_verdict": "hit",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      },
+      {
+        "fixture_id": "cache-source-change",
+        "input": {
+          "changed_dependencies": [
+            "source_artifact_hash",
+            "structural_index_id",
+            "rendered_pdf_hash",
+            "baseline_id"
+          ],
+          "missing_dependencies": [],
+          "requested_coverage": [
+            "body"
+          ],
+          "dependency_completeness": "complete",
+          "fallback_scope": []
+        },
+        "expected": {
+          "expected_impacted_ids": [
+            "package-index",
+            "structure-index",
+            "render-pages",
+            "page-mapping",
+            "material-directory"
+          ],
+          "expected_preserved_ids": [],
+          "expected_verdict": "miss",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      },
+      {
+        "fixture_id": "cache-parser-change",
+        "input": {
+          "changed_dependencies": [
+            "parser_version",
+            "structural_index_id"
+          ],
+          "missing_dependencies": [],
+          "requested_coverage": [
+            "body"
+          ],
+          "dependency_completeness": "complete",
+          "fallback_scope": []
+        },
+        "expected": {
+          "expected_impacted_ids": [
+            "structure-index",
+            "page-mapping"
+          ],
+          "expected_preserved_ids": [
+            "package-index",
+            "render-pages",
+            "material-directory"
+          ],
+          "expected_verdict": "miss",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      },
+      {
+        "fixture_id": "cache-renderer-change",
+        "input": {
+          "changed_dependencies": [
+            "renderer_executable_hash",
+            "rendered_pdf_hash"
+          ],
+          "missing_dependencies": [],
+          "requested_coverage": [
+            "body"
+          ],
+          "dependency_completeness": "complete",
+          "fallback_scope": []
+        },
+        "expected": {
+          "expected_impacted_ids": [
+            "render-pages",
+            "page-mapping"
+          ],
+          "expected_preserved_ids": [
+            "package-index",
+            "structure-index",
+            "material-directory"
+          ],
+          "expected_verdict": "miss",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      },
+      {
+        "fixture_id": "cache-font-change",
+        "input": {
+          "changed_dependencies": [
+            "font_set_hash",
+            "rendered_pdf_hash"
+          ],
+          "missing_dependencies": [],
+          "requested_coverage": [
+            "body"
+          ],
+          "dependency_completeness": "complete",
+          "fallback_scope": []
+        },
+        "expected": {
+          "expected_impacted_ids": [
+            "render-pages",
+            "page-mapping"
+          ],
+          "expected_preserved_ids": [
+            "package-index",
+            "structure-index",
+            "material-directory"
+          ],
+          "expected_verdict": "miss",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      },
+      {
+        "fixture_id": "cache-display-change",
+        "input": {
+          "changed_dependencies": [
+            "renderer_settings",
+            "rendered_pdf_hash"
+          ],
+          "missing_dependencies": [],
+          "requested_coverage": [
+            "body"
+          ],
+          "dependency_completeness": "complete",
+          "fallback_scope": []
+        },
+        "expected": {
+          "expected_impacted_ids": [
+            "render-pages",
+            "page-mapping"
+          ],
+          "expected_preserved_ids": [
+            "package-index",
+            "structure-index",
+            "material-directory"
+          ],
+          "expected_verdict": "miss",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      },
+      {
+        "fixture_id": "cache-pdf-change",
+        "input": {
+          "changed_dependencies": [
+            "rendered_pdf_hash"
+          ],
+          "missing_dependencies": [],
+          "requested_coverage": [
+            "body"
+          ],
+          "dependency_completeness": "complete",
+          "fallback_scope": []
+        },
+        "expected": {
+          "expected_impacted_ids": [
+            "page-mapping"
+          ],
+          "expected_preserved_ids": [
+            "package-index",
+            "structure-index",
+            "render-pages",
+            "material-directory"
+          ],
+          "expected_verdict": "miss",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      },
+      {
+        "fixture_id": "cache-unrelated-rule-change",
+        "input": {
+          "changed_dependencies": [
+            "journal_rule_version"
+          ],
+          "missing_dependencies": [],
+          "requested_coverage": [
+            "body"
+          ],
+          "dependency_completeness": "complete",
+          "fallback_scope": []
+        },
+        "expected": {
+          "expected_impacted_ids": [],
+          "expected_preserved_ids": [
+            "package-index",
+            "structure-index",
+            "render-pages",
+            "page-mapping",
+            "material-directory"
+          ],
+          "expected_verdict": "hit",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      },
+      {
+        "fixture_id": "cache-insufficient-coverage",
+        "input": {
+          "changed_dependencies": [],
+          "missing_dependencies": [],
+          "requested_coverage": [
+            "body",
+            "footer"
+          ],
+          "dependency_completeness": "complete",
+          "fallback_scope": []
+        },
+        "expected": {
+          "expected_impacted_ids": [
+            "package-index",
+            "structure-index",
+            "render-pages",
+            "page-mapping",
+            "material-directory"
+          ],
+          "expected_preserved_ids": [],
+          "expected_verdict": "miss",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      },
+      {
+        "fixture_id": "cache-missing-dependency",
+        "input": {
+          "changed_dependencies": [],
+          "missing_dependencies": [
+            "parser_version"
+          ],
+          "requested_coverage": [
+            "body"
+          ],
+          "dependency_completeness": "incomplete",
+          "fallback_scope": [
+            "structure-index",
+            "page-mapping"
+          ]
+        },
+        "expected": {
+          "expected_impacted_ids": [
+            "structure-index",
+            "page-mapping"
+          ],
+          "expected_preserved_ids": [
+            "package-index",
+            "render-pages",
+            "material-directory"
+          ],
+          "expected_verdict": "miss",
+          "creates_semantic_pass": false,
+          "creates_read_receipt": false
+        }
+      }
+    ]
+  }
+}

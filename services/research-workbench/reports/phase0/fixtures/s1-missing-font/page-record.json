@@ -1,0 +1,15 @@
+﻿{
+    "report_version":  "1.0.0",
+    "input_pdf":  "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-missing-font/s1-missing-font.pdf",
+    "input_pdf_sha256":  "dc26ec5d6883697dbdf60c29ee3607e6479e5cc750a63d8b87bfa25fd7b7100a",
+    "output_directory":  "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-missing-font/pages-150dpi",
+    "dpi":  150,
+    "page_count":  1,
+    "pages":  [
+                  {
+                      "path":  "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-missing-font/pages-150dpi/page-1.png",
+                      "sha256":  "17dd1ac221bf2f27d05eb21c89d66a6da8a86ffad8c53aea6582e26e1cc3ae95",
+                      "size":  26429
+                  }
+              ]
+}

@@ -1,0 +1,65 @@
+{
+  "contract_version": "s1-render-bundle-1.1.0",
+  "scope": "persisted_page_evidence_for_one_immutable_source_baseline",
+  "entry_points": [
+    "rfw-project register-render",
+    "rfw-project renders",
+    "rfw-project read --page-number --render-bundle-id"
+  ],
+  "registration_inputs": [
+    "baseline_id",
+    "input_root",
+    "render_record",
+    "page_index",
+    "actor_id",
+    "confirmation_reason"
+  ],
+  "optional_pair": [
+    "document_annotation",
+    "page_evidence"
+  ],
+  "captured_artifacts": [
+    "pdf",
+    "page_image",
+    "render_record",
+    "page_index",
+    "document_annotation",
+    "page_evidence"
+  ],
+  "identity": "render-bundle prefix with SHA-256 of the normalized immutable manifest including baseline and exact artifact references",
+  "transaction": "artifact blobs, evidence manifest and baseline association share one SQLite commit",
+  "baseline_policy": "registration does not update the current baseline pointer; callers select an exact baseline and bundle",
+  "required_checks": [
+    "captured source/PDF/PNG bytes match their recorded hashes",
+    "physical PDF page count matches the contiguous page index",
+    "Supported static 8-bit non-interlaced PNG structure, checksums, bounded compressed stream and scanlines are valid",
+    "historical process-verified render record contains source, profile and process provenance",
+    "reviewed mapping input requires complete independent review metadata and reviewed source objects",
+    "mapping is rebuilt from captured independent annotations using the current reader and mapping method",
+    "mapping source, PDF, renderer profile and page range agree",
+    "query validates retained artifacts even if original paths no longer exist"
+  ],
+  "states": {
+    "no_annotation_pair": "pending_independent_review",
+    "complete_reviewed_unique_mappings": "reviewed",
+    "ambiguous_or_unmapped_observations": "partial",
+    "scientific_verification": "NOT_REVIEWED"
+  },
+  "read_semantics": [
+    "No automatic latest-bundle selection or cross-baseline reuse.",
+    "Page query returns mapped source observations; PNG pixels are not claimed read.",
+    "Receipt dependencies and continuation cursors bind the exact bundle and mapping.",
+    "Older bundles and saved responses remain retained after registering another bundle.",
+    "Source, reader, mapping or bundle method changes invalidate relevant applicability.",
+    "Catalog and bundle listing do not create content-read receipts.",
+    "A different current baseline makes an old bundle inapplicable even when source bytes are identical; historical bundle access remains available."
+  ],
+  "limits": [
+    "Registration does not run Word/WPS or re-attest a historical renderer process.",
+    "Hashes identify captured bytes; they do not prove PNG raster provenance or visual correctness.",
+    "Reviewer labels preserve operator-supplied provenance without authenticating a person.",
+    "The internal binary accessor provides retained bytes, not a user-authorized export operation.",
+    "The desktop UI, MCP authentication and full S1 independent acceptance remain separate work.",
+    "PNG permits grayscale/RGB/grayscale-alpha/RGBA at 8 bits without interlacing or animation; encoded limit 64 MiB and decoded limit 256 MiB."
+  ]
+}

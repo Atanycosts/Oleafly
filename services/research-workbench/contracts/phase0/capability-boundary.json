@@ -1,0 +1,60 @@
+{
+  "contract_version": "1.0.0",
+  "phase": "S1",
+  "capabilities": [
+    {
+      "capability_id": "docx-package-inventory",
+      "object_scope": ["zip_entry", "content_type", "relationship", "external_target"],
+      "support_level": "required_structural_result",
+      "required_evidence": ["source_hash", "part_path", "relationship_target", "parse_status"]
+    },
+    {
+      "capability_id": "docx-regional-text",
+      "object_scope": ["body", "header", "footer", "footnote", "endnote", "textbox"],
+      "support_level": "required_structural_result",
+      "required_evidence": ["region", "node_locator", "text", "parse_status"]
+    },
+    {
+      "capability_id": "docx-basic-table-grid",
+      "object_scope": ["table", "row", "cell", "merge", "grid_width", "repeat_header"],
+      "support_level": "required_structural_result",
+      "required_evidence": ["node_locator", "relationships", "limitations"]
+    },
+    {
+      "capability_id": "docx-omml-source",
+      "object_scope": ["inline_equation", "display_equation"],
+      "support_level": "required_structural_result",
+      "required_evidence": ["node_locator", "omml_source", "page_refs", "limitations"]
+    },
+    {
+      "capability_id": "docx-field-boundaries",
+      "object_scope": ["field_code", "field_result", "zotero_field", "cross_reference"],
+      "support_level": "required_structural_result",
+      "required_evidence": ["node_locator", "field_boundary", "protected_reason"]
+    },
+    {
+      "capability_id": "docx-image-relationships",
+      "object_scope": ["inline_drawing", "anchored_drawing", "image_resource", "caption"],
+      "support_level": "required_structural_result",
+      "required_evidence": ["node_locator", "resource_relation", "dimensions", "anchor_or_inline"]
+    },
+    {
+      "capability_id": "docx-styles-and-layout",
+      "object_scope": ["style", "inheritance", "section", "page_size", "margin", "column", "break"],
+      "support_level": "required_structural_result",
+      "required_evidence": ["declared_value", "computed_value", "source_chain", "unconfirmed_fields"]
+    },
+    {
+      "capability_id": "docx-complex-embedded-objects",
+      "object_scope": ["ole", "embedded_chart", "group_shape", "unknown_extension"],
+      "support_level": "register_and_render",
+      "required_evidence": ["part_path", "relationship", "available_preview", "limitations"]
+    },
+    {
+      "capability_id": "docx-unknown-or-broken-content",
+      "object_scope": ["unknown_namespace", "broken_relationship", "missing_external_dependency"],
+      "support_level": "declared_unsupported",
+      "required_evidence": ["source_location", "relationship", "failure_reason", "available_page_evidence"]
+    }
+  ]
+}

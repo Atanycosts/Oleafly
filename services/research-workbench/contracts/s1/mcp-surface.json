@@ -1,0 +1,81 @@
+{
+  "contract_version": "workbench-mcp-0.4.1",
+  "status": "implemented_slice_pending_full_s1_acceptance",
+  "entry_point": "rfw-workbench-mcp",
+  "transport": "stdio",
+  "server_id": "workbench-mcp",
+  "scope": "local_read_write",
+  "read_only_option": {
+    "argument": "--read-only",
+    "scope": "read_only",
+    "unregistered_tools": [
+      "import_world",
+      "revise_rule",
+      "import_manuscript",
+      "update_manuscript",
+      "bind_project",
+      "run_check",
+      "record_disposition"
+    ],
+    "read_receipts": "persisted as usual; read-only refers to management operations",
+    "project_scope": "all projects in the selected library; task metadata is retained for local read-receipt correlation only and does not restrict access"
+  },
+  "input": "existing_application_owned_library",
+  "delegates_to": "workbench.WorkbenchService",
+  "tools": [
+    "library_state",
+    "project_detail",
+    "world_review",
+    "manuscript_workspace",
+    "project_history",
+    "read_objects",
+    "saved_read",
+    "check_record",
+    "diff_worlds",
+    "method_versions",
+    "import_world",
+    "revise_rule",
+    "import_manuscript",
+    "update_manuscript",
+    "bind_project",
+    "run_check",
+    "record_disposition",
+    "source_page"
+  ],
+  "method_versions": {
+    "http": "journal-http-1.5.0",
+    "reader": "s1-readonly-reader-1.4.0",
+    "report": "1.0.0",
+    "query": "s1-read-query-1.7.0",
+    "read_receipt": "s1-read-receipt-1.2.0",
+    "world_schema": "journal-world-1.1.0",
+    "analyzer": "journal-world-analyzer-1.4.0",
+    "checker": "journal-geometry-checker-1.1.0"
+  },
+  "not_permitted": [
+    "modify a manuscript's bytes in place; updates are new retained baselines",
+    "publish an author decision: the storage rules refuse agent proposals by design",
+    "register page-evidence render bundles: independent human evidence goes through the operator CLI or browser",
+    "infer page coordinates or page mappings",
+    "read content that discovery did not disclose",
+    "authenticate a remote or multi-user caller"
+  ],
+  "evidence_rules": [
+    "Every tool delegates to WorkbenchService; the MCP layer holds no separate business rule.",
+    "A declared refusal reaches the client with its reason, never as a generic execution failure.",
+    "Unknown top-level tool argument names are refused at the MCP boundary before a service operation; the SDK validates declared argument values.",
+    "read_objects accepts optional com.oleafly/research-task MCP request metadata containing system, project_id, task_id and generation; Oleafly ResearchTask sends it only to a server identifying as research-file-workbench, for local receipt correlation only, not authentication or project authorization.",
+    "With --read-only, management tools are neither advertised nor callable. The default local-operator surface retains all 18 tools.",
+    "Discovery records no content read and no review.",
+    "A read is recorded as a read receipt; the receipt is the design behaviour, not a mutation.",
+    "A world import or revision is the same retained record the browser writes, carrying local-operator as the actor. A manuscript import or update retains a confirmation reason naming the driving surface (browser, mcp or cli); a binding, check or disposition record carries a surface field naming it. World revision records stay actor-attributed only while the retained world schema is frozen.",
+    "Coverage stays partial while the reader declares limits."
+  ],
+  "limits": [
+    "This is a local single-operator interface. It is not an authenticated remote service.",
+    "The desktop shell and this entry point share one library; neither is a second authority.",
+    "Authenticated MCP, task-material directories and full S1 independent acceptance remain separate work.",
+    "Unknown top-level arguments are checked against the SDK-generated schemas through the SDK's public middleware hook. That hook is provisional within SDK 2.x; real-stdio regression tests cover it.",
+    "Nested source records tolerate unknown keys beyond the declared name/kind/content_base64; handlers never use an ignored key."
+  ]
+}

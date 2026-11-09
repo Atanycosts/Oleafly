@@ -1,0 +1,77 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-embedded-objects",
+  "artifact_id": "fixture-docx-s1-embedded-objects",
+  "artifact_sha256": "c35e900292cce6aef20aedd1fb0deb4df95be15b014dba8cbf08343e0bd01d8d",
+  "annotator": "independent-fixture-audit",
+  "review_status": "reviewed",
+  "objects": [
+    {
+      "annotation_id": "rfw-fx-eo-unknown-extension-anchor-001",
+      "region": "body",
+      "kind": "unknown_extension",
+      "locator": "word/document.xml body paragraph 2; mc:AlternateContent with rfw:unknownObject rfw:id=RFW-FX-EO-UNKNOWN-EXTENSION-001 and visible anchor RFW-FX-EO-UNKNOWN-EXTENSION-ANCHOR-001",
+      "expected_support": "register_and_render",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "mc:Choice Requires=rfw->rfw:unknownObject; mc:Fallback->visible text 'unknown extension fallback'"
+      ],
+      "limitations": [
+        "The reviewed page proves only the anchor and fallback rendering; it does not render or semantically interpret the unknown extension object."
+      ]
+    },
+    {
+      "annotation_id": "package:customxml/item1.xml",
+      "region": "body",
+      "kind": "unknown_namespace",
+      "locator": "package part customXml/item1.xml; rfw:fixture xmlns:rfw=urn:research-file-workbench:fixture:custom-xml:2026 id=RFW-FX-EO-UNKNOWN-EXTENSION-001",
+      "expected_support": "register_and_render",
+      "review_status": "reviewed",
+      "expected_relations": [
+        "word/_rels/document.xml.rels:rId1->../customXml/item1.xml",
+        "customXml/_rels/item1.xml.rels:rId1->itemProps1.xml customXmlProps"
+      ],
+      "limitations": [
+        "The custom XML part has no direct page preview or page mapping; existence and relationship-chain registration are reviewed only."
+      ]
+    },
+    {
+      "annotation_id": "not-generated:embedded-chart",
+      "region": "body",
+      "kind": "embedded_chart",
+      "locator": "No chart part or chart relationship exists in this fixture; native coverage is provided by s1-native-complex-objects.",
+      "expected_support": "declared_unsupported",
+      "review_status": "unsupported",
+      "expected_relations": [],
+      "limitations": [
+        "No text placeholder is counted as an embedded chart in this fixture."
+      ]
+    },
+    {
+      "annotation_id": "not-generated:ole-object",
+      "region": "body",
+      "kind": "ole",
+      "locator": "No OLE object or embedded OLE binary exists in this fixture; native coverage is provided by s1-native-complex-objects.",
+      "expected_support": "declared_unsupported",
+      "review_status": "unsupported",
+      "expected_relations": [],
+      "limitations": [
+        "No text placeholder is counted as an OLE object in this fixture."
+      ]
+    },
+    {
+      "annotation_id": "not-generated:group-drawing",
+      "region": "body",
+      "kind": "group_drawing",
+      "locator": "No native grouped drawing exists in this fixture; native coverage is provided by s1-native-complex-objects.",
+      "expected_support": "declared_unsupported",
+      "review_status": "unsupported",
+      "expected_relations": [],
+      "limitations": [
+        "No text placeholder is counted as a grouped drawing in this fixture."
+      ]
+    }
+  ],
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent direct ZIP/OOXML package inspection plus page-image review of the fixed WPS PDF; package and page claims remain separate"
+}

@@ -1,0 +1,87 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-pagination-ambiguity",
+  "source_artifact_sha256": "aff77e49a43a13d0bd944b4176ede04cf73297d0db171bb04ad3a65ea570ec19",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "pdf_sha256": "ecd63652f8113eb858400e8a6789b284b8e6f44b530427b8197a52538efe2152",
+  "review_status": "reviewed",
+  "mappings": [
+    {
+      "annotation_id": "pagination-first-page-001",
+      "object_annotation_id": "rfw-fx-pa-p0001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "RFW-FX-PA-P0001 is visible on page 1.",
+      "limitations": [
+        "Mapping binds to this PDF hash and render profile."
+      ]
+    },
+    {
+      "annotation_id": "pagination-last-page-001",
+      "object_annotation_id": "rfw-fx-pa-p0320",
+      "page_numbers": [
+        14
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "RFW-FX-PA-P0320 is visible on page 14; the 14-page range has no observed clipping.",
+      "limitations": [
+        "Mapping binds to this PDF hash and render profile."
+      ]
+    },
+    {
+      "annotation_id": "pagination-duplicate-pages-001",
+      "object_annotation_id": "rfw-fx-pa-duplicate-text",
+      "page_numbers": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The header occurrence repeats on every page; body duplicate occurrence A is independently bracketed on page 2 and occurrence B on page 10.",
+      "limitations": [
+        "The identical text is deliberately ambiguous without its region and adjacent-anchor relations."
+      ]
+    },
+    {
+      "annotation_id": "pagination-duplicate-a-page-001",
+      "object_annotation_id": "rfw-fx-pa-dup-a-before-001",
+      "page_numbers": [
+        2
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "A-before, duplicate occurrence A, and A-after are visible together on page 2.",
+      "limitations": []
+    },
+    {
+      "annotation_id": "pagination-duplicate-b-page-001",
+      "object_annotation_id": "rfw-fx-pa-dup-b-before-001",
+      "page_numbers": [
+        10
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "B-before, duplicate occurrence B, and B-after are visible together on page 10.",
+      "limitations": []
+    }
+  ],
+  "limitations": [
+    "All page mappings bind to the fixed WPS PDF hash and render profile.",
+    "Identical duplicate text is not a unique locator without region and adjacent-anchor evidence.",
+    "Microsoft Word cross-rendering is unverified because Word is unavailable locally."
+  ],
+  "reviewed_by": "independent-fixture-audit",
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent page-image inspection bound to the fixed PDF hash and WPS profile"
+}

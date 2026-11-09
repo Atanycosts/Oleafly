@@ -1,0 +1,46 @@
+{
+  "contract_version": "1.0.0",
+  "generator": "tools/phase0/build-native-complex-object-probe.ps1",
+  "generator_mode": "wps-native-fixed-snapshot",
+  "fixtures": [
+    {
+      "sample_id": "s1-native-complex-objects",
+      "artifact_id": "fixture-docx-s1-native-complex-objects",
+      "relative_path": "native/s1-native-complex-objects/s1-native-complex-objects.docx",
+      "sha256": "b79624007401c884e9f3de06c2a14b87b7bb451c78ef2be84cfacf481406f5f0",
+      "group_id": "complex-and-unknown",
+      "generation_environment": {
+        "renderer_profile_id": "wps-writer-12.1.0.28505",
+        "wps_executable_sha256": "9a0ceb217d77238a8891e1ef5a2ff3763572417091d0e4646ea5c554db46736d"
+      },
+      "cases": [
+        {
+          "case_id": "embedded_chart",
+          "implementation_status": "generated_native",
+          "expected_support": "register_and_render",
+          "limitations": ["Default WPS chart data and Chinese labels are intentional fixture content."]
+        },
+        {
+          "case_id": "ole",
+          "implementation_status": "generated_native",
+          "expected_support": "register_and_render",
+          "limitations": ["OLE payload is an embedded text-package object with an EMF preview."]
+        },
+        {
+          "case_id": "group_drawing",
+          "implementation_status": "generated_native",
+          "expected_support": "register_and_render",
+          "limitations": ["The grouped drawing contains two WPS-created rectangle shapes."]
+        }
+      ],
+      "generation_status": "generated_native_snapshot",
+      "annotation_status": "reviewed",
+      "annotation_relative_path": "annotations/s1/s1-native-complex-objects/document-annotation.json",
+      "limitations": [
+        "WPS writes nondeterministic package content across rebuilds; this reviewed snapshot and its hash are authoritative.",
+        "Regression validates parts, relationships, reopenability, and rendered appearance rather than byte-identical rebuilds.",
+        "Chart data semantics, OLE execution, and Microsoft Word cross-rendering are outside this reviewed scope."
+      ]
+    }
+  ]
+}

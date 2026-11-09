@@ -1,0 +1,465 @@
+{
+  "contract_version": "journal-world-1.1.0",
+  "method_versions": {
+    "world_schema": "journal-world-1.1.0",
+    "analyzer": "journal-world-analyzer-1.4.0",
+    "checker": "journal-geometry-checker-1.1.0",
+    "http": "journal-http-1.5.0"
+  },
+  "scope": "local_page_geometry_slice",
+  "workflow": [
+    "import_sources",
+    "analyze_world",
+    "bind_explicit_version",
+    "check_retained_manuscript",
+    "inspect_rule_map"
+  ],
+  "publication_gate_required": false,
+  "world_identity": "journal_id plus deterministic digest of captured sources, declared scope, analyzer versions, rules and decisions; repeated identical analysis reuses the version",
+  "source_inputs": [
+    "template_docx",
+    "guide_text",
+    "guide_docx",
+    "guide_pdf",
+    "rule_component_json"
+  ],
+  "properties": [
+    "page_width_twips",
+    "page_height_twips",
+    "top_margin_twips",
+    "right_margin_twips",
+    "bottom_margin_twips",
+    "left_margin_twips",
+    "columns",
+    "body_font_size_halfpoints",
+    "body_line_spacing_twips"
+  ],
+  "rule_fields": [
+    "rule_id",
+    "property",
+    "label",
+    "expected",
+    "unit",
+    "basis_status",
+    "confirmation_method",
+    "scope",
+    "evidence",
+    "limitations"
+  ],
+  "rule_scope": "all_sections only when explicitly supported by a supplied guideline or a template-wide candidate; per-template-section observations do not imply manuscript section correspondence",
+  "basis_states": [
+    "confirmed",
+    "candidate",
+    "conflict"
+  ],
+  "source_assurance": "operator_supplied; deterministic recognition of explicit requirements does not authenticate a publisher or prove the supplied guide is current",
+  "source_semantics": [
+    "Captured sources are immutable and retained with exact hashes and locators.",
+    "Template formatting produces candidate expectations, never normative requirements by itself.",
+    "Only explicitly supported unambiguous guideline patterns can be confirmed by deterministic extraction.",
+    "Unparsed text, mixed section geometry, unsupported input and absent properties remain explicit coverage gaps.",
+    "Shared components are declarative data with exact versions and per-journal applicability evidence; no dynamic imports, eval, commands or script execution.",
+    "New world storage validates captured source bytes and reproduces analysis plus the ordered local decisions; a self-consistent manifest hash alone cannot authorize invented rules.",
+    "PDF guidance feeds the same narrow deterministic requirement recognizer as text guidance, with page/block evidence locators; conditional, negative or unparsed blocks remain explicit gaps and never become confirmed rules.",
+    "Page-format definition sentences (for example 'A double column page is defined as a 7.875″ x 10.75″ page') yield the column count and page dimensions; qualifiers in the same sentence without a checkable geometry property are carried as rule limitations."
+  ],
+  "check_semantics": [
+    "An applicable confirmed expectation produces compliant only when every required section is observed and matches; a known mismatch produces violation even when other section values are missing.",
+    "Every rule result exposes applicability separately as APPLICABLE, NOT_APPLICABLE or UNKNOWN.",
+    "Candidate comparisons produce observed_match or observed_difference, never violation.",
+    "A candidate mismatch produces observed_difference even when other section values are missing; observed_match requires complete matching section coverage.",
+    "A conflict or incomplete coverage with no known mismatch remains cannot_determine; an unsupported scope remains not_checked. Per-section observations and missing coverage are preserved separately.",
+    "Checks bind immutable manuscript baseline, world version and checker dependencies.",
+    "A newer world only creates update_available; it does not stale a check still bound to unchanged inputs.",
+    "Changing a binding, source baseline, analyzer, reader or checker version makes the retained check STALE; historical conclusions remain intact. Corrupt retained source or world evidence is a read failure, never a fabricated current result.",
+    "Disposition records do not change check verdicts or rule confirmation."
+  ],
+  "result_axes": {
+    "rule_basis": [
+      "confirmed",
+      "candidate",
+      "conflict"
+    ],
+    "applicability": [
+      "APPLICABLE",
+      "NOT_APPLICABLE",
+      "UNKNOWN"
+    ],
+    "check_verdict": [
+      "compliant",
+      "violation",
+      "observed_match",
+      "observed_difference",
+      "cannot_determine",
+      "not_checked"
+    ],
+    "validity": [
+      "CURRENT",
+      "STALE"
+    ],
+    "operator_disposition": [
+      "note",
+      "defer"
+    ],
+    "derivation": "The four independent presentation axes are rule basis, check verdict, current validity and operator disposition; applicability is an additional separate scope result. Dispositions are immutable records, not edits to any other axis."
+  },
+  "persistence": [
+    "The retained world record is the single authority. New checks persist world_version_id and explicit dependencies, not an embedded second world.",
+    "The service joins the retained world into an HTTP check response for presentation. It derives validity, stale_reasons, update_available and dispositions when reading; those fields are not persisted as check authority.",
+    "Source-baseline guards and current-binding validation must still hold at binding and check commits.",
+    "Retained world source bytes, check dependencies, binding references and content hashes are verified before reuse."
+  ],
+  "historical_access": [
+    "A supported retained world schema can be read after its analyzer method changes; historical access does not re-execute or restore that older analyzer.",
+    "A new check or local rule correction requires the current analyzer and DOCX reader semantics; re-import captured sources to create a current version instead of relabeling an old world.",
+    "Retained checker 1.0.0 records keep their original missing-value aggregation and absent per-finding verdicts. They are validated as historical records, not generated by an active legacy checker.",
+    "New checks require checker 1.1.0 and the current DOCX reader. A historical embedded world is verified against its retained identity; new writes reject world duplication."
+  ],
+  "presentation": [
+    "Rule bubbles expose separate verdict, basis, validity and disposition axes. Formal violations, candidate differences, undetermined rules and unchecked rules are counted separately.",
+    "Source-material coverage_gaps and manuscript missing observations are distinct counts. A manuscript missing observation is one returned section/property finding whose observed value is null; an unexecuted conflicting rule does not fabricate missing findings.",
+    "STALE results retain their historical conclusion but never use the current compliant appearance.",
+    "Rule evidence and manuscript section observations are shown side by side. A manual resolution displays its reason, actor and previous-to-selected value alongside unchanged original evidence quotes.",
+    "Version comparisons expose changes in expectation, basis, scope, unit, evidence and resolution; same-value rules with different applicability or provenance are not presented as identical requirements.",
+    "No full-journal compliance claim is made from page-geometry checks alone.",
+    "No source document edits, Office rendering or publication actions occur in this slice.",
+    "Source review fragments retain stable source-bound identity, parent hierarchy and exact text spans. Suggestions never become rule evidence solely through similarity.",
+    "Text vector similarity is an explainable retrieval score, not a neural embedding, calibrated probability, or compliance verdict. It never merges components or alters retained worlds.",
+    "World, component, rule, source and manuscript observations are separately addressable review levels with return navigation.",
+    "Manuscript reading exposes every supported object type, region filters, continuation, exact saved responses, historical baselines and explicit retained page evidence."
+  ],
+  "revision_rules": [
+    "A local rule correction creates a new world version and records base version, rule, value, reason and actor.",
+    "The old world and checks remain immutable; project bindings do not move automatically.",
+    "Disposition actions are note or defer and retain the original check verdict."
+  ],
+  "http": {
+    "contract_version": "journal-http-1.5.0",
+    "transport": "same_origin_json_on_ipv4_loopback_only",
+    "session": {
+      "route": "GET /api/session",
+      "response_fields": [
+        "token",
+        "contract_version",
+        "asset_version"
+      ],
+      "mutation_header": "X-RFW-Token",
+      "asset_identity": "SHA-256 of the route-named static byte snapshots captured when the server starts; it does not claim the running server reflects later source edits.",
+      "client_behavior": "Refuse an unsupported HTTP contract. A changed asset_version requires a page reload before more mutations. Restart the service to load changed static assets."
+    },
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/state",
+        "query_fields": []
+      },
+      {
+        "method": "GET",
+        "path": "/api/world",
+        "query_fields": [
+          "version_id"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/check",
+        "query_fields": [
+          "check_id"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/diff",
+        "query_fields": [
+          "from_version",
+          "to_version"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/worlds",
+        "body_fields": [
+          "journal_id",
+          "journal_name",
+          "article_type",
+          "stage",
+          "language",
+          "sources"
+        ],
+        "source_fields": [
+          "name",
+          "kind",
+          "content_base64"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/world-component",
+        "body_fields": [
+          "version_id",
+          "name",
+          "content_base64"
+        ],
+        "optional_body_fields": ["sources", "decisions", "preview"],
+        "source_fields": ["name", "kind", "content_base64"],
+        "decision_fields": ["property", "expected", "reason"],
+        "semantics": "Analyze a captured rule component and optional captured sources with all retained sources of the selected world. Carry prior operator decisions, then apply explicit operator-confirmed decisions, and save one immutable version. preview=true returns the analyzed world without saving sources or a version. Imported declarations remain candidates unless an existing confirmed guide or operator decision determines the same property. Existing manuscript bindings are unchanged. Invalid input saves nothing."
+      },
+      {
+        "method": "POST",
+        "path": "/api/projects",
+        "body_fields": [
+          "name",
+          "filename",
+          "content_base64"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/bind",
+        "body_fields": [
+          "project_id",
+          "world_version_id",
+          "expected_binding_id"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/check",
+        "body_fields": [
+          "project_id"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/disposition",
+        "body_fields": [
+          "check_id",
+          "rule_id",
+          "action",
+          "note"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/revise",
+        "body_fields": [
+          "version_id",
+          "rule_id",
+          "expected",
+          "reason"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/review",
+        "query_fields": [
+          "version_id"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/source-page",
+        "query_fields": [
+          "version_id",
+          "source_id",
+          "page"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/manuscript",
+        "query_fields": [
+          "project_id",
+          "baseline_id"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/history",
+        "query_fields": [
+          "project_id"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/read",
+        "query_fields": [
+          "project_id",
+          "read_record_id"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/render",
+        "query_fields": [
+          "project_id",
+          "baseline_id",
+          "bundle_id",
+          "role",
+          "page_number"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/read",
+        "body_fields": [
+          "project_id",
+          "baseline_id",
+          "render_bundle_id",
+          "query"
+        ],
+        "query_object_fields": [
+          "region",
+          "object_type",
+          "object_id",
+          "page_number",
+          "page_size",
+          "cursor"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/baseline",
+        "body_fields": [
+          "project_id",
+          "expected_baseline_id",
+          "filename",
+          "content_base64",
+          "reason",
+          "request_id"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/render-bundle",
+        "body_fields": [
+          "project_id",
+          "baseline_id",
+          "reason",
+          "render_record",
+          "page_index",
+          "pdf",
+          "pages",
+          "document_annotation",
+          "page_evidence"
+        ],
+        "upload_fields": [
+          "content_base64"
+        ],
+        "page_fields": [
+          "page_number",
+          "content_base64"
+        ]
+      }
+    ],
+    "field_semantics": {
+      "name": "Manuscript display label; it does not have to end in .docx.",
+      "filename": "Original manuscript basename with .docx extension, never a filesystem path.",
+      "content_base64": "Captured file bytes; the HTTP API never accepts an author input path.",
+      "journal_name": "Journal display name in world records and state summaries; no name alias.",
+      "expected_binding_id": "Explicit null for the initial binding, otherwise the current binding identity used for compare-and-swap.",
+      "expected": "Integer in the rule's stored unit: twips for dimensions and margins, count for columns.",
+      "baseline_id": "GET manuscript accepts current or an exact retained baseline ID; POST read accepts explicit null for current or a retained ID. Render operations require exact retained baseline IDs.",
+      "render_bundle_id": "Explicit retained render evidence selection for a physical-page query; null for source object queries.",
+      "query": "All six fields are present. Selectors/cursor are nullable; page_size is a positive bounded integer enforced by ReadQuery.",
+      "request_id": "A stable per-submission kebab-case identity for recoverable baseline updates. Replay returns the same saved outcome.",
+      "render_record/page_index/pdf/document_annotation/page_evidence": "Each supplied upload contains only content_base64. Annotation and page evidence are both null or both supplied. Uploaded historical paths are never opened.",
+      "pages": "Captured page PNG bytes with explicit unique positive page_number, validated against the original index and physical PDF."
+    },
+    "state_response": {
+      "fields": [
+        "worlds",
+        "projects",
+        "capabilities"
+      ],
+      "world_summary_fields": [
+        "version_id",
+        "journal_id",
+        "journal_name",
+        "version_ordinal",
+        "created_at",
+        "scope"
+      ],
+      "project_fields": [
+        "project_id",
+        "name",
+        "baseline_id",
+        "binding",
+        "latest_check"
+      ],
+      "nullable_fields": [
+        "binding",
+        "latest_check"
+      ]
+    },
+    "diff_response_fields": [
+      "from_version",
+      "to_version",
+      "scope_changed",
+      "journal_changed",
+      "changes"
+    ],
+    "error_field": "error",
+    "failure_rules": [
+      "POST bodies require their exact declared keys, application/json and a unique bounded Content-Length; malformed input is not converted to empty success.",
+      "GET query parameters must exactly match the declared query_fields; unknown or repeated parameters return HTTP 400.",
+      "Binding compare-and-swap conflicts return HTTP 409; invalid local origin or session returns 403.",
+      "Storage corruption and internal persistence failures return a generic HTTP 500 without local paths or database details; unsupported methods return JSON HTTP 405 with an Allow header.",
+      "The frontend rejects malformed response records and commits a refreshed view only after all required reads succeed.",
+      "If a write succeeded but the following refresh failed, report the saved operation explicitly and require refresh instead of encouraging a duplicate submission."
+    ],
+    "manuscript_response_fields": [
+      "project",
+      "baseline",
+      "baselines",
+      "catalog",
+      "evidence",
+      "render_bundles",
+      "reads"
+    ],
+    "history_response_fields": [
+      "project_id",
+      "checks",
+      "bindings",
+      "reads"
+    ],
+    "read_response": "Unmodified persistent project response and actual-read receipt; discovery remains catalog_only.",
+    "binary_response": "GET /api/render returns exactly the selected retained PDF or PNG, verified against the bundle. page_number is none for PDF and a positive number for a PNG."
+  },
+  "runtime_entry_point": "rfw-workbench serve",
+  "runtime_boundary": "Local operator workbench; session and origin checks do not provide remote user authentication.",
+  "source_review": {
+    "method_version": "journal-source-evidence-1.1.0",
+    "relation_method_version": "journal-lexical-relations-1.0.0",
+    "fields": [
+      "method_version",
+      "relation_method_version",
+      "reader_version",
+      "pdf_source_version",
+      "offset_unit",
+      "world_version_id",
+      "sources",
+      "fragments",
+      "rule_links",
+      "relations",
+      "limitations"
+    ],
+    "fragment_fields": [
+      "fragment_id",
+      "source_id",
+      "kind",
+      "locator",
+      "parent_fragment_id",
+      "part_path",
+      "text",
+      "char_start",
+      "char_end",
+      "content"
+    ],
+    "offset_unit": "unicode_code_points",
+    "relation_score": "lexical cosine in [0,1], retrieval ranking only; no probability, merging or compliance inference",
+    "pdf_source_version": "journal-pdf-source-1.0.0",
+    "pdf_fragment_binding": "PDF fragment identifiers bind pdf_source_version instead of the DOCX reader version; bbox values are PDF points with a top-left origin."
+  }
+}

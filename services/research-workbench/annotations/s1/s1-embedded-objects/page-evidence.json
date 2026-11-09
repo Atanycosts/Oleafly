@@ -1,0 +1,31 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "s1-embedded-objects",
+  "source_artifact_sha256": "c35e900292cce6aef20aedd1fb0deb4df95be15b014dba8cbf08343e0bd01d8d",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "pdf_sha256": "3c16cb84afb48ffcbff464396bce7164e2442fa3a0dcd4c8fd88a5625abef921",
+  "review_status": "reviewed",
+  "mappings": [
+    {
+      "annotation_id": "embedded-unknown-anchor-page-001",
+      "object_annotation_id": "rfw-fx-eo-unknown-extension-anchor-001",
+      "page_numbers": [
+        1
+      ],
+      "mapping_status": "reviewed",
+      "evidence": "The unknown-extension anchor and AlternateContent fallback text are visible on page 1.",
+      "limitations": [
+        "The page does not preview or semantically prove the unknown extension object. The customXml part has no page preview."
+      ]
+    }
+  ],
+  "limitations": [
+    "Only the unknown-extension anchor and fallback text have page evidence.",
+    "customXml/item1.xml has no direct page preview or page mapping.",
+    "This fixture intentionally contains no native chart, OLE object, or grouped drawing; those are covered separately.",
+    "Microsoft Word cross-rendering is unverified because Word is unavailable locally."
+  ],
+  "reviewed_by": "independent-fixture-audit",
+  "reviewed_at": "2026-09-24T00:00:00Z",
+  "review_method": "Independent page-image inspection bound to the fixed PDF hash and WPS profile"
+}

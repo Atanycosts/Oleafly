@@ -1,0 +1,682 @@
+{
+  "report_version": "1.0.0",
+  "marker_pattern": "RFW-FX-[A-Z0-9-]+",
+  "fixtures": [
+    {
+      "sample_id": "s1-regions-fields",
+      "status": "candidate_text_layer_index",
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-regions-fields/s1-regions-fields.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "markers": [
+            "RFW-FX-RF-BODY-001",
+            "RFW-FX-RF-COMMENT-ANCHOR-001",
+            "RFW-FX-RF-DISPLAY-OMML-001",
+            "RFW-FX-RF-ENDNOTE-BODY-001",
+            "RFW-FX-RF-ENDNOTE-REF-001",
+            "RFW-FX-RF-EXTERNAL-LINK-001",
+            "RFW-FX-RF-FOOTER-001",
+            "RFW-FX-RF-FOOTNOTE-BODY-001",
+            "RFW-FX-RF-FOOTNOTE-REF-0011",
+            "RFW-FX-RF-HEADER-001",
+            "RFW-FX-RF-INLINE-OMML-001",
+            "RFW-FX-RF-NESTED-FIELD-001",
+            "RFW-FX-RF-REVISION-001RFW-FX-RF-REVISION-INSERTED-001",
+            "RFW-FX-RF-REVISION-DELETED-001",
+            "RFW-FX-RF-TEXTBOX-001",
+            "RFW-FX-RF-XREF-RESULT-001",
+            "RFW-FX-RF-XREF-TARGET-001",
+            "RFW-FX-RF-ZOTERO-FIELD-001"
+          ]
+        }
+      ],
+      "limitations": [
+        "PDF text extraction does not prove formula appearance, image placement, or precise coordinates.",
+        "Independent visual review is required before a mapping is marked verified."
+      ]
+    },
+    {
+      "sample_id": "s1-sections-layout",
+      "status": "candidate_text_layer_index",
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-sections-layout/s1-sections-layout.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "markers": [
+            "RFW-FX-SL-SECTION-A4-PORTRAIT-001"
+          ]
+        },
+        {
+          "page_number": 2,
+          "markers": [
+            "RFW-FX-SL-SECTION-LETTER-PORTRAIT-002"
+          ]
+        },
+        {
+          "page_number": 3,
+          "markers": [
+            "RFW-FX-SL-SECTION-A4-LANDSCAPE-003"
+          ]
+        },
+        {
+          "page_number": 4,
+          "markers": [
+            "RFW-FX-SL-COLUMN-BREAK-AFTER-001",
+            "RFW-FX-SL-COLUMN-BREAK-BEFORE-001",
+            "RFW-FX-SL-SECTION-A4-TWO-COLUMN-004"
+          ]
+        },
+        {
+          "page_number": 5,
+          "markers": [
+            "RFW-FX-SL-PAGE-BREAK-BEFORE-001",
+            "RFW-FX-SL-SECTION-A4-RESTORED-005"
+          ]
+        },
+        {
+          "page_number": 6,
+          "markers": [
+            "RFW-FX-SL-NUMBERING-001",
+            "RFW-FX-SL-NUMBERING-002",
+            "RFW-FX-SL-NUMBERING-003",
+            "RFW-FX-SL-PAGE-BREAK-AFTER-001",
+            "RFW-FX-SL-STYLE-INHERITANCE-001"
+          ]
+        }
+      ],
+      "limitations": [
+        "PDF text extraction does not prove formula appearance, image placement, or precise coordinates.",
+        "Independent visual review is required before a mapping is marked verified."
+      ]
+    },
+    {
+      "sample_id": "s1-figures-tables",
+      "status": "candidate_text_layer_index",
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-figures-tables/s1-figures-tables.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "markers": [
+            "RFW-FX-FT-FIGURE-CAPTION-001",
+            "RFW-FX-FT-FLOAT-ANCHOR-001",
+            "RFW-FX-FT-FLOATING-IMAGE-001",
+            "RFW-FX-FT-INLINE-IMAGE-001",
+            "RFW-FX-FT-TABLE-CAPTION-001",
+            "RFW-FX-FT-TABLE-HEADER-001",
+            "RFW-FX-FT-TABLE-ROW-001",
+            "RFW-FX-FT-TABLE-ROW-002",
+            "RFW-FX-FT-TABLE-ROW-003",
+            "RFW-FX-FT-TABLE-ROW-004",
+            "RFW-FX-FT-TABLE-ROW-005",
+            "RFW-FX-FT-TABLE-ROW-006",
+            "RFW-FX-FT-TABLE-ROW-007",
+            "RFW-FX-FT-TABLE-ROW-008",
+            "RFW-FX-FT-TABLE-ROW-009",
+            "RFW-FX-FT-TABLE-ROW-010",
+            "RFW-FX-FT-TABLE-ROW-011",
+            "RFW-FX-FT-TABLE-ROW-012",
+            "RFW-FX-FT-TABLE-ROW-013",
+            "RFW-FX-FT-TABLE-ROW-014",
+            "RFW-FX-FT-TABLE-ROW-015",
+            "RFW-FX-FT-TABLE-ROW-016",
+            "RFW-FX-FT-TABLE-ROW-017",
+            "RFW-FX-FT-TABLE-ROW-018",
+            "RFW-FX-FT-TABLE-ROW-019"
+          ]
+        },
+        {
+          "page_number": 2,
+          "markers": [
+            "RFW-FX-FT-TABLE-HEADER-001",
+            "RFW-FX-FT-TABLE-ROW-020",
+            "RFW-FX-FT-TABLE-ROW-021",
+            "RFW-FX-FT-TABLE-ROW-022",
+            "RFW-FX-FT-TABLE-ROW-023",
+            "RFW-FX-FT-TABLE-ROW-024",
+            "RFW-FX-FT-TABLE-ROW-025",
+            "RFW-FX-FT-TABLE-ROW-026",
+            "RFW-FX-FT-TABLE-ROW-027",
+            "RFW-FX-FT-TABLE-ROW-028",
+            "RFW-FX-FT-TABLE-ROW-029",
+            "RFW-FX-FT-TABLE-ROW-030",
+            "RFW-FX-FT-TABLE-ROW-031",
+            "RFW-FX-FT-TABLE-ROW-032",
+            "RFW-FX-FT-TABLE-ROW-033",
+            "RFW-FX-FT-TABLE-ROW-034",
+            "RFW-FX-FT-TABLE-ROW-035",
+            "RFW-FX-FT-TABLE-ROW-036",
+            "RFW-FX-FT-TABLE-ROW-037",
+            "RFW-FX-FT-TABLE-ROW-038",
+            "RFW-FX-FT-TABLE-ROW-039",
+            "RFW-FX-FT-TABLE-ROW-040",
+            "RFW-FX-FT-TABLE-ROW-041",
+            "RFW-FX-FT-TABLE-ROW-042",
+            "RFW-FX-FT-TABLE-ROW-043",
+            "RFW-FX-FT-TABLE-ROW-044",
+            "RFW-FX-FT-TABLE-ROW-045",
+            "RFW-FX-FT-TABLE-ROW-046",
+            "RFW-FX-FT-TABLE-ROW-047"
+          ]
+        },
+        {
+          "page_number": 3,
+          "markers": [
+            "RFW-FX-FT-MERGED-CELL-001",
+            "RFW-FX-FT-TABLE-HEADER-001",
+            "RFW-FX-FT-TABLE-ROW-048",
+            "RFW-FX-FT-TABLE-ROW-049",
+            "RFW-FX-FT-TABLE-ROW-050",
+            "RFW-FX-FT-TABLE-ROW-051",
+            "RFW-FX-FT-TABLE-ROW-052",
+            "RFW-FX-FT-TABLE-ROW-053",
+            "RFW-FX-FT-TABLE-ROW-054",
+            "RFW-FX-FT-TABLE-ROW-055"
+          ]
+        }
+      ],
+      "limitations": [
+        "PDF text extraction does not prove formula appearance, image placement, or precise coordinates.",
+        "Independent visual review is required before a mapping is marked verified."
+      ]
+    },
+    {
+      "sample_id": "s1-embedded-objects",
+      "status": "candidate_text_layer_index",
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-embedded-objects/s1-embedded-objects.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "markers": [
+            "RFW-FX-EO-UNKNOWN-EXTENSION-ANCHOR-001"
+          ]
+        }
+      ],
+      "limitations": [
+        "PDF text extraction does not prove formula appearance, image placement, or precise coordinates.",
+        "Independent visual review is required before a mapping is marked verified."
+      ]
+    },
+    {
+      "sample_id": "s1-broken-relationships",
+      "status": "candidate_text_layer_index",
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-broken-relationships/s1-broken-relationships.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "markers": [
+            "RFW-FX-BR-MISSING-EXTERNAL-001",
+            "RFW-FX-BR-MISSING-RID-001",
+            "RFW-FX-BR-MISSING-TARGET-001"
+          ]
+        }
+      ],
+      "limitations": [
+        "PDF text extraction does not prove formula appearance, image placement, or precise coordinates.",
+        "Independent visual review is required before a mapping is marked verified."
+      ]
+    },
+    {
+      "sample_id": "s1-missing-font",
+      "status": "candidate_text_layer_index",
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-missing-font/s1-missing-font.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "markers": [
+            "RFW-FX-MF-CONTROL-001",
+            "RFW-FX-MF-MISSING-001"
+          ]
+        }
+      ],
+      "limitations": [
+        "PDF text extraction does not prove formula appearance, image placement, or precise coordinates.",
+        "Independent visual review is required before a mapping is marked verified."
+      ]
+    },
+    {
+      "sample_id": "s1-pagination-ambiguity",
+      "status": "candidate_text_layer_index",
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-pagination-ambiguity/s1-pagination-ambiguity.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0001",
+            "RFW-FX-PA-P0002",
+            "RFW-FX-PA-P0003",
+            "RFW-FX-PA-P0004",
+            "RFW-FX-PA-P0005",
+            "RFW-FX-PA-P0006",
+            "RFW-FX-PA-P0007",
+            "RFW-FX-PA-P0008",
+            "RFW-FX-PA-P0009",
+            "RFW-FX-PA-P0010",
+            "RFW-FX-PA-P0011",
+            "RFW-FX-PA-P0012",
+            "RFW-FX-PA-P0013",
+            "RFW-FX-PA-P0014",
+            "RFW-FX-PA-P0015",
+            "RFW-FX-PA-P0016",
+            "RFW-FX-PA-P0017",
+            "RFW-FX-PA-P0018",
+            "RFW-FX-PA-P0019",
+            "RFW-FX-PA-P0020",
+            "RFW-FX-PA-P0021",
+            "RFW-FX-PA-P0022",
+            "RFW-FX-PA-P0023"
+          ]
+        },
+        {
+          "page_number": 2,
+          "markers": [
+            "RFW-FX-PA-DUP-A-AFTER-001",
+            "RFW-FX-PA-DUP-A-BEFORE-001",
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0024",
+            "RFW-FX-PA-P0025",
+            "RFW-FX-PA-P0026",
+            "RFW-FX-PA-P0027",
+            "RFW-FX-PA-P0028",
+            "RFW-FX-PA-P0029",
+            "RFW-FX-PA-P0030",
+            "RFW-FX-PA-P0031",
+            "RFW-FX-PA-P0032",
+            "RFW-FX-PA-P0033",
+            "RFW-FX-PA-P0034",
+            "RFW-FX-PA-P0035",
+            "RFW-FX-PA-P0036",
+            "RFW-FX-PA-P0037",
+            "RFW-FX-PA-P0038",
+            "RFW-FX-PA-P0039",
+            "RFW-FX-PA-P0040",
+            "RFW-FX-PA-P0041",
+            "RFW-FX-PA-P0042",
+            "RFW-FX-PA-P0043",
+            "RFW-FX-PA-P0044",
+            "RFW-FX-PA-P0045"
+          ]
+        },
+        {
+          "page_number": 3,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0046",
+            "RFW-FX-PA-P0047",
+            "RFW-FX-PA-P0048",
+            "RFW-FX-PA-P0049",
+            "RFW-FX-PA-P0050",
+            "RFW-FX-PA-P0051",
+            "RFW-FX-PA-P0052",
+            "RFW-FX-PA-P0053",
+            "RFW-FX-PA-P0054",
+            "RFW-FX-PA-P0055",
+            "RFW-FX-PA-P0056",
+            "RFW-FX-PA-P0057",
+            "RFW-FX-PA-P0058",
+            "RFW-FX-PA-P0059",
+            "RFW-FX-PA-P0060",
+            "RFW-FX-PA-P0061",
+            "RFW-FX-PA-P0062",
+            "RFW-FX-PA-P0063",
+            "RFW-FX-PA-P0064",
+            "RFW-FX-PA-P0065",
+            "RFW-FX-PA-P0066",
+            "RFW-FX-PA-P0067",
+            "RFW-FX-PA-P0068",
+            "RFW-FX-PA-P0069",
+            "RFW-FX-PA-P0070"
+          ]
+        },
+        {
+          "page_number": 4,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0071",
+            "RFW-FX-PA-P0072",
+            "RFW-FX-PA-P0073",
+            "RFW-FX-PA-P0074",
+            "RFW-FX-PA-P0075",
+            "RFW-FX-PA-P0076",
+            "RFW-FX-PA-P0077",
+            "RFW-FX-PA-P0078",
+            "RFW-FX-PA-P0079",
+            "RFW-FX-PA-P0080",
+            "RFW-FX-PA-P0081",
+            "RFW-FX-PA-P0082",
+            "RFW-FX-PA-P0083",
+            "RFW-FX-PA-P0084",
+            "RFW-FX-PA-P0085",
+            "RFW-FX-PA-P0086",
+            "RFW-FX-PA-P0087",
+            "RFW-FX-PA-P0088",
+            "RFW-FX-PA-P0089",
+            "RFW-FX-PA-P0090",
+            "RFW-FX-PA-P0091",
+            "RFW-FX-PA-P0092",
+            "RFW-FX-PA-P0093",
+            "RFW-FX-PA-P0094",
+            "RFW-FX-PA-P0095"
+          ]
+        },
+        {
+          "page_number": 5,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0096",
+            "RFW-FX-PA-P0097",
+            "RFW-FX-PA-P0098",
+            "RFW-FX-PA-P0099",
+            "RFW-FX-PA-P0100",
+            "RFW-FX-PA-P0101",
+            "RFW-FX-PA-P0102",
+            "RFW-FX-PA-P0103",
+            "RFW-FX-PA-P0104",
+            "RFW-FX-PA-P0105",
+            "RFW-FX-PA-P0106",
+            "RFW-FX-PA-P0107",
+            "RFW-FX-PA-P0108",
+            "RFW-FX-PA-P0109",
+            "RFW-FX-PA-P0110",
+            "RFW-FX-PA-P0111",
+            "RFW-FX-PA-P0112",
+            "RFW-FX-PA-P0113",
+            "RFW-FX-PA-P0114",
+            "RFW-FX-PA-P0115",
+            "RFW-FX-PA-P0116",
+            "RFW-FX-PA-P0117",
+            "RFW-FX-PA-P0118",
+            "RFW-FX-PA-P0119",
+            "RFW-FX-PA-P0120"
+          ]
+        },
+        {
+          "page_number": 6,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0121",
+            "RFW-FX-PA-P0122",
+            "RFW-FX-PA-P0123",
+            "RFW-FX-PA-P0124",
+            "RFW-FX-PA-P0125",
+            "RFW-FX-PA-P0126",
+            "RFW-FX-PA-P0127",
+            "RFW-FX-PA-P0128",
+            "RFW-FX-PA-P0129",
+            "RFW-FX-PA-P0130",
+            "RFW-FX-PA-P0131",
+            "RFW-FX-PA-P0132",
+            "RFW-FX-PA-P0133",
+            "RFW-FX-PA-P0134",
+            "RFW-FX-PA-P0135",
+            "RFW-FX-PA-P0136",
+            "RFW-FX-PA-P0137",
+            "RFW-FX-PA-P0138",
+            "RFW-FX-PA-P0139",
+            "RFW-FX-PA-P0140",
+            "RFW-FX-PA-P0141",
+            "RFW-FX-PA-P0142",
+            "RFW-FX-PA-P0143",
+            "RFW-FX-PA-P0144",
+            "RFW-FX-PA-P0145"
+          ]
+        },
+        {
+          "page_number": 7,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0146",
+            "RFW-FX-PA-P0147",
+            "RFW-FX-PA-P0148",
+            "RFW-FX-PA-P0149",
+            "RFW-FX-PA-P0150",
+            "RFW-FX-PA-P0151",
+            "RFW-FX-PA-P0152",
+            "RFW-FX-PA-P0153",
+            "RFW-FX-PA-P0154",
+            "RFW-FX-PA-P0155",
+            "RFW-FX-PA-P0156",
+            "RFW-FX-PA-P0157",
+            "RFW-FX-PA-P0158",
+            "RFW-FX-PA-P0159",
+            "RFW-FX-PA-P0160",
+            "RFW-FX-PA-P0161",
+            "RFW-FX-PA-P0162",
+            "RFW-FX-PA-P0163",
+            "RFW-FX-PA-P0164",
+            "RFW-FX-PA-P0165",
+            "RFW-FX-PA-P0166",
+            "RFW-FX-PA-P0167",
+            "RFW-FX-PA-P0168",
+            "RFW-FX-PA-P0169",
+            "RFW-FX-PA-P0170"
+          ]
+        },
+        {
+          "page_number": 8,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0171",
+            "RFW-FX-PA-P0172",
+            "RFW-FX-PA-P0173",
+            "RFW-FX-PA-P0174",
+            "RFW-FX-PA-P0175",
+            "RFW-FX-PA-P0176",
+            "RFW-FX-PA-P0177",
+            "RFW-FX-PA-P0178",
+            "RFW-FX-PA-P0179",
+            "RFW-FX-PA-P0180",
+            "RFW-FX-PA-P0181",
+            "RFW-FX-PA-P0182",
+            "RFW-FX-PA-P0183",
+            "RFW-FX-PA-P0184",
+            "RFW-FX-PA-P0185",
+            "RFW-FX-PA-P0186",
+            "RFW-FX-PA-P0187",
+            "RFW-FX-PA-P0188",
+            "RFW-FX-PA-P0189",
+            "RFW-FX-PA-P0190",
+            "RFW-FX-PA-P0191",
+            "RFW-FX-PA-P0192",
+            "RFW-FX-PA-P0193",
+            "RFW-FX-PA-P0194",
+            "RFW-FX-PA-P0195"
+          ]
+        },
+        {
+          "page_number": 9,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0196",
+            "RFW-FX-PA-P0197",
+            "RFW-FX-PA-P0198",
+            "RFW-FX-PA-P0199",
+            "RFW-FX-PA-P0200",
+            "RFW-FX-PA-P0201",
+            "RFW-FX-PA-P0202",
+            "RFW-FX-PA-P0203",
+            "RFW-FX-PA-P0204",
+            "RFW-FX-PA-P0205",
+            "RFW-FX-PA-P0206",
+            "RFW-FX-PA-P0207",
+            "RFW-FX-PA-P0208",
+            "RFW-FX-PA-P0209",
+            "RFW-FX-PA-P0210",
+            "RFW-FX-PA-P0211",
+            "RFW-FX-PA-P0212",
+            "RFW-FX-PA-P0213",
+            "RFW-FX-PA-P0214",
+            "RFW-FX-PA-P0215",
+            "RFW-FX-PA-P0216",
+            "RFW-FX-PA-P0217",
+            "RFW-FX-PA-P0218",
+            "RFW-FX-PA-P0219",
+            "RFW-FX-PA-P0220"
+          ]
+        },
+        {
+          "page_number": 10,
+          "markers": [
+            "RFW-FX-PA-DUP-B-AFTER-001",
+            "RFW-FX-PA-DUP-B-BEFORE-001",
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0221",
+            "RFW-FX-PA-P0222",
+            "RFW-FX-PA-P0223",
+            "RFW-FX-PA-P0224",
+            "RFW-FX-PA-P0225",
+            "RFW-FX-PA-P0226",
+            "RFW-FX-PA-P0227",
+            "RFW-FX-PA-P0228",
+            "RFW-FX-PA-P0229",
+            "RFW-FX-PA-P0230",
+            "RFW-FX-PA-P0231",
+            "RFW-FX-PA-P0232",
+            "RFW-FX-PA-P0233",
+            "RFW-FX-PA-P0234",
+            "RFW-FX-PA-P0235",
+            "RFW-FX-PA-P0236",
+            "RFW-FX-PA-P0237",
+            "RFW-FX-PA-P0238",
+            "RFW-FX-PA-P0239",
+            "RFW-FX-PA-P0240",
+            "RFW-FX-PA-P0241",
+            "RFW-FX-PA-P0242"
+          ]
+        },
+        {
+          "page_number": 11,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0243",
+            "RFW-FX-PA-P0244",
+            "RFW-FX-PA-P0245",
+            "RFW-FX-PA-P0246",
+            "RFW-FX-PA-P0247",
+            "RFW-FX-PA-P0248",
+            "RFW-FX-PA-P0249",
+            "RFW-FX-PA-P0250",
+            "RFW-FX-PA-P0251",
+            "RFW-FX-PA-P0252",
+            "RFW-FX-PA-P0253",
+            "RFW-FX-PA-P0254",
+            "RFW-FX-PA-P0255",
+            "RFW-FX-PA-P0256",
+            "RFW-FX-PA-P0257",
+            "RFW-FX-PA-P0258",
+            "RFW-FX-PA-P0259",
+            "RFW-FX-PA-P0260",
+            "RFW-FX-PA-P0261",
+            "RFW-FX-PA-P0262",
+            "RFW-FX-PA-P0263",
+            "RFW-FX-PA-P0264",
+            "RFW-FX-PA-P0265",
+            "RFW-FX-PA-P0266",
+            "RFW-FX-PA-P0267"
+          ]
+        },
+        {
+          "page_number": 12,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0268",
+            "RFW-FX-PA-P0269",
+            "RFW-FX-PA-P0270",
+            "RFW-FX-PA-P0271",
+            "RFW-FX-PA-P0272",
+            "RFW-FX-PA-P0273",
+            "RFW-FX-PA-P0274",
+            "RFW-FX-PA-P0275",
+            "RFW-FX-PA-P0276",
+            "RFW-FX-PA-P0277",
+            "RFW-FX-PA-P0278",
+            "RFW-FX-PA-P0279",
+            "RFW-FX-PA-P0280",
+            "RFW-FX-PA-P0281",
+            "RFW-FX-PA-P0282",
+            "RFW-FX-PA-P0283",
+            "RFW-FX-PA-P0284",
+            "RFW-FX-PA-P0285",
+            "RFW-FX-PA-P0286",
+            "RFW-FX-PA-P0287",
+            "RFW-FX-PA-P0288",
+            "RFW-FX-PA-P0289",
+            "RFW-FX-PA-P0290",
+            "RFW-FX-PA-P0291",
+            "RFW-FX-PA-P0292"
+          ]
+        },
+        {
+          "page_number": 13,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0293",
+            "RFW-FX-PA-P0294",
+            "RFW-FX-PA-P0295",
+            "RFW-FX-PA-P0296",
+            "RFW-FX-PA-P0297",
+            "RFW-FX-PA-P0298",
+            "RFW-FX-PA-P0299",
+            "RFW-FX-PA-P0300",
+            "RFW-FX-PA-P0301",
+            "RFW-FX-PA-P0302",
+            "RFW-FX-PA-P0303",
+            "RFW-FX-PA-P0304",
+            "RFW-FX-PA-P0305",
+            "RFW-FX-PA-P0306",
+            "RFW-FX-PA-P0307",
+            "RFW-FX-PA-P0308",
+            "RFW-FX-PA-P0309",
+            "RFW-FX-PA-P0310",
+            "RFW-FX-PA-P0311",
+            "RFW-FX-PA-P0312",
+            "RFW-FX-PA-P0313",
+            "RFW-FX-PA-P0314",
+            "RFW-FX-PA-P0315",
+            "RFW-FX-PA-P0316",
+            "RFW-FX-PA-P0317"
+          ]
+        },
+        {
+          "page_number": 14,
+          "markers": [
+            "RFW-FX-PA-DUPLICATE-TEXT",
+            "RFW-FX-PA-P0318",
+            "RFW-FX-PA-P0319",
+            "RFW-FX-PA-P0320"
+          ]
+        }
+      ],
+      "limitations": [
+        "PDF text extraction does not prove formula appearance, image placement, or precise coordinates.",
+        "Independent visual review is required before a mapping is marked verified."
+      ]
+    },
+    {
+      "sample_id": "s1-native-complex-objects",
+      "status": "candidate_text_layer_index",
+      "pdf_path": "C:/Users/Administrator/Desktop/research-file-workbench/reports/phase0/fixtures/s1-native-complex-objects/s1-native-complex-objects.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "markers": [
+            "RFW-FX-EO-CHART-ANCHOR-001"
+          ]
+        },
+        {
+          "page_number": 2,
+          "markers": [
+            "RFW-FX-EO-GROUP-ANCHOR-001",
+            "RFW-FX-EO-GROUP-SHAPE-A-001",
+            "RFW-FX-EO-GROUP-SHAPE-B-001"
+          ]
+        }
+      ],
+      "limitations": [
+        "PDF text extraction does not prove formula appearance, image placement, or precise coordinates.",
+        "Independent visual review is required before a mapping is marked verified."
+      ]
+    }
+  ]
+}

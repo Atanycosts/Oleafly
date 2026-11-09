@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-file-workbench"
+version = "0.1.0"
+description = "Read-only scientific-document inspection, versioned evidence, and project contracts"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Grace Young" }]
+# Runtime dependencies are permitted where an established implementation is better than a
+# bespoke one. The evidence, versioning and handoff layer stays in-repo because it is the
+# product differentiator; everything else prefers a maintained upstream component.
+# Adding a dependency requires a matching update to the development guide.
+dependencies = [
+  # Official Model Context Protocol SDK. The baseline declares MCP the unified entry for
+  # agents; implementing the protocol by hand would drop version negotiation, capability
+  # negotiation, cancellation and the streamable HTTP transport.
+  "mcp>=2.3,<3",
+  # Imported directly for field constraints on the MCP tool schemas. It arrives with mcp, but
+  # a direct import is declared directly rather than relied on transitively.
+  "pydantic>=2.12,<3",
+  # PDF text-layer extraction for journal source fragments (page/bbox binding). PyMuPDF is
+  # AGPL-3.0; the operator decision (2026-10-31) is that this checkout stays a private local
+  # tool, so copyleft constraints are accepted for all AGPL/GPL dependencies without per-item
+  # justification. The minor version is pinned because block segmentation feeds
+  # `journal-pdf-source-1.0.0`: a pymupdf upgrade that changes extraction results must bump
+  # that method version in the same change.
+  "pymupdf>=1.28.2,<1.29",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.18,<2",
+  "pytest>=9,<10",
+  "ruff>=0.16,<0.17",
+]
+fixture-building = [
+  "lxml>=6,<7",
+  "Pillow>=12,<13",
+  "python-docx>=1.2,<2",
+]
+
+[project.scripts]
+rfw-phase0 = "research_file_workbench.phase0.cli:main"
+rfw-s1-read = "research_file_workbench.docx.cli:main"
+rfw-s1-query = "research_file_workbench.docx.query_cli:main"
+rfw-project = "research_file_workbench.projects.cli:main"
+rfw-workbench = "research_file_workbench.workbench.cli:main"
+rfw-workbench-mcp = "research_file_workbench.workbench.mcp:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"research_file_workbench.workbench" = ["web/*.html", "web/*.js", "web/*.css", "web/transport/*.js", "web/ui/*.js", "web/views/*.js", "web/styles/*.css"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tools/phase0"]
+exclude = ["tests/fixtures", "tools/fixture_building"]
+warn_unused_configs = true

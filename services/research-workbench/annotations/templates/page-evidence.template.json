@@ -1,0 +1,17 @@
+{
+  "annotation_version": "1.0.0",
+  "sample_id": "replace-with-sample-id",
+  "source_artifact_sha256": "replace-with-64-hex-digest",
+  "render_profile_id": "wps-writer-12.1.0.28505",
+  "pdf_sha256": "replace-after-render",
+  "mappings": [
+    {
+      "annotation_id": "mapping-001",
+      "object_annotation_id": "object-001",
+      "page_numbers": [1],
+      "mapping_status": "candidate",
+      "evidence": "describe the independently observed page evidence",
+      "limitations": []
+    }
+  ]
+}

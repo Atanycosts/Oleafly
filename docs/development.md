@@ -24,6 +24,7 @@ oleafly-desktop/
 │   ├── latex/  latex-intelligence/  ai-core/  ai-tools/  registry/  preflight/
 │   ├── editor/  wysiwyg/  preview/  diagram/  templates/  search-query/
 │   └── backend-port/  conversion-registry/  i18n-contract/  pdf-to-latex/
+├── services/research-workbench/  Python document, journal and evidence service
 ├── src-tauri/
 │   ├── src/                rust: commands, DocumentEngine, config, git, paths, project, synctex
 │   ├── binaries/           target-suffixed compiler sidecars
@@ -86,6 +87,20 @@ nor package it. The app's first-run path must display the pinned license/source
 and wait for user consent before downloading. See
 [Language-server toolchain](language-server-toolchain.md). `pnpm build` does
 not fetch or require any sidecar.
+
+## Journal Workbench service
+
+The optional Journal checks integration uses the Python service in
+[`services/research-workbench`](../services/research-workbench/README.md). Install
+[uv](https://docs.astral.sh/uv/) and run `pnpm workbench:setup` from this repository root.
+This creates a Python 3.12 environment and installs the module with its development extras.
+`pnpm tauri dev` selects it automatically; `OLEAFLY_WORKBENCH_PYTHON` can select another
+installation. Packaged applications retain their existing Python selector and saved library.
+
+The Python module keeps its own `pyproject.toml`, tests and contracts. It does not join the
+Cargo or pnpm workspaces. Application data remains outside source control; the source merge
+does not relocate existing journal libraries. See the service README for portable tests and
+separate environment-bound acceptance checks.
 
 ## Day-to-day
 
