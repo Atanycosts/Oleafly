@@ -1078,7 +1078,8 @@
       "medium": "Orta",
       "high": "Yüksek",
       "xhigh": "Çok yüksek",
-      "max": "En yüksek"
+      "max": "En yüksek",
+      "ultra": "Ultra"
     }
   },
   "web": {

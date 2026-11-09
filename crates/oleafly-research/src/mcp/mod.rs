@@ -133,6 +133,9 @@ impl Drop for ScopedResearchMcp {
 }
 
 impl TaskBridge for ScopedResearchMcp {
+    fn tool_definitions(&self) -> Vec<protocol::ToolMeta> {
+        tools::session_tools(&self.context)
+    }
     fn mcp_server(&self) -> Value {
         ScopedResearchMcp::mcp_server(self)
     }

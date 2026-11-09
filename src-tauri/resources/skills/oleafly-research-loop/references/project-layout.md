@@ -1,6 +1,9 @@
 # Project layout
 
-The layout is a contract. A sweep run today has to be readable by a claim audit run next month, possibly by a different model. That only works if the paths and the field names are fixed.
+These are shared locations and formats for new artifacts used by several skills.
+Reuse existing project records and conventions. Create only the artifacts the task
+needs; keeping the source keys and relevant provenance consistent lets later work
+find and interpret them.
 
 ## Directories
 
@@ -33,7 +36,7 @@ Collisions are rare with a slug. If two papers still collide, append `a` and `b`
 
 The same key names three things: the `.bib` entry, `research/sources/<key>.md`, and `research/sources/<key>.pdf`. Never let them drift apart.
 
-**The project wins.** If the existing `.bib` uses `Vaswani2017` or `DBLP:conf/nips/VaswaniSPUJGKP17`, follow that scheme for new entries and record it with `remember_note`. A bibliography with two key styles is worse than a bibliography with the wrong key style.
+**The project wins.** If the existing `.bib` uses `Vaswani2017` or `DBLP:conf/nips/VaswaniSPUJGKP17`, follow that scheme for new entries. Save a note only if later work cannot recover the convention from the bibliography.
 
 ## research/reading-list.md
 

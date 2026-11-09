@@ -80,6 +80,13 @@ pub struct TaskIsolation {
     pub created_at: i64,
     #[serde(default)]
     pub skipped: Vec<SkippedEntry>,
+    /// Git status captured before task work; None for a non-Git snapshot or
+    /// historical isolation that did not collect it.
+    #[serde(default)]
+    pub initial_git_status: Option<Vec<String>>,
+    /// None for older records that did not establish capture completeness.
+    #[serde(default)]
+    pub initial_git_status_complete: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +146,7 @@ pub struct ResearchBrief {
     pub review_plan_first: bool,
     pub permissions: TaskPermissions,
     pub budget: TaskBudget,
+    pub reasoning_effort: Option<oleafly_agent::Effort>,
     pub profile: RunProfile,
     pub compute: ComputeTarget,
 }
@@ -315,7 +323,7 @@ pub enum ResumeReason {
 )]
 pub enum PendingStart {
     Resume {
-        isolation: TaskIsolation,
+        isolation: Box<TaskIsolation>,
         reason: ResumeReason,
         #[serde(default)]
         previous_native_session_id: Option<String>,
@@ -373,6 +381,8 @@ pub struct EvidenceItem {
     pub file: Option<String>,
     pub line: Option<u32>,
     pub params: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<crate::findings::CheckProvenance>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -633,6 +643,10 @@ pub struct TaskIsolationSummary {
     pub created_at: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<SkippedEntry>,
+    #[serde(default)]
+    pub initial_git_status: Option<Vec<String>>,
+    #[serde(default)]
+    pub initial_git_status_complete: Option<bool>,
 }
 
 impl From<&TaskIsolation> for TaskIsolationSummary {
@@ -645,6 +659,8 @@ impl From<&TaskIsolation> for TaskIsolationSummary {
             file_count: isolation.baseline.len(),
             created_at: isolation.created_at,
             skipped: isolation.skipped.iter().take(200).cloned().collect(),
+            initial_git_status: isolation.initial_git_status.clone(),
+            initial_git_status_complete: isolation.initial_git_status_complete,
         }
     }
 }
@@ -799,6 +815,9 @@ pub enum ToolPhase {
     rename_all_fields = "camelCase"
 )]
 pub enum TaskRuntimeEvent {
+    Observation {
+        observation: crate::observations::TaskObservation,
+    },
     SessionBound {
         native_session_id: String,
     },

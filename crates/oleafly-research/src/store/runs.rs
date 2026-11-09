@@ -146,18 +146,7 @@ impl TaskStore {
     }
 
     pub fn runs(&self, task_id: &str) -> Result<Vec<RunRecord>, String> {
-        let connection = self.open()?;
-        let mut statement = connection
-            .prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM research_task_runs WHERE task_id = ?1
-                 ORDER BY started_at ASC, run_id ASC"
-            ))
-            .map_err(store_error)?;
-        let rows = statement
-            .query_map([task_id], read_run)
-            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
-            .map_err(store_error)?;
-        rows.into_iter().map(with_metrics).collect()
+        runs_on(&self.open()?, task_id)
     }
 
     pub fn run(&self, task_id: &str, run_id: &str) -> Result<RunRecord, String> {
@@ -262,4 +251,20 @@ impl TaskStore {
             &BTreeMap::new(),
         )
     }
+}
+
+/// Read through the caller's snapshot, including when findings and run evidence
+/// must be compared in one transaction.
+pub(super) fn runs_on(
+    connection: &rusqlite::Connection,
+    task_id: &str,
+) -> Result<Vec<RunRecord>, String> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {RUN_COLUMNS} FROM research_task_runs WHERE task_id = ?1 ORDER BY started_at ASC, run_id ASC"
+    )).map_err(store_error)?;
+    let rows = statement
+        .query_map([task_id], read_run)
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .map_err(store_error)?;
+    rows.into_iter().map(with_metrics).collect()
 }

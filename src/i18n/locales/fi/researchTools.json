@@ -195,6 +195,7 @@
       "agentLabel": "Agentti ja malli",
       "noAgents": "Agentteja ei ole käytettävissä",
       "chooseAgent": "Valitse agentti ja malli",
+      "unsupportedEffort": "Tämä malli ei enää tue tallennettua päättelytasoa. Valitse Automaattinen tai muu tuettu taso.",
       "configureAgent": "Määritä agentti avustajan asetuksissa ennen tehtävän luomista.",
       "dependencies": "Odota näitä tehtäviä",
       "dependencyStatus": "({{status}})",

@@ -800,8 +800,8 @@ async fn skills_and_linked_roots_come_from_the_ports() {
 struct NoModelHost;
 
 impl crate::builtin::TaskHost for NoModelHost {
-    fn skills(&self, _context: &TaskRunContext) -> Result<String, String> {
-        Ok(String::new())
+    fn skills(&self, _context: &TaskRunContext) -> Result<crate::observations::TaskSkills, String> {
+        Ok(Default::default())
     }
 
     fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<std::path::PathBuf> {
@@ -905,6 +905,8 @@ async fn acp_task_bridges_offer_the_task_tools_but_not_spawn_agent() {
     let tools = listed_tools(&bridge).await;
     let names = tool_names(&tools);
     for name in [
+        "task_observations",
+        "task_findings",
         "start_run",
         "wait_runs",
         "run_status",
@@ -970,6 +972,8 @@ async fn chat_bridges_offer_no_task_tools() {
     assert_eq!(names, research);
     assert_eq!(names.len(), 14);
     for name in [
+        "task_observations",
+        "task_findings",
         "start_run",
         "wait_runs",
         "ledger_append",
@@ -987,5 +991,15 @@ async fn chat_bridges_offer_no_task_tools() {
         .await
         .unwrap_err();
     assert!(refused.contains("not available"), "{refused}");
+    assert!(bridge
+        .call_tool("task_observations", &json!({}))
+        .await
+        .unwrap_err()
+        .contains("not available"));
+    assert!(bridge
+        .call_tool("task_findings", &json!({}))
+        .await
+        .unwrap_err()
+        .contains("not available"));
     bridge.shutdown().await;
 }

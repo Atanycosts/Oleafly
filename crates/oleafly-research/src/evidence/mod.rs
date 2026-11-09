@@ -27,8 +27,8 @@ const CLI_MISSING: &str = "The command-line tool isn't available.";
 pub struct EvidenceInputs<'a> {
     pub isolation: &'a TaskIsolation,
     pub changes: &'a [TaskFileChange],
-    pub runs: Vec<RunRecord>,
-    pub ledger: Vec<LedgerRow>,
+    pub runs: Result<Vec<RunRecord>, String>,
+    pub ledger: Result<Vec<LedgerRow>, String>,
     pub workspace: Option<Arc<dyn WorkspaceTools>>,
     pub project_root: Option<PathBuf>,
 }
@@ -129,6 +129,7 @@ fn item(
             .iter()
             .map(|(name, value)| ((*name).to_owned(), value.clone()))
             .collect(),
+        provenance: None,
     }
 }
 
@@ -274,9 +275,23 @@ fn bibliography_entries(
 fn numbers_check(
     changes: &[TaskFileChange],
     root: &Path,
-    runs: &[RunRecord],
-    ledger: &[LedgerRow],
+    runs: &Result<Vec<RunRecord>, String>,
+    ledger: &Result<Vec<LedgerRow>, String>,
 ) -> EvidenceCheck {
+    let (runs, ledger) = match (runs, ledger) {
+        (Ok(runs), Ok(ledger)) => (runs, ledger),
+        (Err(reason), _) | (_, Err(reason)) => {
+            return skipped(
+                EvidenceCheckId::Numbers,
+                item(
+                    "numbers.notChecked",
+                    None,
+                    None,
+                    &[("reason", reason.clone())],
+                ),
+            )
+        }
+    };
     let runs: HashMap<&str, &RunRecord> =
         runs.iter().map(|run| (run.run_id.as_str(), run)).collect();
     let ledger: BTreeSet<&str> = ledger.iter().map(|row| row.id.as_str()).collect();
@@ -285,47 +300,75 @@ fn numbers_check(
         let Some(text) = read_text(&root.join(&change.path)) else {
             continue;
         };
+        let file_sha256 = crate::observations::content_hash(text.as_bytes());
         for (line, values, run_id) in numbers_with_run_markers(&text) {
+            let first_item = items.len();
             let file = Some(change.path.as_str());
-            let Some(run) = runs.get(run_id.as_str()) else {
+            let recorded_run = runs.get(run_id.as_str()).copied();
+            if let Some(run) = recorded_run {
+                if !ledger.contains(run_id.as_str()) {
+                    items.push(item(
+                        "numbers.noLedgerRow",
+                        file,
+                        Some(line),
+                        &[("run", run_id.clone())],
+                    ));
+                }
+                let recorded = run
+                    .metrics
+                    .iter()
+                    .map(|(name, value)| format!("{name}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                for value in values {
+                    if !run
+                        .metrics
+                        .values()
+                        .any(|metric| number_matches(&value, *metric))
+                    {
+                        items.push(item(
+                            "numbers.mismatch",
+                            file,
+                            Some(line),
+                            &[
+                                ("value", value),
+                                ("run", run_id.clone()),
+                                ("recorded", recorded.clone()),
+                            ],
+                        ));
+                    }
+                }
+            } else {
                 items.push(item(
                     "numbers.unknownRun",
-                    file,
-                    Some(line),
-                    &[("run", run_id)],
-                ));
-                continue;
-            };
-            if !ledger.contains(run_id.as_str()) {
-                items.push(item(
-                    "numbers.noLedgerRow",
                     file,
                     Some(line),
                     &[("run", run_id.clone())],
                 ));
             }
-            let recorded = run
-                .metrics
-                .iter()
-                .map(|(name, value)| format!("{name}={value}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            for value in values {
-                if !run
-                    .metrics
-                    .values()
-                    .any(|metric| number_matches(&value, *metric))
-                {
-                    items.push(item(
-                        "numbers.mismatch",
-                        file,
-                        Some(line),
-                        &[
-                            ("value", value),
-                            ("run", run_id.clone()),
-                            ("recorded", recorded.clone()),
-                        ],
-                    ));
+            // The quote and hash come from the same bytes inspected above.
+            // Oversized lines remain check items, with a finding coverage gap.
+            if let Some(quote) = text
+                .lines()
+                .nth(line as usize - 1)
+                .filter(|quote| quote.len() <= 8192)
+            {
+                let provenance = crate::findings::CheckProvenance {
+                    rule_version: crate::findings::NUMBER_RULE_VERSION.into(),
+                    source: crate::findings::FindingSource {
+                        path: change.path.clone(),
+                        file_sha256: file_sha256.clone(),
+                        line_start: line,
+                        line_end: line,
+                        quote: quote.into(),
+                        quote_sha256: crate::observations::content_hash(quote.as_bytes()),
+                    },
+                    run_id: run_id.clone(),
+                    run_sha256: crate::findings::run_basis_hash(recorded_run),
+                    ledger_contains_run: ledger.contains(run_id.as_str()),
+                };
+                for item in &mut items[first_item..] {
+                    item.provenance = Some(provenance.clone());
                 }
             }
         }

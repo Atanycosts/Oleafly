@@ -12,6 +12,7 @@ use oleafly_research::builtin::{
 use oleafly_research::host::ConnectorSecrets;
 use oleafly_research::literature::paper::PdfTextExtractor;
 use oleafly_research::literature::{LiteratureClient, LiteratureSource};
+use oleafly_research::observations::{content_hash, InjectedSkill, TaskSkills};
 use oleafly_research::prompt::task_prompt;
 use oleafly_research::scheduler::TaskServices;
 use oleafly_research::task_tools::extra::TaskBinding;
@@ -169,30 +170,45 @@ fn cli_skill_section(record: &crate::skills::SkillRecord) -> String {
     section
 }
 
-fn skill_prompt_in(
+fn task_skills_in(
     root: &Path,
     pack: Option<&Path>,
     context: &TaskRunContext,
-) -> Result<String, String> {
+) -> Result<TaskSkills, String> {
     let mut prompt = String::new();
+    let mut injected = Vec::new();
     for skill in selected_skills(root, pack, context)? {
-        prompt.push_str(&skill_section(&skill, SkillAudience::Task));
+        let section = skill_section(&skill, SkillAudience::Task);
+        injected.push(InjectedSkill {
+            id: skill.id.clone(),
+            section_sha256: content_hash(section.as_bytes()),
+        });
+        prompt.push_str(&section);
         if prompt.len() > MAX_SKILL_BYTES {
             return Err(
                 "The selected skills exceed this task's context limit. Select fewer skills.".into(),
             );
         }
     }
-    Ok(prompt)
+    Ok(TaskSkills { prompt, injected })
 }
 
-fn skill_prompt(app: &tauri::AppHandle, context: &TaskRunContext) -> Result<String, String> {
+#[cfg(test)]
+fn skill_prompt_in(
+    root: &Path,
+    pack: Option<&Path>,
+    context: &TaskRunContext,
+) -> Result<String, String> {
+    task_skills_in(root, pack, context).map(|skills| skills.prompt)
+}
+
+fn skill_prompt(app: &tauri::AppHandle, context: &TaskRunContext) -> Result<TaskSkills, String> {
     if context.skill_ids.is_empty() {
-        return Ok(String::new());
+        return Ok(TaskSkills::default());
     }
     let root = crate::paths::oleafly_root()?;
     let pack = crate::skills_pack::pack_root(app);
-    skill_prompt_in(&root, pack.as_deref(), context)
+    task_skills_in(&root, pack.as_deref(), context)
 }
 
 struct NativeTaskHost {
@@ -204,8 +220,6 @@ struct AppWeb {
     client: oleafly_agent::tools::web::WebClient,
 }
 
-const MAX_WEB_TEXT: usize = 48 * 1024;
-
 #[async_trait::async_trait]
 impl WebTools for AppWeb {
     async fn fetch(&self, url: &str) -> Result<serde_json::Value, String> {
@@ -216,13 +230,12 @@ impl WebTools for AppWeb {
         let page = oleafly_agent::tools::web::web_fetch(&self.client, url, &options)
             .await
             .map_err(|error| error.to_string())?;
-        let truncated = page.truncated || page.markdown.len() > MAX_WEB_TEXT;
         Ok(json!({
             "url": page.url,
             "title": page.title,
             "contentType": page.content_type,
-            "text": bounded(&page.markdown, MAX_WEB_TEXT),
-            "truncated": truncated,
+            "text": page.markdown,
+            "truncated": page.truncated,
         }))
     }
 
@@ -246,7 +259,7 @@ fn task_mcp_server_names() -> Vec<String> {
 }
 
 impl TaskHost for NativeTaskHost {
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+    fn skills(&self, context: &TaskRunContext) -> Result<TaskSkills, String> {
         skill_prompt(&self.app, context)
     }
 
@@ -291,6 +304,7 @@ impl TaskHost for NativeTaskHost {
     ) -> TaskRuntimeFuture<Arc<dyn TaskBridge>> {
         let app = self.app.clone();
         Box::pin(async move {
+            crate::journal_workbench::prepare_research_context(&app, &context).await?;
             let desktop_apps = context.desktop_apps;
             let task_id = context.task_id.clone();
             let generation = context.execution_generation;
@@ -362,8 +376,16 @@ impl TaskHost for NativeTaskHost {
         self.web.clone()
     }
 
-    fn task_mcp_tools(&self, _context: &TaskRunContext) -> TaskRuntimeFuture<Vec<TaskMcpTool>> {
-        Box::pin(async {
+    fn task_mcp_tools(&self, context: &TaskRunContext) -> TaskRuntimeFuture<Vec<TaskMcpTool>> {
+        let task_meta = json!({
+            "com.oleafly/research-task": {
+                "system": "oleafly",
+                "project_id": context.project_id,
+                "task_id": context.task_id,
+                "generation": context.execution_generation,
+            }
+        });
+        Box::pin(async move {
             let names = tokio::task::spawn_blocking(task_mcp_server_names)
                 .await
                 .unwrap_or_default();
@@ -372,21 +394,25 @@ impl TaskHost for NativeTaskHost {
                 .into_iter()
                 .flat_map(|server| {
                     let server_name = server.name;
+                    let task_meta = task_meta.clone();
                     server.tools.into_iter().map(move |tool| {
                         let server = server_name.clone();
                         let handle = tool.tool_handle.clone();
+                        let task_meta = Some(task_meta.clone());
                         TaskMcpTool {
                             schema: oleafly_agent::ToolSchema {
                                 name: tool.name,
                                 description: tool.description.unwrap_or_default(),
                                 input_schema: tool.input_schema,
                             },
+                            read_only_hint: tool.read_only_hint,
                             call: Arc::new(move |arguments| {
                                 let server = server.clone();
                                 let handle = handle.clone();
+                                let task_meta = task_meta.clone();
                                 Box::pin(async move {
                                     crate::mcp::client::call_enabled_server_tool(
-                                        &server, &handle, arguments,
+                                        &server, &handle, arguments, task_meta,
                                     )
                                     .await
                                 })
@@ -421,6 +447,9 @@ struct NativeUsage(super::usage::NativeUsageGuard);
 
 impl UsageSink for NativeUsage {
     fn observe(&self, event: &oleafly_agent::AgentEvent) {
+        if matches!(event, oleafly_agent::AgentEvent::StepStart { step: 0 }) {
+            self.0.begin_task_turn();
+        }
         self.0.observe(event);
     }
 
@@ -602,7 +631,7 @@ impl AcpTaskAdapter {
             return Err("The task was cancelled.".into());
         }
         let files = TaskFiles::open(Path::new(&context.execution_root), &context.allowed_paths)?;
-        let skills = self.host.skills(&context)?;
+        let skills = self.host.skills(&context)?.prompt;
         let (mut options, generation) = acp_task_start(&self.runtime, &context, files.root.clone());
         let mut bridge_context = context.clone();
         bridge_context.execution_root = files.root.to_string_lossy().into_owned();

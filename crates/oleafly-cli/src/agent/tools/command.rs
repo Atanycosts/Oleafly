@@ -282,6 +282,7 @@ pub(crate) async fn run_command(
 
 struct SandboxInputs {
     root: PathBuf,
+    project: PathBuf,
     read_paths: Vec<PathBuf>,
     writable: bool,
     network: bool,
@@ -292,6 +293,7 @@ impl From<&ToolContext> for SandboxInputs {
     fn from(ctx: &ToolContext) -> Self {
         Self {
             root: ctx.workspace.work_root().to_path_buf(),
+            project: ctx.workspace.project().to_path_buf(),
             read_paths: ctx.read_paths.clone(),
             writable: !matches!(ctx.policy.mode, WriteMode::ReadOnly),
             network: ctx.policy.allow.network,
@@ -302,27 +304,48 @@ impl From<&ToolContext> for SandboxInputs {
 
 impl SandboxInputs {
     fn command(&self, text: &str, home: &std::path::Path) -> Result<std::process::Command, String> {
-        let spec = oleafly_sandbox::SandboxSpec {
-            workspace: self.root.clone(),
-            read_only: self.read_paths.clone(),
-            read_write: if self.writable {
-                vec![self.root.clone()]
-            } else {
-                Vec::new()
-            },
-            // What the file tools refuse stays read-only for commands too
-            // (`.git` hooks and config run outside the sandbox later).
-            protected: if self.writable {
-                protected_folders(&self.root)
-            } else {
-                Vec::new()
-            },
-            deny_read: hidden_files(&self.root),
-            network: self.network,
-            home: home.to_path_buf(),
-            owner: sandbox_owner(&self.run_id),
-            ..oleafly_sandbox::SandboxSpec::default()
+        use oleafly_sandbox::profile::{
+            detect_runtimes_cached, spec_for_run, DetectInputs, RunInputs, RunProfile,
         };
+        oleafly_sandbox::profile::prepare_home(home).map_err(|error| error.to_string())?;
+        let search_dirs = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let user_home = oleafly_sandbox::home_dir();
+        let env = |name: &str| std::env::var_os(name);
+        let runtimes = detect_runtimes_cached(&DetectInputs {
+            search_dirs: &search_dirs,
+            project_root: Some(&self.project),
+            home: user_home.as_deref(),
+            env: &env,
+        });
+        let writable = if self.writable {
+            vec![self.root.clone()]
+        } else {
+            Vec::new()
+        };
+        let protected = if self.writable {
+            protected_folders(&self.root)
+        } else {
+            Vec::new()
+        };
+        let host_env = |name: &str| std::env::var(name).ok();
+        let mut spec = spec_for_run(&RunInputs {
+            profile: RunProfile::Analysis,
+            owner: &sandbox_owner(&self.run_id),
+            project: None,
+            workspace: &self.root,
+            writable: &writable,
+            protected: &protected,
+            home,
+            network: self.network,
+            linked: &[],
+            extra_read: &self.read_paths,
+            runtimes: &runtimes,
+            host_env: &host_env,
+        })
+        .map_err(String::from)?;
+        spec.deny_read = hidden_files(&self.root);
         oleafly_sandbox::shell_command(&spec, text).map_err(String::from)
     }
 }
@@ -455,6 +478,50 @@ pub(crate) mod tests {
         assert_eq!(value["truncated"], true);
         assert_eq!(value["output"].as_str().unwrap().len(), MAX_COMMAND_OUTPUT);
         assert_eq!(value["exitCode"], 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_can_use_a_project_runtime_without_granting_other_project_writes() {
+        if sandbox_unavailable(None).is_some() {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        let project = tempfile::tempdir().unwrap();
+        let bin = project.path().join(".venv/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python3");
+        std::fs::write(&python, "#!/bin/sh\nprintf 'project-python\\n'\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let review = tempfile::tempdir().unwrap();
+        let workspace = review.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let inputs = SandboxInputs {
+            root: workspace.clone(),
+            project: project.path().to_path_buf(),
+            read_paths: Vec::new(),
+            writable: true,
+            network: false,
+            run_id: "runtime-test".into(),
+        };
+        let home = tempfile::tempdir().unwrap();
+        let command = format!(
+            "python3; if printf x > '{}'; then exit 1; fi; printf ok > result.txt",
+            project.path().join("outside.txt").display()
+        );
+        let output = inputs
+            .command(&command, home.path())
+            .unwrap()
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "project-python\n");
+        assert!(!project.path().join("outside.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("result.txt")).unwrap(),
+            "ok"
+        );
     }
 
     #[cfg(unix)]

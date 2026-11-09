@@ -53,7 +53,7 @@ import {
   type SkillToggleScope,
   type UpdateSkillInput,
 } from "@/lib/skills";
-import { groupSkills, matchesSkillSearch } from "@/lib/skill-groups";
+import { groupSkills, matchesSkillSearch, skillDisplayText } from "@/lib/skill-groups";
 import { cn } from "@/lib/utils";
 import { SkillCatalogList, SkillResultMessage, SkillsNoMatch } from "./SkillCatalogList";
 import { SkillShareCard } from "./SkillShareCard";
@@ -256,6 +256,8 @@ function filterSkillGroups(
           skill.name,
           skill.id,
           skill.description,
+          skillDisplayText(skill).name,
+          skillDisplayText(skill).description,
           skill.author,
           skill.phase,
           skill.phase ? phaseLabels[skill.phase] : null,
@@ -490,7 +492,7 @@ function SkillCard({
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-medium text-foreground">{skill.name}</p>
+            <p className="text-sm font-medium text-foreground">{skillDisplayText(skill).name}</p>
             <Badge variant="muted" size="sm">
               {sourceBadge(skill.source)}
             </Badge>
@@ -506,7 +508,7 @@ function SkillCard({
             </p>
           ) : null}
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {skill.description || t(($) => $.settings.ai.skills.missingDescription)}
+            {skillDisplayText(skill).description || t(($) => $.settings.ai.skills.missingDescription)}
           </p>
           {renderSkillFiles()}
         </div>

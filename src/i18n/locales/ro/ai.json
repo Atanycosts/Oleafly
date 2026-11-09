@@ -1098,7 +1098,8 @@
       "medium": "Mediu",
       "high": "Ridicat",
       "xhigh": "Foarte ridicat",
-      "max": "Maxim"
+      "max": "Maxim",
+      "ultra": "Ultra"
     }
   },
   "web": {

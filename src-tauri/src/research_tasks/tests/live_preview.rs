@@ -8,6 +8,90 @@ use crate::collab::live::write::SharedDocument;
 use crate::research_tasks::model::{ResearchTask, TaskFilePreview};
 use crate::research_tasks::preview::task_file_preview;
 
+#[test]
+fn source_observations_recover_the_exact_range_and_refuse_an_unretained_revision() {
+    use oleafly_research::model::{ResearchTaskDraft, TaskRuntimeEvent};
+    use oleafly_research::observations::{content_hash, ReadSource, TaskObservation};
+    let fixture = Fixture::new();
+    let bytes = "alpha\n证据\nomega\n";
+    let saved = fixture.task(
+        "source-read",
+        &[("main.tex", Some(bytes.as_bytes()), Some(b"changed source"))],
+    );
+    let task = fixture
+        .store
+        .create(ResearchTaskDraft {
+            project_id: "source-read".into(),
+            title: "Read source".into(),
+            prompt: "Read".into(),
+            runtime_id: "builtin".into(),
+            agent_id: "fixture".into(),
+            model_id: "fixture".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    fixture.store.request_start(&task.id).unwrap();
+    let task = fixture.store.claim_next().unwrap().unwrap();
+    fixture
+        .store
+        .set_isolation(
+            &task.id,
+            task.execution_generation,
+            &saved.isolation.unwrap(),
+        )
+        .unwrap();
+    let row = fixture
+        .store
+        .append_event(
+            &task.id,
+            task.execution_generation,
+            &TaskRuntimeEvent::Observation {
+                observation: TaskObservation::ToolExecution {
+                    call_id: "read-call".into(),
+                    name: "read_file".into(),
+                    status: "done".into(),
+                    input_sha256: content_hash(b"input"),
+                    output_sha256: content_hash(b"output"),
+                    skill_id: None,
+                    skill_instructions_sha256: None,
+                    source: Some(ReadSource {
+                        path: "main.tex".into(),
+                        file_sha256: content_hash(bytes.as_bytes()),
+                        offset: 6,
+                        end_offset: 12,
+                        truncated: true,
+                    }),
+                },
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let preview = crate::research_tasks::preview::source_preview(
+        &fixture.store,
+        &task.id,
+        task.execution_generation,
+        row.sequence,
+    )
+    .unwrap();
+    assert_eq!(preview.text, "证据");
+    assert!(crate::research_tasks::preview::source_preview(
+        &fixture.store,
+        &task.id,
+        task.execution_generation + 1,
+        row.sequence
+    )
+    .is_err());
+    fs::write(fixture.baseline.join("main.tex"), "overwritten baseline").unwrap();
+    let error = crate::research_tasks::preview::source_preview(
+        &fixture.store,
+        &task.id,
+        task.execution_generation,
+        row.sequence,
+    )
+    .unwrap_err();
+    assert!(error.contains("no longer retained"), "{error}");
+}
+
 fn previewed(
     fixture: &Fixture,
     task: &ResearchTask,

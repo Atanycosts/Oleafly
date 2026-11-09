@@ -598,8 +598,8 @@ async fn cancelled_and_invalid_commands_do_not_create_task_files() {
 struct NoModelHost;
 
 impl crate::builtin::TaskHost for NoModelHost {
-    fn skills(&self, _context: &TaskRunContext) -> Result<String, String> {
-        Ok(String::new())
+    fn skills(&self, _context: &TaskRunContext) -> Result<crate::observations::TaskSkills, String> {
+        Ok(Default::default())
     }
 
     fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<std::path::PathBuf> {
@@ -620,6 +620,78 @@ impl crate::builtin::TaskHost for NoModelHost {
     ) -> TaskRuntimeFuture<Arc<dyn crate::builtin::TaskBridge>> {
         Box::pin(async { Err("No bridge in this test.".to_string()) })
     }
+}
+
+struct RetainedWebHost;
+
+#[async_trait::async_trait]
+impl crate::builtin::WebTools for RetainedWebHost {
+    async fn fetch(&self, url: &str) -> Result<serde_json::Value, String> {
+        Ok(
+            json!({"url": url, "text": "Use two columns for review.\n".repeat(3000), "truncated": false}),
+        )
+    }
+
+    async fn search(&self, _query: &str) -> Result<serde_json::Value, String> {
+        Err("No search provider in this test.".into())
+    }
+}
+
+impl crate::builtin::TaskHost for RetainedWebHost {
+    fn skills(&self, context: &TaskRunContext) -> Result<crate::observations::TaskSkills, String> {
+        NoModelHost.skills(context)
+    }
+    fn skill_read_paths(&self, context: &TaskRunContext) -> Vec<std::path::PathBuf> {
+        NoModelHost.skill_read_paths(context)
+    }
+    fn provider(&self, context: TaskRunContext) -> TaskRuntimeFuture<crate::builtin::TaskProvider> {
+        NoModelHost.provider(context)
+    }
+    fn bridge(
+        &self,
+        context: TaskRunContext,
+        binding: Option<TaskBinding>,
+    ) -> TaskRuntimeFuture<Arc<dyn crate::builtin::TaskBridge>> {
+        NoModelHost.bridge(context, binding)
+    }
+    fn web(&self) -> Option<Arc<dyn crate::builtin::WebTools>> {
+        Some(Arc::new(RetainedWebHost))
+    }
+}
+
+#[tokio::test]
+async fn web_pages_are_retained_for_review_without_enabling_subprocess_network() {
+    let mut fixture = tool_task(ResearchBrief::default());
+    fixture.binding.host = Arc::new(RetainedWebHost);
+    let saved = fixture
+        .call(
+            "web_fetch",
+            json!({"url": "https://example.org/authors", "save_path": "research/guide.txt"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved["savedPath"], "research/guide.txt");
+    let captured =
+        std::fs::read_to_string(fixture.binding.execution_root.join("research/guide.txt")).unwrap();
+    assert!(captured.contains("https://example.org/authors"));
+    assert!(captured.contains("Use two columns for review."));
+    assert_eq!(
+        captured.matches("Use two columns for review.").count(),
+        3000
+    );
+    assert!(saved["text"]
+        .as_str()
+        .unwrap()
+        .contains("[output truncated]"));
+    assert_eq!(saved["textTruncated"], true);
+    assert!(captured.contains("Truncated: false"));
+    assert!(fixture
+        .call(
+            "web_fetch",
+            json!({"url": "https://example.org/authors", "save_path": "../outside.txt"})
+        )
+        .await
+        .is_err());
 }
 
 struct ToolTask {
@@ -758,8 +830,63 @@ impl ToolTask {
 }
 
 #[tokio::test]
+async fn observation_tool_uses_its_binding_and_refuses_caller_supplied_scope() {
+    let mut task = tool_task(ResearchBrief::default());
+    let view = task.call("task_observations", json!({})).await.unwrap();
+    assert_eq!(view["summary"]["taskId"], task.task.id);
+    assert!(view["summary"]["runtime"].is_null());
+    for args in [
+        json!({"task_id":"another"}),
+        json!({"limit":0}),
+        json!({"limit":51}),
+        json!({"after_sequence":-1}),
+        json!({"after_sequence":1}),
+    ] {
+        assert!(task.call("task_observations", args).await.is_err());
+    }
+    task.binding.project_id = "other-project".into();
+    assert!(task.call("task_observations", json!({})).await.is_err());
+    task.binding.project_id = task.task.project_id.clone();
+    task.binding.generation += 1;
+    assert!(task.call("task_observations", json!({})).await.is_err());
+}
+
+#[tokio::test]
+async fn finding_query_is_read_only_and_uses_only_its_bound_task() {
+    let mut task = tool_task(ResearchBrief::default());
+    let page = task.call("task_findings", json!({})).await.unwrap();
+    assert_eq!(page["taskId"], task.task.id);
+    assert!(page["coverageGaps"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("findings.model_reviewer_not_run")));
+    for args in [
+        json!({"task_id":"another"}),
+        json!({"limit":0}),
+        json!({"limit":51}),
+        json!({"after_sequence":-1}),
+        json!({"disposition":"done"}),
+        json!({"rationale":"change it"}),
+    ] {
+        assert!(task.call("task_findings", args).await.is_err());
+    }
+    task.binding.generation += 1;
+    assert!(task.call("task_findings", json!({})).await.is_err());
+    task.binding.generation -= 1;
+    task.binding.project_id = "other".into();
+    assert!(task.call("task_findings", json!({})).await.is_err());
+}
+
+#[tokio::test]
 async fn ledger_append_fills_the_command_and_metrics_from_the_run() {
     let fixture = tool_task(ResearchBrief::default());
+    crate::record::init_record(
+        &fixture.binding.execution_root,
+        &fixture.task.record_slug,
+        "# Brief\n",
+    )
+    .unwrap();
+    assert!(!fixture.record_file("ledger.tsv").exists());
     fixture.add_run(
         "r001",
         "python train.py --dropout 0.3",

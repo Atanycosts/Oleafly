@@ -26,13 +26,13 @@ describe("EffortSelector", () => {
     );
   });
 
-  it("picks a level and goes back to Auto", async () => {
+  it("picks the provider's ultra level and goes back to Auto", async () => {
     const onChange = vi.fn();
-    const { rerender } = render(<EffortSelector choices={["low", "medium", "high"]} value={undefined} onChange={onChange} />);
+    const { rerender } = render(<EffortSelector choices={["max", "ultra"]} value={undefined} onChange={onChange} />);
     open();
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: en.effort.levels.high }));
-    expect(onChange).toHaveBeenLastCalledWith("high");
-    rerender(<EffortSelector choices={["low", "medium", "high"]} value="high" onChange={onChange} />);
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: en.effort.levels.ultra }));
+    expect(onChange).toHaveBeenLastCalledWith("ultra");
+    rerender(<EffortSelector choices={["max", "ultra"]} value="ultra" onChange={onChange} />);
     open();
     fireEvent.click(await screen.findByRole("menuitemradio", { name: new RegExp(en.effort.auto) }));
     expect(onChange).toHaveBeenLastCalledWith(undefined);

@@ -243,10 +243,26 @@ impl LoopbackBridge {
         let observed = calls.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let router = Router::new().route("/mcp", post(move |Json(request): Json<Value>| {
-            lock(&observed).push(request);
-            async { Json(json!({"content":[{"type":"text","text":"scoped research evidence"}],"isError":false})) }
-        }));
+        let router = Router::new().route(
+            "/mcp",
+            post(move |Json(request): Json<Value>| {
+                lock(&observed).push(request.clone());
+                async move {
+                    let (text, failed) = match (
+                        request["name"].as_str(),
+                        request["arguments"]["id"].as_str(),
+                    ) {
+                        (Some("load_skill"), Some("enabled-skill")) => (
+                            json!({"instructions":"Use the recorded source ranges."}).to_string(),
+                            false,
+                        ),
+                        (Some("load_skill"), _) => ("This skill is disabled.".into(), true),
+                        _ => ("scoped research evidence".into(), false),
+                    };
+                    Json(json!({"content":[{"type":"text","text":text}],"isError":failed}))
+                }
+            }),
+        );
         let cancel = CancellationToken::new();
         let stopped = cancel.clone();
         let server = tokio::spawn(async move {
@@ -351,16 +367,23 @@ impl UsageSink for RecordingUsage {
 struct FixtureHost {
     usage: Arc<Mutex<UsageRecord>>,
     provider_url: String,
+    caps: oleafly_agent::ModelCaps,
     bridge: Arc<LoopbackBridge>,
     preparations: Mutex<Vec<TaskRunContext>>,
     bridge_gate: Option<Arc<tokio::sync::Semaphore>>,
     bridge_started: tokio::sync::Notify,
+    mcp_tools: Vec<TaskMcpTool>,
 }
 
 impl TaskHost for FixtureHost {
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+    fn task_mcp_tools(&self, _context: &TaskRunContext) -> TaskRuntimeFuture<Vec<TaskMcpTool>> {
+        let tools = self.mcp_tools.clone();
+        Box::pin(async move { Ok(tools) })
+    }
+
+    fn skills(&self, context: &TaskRunContext) -> Result<crate::observations::TaskSkills, String> {
         assert!(context.skill_ids.is_empty());
-        Ok(String::new())
+        Ok(Default::default())
     }
 
     fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<PathBuf> {
@@ -370,6 +393,7 @@ impl TaskHost for FixtureHost {
     fn provider(&self, context: TaskRunContext) -> TaskRuntimeFuture<TaskProvider> {
         let usage = self.usage.clone();
         let base_url = self.provider_url.clone();
+        let caps = self.caps.clone();
         Box::pin(async move {
             Ok(TaskProvider {
                 client: reqwest::Client::builder().no_proxy().build().unwrap(),
@@ -382,7 +406,7 @@ impl TaskHost for FixtureHost {
                         base_url,
                         reasoning_content: true,
                     },
-                    caps: oleafly_agent::ModelCaps::default(),
+                    caps,
                 },
                 usage: Box::new(RecordingUsage(usage)),
             })
@@ -413,6 +437,7 @@ enum ProviderBehavior {
     Reject,
     Wait,
     RepeatTool,
+    Skills,
 }
 
 struct ProviderFixture {
@@ -451,6 +476,13 @@ impl ProviderFixture {
                     return Response::builder().header("content-type","text/event-stream").body(Body::from_stream(stream)).unwrap();
                 }
                 let delta = match (behavior, step) {
+                    (ProviderBehavior::Skills, 0) => tool_delta(vec![
+                        ("load_skill", json!({"id":"enabled-skill"})),
+                        ("load_skill", json!({"id":"disabled-skill"})),
+                        ("read_file", json!({"path":"main.tex","offset":0,"limit":4})),
+                        ("run_command", json!({"command":"echo forbidden"})),
+                    ]),
+                    (ProviderBehavior::Skills, _) => json!({"content":"Reviewed skill outcomes."}),
                     (ProviderBehavior::RepeatTool, _) => tool_delta(vec![("list_files", json!({}))]),
                     (_, 0) => tool_delta(vec![
                         ("write_file",json!({"path":"analysis/result.md","content":"Isolated manuscript revision"})),
@@ -492,10 +524,12 @@ async fn fixture_host(_root: &Path, url: String) -> Arc<FixtureHost> {
     Arc::new(FixtureHost {
         usage: Arc::new(Mutex::new(UsageRecord::default())),
         provider_url: url,
+        caps: oleafly_agent::ModelCaps::default(),
         bridge: LoopbackBridge::start().await,
         preparations: Mutex::new(Vec::new()),
         bridge_gate: None,
         bridge_started: tokio::sync::Notify::new(),
+        mcp_tools: Vec::new(),
     })
 }
 
@@ -570,6 +604,82 @@ async fn builtin_adapter_edits_isolated_files_and_records_native_usage() {
     }
     assert!(lock(&events).iter().any(|event| matches!(event,TaskRuntimeEvent::Reasoning{text} if text=="Checked the scoped evidence.")));
     assert_eq!(usage_row(&host), ("completed".into(), Some(30), Some(6)));
+    let recorded = lock(&events);
+    let runtime = recorded
+        .iter()
+        .find_map(|event| match event {
+            TaskRuntimeEvent::Observation {
+                observation: TaskObservation::Runtime { tools, .. },
+            } => Some(tools),
+            _ => None,
+        })
+        .unwrap();
+    let provided: BTreeSet<_> = runtime.iter().map(|tool| tool.name.as_str()).collect();
+    let requests = lock(&provider.requests);
+    let offered: BTreeSet<_> = requests[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(provided, offered);
+    assert!(recorded.iter().any(|event| matches!(event,
+        TaskRuntimeEvent::Observation { observation: TaskObservation::ToolExecution { name, status, .. } }
+        if name == "write_file" && status == "done"
+    )));
+    assert!(recorded.iter().any(|event| matches!(event,
+        TaskRuntimeEvent::Observation { observation: TaskObservation::ToolExecution { name, status, .. } }
+        if name == "write_file" && status == "error"
+    )));
+}
+
+#[tokio::test]
+async fn observations_distinguish_loaded_disabled_and_unavailable_capabilities() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("main.tex"), "source evidence").unwrap();
+    let provider = ProviderFixture::start(ProviderBehavior::Skills).await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut context = context(root.path());
+    context.allowed_paths = vec!["main.tex".into()];
+    context.brief.permissions.commands = crate::model::CommandPolicy::Off;
+    let (events, sink) = event_log();
+    adapter
+        .run(context, CancellationToken::new(), sink)
+        .await
+        .unwrap();
+    let events = lock(&events);
+    let executions: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            TaskRuntimeEvent::Observation {
+                observation: value @ TaskObservation::ToolExecution { .. },
+            } => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(executions.len(), 4);
+    assert!(executions.iter().any(|event| matches!(event,
+        TaskObservation::ToolExecution { skill_id: Some(id), skill_instructions_sha256: Some(hash), status, .. }
+        if id == "enabled-skill" && status == "done" && *hash == content_hash(b"Use the recorded source ranges.")
+    )));
+    assert!(executions.iter().any(|event| matches!(event,
+        TaskObservation::ToolExecution { skill_id: Some(id), skill_instructions_sha256: None, status, .. }
+        if id == "disabled-skill" && status == "error"
+    )));
+    assert!(executions.iter().any(|event| matches!(event,
+        TaskObservation::ToolExecution { source: Some(source), .. }
+        if source.path == "main.tex" && source.file_sha256 == content_hash(b"source evidence")
+            && source.offset == 0 && source.end_offset == 4 && source.truncated
+    )));
+    assert!(executions.iter().any(|event| matches!(event,
+        TaskObservation::ToolExecution { name, status, .. } if name == "run_command" && status == "error"
+    )));
+    assert!(events.iter().any(|event| matches!(event,
+        TaskRuntimeEvent::Observation { observation: TaskObservation::Runtime { unavailable, tools, .. } }
+        if unavailable.contains(&"commands:disabled".into()) && unavailable.contains(&"desktop_apps:disabled".into())
+            && !tools.iter().any(|tool| tool.name == "desktop_apps")
+    )));
 }
 
 #[tokio::test]
@@ -651,7 +761,7 @@ struct CountingHost {
 }
 
 impl TaskHost for CountingHost {
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+    fn skills(&self, context: &TaskRunContext) -> Result<crate::observations::TaskSkills, String> {
         self.inner.skills(context)
     }
 
@@ -839,6 +949,56 @@ fn tool_description(request: &Value, name: &str) -> String {
         .to_owned()
 }
 
+#[tokio::test]
+async fn commands_off_allows_read_only_mcp_but_does_not_invoke_write_tools() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Scripted::start(script(|_, step| {
+        if step == 0 {
+            tool_delta(vec![("mcp_read", json!({})), ("mcp_write", json!({}))])
+        } else {
+            text_reply("Read completed; write denied.")
+        }
+    }))
+    .await;
+    let mut host = fixture_host(root.path(), provider.url.clone()).await;
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    Arc::get_mut(&mut host).unwrap().mcp_tools = [("mcp_read", true), ("mcp_write", false)]
+        .into_iter()
+        .map(|(name, read_only_hint)| {
+            let calls = calls.clone();
+            TaskMcpTool {
+                schema: ToolSchema {
+                    name: name.into(),
+                    description: name.into(),
+                    input_schema: json!({"type": "object"}),
+                },
+                read_only_hint,
+                call: Arc::new(move |_| {
+                    lock(&calls).push(name);
+                    Box::pin(async { Ok(json!({"content": "retained evidence"})) })
+                }),
+            }
+        })
+        .collect();
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut context = context(root.path());
+    context.brief.permissions.commands = crate::model::CommandPolicy::Off;
+    within(adapter.run(context, CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+
+    assert_eq!(*lock(&calls), ["mcp_read"]);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    let outputs = tool_outputs(&requests[1]);
+    assert!(outputs
+        .iter()
+        .any(|output| output.contains("retained evidence")));
+    assert!(outputs
+        .iter()
+        .any(|output| output.contains(crate::approvals::COMMANDS_OFF)));
+}
+
 fn running_task(tasks_root: &Path, executor: &str) -> ResearchTask {
     let store = TaskStore::new(tasks_root.to_path_buf()).unwrap();
     let mut brief = ResearchBrief::default();
@@ -950,6 +1110,10 @@ async fn the_agent_is_woken_when_a_run_finishes_after_its_turn() {
     let result = within(run).await.unwrap().unwrap();
 
     assert_eq!(result.summary, "Recorded r001 in the ledger.");
+    assert_eq!(
+        (result.input_tokens, result.output_tokens),
+        (Some(30), Some(6))
+    );
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
     assert!(!requests[1]["messages"].to_string().contains("finished:"));
@@ -1206,6 +1370,16 @@ async fn run_with_helper(root: &Path) -> Vec<Value> {
 async fn spawned_readers_can_only_write_inside_the_record() {
     let root = tempfile::tempdir().unwrap();
     let requests = run_with_helper(root.path()).await;
+    for helper in [false, true] {
+        let request = requests
+            .iter()
+            .find(|request| is_helper(request) == helper)
+            .unwrap();
+        assert!(request["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains(oleafly_agent::WORKFLOW_RULES));
+    }
     let workspace = root.path().join("workspace");
     assert_eq!(
         std::fs::read_to_string(workspace.join("main.tex")).unwrap(),
@@ -1235,6 +1409,85 @@ async fn spawned_readers_can_only_write_inside_the_record() {
         spawned["wrote"],
         json!([format!("{HELPER_RECORD}/notes/x.md")])
     );
+}
+
+#[tokio::test]
+async fn spawned_readers_use_the_task_reasoning_effort() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let provider = Scripted::start(helper_script()).await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut task = context(&workspace);
+    task.agent_id = "xai".into();
+    task.model_id = "grok-4.5".into();
+    task.brief.reasoning_effort = Some(oleafly_agent::Effort::High);
+    task.allowed_paths = vec!["main.tex".into(), "research".into()];
+    task.record_dir = HELPER_RECORD.into();
+
+    within(adapter.run(task, CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+
+    let requests = provider.requests();
+    assert!(requests.len() >= 3);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request["reasoning_effort"] == "high"),
+        "{requests:?}"
+    );
+}
+
+#[tokio::test]
+async fn gateway_effort_reaches_parent_and_spawned_reader_requests() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let provider = Scripted::start(helper_script()).await;
+    let mut host = fixture_host(root.path(), provider.url.clone()).await;
+    Arc::get_mut(&mut host).unwrap().caps = oleafly_agent::ModelCaps::from_metadata_json(&json!({
+        "reasoning": true,
+        "reasoningOptions": [{"type": "effort", "values": ["low", "max", "ultra"]}]
+    }));
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut task = context(&workspace);
+    task.agent_id = "gateway".into();
+    task.model_id = "auto/gpt-6.1-sol".into();
+    task.brief.reasoning_effort = Some(oleafly_agent::Effort::Ultra);
+    task.allowed_paths = vec!["main.tex".into(), "research".into()];
+    task.record_dir = HELPER_RECORD.into();
+
+    within(adapter.run(task, CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+
+    let requests = provider.requests();
+    assert!(requests.len() >= 3);
+    assert!(requests
+        .iter()
+        .all(|request| request["reasoning_effort"] == "ultra"));
+}
+
+#[tokio::test]
+async fn unsupported_reasoning_effort_fails_before_requesting_a_completion() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Scripted::start(script(|_, _| text_reply("unused"))).await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&root.path().join("tasks")));
+    let mut task = context(root.path());
+    task.agent_id = "xai".into();
+    task.model_id = "grok-4.5".into();
+    task.brief.reasoning_effort = Some(oleafly_agent::Effort::Max);
+
+    let error = adapter
+        .run(task, CancellationToken::new(), event_log().1)
+        .await
+        .unwrap_err();
+
+    assert!(error.contains("no longer supported"), "{error}");
+    assert!(provider.requests().is_empty());
 }
 
 #[tokio::test]
@@ -1382,7 +1635,7 @@ async fn a_time_budget_stop_wraps_up_and_goes_to_review() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
-            text_reply("Updated the handoff and wrote the report.")
+            text_reply("Updated the handoff.")
         }
     }))
     .await;
@@ -1418,7 +1671,7 @@ async fn a_time_budget_stop_wraps_up_and_goes_to_review() {
     assert_eq!(finished.stop_reason, Some(StopReason::BudgetTime));
     assert_eq!(
         finished.result.as_ref().unwrap().summary,
-        "Updated the handoff and wrote the report."
+        "Updated the handoff."
     );
     let requests = provider.requests();
     let (wrap_ups, working): (Vec<&Value>, Vec<&Value>) = requests

@@ -1,4 +1,6 @@
-export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+import { getProvider } from "./providers";
+
+export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export const EFFORT_LEVELS: readonly EffortLevel[] = [
   "none",
@@ -8,6 +10,7 @@ export const EFFORT_LEVELS: readonly EffortLevel[] = [
   "high",
   "xhigh",
   "max",
+  "ultra",
 ];
 
 export interface ReasoningOption {
@@ -139,7 +142,9 @@ function anthropicChoices(id: string, caps: ReasoningCaps): ProviderChoices {
 function openAiChoices(id: string, caps: ReasoningCaps): ProviderChoices {
   const wire = [...EFFORT_LEVELS];
   if (caps.efforts !== null) return { wire, base: [...caps.efforts] };
-  if (caps.flag === false || !openAiReasoningId(id)) return { wire, base: [] };
+  if (caps.flag === false) return { wire, base: [] };
+  if (id === "gpt-6.1-sol") return { wire, base: ["low", "medium", "high", "xhigh", "max"] };
+  if (!openAiReasoningId(id)) return { wire, base: [] };
   return { wire, base: [...LOW_TO_HIGH] };
 }
 
@@ -226,7 +231,9 @@ function providerChoices(providerId: string, id: string, caps: ReasoningCaps): P
     case "deepseek":
       return deepSeekChoices(id, caps);
     default:
-      return { wire: [], base: [] };
+      return getProvider(providerId)
+        ? { wire: [], base: [] }
+        : { wire: [...EFFORT_LEVELS], base: [...(caps.efforts ?? [])] };
   }
 }
 

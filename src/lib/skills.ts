@@ -206,8 +206,6 @@ const PHASE_ORDER = [
   "tooling",
 ] as const;
 
-const RESEARCH_LOOP_SKILL_ID = "oleafly-research-loop";
-
 function phaseKey(skill: SkillEntry): string {
   const phase = (skill.phase ?? "").trim().toLowerCase();
   return phase || "other";
@@ -244,17 +242,12 @@ export function skillCatalogPrompt(skills: readonly SkillEntry[]): string {
     );
     return `## ${phase}\n${entries.join("\n")}`;
   });
-  const loopEnabled = enabled.some((skill) => skill.id === RESEARCH_LOOP_SKILL_ID);
   const rules = [
-    loopEnabled
-      ? `For any research task that spans more than one step, call load_skill with "${RESEARCH_LOOP_SKILL_ID}" first and follow the handoffs it names.`
-      : "For any research task that spans more than one step, load the skill for the stage you are starting before you do the work.",
-    "Load the skill that matches the phase you are about to start, then follow it.",
-    "Never say you are using a skill before you have loaded it with load_skill.",
-    "Vendored skills ship reference files and scripts. Read a listed file with read_skill_file, and run a script through run_command using the absolute dir that load_skill reports.",
+    "Use load_skill when a skill provides knowledge or tools needed for the current task.",
+    "Read supporting files with read_skill_file as needed. Run bundled scripts through run_command using the absolute dir returned by load_skill.",
   ];
   const ruleLines = rules.map((rule) => `- ${rule}`).join("\n");
-  return `Research workflow map. Oleafly runs research writing as a loop: research, then authoring, then figures, then review, then submission, then communication, with tooling skills available at any stage. The skills enabled for this run are grouped below by phase.
+  return `Research workflow map. Enabled skills are grouped by area; choose those useful for the current task.
 <enabled_skills>
 ${blocks.join("\n")}
 </enabled_skills>

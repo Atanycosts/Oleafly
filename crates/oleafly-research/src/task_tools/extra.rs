@@ -105,6 +105,26 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
     let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
     let mut tools = vec![
         tool(
+            "task_observations",
+            "Read this bound task's recorded runtime summary and a bounded page of immutable observation events. Returns the next sequence cursor, baseline, file changes and existing evidence checks. Does not return prompts or transcript text. Only committed observations are visible; query again for newer records.",
+            json!({
+                "after_sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991_u64},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            }),
+            &[],
+        ),
+        tool(
+            "task_findings",
+            "Read a bounded page of this task generation's retained findings, rule versions, source quotes, current dependency validity and operator dispositions. Read-only. after_sequence is a finding cursor, independent of observation events. To refresh validity or dispositions of already seen findings, query again from 0 with optional file/rule/disposition filters. Only numeric deterministic checks are currently supported; no model reviewer has run.",
+            json!({
+                "after_sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991_u64},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "file": {"type": "string"}, "rule": {"type": "string"},
+                "disposition": {"type": "string", "enum": ["open", "accepted", "rejected", "deferred"]},
+            }),
+            &[],
+        ),
+        tool(
             "start_run",
             &format!(
                 "Start a long command (training, a benchmark, an analysis) as a supervised run in the task workspace and return at once. The command runs through {shell}. Use wait_runs to be woken when it finishes; never poll in a tight loop. Print metrics as key=value or JSON lines to have them recorded. Each run stops after the task's run time limit ({} minutes).",
@@ -233,11 +253,11 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
             &["brief"],
         ),
     ];
-    if brief.permissions.network && has_web {
+    if has_web {
         tools.push(tool(
             "web_fetch",
-            "Read a public web page as Markdown.",
-            json!({"url": {"type": "string", "maxLength": 2000}}),
+            "Read a public web page as Markdown. Optionally retain the returned page in a task workspace file for source review.",
+            json!({"url": {"type": "string", "maxLength": 2000}, "save_path": {"type": "string"}}),
             &["url"],
         ));
         tools.push(tool(
@@ -772,6 +792,11 @@ pub async fn call_task_tool(
     binding: &TaskBinding,
 ) -> Option<Result<Value, String>> {
     let result = match name {
+        "task_observations" => task_observations(binding, &args),
+        "task_findings" => serde_json::from_value::<crate::findings::FindingQuery>(args)
+            .map_err(|error| error.to_string())
+            .and_then(|query| binding.store()?.findings(&binding.project_id, &binding.task_id, binding.generation, &query))
+            .and_then(|page| serde_json::to_value(page).map_err(|error| error.to_string())),
         "start_run" => start_run(binding, &args).await,
         "wait_runs" => wait_runs(binding, &args).await,
         "run_status" => match text(&args, "id") {
@@ -847,11 +872,43 @@ pub async fn call_task_tool(
         "literature_search" => literature(binding, &args).await,
         "read_paper" => paper(binding, &args).await,
         "web_fetch" | "web_search" => {
-            let web = binding.host.web().filter(|_| binding.brief.permissions.network);
+            let web = binding.host.web();
             match web {
                 None => Err("Web access is off for this task.".into()),
                 Some(web) if name == "web_fetch" => match required(&args, "url") {
-                    Ok(url) => web.fetch(url).await,
+                    Ok(url) => match web.fetch(url).await {
+                        Ok(mut page) => {
+                            let saved = if let Some(path) = args.get("save_path").and_then(Value::as_str) {
+                                binding.files().and_then(|files| {
+                                    let text = page.get("text").and_then(Value::as_str)
+                                        .ok_or("The web reader did not return source text.")?;
+                                    let captured = format!(
+                                        "Source URL: {}\nCaptured at: {}\nTruncated: {}\n\n{}",
+                                        page.get("url").and_then(Value::as_str).unwrap_or(url),
+                                        iso_utc(now_ms()), page["truncated"], text,
+                                    );
+                                    files.write(path, &captured)?;
+                                    page["savedPath"] = json!(path);
+                                    Ok(())
+                                })
+                            } else {
+                                Ok(())
+                            };
+                            saved.map(|()| {
+                                if let Some(text) = page.get("text").and_then(Value::as_str) {
+                                    let shortened = text.len() > super::MAX_OUTPUT_BYTES;
+                                    let excerpt = super::bounded(text, super::MAX_OUTPUT_BYTES);
+                                    page["text"] = json!(excerpt);
+                                    page["textTruncated"] = json!(shortened);
+                                    if shortened {
+                                        page["note"] = json!("This response contains an excerpt. Use save_path, then read_file with nextOffset to read the retained page in full.");
+                                    }
+                                }
+                                page
+                            })
+                        }
+                        Err(error) => Err(error),
+                    },
                     Err(error) => Err(error),
                 },
                 Some(web) => match required(&args, "query") {
@@ -863,6 +920,45 @@ pub async fn call_task_tool(
         _ => return None,
     };
     Some(result)
+}
+
+fn task_observations(binding: &TaskBinding, args: &Value) -> Result<Value, String> {
+    let fields = args
+        .as_object()
+        .ok_or("Tool arguments must be an object.")?;
+    if fields
+        .keys()
+        .any(|key| !matches!(key.as_str(), "after_sequence" | "limit"))
+    {
+        return Err(
+            "This query uses the bound task; only after_sequence and limit are accepted.".into(),
+        );
+    }
+    let after = fields
+        .get("after_sequence")
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or("after_sequence must be a nonnegative integer.")
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let limit = fields
+        .get("limit")
+        .map(|value| value.as_u64().ok_or("limit must be an integer."))
+        .transpose()?
+        .unwrap_or(20);
+    if !(1..=50).contains(&limit) || after > 9_007_199_254_740_991 {
+        return Err("Use a nonnegative cursor and a limit between 1 and 50.".into());
+    }
+    let view = binding.store()?.observations(
+        &binding.project_id,
+        &binding.task_id,
+        binding.generation,
+        after,
+        limit as usize,
+    )?;
+    serde_json::to_value(view).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -917,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn web_tools_appear_only_with_network_permission() {
+    fn web_tools_are_independent_of_subprocess_network_permission() {
         let mut brief = ResearchBrief::default();
         let names = |brief: &ResearchBrief, web: bool| {
             task_tool_schemas(brief, web)
@@ -925,7 +1021,7 @@ mod tests {
                 .map(|tool| tool.name)
                 .collect::<Vec<_>>()
         };
-        assert!(!names(&brief, true).contains(&"web_fetch".to_owned()));
+        assert!(names(&brief, true).contains(&"web_fetch".to_owned()));
         brief.permissions.network = true;
         assert!(names(&brief, true).contains(&"web_fetch".to_owned()));
         assert!(!names(&brief, false).contains(&"web_search".to_owned()));

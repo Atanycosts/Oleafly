@@ -1058,7 +1058,8 @@
       "medium": "Trung bình",
       "high": "Cao",
       "xhigh": "Rất cao",
-      "max": "Tối đa"
+      "max": "Tối đa",
+      "ultra": "Ultra"
     }
   },
   "web": {

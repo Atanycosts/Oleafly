@@ -142,6 +142,40 @@ pub fn prepare_at(
             IsolationSource::Repository => exact_git_root(project_root, git, cancel)?,
             IsolationSource::Snapshot => None,
         };
+        let (initial_git_status, initial_git_status_complete) = if repository_head.is_some() {
+            let arguments = [
+                "status".into(),
+                "--porcelain=v1".into(),
+                "--untracked-files=all".into(),
+            ];
+            let output = run_git(project_root, git, &arguments, cancel)?
+                .ok_or("Git is unavailable while capturing the task baseline status.")?;
+            if !output.status.success() {
+                return Err("Git could not capture the task baseline status.".into());
+            }
+            let mut stdout = output.stdout;
+            if output.stdout_truncated {
+                // A truncated path is not a status entry. Keep only complete lines.
+                stdout.truncate(
+                    stdout
+                        .iter()
+                        .rposition(|byte| *byte == b'\n')
+                        .map_or(0, |end| end + 1),
+                );
+            }
+            (
+                Some(
+                    String::from_utf8(stdout)
+                        .map_err(|_| "Git status was not UTF-8.")?
+                        .lines()
+                        .map(str::to_owned)
+                        .collect(),
+                ),
+                Some(!output.stdout_truncated),
+            )
+        } else {
+            (None, None)
+        };
         let (kind, revision) = if let Some(head) = repository_head {
             create_git_worktree(project_root, git, generation_root, &head, cancel)?;
             scrub_checkout(generation_root, &baseline, cancel)?;
@@ -170,6 +204,8 @@ pub fn prepare_at(
             allowed_paths,
             created_at: now_ms(),
             skipped,
+            initial_git_status,
+            initial_git_status_complete,
         })
     })();
     if prepared.is_err() {
@@ -576,12 +612,19 @@ fn copy_manifest(
     Ok(())
 }
 
+struct GitOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_truncated: bool,
+}
+
 fn run_git(
     project: &Path,
     git: Option<&GitEnv>,
     arguments: &[String],
     cancel: &CancellationToken,
-) -> Result<Option<std::process::Output>, String> {
+) -> Result<Option<GitOutput>, String> {
     let Some(git) = git else {
         return Ok(None);
     };
@@ -670,17 +713,20 @@ fn run_git(
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
     stdout
-        .take(MAX_GIT_OUTPUT_BYTES)
+        .take(MAX_GIT_OUTPUT_BYTES + 1)
         .read_to_end(&mut stdout_bytes)
         .map_err(|error| format!("could not read Git output: {error}"))?;
     stderr
         .take(MAX_GIT_OUTPUT_BYTES)
         .read_to_end(&mut stderr_bytes)
         .map_err(|error| format!("could not read Git errors: {error}"))?;
-    Ok(Some(std::process::Output {
+    let stdout_truncated = stdout_bytes.len() as u64 > MAX_GIT_OUTPUT_BYTES;
+    stdout_bytes.truncate(MAX_GIT_OUTPUT_BYTES as usize);
+    Ok(Some(GitOutput {
         status,
         stdout: stdout_bytes,
         stderr: stderr_bytes,
+        stdout_truncated,
     }))
 }
 
@@ -1235,7 +1281,7 @@ pub fn carry_over_record(from_root: &Path, to_root: &Path, slug: &str) -> Result
             total = total.saturating_add(metadata.len());
             if copied >= MAX_RECORD_FILES || total > MAX_RECORD_BYTES {
                 return Err(
-                    "The research record is too large to carry over. Start over without it.".into(),
+                    "The research record is too large to carry over. Remove excess files from the existing record, then retry Fresh.".into(),
                 );
             }
             let destination = to_root.join(inside);

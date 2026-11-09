@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import {
   ArrowUpRight,
   BookOpen,
@@ -13,7 +13,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { groupSkills, type SkillGroup } from "@/lib/skill-groups";
+import { groupSkills, skillDisplayText, type SkillGroup } from "@/lib/skill-groups";
 import { isSkillAvailable, type SkillEntry } from "@/lib/skills";
 import { cn } from "@/lib/utils";
 import { useMarquee } from "./use-marquee";
@@ -101,10 +101,10 @@ function AssistantHomeView({
   before?: ReactNode;
   children?: ReactNode;
 }>) {
-  const { t } = useTranslation(["common", "ai"]);
+  const { t } = useTranslation(["common", "ai", "core"]);
   const resolvedHeading = heading ?? t(($) => $.ai.home.heading);
   const resolvedAccent = accent ?? t(($) => $.ai.home.headingAccent);
-  const groups = useMemo(() => homeSkillGroups(skills), [skills]);
+  const groups = homeSkillGroups(skills);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   useEffect(() => {
     if (groups.length === 0) {
@@ -133,10 +133,10 @@ function AssistantHomeView({
     ...(showSkills ? chips : []).map((skill) => ({
       key: `skill:${skill.id}`,
       testId: `assistant-home-chip-${skill.id}`,
-      label: skill.name,
+      label: skillDisplayText(skill).name,
       title: skillLocked(skill)
-        ? t(($) => $.ai.home.skillLockedTitle, { name: skill.name })
-        : skill.description,
+        ? t(($) => $.ai.home.skillLockedTitle, { name: skillDisplayText(skill).name })
+        : skillDisplayText(skill).description,
       icon: groupIcon,
       locked: skillLocked(skill),
       onSelect: () => pick(skill),
@@ -208,6 +208,7 @@ function AssistantHomeView({
           className="grid w-full gap-2.5 @md:grid-cols-2 @2xl:grid-cols-3"
         >
           {cards.map((skill, index) => {
+            const display = skillDisplayText(skill);
             const cardTone = tone(index);
             const Icon = GROUP_ICONS[active?.key ?? "user"] ?? Sparkles;
             const locked = skillLocked(skill);
@@ -219,8 +220,8 @@ function AssistantHomeView({
                 data-locked={locked ? "true" : undefined}
                 title={
                   locked
-                    ? t(($) => $.ai.home.skillLockedTitle, { name: skill.name })
-                    : skill.description
+                    ? t(($) => $.ai.home.skillLockedTitle, { name: display.name })
+                    : display.description
                 }
                 onClick={() => pick(skill)}
                 className={cn(
@@ -238,7 +239,7 @@ function AssistantHomeView({
                 <span className="relative flex w-full items-start gap-2">
                   <Icon aria-hidden className={cn("mt-px size-4 shrink-0", cardTone.icon)} />
                   <span className="min-w-0 flex-1 text-balance text-sm font-semibold leading-snug text-foreground">
-                    {skill.name}
+                    {display.name}
                   </span>
                   {locked ? (
                     <Lock aria-hidden className="mt-px size-3.5 shrink-0 text-muted-foreground/70" />
@@ -247,7 +248,7 @@ function AssistantHomeView({
                   )}
                 </span>
                 <span className="relative line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-                  {skill.description}
+                  {display.description}
                 </span>
               </button>
             );

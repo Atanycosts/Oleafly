@@ -2,6 +2,7 @@ export const SUPPORTED_LOCALES = ["en", "zh-Hans", "zh-Hant", "de", "fr", "es", 
 export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number];
 export type LocalePreference = "system" | SupportedLocale;
 export const DEFAULT_LOCALE: SupportedLocale = "en";
+export const DEFAULT_LOCALE_PREFERENCE: LocalePreference = "zh-Hans";
 
 export interface LocaleInfo {
   nativeName: string;

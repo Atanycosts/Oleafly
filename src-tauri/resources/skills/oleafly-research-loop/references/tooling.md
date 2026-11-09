@@ -1,6 +1,6 @@
 # Tooling notes
 
-Facts about how Oleafly runs tools that change what a good procedure looks like. Read this once, then stop guessing about the runtime.
+Facts about how Oleafly runs tools that change what a good procedure looks like. Consult the details relevant to the current operation.
 
 ## Approval
 
@@ -15,7 +15,7 @@ Every tool call is classified read, write, network or shell.
 
 A declined call comes back as `{"declined": true, "status": "declined"}`. That is the user saying no. Do not retry the same call, and do not route around it with a different tool. Ask what they would prefer instead.
 
-Ten separate `run_command` calls means ten approval prompts. Batch what belongs together into one shell line.
+In approval modes that prompt for shell calls, batching related work can reduce repeated command cards.
 
 ## run_command
 
@@ -37,7 +37,7 @@ python3 "<skill dir>/scripts/validate_citations.py" references.bib --report rese
 
 Requirements vary by skill and are stated in each skill's `compatibility` line. `paper-lookup` and `scientific-writing` use only the Python standard library. `citation-management` needs `requests`, and its Google Scholar path additionally needs `scholarly`. Check the frontmatter that `load_skill` returned before assuming a script will import cleanly, and prefer the standard library ones when either would do.
 
-If a script fails on a missing module, do not install packages. Fall back to the native Oleafly tool and tell the user which capability was unavailable.
+If a script needs a missing module, use an available equivalent method or obtain any permission needed to install it. Preserve the requested operation and explain an unavailable capability when it affects delivery.
 
 ## Subagents
 
@@ -53,7 +53,7 @@ An agent's prompt must be self contained. It does not see your conversation.
 
 `compile` takes `{}`. It persists the active editor file, builds, and returns `{success, errors, has_pdf, log_tail}`. `log_tail` is the last 4000 characters. `get_log` with `{}` returns the last 20000 characters when you need more context around an error.
 
-Compile after each section rather than at the end. A red build found after six edits costs more to diagnose than one found after one.
+Compile changes that affect the document build, using the diagnostics to identify and repair failures.
 
 `get_pdf_text` with `{}` returns the last PDF page by page, capped at 20000 characters. Use it to confirm that what you wrote actually rendered, particularly for citations, which fail silently into a question mark rather than an error.
 

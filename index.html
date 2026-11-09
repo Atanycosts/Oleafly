@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hans">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -19,7 +19,7 @@
       // users and vice versa). Must stay dependency-free and synchronous.
       (function () {
         var theme = "dark";
-        var locale = "en";
+        var locale = "zh-Hans";
         try {
           var stored = localStorage.getItem("oleafly.theme");
           if (stored === "light" || stored === "dark") {
@@ -55,7 +55,7 @@
           var preference = localStorage.getItem("oleafly.locale");
           if (shipped.indexOf(preference) >= 0) {
             locale = preference;
-          } else if (preference === null || preference === "system") {
+          } else if (preference === "system") {
             locale = resolveTag(navigator.language) || locale;
           }
         } catch (e) {

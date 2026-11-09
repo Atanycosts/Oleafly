@@ -1,6 +1,8 @@
 # Handoffs
 
-What the user says, and the skill that owns it. Match on intent, not on exact words. When two rows fit, load the Oleafly skill first: it names the vendored skill to hand off to at the right point in its own procedure.
+What the user says, and the skill that can help. Match on intent, not on exact
+words. Choose the guidance needed for the task; the table does not require a
+particular loading order.
 
 ## Research
 
@@ -17,8 +19,8 @@ What the user says, and the skill that owns it. Match on intent, not on exact wo
 | "design the experiment", "what controls do I need", "randomisation" | `experimental-design` |
 | "how many subjects do I need", "power analysis", "sample size" | `statistical-power` |
 | "analyse this data", "run the stats on my results", "make a table from this CSV" | `oleafly-data-analysis` |
-| "explore this dataset first", "what is in this data" | `exploratory-data-analysis` (after `oleafly-data-analysis`) |
-| "which test should I use", "fit a model", "report the effect size" | `statistical-analysis` (after `oleafly-data-analysis`) |
+| "explore this dataset first", "what is in this data" | `exploratory-data-analysis` |
+| "which test should I use", "fit a model", "report the effect size" | `statistical-analysis` |
 
 ## Authoring
 

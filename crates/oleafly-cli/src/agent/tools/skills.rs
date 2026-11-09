@@ -452,15 +452,30 @@ pub fn skill_prompt(
     ids: &[String],
     audience: SkillAudience,
 ) -> Result<String, String> {
+    task_skills(skills, ids, audience).map(|skills| skills.prompt)
+}
+
+pub fn task_skills(
+    skills: &CliSkills,
+    ids: &[String],
+    audience: SkillAudience,
+) -> Result<oleafly_research::observations::TaskSkills, String> {
+    use oleafly_research::observations::{content_hash, InjectedSkill, TaskSkills};
     let mut prompt = String::new();
+    let mut injected = Vec::new();
     for id in ids {
         let skill = skills.enabled(id)?;
-        prompt.push_str(&section(&skill, audience));
+        let text = section(&skill, audience);
+        injected.push(InjectedSkill {
+            id: id.clone(),
+            section_sha256: content_hash(text.as_bytes()),
+        });
+        prompt.push_str(&text);
         if prompt.len() > MAX_SKILL_PROMPT_BYTES {
             return Err("The selected skills are too long for one run. Pick fewer skills.".into());
         }
     }
-    Ok(prompt)
+    Ok(TaskSkills { prompt, injected })
 }
 
 pub(super) fn specs() -> Vec<ToolSpec> {
@@ -659,6 +674,13 @@ mod tests {
         assert!(
             prompt.contains("Supporting files, read one with read_skill_file: references/guide.md")
         );
+        let selected =
+            task_skills(&skills, &["literature-review".into()], SkillAudience::Task).unwrap();
+        assert_eq!(selected.injected[0].id, "literature-review");
+        assert_eq!(
+            selected.injected[0].section_sha256,
+            oleafly_research::observations::content_hash(prompt.as_bytes())
+        );
         let big = data.path().join("skills").join("big");
         std::fs::create_dir_all(&big).unwrap();
         std::fs::write(
@@ -681,5 +703,19 @@ mod tests {
         write_skill(pack.path(), "bundled", "Bundled");
         let skills = CliSkills::from_app(data.path(), Some(pack.path().to_path_buf()), None);
         assert_eq!(skills.load("p", "bundled").unwrap()["name"], "Bundled");
+
+        let pack =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/resources/skills");
+        let skills = CliSkills::from_app(data.path(), Some(pack), None);
+        let loaded = skills.load("p", "oleafly-development").unwrap();
+        assert_eq!(loaded["name"], "oleafly-development");
+        let prompt = skill_prompt(
+            &skills,
+            None,
+            &["oleafly-development".into()],
+            SkillAudience::Task,
+        )
+        .unwrap();
+        assert!(prompt.contains(loaded["instructions"].as_str().unwrap()));
     }
 }

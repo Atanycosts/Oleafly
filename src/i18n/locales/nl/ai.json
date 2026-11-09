@@ -1078,7 +1078,8 @@
       "medium": "Gemiddeld",
       "high": "Hoog",
       "xhigh": "Zeer hoog",
-      "max": "Maximaal"
+      "max": "Maximaal",
+      "ultra": "Ultra"
     }
   },
   "web": {

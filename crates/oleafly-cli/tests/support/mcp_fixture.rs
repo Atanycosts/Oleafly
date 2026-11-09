@@ -20,6 +20,7 @@ pub enum Mode {
 #[derive(Clone, Debug)]
 pub struct Received {
     pub method: String,
+    pub params: Value,
     pub headers: Vec<(String, String)>,
 }
 
@@ -49,28 +50,34 @@ impl McpFixture {
 
 pub const SESSION_ID: &str = "fixture-session-1";
 
-fn tools() -> Value {
-    json!({"tools": [
-        {"name": "echo", "description": "Echo the text back.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}, "annotations": {"readOnlyHint": true}},
-        {"name": "write_note", "description": "Write a note.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
-    ]})
+fn tools(server_name: &str) -> Value {
+    let mut tools = vec![
+        json!({"name": "echo", "description": "Echo the text back.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}, "annotations": {"readOnlyHint": true}}),
+        json!({"name": "write_note", "description": "Write a note.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}}),
+    ];
+    if server_name != "fixture" {
+        tools.push(json!({"name": "read_objects", "description": "Read objects.", "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}, "region": {"type": ["string", "null"]}, "cursor": {"type": ["string", "null"]}}, "required": ["project_id"]}, "annotations": {"readOnlyHint": true}}));
+    }
+    json!({"tools": tools})
 }
 
-fn answer(message: &Value) -> Option<Value> {
+fn answer(message: &Value, server_name: &str) -> Option<Value> {
     let id = message.get("id")?.clone();
     let result = match message["method"].as_str().unwrap_or_default() {
         "initialize" => json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "fixture", "version": "1"},
+            "serverInfo": {"name": server_name, "version": "1"},
         }),
-        "tools/list" => tools(),
+        "tools/list" => tools(server_name),
         "tools/call" => {
             let text = message["params"]["arguments"]["text"]
                 .as_str()
                 .unwrap_or_default();
             match message["params"]["name"].as_str() {
-                Some("echo") => json!({"content": [{"type": "text", "text": text}]}),
+                Some("echo" | "read_objects") => {
+                    json!({"content": [{"type": "text", "text": text}]})
+                }
                 _ => json!({"content": [{"type": "text", "text": "noted"}]}),
             }
         }
@@ -83,7 +90,7 @@ fn answer(message: &Value) -> Option<Value> {
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
-fn serve(stream: TcpStream, mode: Mode, received: Arc<Mutex<Vec<Received>>>) {
+fn serve(stream: TcpStream, mode: Mode, server_name: String, received: Arc<Mutex<Vec<Received>>>) {
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(stream) => stream,
         Err(_) => return,
@@ -124,13 +131,14 @@ fn serve(stream: TcpStream, mode: Mode, received: Arc<Mutex<Vec<Received>>>) {
         let message: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
         received.lock().unwrap().push(Received {
             method: message["method"].as_str().unwrap_or_default().to_string(),
+            params: message["params"].clone(),
             headers,
         });
         if mode == Mode::Silent {
             thread::sleep(std::time::Duration::from_secs(60));
             return;
         }
-        let Some(reply) = answer(&message) else {
+        let Some(reply) = answer(&message, &server_name) else {
             let _ = stream.write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n");
             continue;
         };
@@ -156,14 +164,20 @@ fn serve(stream: TcpStream, mode: Mode, received: Arc<Mutex<Vec<Received>>>) {
 }
 
 pub fn start(mode: Mode) -> McpFixture {
+    start_named(mode, "fixture")
+}
+
+pub fn start_named(mode: Mode, server_name: &str) -> McpFixture {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let received = Arc::new(Mutex::new(Vec::new()));
     let shared = received.clone();
+    let server_name = server_name.to_string();
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let received = shared.clone();
-            thread::spawn(move || serve(stream, mode, received));
+            let server_name = server_name.clone();
+            thread::spawn(move || serve(stream, mode, server_name, received));
         }
     });
     McpFixture { address, received }

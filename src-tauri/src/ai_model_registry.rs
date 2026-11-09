@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
-use crate::ai_model_metadata::{MetadataSnapshot, ModelMetadata};
+use crate::ai_model_metadata::MetadataSnapshot;
 use crate::config::{model_probe_key, ModelProbe, ProbeVerdict};
 
 const DEFAULT_REGISTRY_URL: &str = "https://cdn.oleafly.com/catalogs/ai-models.json";
@@ -87,7 +87,7 @@ pub struct ProviderModel {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<ModelMetadata>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl ModelRegistry {
@@ -143,7 +143,14 @@ pub(crate) fn classify(
             let probe = probes.get(&model_probe_key(provider_id, &model.id));
             let resolution = resolve_trust(registry.catalog_trust(provider_id, &model.id), probe);
             ProviderModel {
-                metadata: snapshot.lookup(provider_id, &model.id).cloned(),
+                metadata: model.metadata.or_else(|| {
+                    crate::ai_model_metadata::model_metadata_for(
+                        snapshot,
+                        None,
+                        provider_id,
+                        &model.id,
+                    )
+                }),
                 id: model.id,
                 name: model.name,
                 trust: resolution.trust,
@@ -160,6 +167,7 @@ pub(crate) fn run_refusal(
     model_id: &str,
     probes: &BTreeMap<String, ModelProbe>,
     snapshot: &MetadataSnapshot,
+    stored_metadata: Option<&serde_json::Value>,
     has_tools: bool,
 ) -> Option<String> {
     let probe = probes.get(&model_probe_key(provider_id, model_id));
@@ -171,10 +179,23 @@ pub(crate) fn run_refusal(
             resolution.blocked_reason.unwrap_or_default()
         )),
         ModelTrust::Verified => None,
-        ModelTrust::Untested if has_tools => snapshot
-            .lookup(provider_id, model_id)
-            .filter(|metadata| !metadata.tool_call)
-            .map(|_| NO_TOOLS_RUN_REFUSAL.to_string()),
+        ModelTrust::Untested if has_tools => {
+            let provider_metadata = stored_metadata.filter(|metadata| {
+                metadata
+                    .get("metadataSource")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("provider")
+            });
+            let tool_call = match provider_metadata {
+                Some(metadata) => metadata
+                    .get("toolCall")
+                    .and_then(serde_json::Value::as_bool),
+                None => snapshot
+                    .lookup(provider_id, model_id)
+                    .map(|metadata| metadata.tool_call),
+            };
+            (tool_call == Some(false)).then(|| NO_TOOLS_RUN_REFUSAL.to_string())
+        }
         ModelTrust::Untested => None,
     }
 }
@@ -387,6 +408,7 @@ mod tests {
         oleafly_agent::ModelInfo {
             id: id.into(),
             name: format!("Name for {id}"),
+            metadata: None,
         }
     }
 
@@ -752,7 +774,10 @@ mod tests {
             &no_probes(),
             &live,
         );
-        assert_eq!(with_metadata[0].metadata.as_ref().unwrap().name, "GPT-4o");
+        assert_eq!(
+            with_metadata[0].metadata.as_ref().unwrap()["name"],
+            "GPT-4o"
+        );
         assert!(with_metadata[1].metadata.is_none());
         let json = serde_json::to_value(&with_metadata[1]).unwrap();
         assert_eq!(
@@ -769,6 +794,27 @@ mod tests {
         assert_eq!(json["metadata"]["toolCall"], true);
         assert_eq!(json["metadata"]["cost"]["cacheRead"], 1.25);
         assert!(json.get("blockedReason").is_none());
+    }
+
+    #[test]
+    fn custom_provider_listings_attach_exact_catalog_metadata_without_inheriting_trust() {
+        let registry =
+            parse_registry(r#"{"schemaVersion":1,"providers":{"openai":["gpt-6.1-sol"]}}"#)
+                .unwrap();
+        let snapshot = crate::ai_model_metadata::bundled_snapshot();
+        let custom = classify(
+            &registry,
+            "xiaobai-best",
+            vec![model("gpt-6.1-sol"), model("gpt-6.1-sol-enterprise")],
+            &no_probes(),
+            &snapshot,
+        );
+
+        assert_eq!(custom[0].metadata.as_ref().unwrap()["name"], "GPT-6.1 Sol");
+        assert!(custom[1].metadata.is_none());
+        assert!(custom
+            .iter()
+            .all(|entry| entry.trust == ModelTrust::Untested));
     }
 
     #[test]
@@ -812,6 +858,7 @@ mod tests {
                 model,
                 &no_probes(),
                 &snapshot,
+                None,
                 has_tools,
             )
         };
@@ -845,15 +892,68 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            run_refusal(&registry, "openai", "gpt-image-2", &probes, &snapshot, true),
+            run_refusal(
+                &registry,
+                "openai",
+                "gpt-image-2",
+                &probes,
+                &snapshot,
+                None,
+                true
+            ),
             None
         );
         assert_eq!(
-            run_refusal(&registry, "openai", "gpt-4o", &probes, &snapshot, true),
+            run_refusal(&registry, "openai", "gpt-4o", &probes, &snapshot, None, true),
             Some(
                 "This model is blocked for the assistant: The model answered without calling the tool."
                     .into()
             )
+        );
+    }
+
+    #[test]
+    fn gateway_capabilities_do_not_inherit_trust_and_unknown_tools_are_not_false() {
+        let registry = parse_registry(BUNDLED_REGISTRY).unwrap();
+        let snapshot = crate::ai_model_metadata::bundled_snapshot();
+        let metadata = serde_json::json!({
+            "name": "Gateway route", "metadataSource": "provider", "contextWindow": 922000
+        });
+        let mut gateway = model("gpt-4o");
+        gateway.metadata = Some(metadata.clone());
+        let models = classify(
+            &registry,
+            "my-gateway",
+            vec![gateway],
+            &no_probes(),
+            &snapshot,
+        );
+        assert_eq!(models[0].trust, ModelTrust::Untested);
+        assert_eq!(models[0].metadata, Some(metadata.clone()));
+        assert_eq!(
+            run_refusal(
+                &registry,
+                "my-gateway",
+                "gpt-4o",
+                &no_probes(),
+                &snapshot,
+                Some(&metadata),
+                true
+            ),
+            None
+        );
+        let no_tools = serde_json::json!({"name":"Gateway route", "metadataSource":"provider", "toolCall":false});
+        assert_eq!(
+            run_refusal(
+                &registry,
+                "my-gateway",
+                "gpt-4o",
+                &no_probes(),
+                &snapshot,
+                Some(&no_tools),
+                true
+            ),
+            Some(NO_TOOLS_RUN_REFUSAL.into())
         );
     }
 
@@ -870,6 +970,7 @@ mod tests {
                 "gpt-image-2",
                 &no_probes(),
                 &snapshot,
+                None,
                 false
             ),
             None
@@ -881,6 +982,7 @@ mod tests {
                 "gemini-3-flash-preview",
                 &no_probes(),
                 &snapshot,
+                None,
                 false
             ),
             Some(
@@ -918,7 +1020,9 @@ mod tests {
             ),
         ]);
         let refusal = |provider: &str, model: &str, has_tools: bool| {
-            run_refusal(&registry, provider, model, &probes, &snapshot, has_tools)
+            run_refusal(
+                &registry, provider, model, &probes, &snapshot, None, has_tools,
+            )
         };
 
         for (provider, model, reason) in [

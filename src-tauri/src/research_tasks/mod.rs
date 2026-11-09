@@ -1,7 +1,7 @@
 mod apply;
 pub(crate) mod host;
 pub(crate) mod pdf_text;
-mod preview;
+pub(crate) mod preview;
 #[cfg(test)]
 #[path = "tests/scheduler.rs"]
 mod scheduler_tests;
@@ -335,6 +335,99 @@ pub async fn research_task_events(
             before_sequence,
             limit.unwrap_or(100),
         )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_observations(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    execution_generation: u64,
+    after_sequence: Option<u64>,
+    limit: Option<usize>,
+) -> Result<oleafly_research::observations::TaskObservationView, String> {
+    blocking_task_command(&state, move |state| {
+        state.events_page(&task_id, execution_generation, None, None, 1)?;
+        let store = state.store()?;
+        let task = store.require(&task_id)?;
+        store.observations(
+            &task.project_id,
+            &task_id,
+            execution_generation,
+            after_sequence.unwrap_or(0),
+            limit.unwrap_or(20),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_findings(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    execution_generation: u64,
+    query: oleafly_research::findings::FindingQuery,
+) -> Result<oleafly_research::findings::FindingPage, String> {
+    blocking_task_command(&state, move |state| {
+        let store = state.store()?;
+        let task = store.require(&task_id)?;
+        store.findings(&task.project_id, &task_id, execution_generation, &query)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_finding_decide(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    execution_generation: u64,
+    finding_id: String,
+    decision: oleafly_research::findings::FindingDecision,
+) -> Result<(), String> {
+    blocking_task_command(&state, move |state| {
+        let store = state.store()?;
+        let task = store.require(&task_id)?;
+        store.decide_finding(
+            &task.project_id,
+            &task_id,
+            execution_generation,
+            &finding_id,
+            &decision,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_finding_source(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    execution_generation: u64,
+    finding_id: String,
+) -> Result<oleafly_research::findings::FindingSource, String> {
+    blocking_task_command(&state, move |state| {
+        let store = state.store()?;
+        let task = store.require(&task_id)?;
+        store.finding_source(
+            &task.project_id,
+            &task_id,
+            execution_generation,
+            &finding_id,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_source_preview(
+    state: tauri::State<'_, ResearchTaskState>,
+    task_id: String,
+    execution_generation: u64,
+    sequence: u64,
+) -> Result<preview::TaskSourcePreview, String> {
+    blocking_task_command(&state, move |state| {
+        preview::source_preview(&state.store()?, &task_id, execution_generation, sequence)
     })
     .await
 }

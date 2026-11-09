@@ -30,6 +30,7 @@ vi.mock("@/lib/research-tasks", async (importOriginal) => ({
   cancelResearchTaskRun: vi.fn(),
   researchTaskRunLog: vi.fn(),
   refreshResearchTaskEvidence: vi.fn(),
+  loadResearchTaskFindings: vi.fn(async () => ({ findings: [], nextSequence: 0, hasMore: false, coverageGaps: [] })),
   setResearchTaskKeepRunning: vi.fn(),
 }));
 

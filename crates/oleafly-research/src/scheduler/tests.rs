@@ -1873,8 +1873,11 @@ mod handoff {
     struct NullTaskHost;
 
     impl crate::builtin::TaskHost for NullTaskHost {
-        fn skills(&self, _context: &TaskRunContext) -> Result<String, String> {
-            Ok(String::new())
+        fn skills(
+            &self,
+            _context: &TaskRunContext,
+        ) -> Result<crate::observations::TaskSkills, String> {
+            Ok(Default::default())
         }
 
         fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<PathBuf> {
@@ -2319,6 +2322,76 @@ async fn fresh_retry_carries_the_research_record_over() {
         .find(|change| change.path == ledger_path)
         .expect("the carried ledger comes back through review");
     assert_eq!(change.kind, crate::model::TaskFileChangeKind::Added);
+    stop(&state).await;
+}
+
+#[tokio::test]
+async fn fresh_retry_keeps_the_old_record_when_carry_over_fails() {
+    let data = DataRoot::new();
+    data.project("paper");
+    let state = data.state(1);
+    let (runtime, mut starts) = ControlledRuntime::new();
+    state.register_runtime("fixture", runtime).unwrap();
+    let store = state.store().unwrap();
+    let task = requested(&store, draft("paper", "Large record"));
+    state.launch_ready().await.unwrap();
+    let first = next_run(&mut starts).await;
+    let record = PathBuf::from(&first.context.execution_root).join(&first.context.record_dir);
+    std::fs::create_dir_all(&record).unwrap();
+    let ledger = format!(
+        "{}\nr001\t2026-10-18T10:00:00Z\th\tc\tpython train.py\tacc=0.9\tkeep\t\n",
+        record::LEDGER_HEADER
+    );
+    std::fs::write(record.join("ledger.tsv"), &ledger).unwrap();
+    for index in 0..=2_000 {
+        std::fs::write(record.join(format!("entry-{index:04}.md")), "x").unwrap();
+    }
+    let old_root = first.context.execution_root.clone();
+    finish_run(&state, first, Err("stopped".into())).await;
+
+    state.retry(&task.id, RetryMode::Fresh).unwrap();
+    state.request_start(&task.id).unwrap();
+    state.launch_ready().await.unwrap();
+    poll_until(|| {
+        store
+            .require(&task.id)
+            .is_ok_and(|current| current.status == ResearchTaskStatus::Failed)
+    })
+    .await;
+
+    let failed = store.require(&task.id).unwrap();
+    assert!(failed
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("could not be carried over")));
+    assert!(failed.isolation.is_none());
+    assert_eq!(
+        failed.pending_start,
+        Some(PendingStart::Fresh {
+            carry_from: Some(old_root.clone())
+        })
+    );
+    assert!(PathBuf::from(&old_root).is_dir());
+
+    for index in 0..=2_000 {
+        std::fs::remove_file(record.join(format!("entry-{index:04}.md"))).unwrap();
+    }
+    state.retry(&task.id, RetryMode::Fresh).unwrap();
+    state.request_start(&task.id).unwrap();
+    state.launch_ready().await.unwrap();
+    let fresh = next_run(&mut starts).await;
+    assert_eq!(fresh.context.carry_from.as_deref(), Some(old_root.as_str()));
+    assert_eq!(
+        std::fs::read_to_string(
+            PathBuf::from(&fresh.context.execution_root)
+                .join(&fresh.context.record_dir)
+                .join("ledger.tsv")
+        )
+        .unwrap(),
+        ledger
+    );
+    finish_run(&state, fresh, Ok(outcome("record recovered"))).await;
+    poll_until(|| !PathBuf::from(&old_root).exists()).await;
     stop(&state).await;
 }
 
@@ -3413,8 +3486,11 @@ mod approvals {
     }
 
     impl TaskHost for ScriptedHost {
-        fn skills(&self, _context: &TaskRunContext) -> Result<String, String> {
-            Ok(String::new())
+        fn skills(
+            &self,
+            _context: &TaskRunContext,
+        ) -> Result<crate::observations::TaskSkills, String> {
+            Ok(Default::default())
         }
 
         fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<PathBuf> {

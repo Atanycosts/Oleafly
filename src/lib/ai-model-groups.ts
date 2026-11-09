@@ -33,7 +33,9 @@ export function catalogFirst(provider: AIProvider, stored: StoredModel[]): Store
   return stored
     .map((model) => {
       const catalog = provider.models[rank.get(model.id) ?? last];
-      return catalog && model.source !== "custom" ? { ...model, name: catalog.name } : model;
+      return catalog && model.source !== "custom" && model.metadata?.metadataSource !== "provider"
+        ? { ...model, name: catalog.name }
+        : model;
     })
     .sort((left, right) => (rank.get(left.id) ?? last) - (rank.get(right.id) ?? last));
 }

@@ -133,8 +133,8 @@ struct Host {
 }
 
 impl TaskHost for Host {
-    fn skills(&self, _context: &TaskRunContext) -> Result<String, String> {
-        Ok(String::new())
+    fn skills(&self, _context: &TaskRunContext) -> Result<crate::observations::TaskSkills, String> {
+        Ok(Default::default())
     }
 
     fn skill_read_paths(&self, _context: &TaskRunContext) -> Vec<PathBuf> {

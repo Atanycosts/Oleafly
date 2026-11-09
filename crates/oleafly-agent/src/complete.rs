@@ -737,7 +737,11 @@ mod tests {
                 .unwrap()
                 .effort
         };
-        assert_eq!(parse(r#"{"messages":[],"effort":"ultra"}"#), None);
+        assert_eq!(parse(r#"{"messages":[],"effort":"extreme"}"#), None);
+        assert_eq!(
+            parse(r#"{"messages":[],"effort":"ultra"}"#),
+            Some(Effort::Ultra)
+        );
         assert_eq!(
             parse(r#"{"messages":[],"effort":"xhigh"}"#),
             Some(Effort::Xhigh)

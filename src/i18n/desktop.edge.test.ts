@@ -35,6 +35,7 @@ beforeEach(() => {
 describe("desktop locale glue edge cases", () => {
   it("uses the browser language and skips native calls outside the desktop shell", async () => {
     mocks.tauri = false;
+    localStorage.setItem("oleafly.locale", "system");
     const { initializeDesktopI18n, changeLocalePreference, currentLocale } = await load();
     await initializeDesktopI18n();
     expect(currentLocale()).toBe("en");
@@ -45,8 +46,21 @@ describe("desktop locale glue edge cases", () => {
   });
 
   it("falls back to English when the operating system locale cannot be read", async () => {
+    localStorage.setItem("oleafly.locale", "system");
     mocks.osLocale.mockRejectedValue(new Error("no os plugin"));
     const { initializeDesktopI18n, currentLocale } = await load();
+    await initializeDesktopI18n();
+    expect(currentLocale()).toBe("en");
+  });
+
+  it("starts in Chinese on an English device until another preference is selected", async () => {
+    mocks.osLocale.mockResolvedValue("en-US");
+    const { initializeDesktopI18n, changeLocalePreference, currentLocale } = await load();
+    await initializeDesktopI18n();
+    expect(currentLocale()).toBe("zh-Hans");
+    expect(mocks.osLocale).not.toHaveBeenCalled();
+    await changeLocalePreference("en");
+    expect(currentLocale()).toBe("en");
     await initializeDesktopI18n();
     expect(currentLocale()).toBe("en");
   });

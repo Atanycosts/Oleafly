@@ -119,6 +119,7 @@ pub enum EffortArg {
     High,
     Xhigh,
     Max,
+    Ultra,
 }
 
 #[derive(Debug, clap::Args)]
@@ -261,9 +262,9 @@ mod tests {
     }
 
     #[test]
-    fn effort_accepts_the_seven_levels_and_auto() {
+    fn effort_accepts_the_eight_levels_and_auto() {
         for level in [
-            "auto", "none", "minimal", "low", "medium", "high", "xhigh", "max",
+            "auto", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
         ] {
             assert!(
                 Cli::try_parse_from(["oleafly", "ask", "q", "--effort", level]).is_ok(),

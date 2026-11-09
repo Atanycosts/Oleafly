@@ -2,6 +2,7 @@ import { createInstance } from "i18next";
 import { initReactI18next } from "react-i18next";
 import {
   DEFAULT_LOCALE,
+  DEFAULT_LOCALE_PREFERENCE,
   isLocalePreference,
   LOCALE_INFO,
   resolvePreference,
@@ -43,9 +44,9 @@ export const onLocaleApplied = localeApplied.subscribe;
 export function readCachedPreference(): LocalePreference {
   try {
     const raw = localStorage.getItem(LOCALE_STORAGE_KEY);
-    return isLocalePreference(raw) ? raw : "system";
+    return isLocalePreference(raw) ? raw : DEFAULT_LOCALE_PREFERENCE;
   } catch {
-    return "system";
+    return DEFAULT_LOCALE_PREFERENCE;
   }
 }
 
@@ -141,8 +142,9 @@ export async function applyLocale(locale: SupportedLocale): Promise<void> {
       addCatalog(locale, namespace, await translatedCatalog(locale, namespace)),
     ),
   );
-  await i18n.changeLanguage(locale);
+  // languageChanged can render components synchronously.
   current = locale;
+  await i18n.changeLanguage(locale);
   setDocumentLocale(locale);
   localeApplied.emit(locale);
 }

@@ -944,6 +944,8 @@ mod tests {
                 allowed_paths: vec!["main.tex".into()],
                 created_at: now_ms(),
                 skipped: Vec::new(),
+                initial_git_status: None,
+                initial_git_status_complete: None,
             }),
             error: None,
             result: Some(TaskResultMetadata {

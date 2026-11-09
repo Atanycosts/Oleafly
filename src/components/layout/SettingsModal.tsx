@@ -97,7 +97,7 @@ import {
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { DISCORD_URL, useDiscordOnlineCount } from "@/lib/community";
-import { currentLocale, i18n, loadNamespace } from "@/i18n";
+import { i18n, loadNamespace } from "@/i18n";
 import { formatBytes } from "@/lib/format-bytes";
 import {
   dictionaryLabel,
@@ -1120,7 +1120,7 @@ export function SettingsModal() {
             {t(($) => $.shell.settings.general.harper.englishOnly, {
               name: dictionaryLabel(
                 { id: dictionaryLocale, language: dictionaryLocale, region: null },
-                currentLocale(),
+                i18n.resolvedLanguage ?? i18n.language,
               ),
             })}
           </SettingsNote>
@@ -1147,7 +1147,10 @@ export function SettingsModal() {
                   <SelectContent className="z-[100]">
                     {GRAMMAR_DIALECTS.map((dialect) => (
                       <SelectItem key={dialect.id} value={dialect.id}>
-                        {dialect.name}
+                        {dictionaryLabel(
+                          { id: dialect.locale, language: "English", region: null },
+                          i18n.resolvedLanguage ?? i18n.language,
+                        )}
                       </SelectItem>
                     ))}
                   </SelectContent>

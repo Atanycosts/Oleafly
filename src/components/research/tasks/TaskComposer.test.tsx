@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { ResearchTask } from "@/lib/research-tasks";
 import type { ResearchTaskAgentOption } from "./ResearchTasksPanel";
 import enCommon from "@/i18n/locales/en/common.json" with { type: "json" };
+import enAI from "@/i18n/locales/en/ai.json" with { type: "json" };
 import enResearchTools from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { briefFixture, taskFieldsSince047 } from "./tests/task-fixtures";
 
@@ -120,7 +121,7 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 const agents: ResearchTaskAgentOption[] = [
-  { runtimeId: "builtin", agentId: "provider", modelId: "first", label: "First model", modelLabel: "Provider" },
+  { runtimeId: "builtin", agentId: "provider", modelId: "first", label: "First model", modelLabel: "Provider", effortChoices: ["low", "high"] },
   { runtimeId: "acp", agentId: "cli", modelId: "second", label: "Second model", modelLabel: "CLI agent" },
 ];
 
@@ -390,6 +391,7 @@ describe("TaskComposer draft ownership", () => {
 
 describe("TaskComposer brief", () => {
   const brief = enResearchTools.brief;
+  const effort = enAI.effort;
 
   interface SentDraft {
     brief: ResearchTask["brief"];
@@ -465,7 +467,7 @@ describe("TaskComposer brief", () => {
     expect(input.onCreate).not.toHaveBeenCalled();
   });
 
-  it("prefills the time budget and network from research settings", async () => {
+  it("prefills the time budget and command network from research settings", async () => {
     appConfig.get.mockResolvedValue({ research_time_budget_minutes: 240, research_command_network: true });
     const input = props();
     render(<TaskComposer {...input} />);
@@ -499,6 +501,36 @@ describe("TaskComposer brief", () => {
 
     await waitFor(() => expect(input.onCreate).toHaveBeenCalledOnce());
     expect(input.onCreate).toHaveBeenCalledWith(expect.objectContaining({ brief: briefFixture() }));
+  });
+
+  it("sends the selected reasoning effort and clears it when switching to an agent without effort choices", async () => {
+    const input = props();
+    const first = render(<TaskComposer {...input} />);
+    await named();
+    fireEvent.pointerDown(page().getByTestId("ai-effort-selector"), { button: 0, ctrlKey: false, pointerType: "mouse" });
+    fireEvent.click(await page().findByRole("menuitemradio", { name: effort.levels.high }));
+    create();
+
+    await waitFor(() => expect(input.onCreate).toHaveBeenCalledOnce());
+    expect(sent(input.onCreate).brief.reasoningEffort).toBe("high");
+    first.unmount();
+
+    const editing = task("effort");
+    editing.brief = briefFixture({ reasoningEffort: "high" });
+    const next = props(editing);
+    render(<TaskComposer {...next} />);
+    choose(enResearchTools.tasks.composer.agentLabel, /Second model/);
+
+    expect(page().queryByTestId("ai-effort-selector")).toBeNull();
+    expect(page().queryByRole("alert")).toBeNull();
+    fireEvent.click(page().getByRole("button", { name: enResearchTools.tasks.composer.saveTask }));
+    expect(next.onSave).toHaveBeenCalledWith(
+      "effort",
+      expect.objectContaining({
+        runtimeId: "acp",
+        brief: expect.objectContaining({ reasoningEffort: null }),
+      }),
+    );
   });
 
   it("does not overwrite a brief the user already changed with the settings", async () => {
@@ -602,6 +634,21 @@ describe("TaskComposer brief", () => {
       skillIds: ["oleafly-experiment-loop"],
       brief: { reviewPlanFirst: true },
     });
+  });
+
+  it("uses Chinese instructions when selecting a starter in Chinese", async () => {
+    const { applyLocale } = await import("@/i18n");
+    const { default: zh } = await import("@/i18n/locales/zh-Hans/researchTools.json", { with: { type: "json" } });
+    await applyLocale("zh-Hans");
+    try {
+      render(<TaskComposer {...props()} />);
+      choose(zh.tasks.composer.starterLabel, zh.tasks.starter.literatureReview.label);
+      expect(page().getByLabelText(zh.tasks.composer.titleLabel)).toHaveValue(zh.tasks.starter.literatureReview.title);
+      expect(page().getByLabelText(zh.tasks.composer.promptLabel)).toHaveValue(zh.tasks.starter.literatureReview.prompt);
+    } finally {
+      cleanup();
+      await applyLocale("en");
+    }
   });
 
   it("starts an experiment loop with plan review turned on", async () => {

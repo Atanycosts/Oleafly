@@ -46,6 +46,8 @@ pub use tools::registry::{ParallelPolicy, RegisteredTool, ToolExposure, ToolRegi
 pub use wire::replays_reasoning;
 pub use wire::server_tools::{native_web, NativeWeb};
 
+pub const WORKFLOW_RULES: &str = include_str!("workflow.md");
+
 use std::time::Duration;
 
 pub fn build_client() -> Result<reqwest::Client> {

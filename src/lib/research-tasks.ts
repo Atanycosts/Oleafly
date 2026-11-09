@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { EffortLevel } from "@oleafly/ai-core";
 import type { ProjectStateChanged } from "@/lib/tauri";
 
 export type ResearchTaskStatus =
@@ -24,6 +25,8 @@ export interface TaskIsolationSummary {
   fileCount: number;
   createdAt: number;
   skipped?: { path: string; reason: SkipReason }[];
+  initialGitStatus?: string[] | null;
+  initialGitStatusComplete?: boolean | null;
 }
 
 export type MetricGoal = "maximize" | "minimize";
@@ -72,6 +75,7 @@ export interface ResearchBrief {
   reviewPlanFirst: boolean;
   permissions: { network: boolean; commands: CommandPolicy; desktopApps: boolean };
   budget: TaskBudget;
+  reasoningEffort: EffortLevel | null;
   profile: RunProfile;
   compute: { executor: string; target: string | null; resources: ComputeResources | null };
 }
@@ -90,7 +94,47 @@ export interface EvidenceItem {
   file: string | null;
   line: number | null;
   params: Record<string, string>;
+  provenance?: CheckProvenance;
 }
+
+export interface FindingSource {
+  path: string; fileSha256: string; lineStart: number; lineEnd: number;
+  quote: string; quoteSha256: string;
+}
+
+export interface CheckProvenance {
+  ruleVersion: string; source: FindingSource; runId: string; runSha256: string;
+  ledgerContainsRun: boolean;
+}
+
+export type FindingDisposition = "open" | "accepted" | "rejected" | "deferred";
+export type FindingValidity = "current" | "stale" | "unknown";
+export interface FindingView {
+  sequence: number;
+  finding: {
+    id: string; taskId: string; executionGeneration: number; origin: string;
+    verdict: string; severity: string; item: EvidenceItem; createdAt: number;
+  };
+  validity: FindingValidity;
+  changedDependencies: { dependency: string; expected: string; actual: string | null }[];
+  unavailable: string[]; disposition: FindingDisposition;
+  history: { sequence: number; disposition: FindingDisposition; rationale: string; actor: string; source: string; createdAt: number }[];
+  historyCount: number;
+}
+
+export interface FindingPage {
+  taskId: string; executionGeneration: number; findings: FindingView[];
+  nextSequence: number; hasMore: boolean; coverageGaps: string[];
+}
+
+export const loadResearchTaskFindings = (taskId: string, executionGeneration: number, afterSequence = 0, limit = 20) =>
+  invoke<FindingPage>("research_task_findings", { taskId, executionGeneration, query: { after_sequence: afterSequence, limit } });
+
+export const decideResearchTaskFinding = (taskId: string, executionGeneration: number, findingId: string, disposition: FindingDisposition, rationale: string) =>
+  invoke<void>("research_task_finding_decide", { taskId, executionGeneration, findingId, decision: { disposition, rationale } });
+
+export const previewResearchTaskFindingSource = (taskId: string, executionGeneration: number, findingId: string) =>
+  invoke<FindingSource>("research_task_finding_source", { taskId, executionGeneration, findingId });
 
 export interface EvidenceReport {
   checkedAt: number;
@@ -142,6 +186,7 @@ export function defaultBrief(goal = ""): ResearchBrief {
     reviewPlanFirst: false,
     permissions: { network: false, commands: "allow", desktopApps: false },
     budget: { wallClockMinutes: 120, usdCap: null, maxRuns: null, runTimeoutMinutes: 60 },
+    reasoningEffort: null,
     profile: "analysis",
     compute: { executor: "local", target: null, resources: null },
   };
@@ -276,6 +321,7 @@ export function normalizeTask(raw: RawTask): ResearchTask {
     ...raw,
     brief: {
       ...brief,
+      reasoningEffort: raw.brief?.reasoningEffort ?? null,
       permissions: { ...defaultBrief().permissions, ...raw.brief?.permissions },
       budget: { ...defaultBrief().budget, ...raw.brief?.budget },
       compute: { ...defaultBrief().compute, ...raw.brief?.compute },
@@ -297,6 +343,7 @@ export interface TaskToolEvent {
 }
 
 export type TaskRuntimeEvent =
+  | { kind: "observation"; observation: TaskObservation }
   | { kind: "sessionBound"; nativeSessionId: string }
   | { kind: "status"; message: string }
   | { kind: "text"; text: string }
@@ -307,6 +354,36 @@ export type TaskRuntimeEvent =
   | { kind: "run"; runId: string; name: string; state: RunState; exitCode: number | null }
   | { kind: "approval"; approvalId: string; approvalKind: ApprovalKind; status: ApprovalStatus; summary: string }
   | { kind: "phase"; phase: TaskPhase };
+
+export type TaskObservation =
+  | { type: "runtime"; runtimeId: string; providerId: string; modelId: string; sessionId: string;
+      tools: { name: string; source: string; schemaSha256: string }[]; declaredSkills: string[];
+      injectedSkills: { id: string; sectionSha256: string }[]; unavailable: string[] }
+  | { type: "toolRequested"; callId: string; name: string; inputSha256: string }
+  | { type: "toolExecution"; callId: string; name: string; status: string; inputSha256: string; outputSha256: string;
+      skillId: string | null; skillInstructionsSha256: string | null;
+      source: { path: string; fileSha256: string; offset: number; endOffset: number; truncated: boolean } | null }
+  | { type: "usage"; inputTokens: number | null; outputTokens: number | null };
+
+export interface TaskObservationView {
+  summary: {
+    taskId: string; projectId: string; executionGeneration: number;
+    status: ResearchTaskStatus; goal: string; successCriteria: string[];
+    runtime: TaskTranscriptEvent | null; usage: TaskTranscriptEvent | null;
+    baseline: TaskIsolationSummary | null;
+    changedFiles: TaskFileChange[]; changedFileCount: number; evidence: EvidenceReport | null;
+    coverageGaps: string[];
+  };
+  page: { events: TaskTranscriptEvent[]; nextSequence: number; throughSequence: number; hasMore: boolean };
+}
+
+export const loadResearchTaskObservations = (taskId: string, executionGeneration: number, afterSequence = 0, limit = 20) =>
+  invoke<TaskObservationView>("research_task_observations", { taskId, executionGeneration, afterSequence, limit });
+
+export const previewResearchTaskSource = (taskId: string, executionGeneration: number, sequence: number) =>
+  invoke<{ source: NonNullable<Extract<TaskObservation, { type: "toolExecution" }>["source"]>; text: string }>(
+    "research_task_source_preview", { taskId, executionGeneration, sequence },
+  );
 
 export interface TaskTranscriptEvent {
   taskId: string;

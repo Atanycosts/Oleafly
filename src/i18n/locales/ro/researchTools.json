@@ -196,6 +196,7 @@
       "agentLabel": "Agent și model",
       "noAgents": "Niciun agent disponibil",
       "chooseAgent": "Alege un agent și un model",
+      "unsupportedEffort": "Acest model nu mai acceptă nivelul de raționament salvat. Alege Automat sau un alt nivel acceptat.",
       "configureAgent": "Configurează un agent în setările asistentului înainte să creezi o sarcină.",
       "dependencies": "Așteaptă aceste sarcini",
       "dependencyStatus": "({{status}})",

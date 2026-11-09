@@ -195,6 +195,7 @@
       "agentLabel": "Agent und Modell",
       "noAgents": "Keine Agenten verfügbar",
       "chooseAgent": "Agent und Modell wählen",
+      "unsupportedEffort": "Dieses Modell unterstützt die gespeicherte Denktiefe nicht mehr. Wählen Sie Automatisch oder eine andere unterstützte Stufe.",
       "configureAgent": "Richten Sie in den Einstellungen des Assistenten einen Agenten ein, bevor Sie eine Aufgabe anlegen.",
       "dependencies": "Auf diese Aufgaben warten",
       "dependencyStatus": "({{status}})",

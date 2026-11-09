@@ -16,6 +16,8 @@ fn isolation(root: &Path, baseline: &Path) -> TaskIsolation {
         allowed_paths: Vec::new(),
         created_at: 0,
         skipped: Vec::new(),
+        initial_git_status: None,
+        initial_git_status_complete: None,
     }
 }
 
@@ -93,8 +95,8 @@ async fn a_number_without_a_recorded_run_is_flagged() {
         EvidenceInputs {
             isolation: &isolation,
             changes: &changes,
-            runs: vec![run("r002", &[("acc", 0.913), ("loss", 0.5)])],
-            ledger: Vec::new(),
+            runs: Ok(vec![run("r002", &[("acc", 0.913), ("loss", 0.5)])]),
+            ledger: Ok(Vec::new()),
             workspace: None,
             project_root: None,
         },
@@ -147,8 +149,8 @@ async fn new_bib_entries_are_verified_and_mismatches_warn() {
         EvidenceInputs {
             isolation: &isolation,
             changes: &changes,
-            runs: Vec::new(),
-            ledger: Vec::new(),
+            runs: Ok(Vec::new()),
+            ledger: Ok(Vec::new()),
             workspace: None,
             project_root: None,
         },
@@ -186,8 +188,8 @@ async fn added_figures_must_be_used() {
         EvidenceInputs {
             isolation: &isolation,
             changes: &changes,
-            runs: Vec::new(),
-            ledger: Vec::new(),
+            runs: Ok(Vec::new()),
+            ledger: Ok(Vec::new()),
             workspace: None,
             project_root: None,
         },
@@ -218,12 +220,12 @@ async fn a_clean_result_passes_every_check_it_can_run() {
         EvidenceInputs {
             isolation: &isolation,
             changes: &changes,
-            runs: vec![run("r001", &[("acc", 0.913)])],
-            ledger: vec![crate::record::LedgerRow {
+            runs: Ok(vec![run("r001", &[("acc", 0.913)])]),
+            ledger: Ok(vec![crate::record::LedgerRow {
                 id: "r001".into(),
                 metrics: BTreeMap::from([("acc".to_owned(), 0.913)]),
                 ..Default::default()
-            }],
+            }]),
             workspace: None,
             project_root: None,
         },
@@ -344,4 +346,17 @@ async fn a_capped_project_map_is_not_diffed_for_unresolved_citations() {
     )
     .await;
     assert_eq!(other.status, EvidenceStatus::Warn);
+}
+
+#[test]
+fn unavailable_run_or_ledger_evidence_is_skipped_without_claiming_absence() {
+    for (runs, ledger) in [
+        (Err("Run store unavailable".into()), Ok(Vec::new())),
+        (Ok(Vec::new()), Err("Ledger unreadable".into())),
+    ] {
+        let check = numbers_check(&[], Path::new("unused"), &runs, &ledger);
+        assert_eq!(check.status, EvidenceStatus::Skipped);
+        assert_eq!(check.items[0].code, "numbers.notChecked");
+        assert!(check.items[0].provenance.is_none());
+    }
 }

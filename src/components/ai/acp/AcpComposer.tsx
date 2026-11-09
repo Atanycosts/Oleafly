@@ -11,6 +11,7 @@ import { acpCancel, acpError, acpUsable, type AcpAgentStatus, type AcpSession } 
 import { mentionInsertText } from "@/lib/composer-tokens";
 import { logError } from "@/lib/log";
 import { isSkillAvailable, useSkills } from "@/lib/skills";
+import { skillDisplayText } from "@/lib/skill-groups";
 import { acpComposerId, useAcpSessionsStore, type AcpPromptDraft } from "@/store/acp-sessions";
 import { EMPTY_ATTACHMENTS, useComposerDrafts } from "@/store/composer-drafts";
 import { useFilesStore } from "@/store/files";
@@ -105,8 +106,8 @@ export const AcpComposer = forwardRef<ChatComposerHandle, AcpComposerProps>(func
     session?.availableCommands ?? [],
     (skillsQuery.data ?? []).map((skill) => ({
       id: skill.id,
-      name: skill.name,
-      description: skill.description,
+      name: skillDisplayText(skill).name,
+      description: skillDisplayText(skill).description,
       valid: skill.validation.status === "valid",
       available: isSkillAvailable(skill),
     })),

@@ -195,6 +195,7 @@
       "agentLabel": "Agent en model",
       "noAgents": "Geen agents beschikbaar",
       "chooseAgent": "Kies een agent en een model",
+      "unsupportedEffort": "Dit model ondersteunt het opgeslagen redeneerniveau niet meer. Kies Automatisch of een ander ondersteund niveau.",
       "configureAgent": "Stel een agent in bij de assistentinstellingen voordat je een taak maakt.",
       "dependencies": "Wacht op deze taken",
       "dependencyStatus": "({{status}})",

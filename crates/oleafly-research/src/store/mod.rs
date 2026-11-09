@@ -19,10 +19,13 @@ use crate::model::{
 use oleafly_sandbox::process::identity::{ProcessIdentity, ProcessProbe};
 
 pub mod approvals;
+mod findings;
+mod observations;
 pub mod runs;
 
 const MAX_TASKS_PER_PROJECT: usize = 500;
 pub const MAX_EVENTS_PER_RUN: u64 = 5_000;
+pub const MAX_EVENT_BYTES: usize = 128 * 1024;
 const TEXT_EVENT_KINDS: [&str; 2] = ["text", "reasoning"];
 const EVENT_KIND_COLUMN: &str = "GENERATED ALWAYS AS (json_extract(event_json, '$.kind')) VIRTUAL";
 
@@ -326,6 +329,10 @@ impl TaskStore {
 
     pub fn require(&self, id: &str) -> Result<ResearchTask, String> {
         let connection = self.open()?;
+        Self::require_on(&connection, id)
+    }
+
+    fn require_on(connection: &Connection, id: &str) -> Result<ResearchTask, String> {
         let stored = connection
             .query_row(
                 &format!("SELECT {TASK_COLUMNS} FROM research_tasks WHERE id = ?1"),
@@ -335,7 +342,7 @@ impl TaskStore {
             .optional()
             .map_err(store_error)?
             .ok_or_else(|| "Research task not found.".to_string())?;
-        materialize_task(&connection, stored)
+        materialize_task(connection, stored)
     }
 
     pub fn request_start(&self, id: &str) -> Result<ResearchTask, String> {
@@ -506,7 +513,7 @@ impl TaskStore {
         event: &TaskRuntimeEvent,
     ) -> Result<Option<TaskTranscriptEvent>, String> {
         let encoded = encode_json(event)?;
-        if encoded.len() > 128 * 1024 {
+        if encoded.len() > MAX_EVENT_BYTES {
             return Err("A research task event exceeded the 128 KiB limit.".into());
         }
         let mut connection = self.open()?;
@@ -561,8 +568,11 @@ impl TaskStore {
         sequence: u64,
         event: &TaskRuntimeEvent,
     ) -> Result<Option<TaskTranscriptEvent>, String> {
+        if matches!(event, TaskRuntimeEvent::Observation { .. }) {
+            return Err("Task observations are immutable; append a new fact instead.".into());
+        }
         let encoded = encode_json(event)?;
-        if encoded.len() > 128 * 1024 {
+        if encoded.len() > MAX_EVENT_BYTES {
             return Err("A research task event exceeded the 128 KiB limit.".into());
         }
         let mut connection = self.open()?;
@@ -585,7 +595,7 @@ impl TaskStore {
         let created_at: Option<i64> = transaction
             .query_row(
                 "SELECT created_at FROM research_task_events
-                 WHERE task_id = ?1 AND execution_generation = ?2 AND sequence = ?3",
+                 WHERE task_id = ?1 AND execution_generation = ?2 AND sequence = ?3 AND kind != 'observation'",
                 params![id, generation as i64, sequence as i64],
                 |row| row.get(0),
             )
@@ -648,14 +658,14 @@ impl TaskStore {
             .map_err(store_error)?;
         let mut appended: HashMap<(String, u64), i64> = HashMap::new();
         for write in writes {
-            if write.event_json.len() > 128 * 1024 {
+            if write.event_json.len() > MAX_EVENT_BYTES {
                 continue;
             }
             if write.replace {
                 transaction
                     .execute(
                         "UPDATE research_task_events SET event_json = ?4
-                         WHERE task_id = ?1 AND execution_generation = ?2 AND sequence = ?3
+                         WHERE task_id = ?1 AND execution_generation = ?2 AND sequence = ?3 AND kind != 'observation'
                            AND EXISTS (SELECT 1 FROM research_tasks
                                        WHERE id = ?1 AND status = 'running' AND execution_generation = ?2)",
                         params![write.task_id, write.generation as i64, write.sequence as i64, write.event_json],
@@ -860,9 +870,9 @@ impl TaskStore {
         }
         let pending = match mode {
             RetryMode::Resume => PendingStart::Resume {
-                isolation: task.isolation.clone().ok_or_else(|| {
+                isolation: Box::new(task.isolation.clone().ok_or_else(|| {
                     "This task has no saved workspace. Start over instead.".to_string()
-                })?,
+                })?),
                 reason: ResumeReason::Retry,
                 previous_native_session_id: task.native_session_id.clone(),
             },
@@ -870,7 +880,11 @@ impl TaskStore {
                 carry_from: task
                     .isolation
                     .as_ref()
-                    .map(|isolation| isolation.execution_root.clone()),
+                    .map(|isolation| isolation.execution_root.clone())
+                    .or_else(|| match &task.pending_start {
+                        Some(PendingStart::Fresh { carry_from }) => carry_from.clone(),
+                        _ => None,
+                    }),
             },
         };
         let fresh = mode == RetryMode::Fresh;
@@ -925,7 +939,7 @@ impl TaskStore {
             .clone()
             .ok_or_else(|| "The saved workspace is gone. Start over instead.".to_string())?;
         let pending = PendingStart::Resume {
-            isolation,
+            isolation: Box::new(isolation),
             reason: ResumeReason::PlanApproved,
             previous_native_session_id: task.native_session_id.clone(),
         };
@@ -950,7 +964,7 @@ impl TaskStore {
             return Ok(false);
         };
         let pending = PendingStart::Resume {
-            isolation,
+            isolation: Box::new(isolation),
             reason: ResumeReason::Handoff,
             previous_native_session_id: task.native_session_id.clone(),
         };
@@ -1076,14 +1090,24 @@ impl TaskStore {
         generation: u64,
         report: &EvidenceReport,
     ) -> Result<bool, String> {
-        self.open()?
+        let mut connection = self.open()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let current = Self::require_on(&transaction, id)?;
+        if current.execution_generation != generation {
+            return Ok(false);
+        }
+        findings::retain_findings(&transaction, id, generation, report)?;
+        let updated = transaction
             .execute(
                 "UPDATE research_tasks SET evidence_json = ?3, updated_at = ?4
                  WHERE id = ?1 AND execution_generation = ?2",
                 params![id, generation as i64, encode_json(report)?, now_ms()],
             )
-            .map(|count| count == 1)
-            .map_err(store_error)
+            .map_err(store_error)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(updated == 1)
     }
 
     pub fn clear_phase(&self, id: &str, generation: u64) -> Result<(), String> {
@@ -1633,7 +1657,7 @@ impl TaskStore {
             .isolation
             .clone()
             .map(|isolation| PendingStart::Resume {
-                isolation,
+                isolation: Box::new(isolation),
                 reason: ResumeReason::Handoff,
                 previous_native_session_id: task.native_session_id.clone(),
             });
@@ -1821,7 +1845,7 @@ impl TaskStore {
         let generation = generation.max(0) as u64;
         let isolation: Option<TaskIsolation> = decode_optional(isolation_json, "task isolation")?;
         let pending = isolation.map(|isolation| PendingStart::Resume {
-            isolation,
+            isolation: Box::new(isolation),
             reason: ResumeReason::Handoff,
             previous_native_session_id: native.clone(),
         });
@@ -2789,7 +2813,8 @@ const OWNER_SCHEMA_VERSION: i64 = 1;
 const BRIEF_SCHEMA_VERSION: i64 = 2;
 const HANDOFF_SCHEMA_VERSION: i64 = 3;
 const EVENT_KIND_SCHEMA_VERSION: i64 = 4;
-pub const SCHEMA_VERSION: i64 = 5;
+const RUN_CONTROL_SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 fn migrate(connection: &mut Connection) -> Result<(), String> {
     if schema_version(connection)? >= SCHEMA_VERSION {
@@ -2909,7 +2934,7 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
                ON research_task_events(task_id, execution_generation, kind, sequence);",
         )?;
     }
-    if version < SCHEMA_VERSION {
+    if version < RUN_CONTROL_SCHEMA_VERSION {
         add_columns(&[("runs_baseline", "INTEGER NOT NULL DEFAULT 0")])?;
         let run_columns: HashSet<String> = {
             let mut statement = transaction
@@ -2940,6 +2965,26 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
                trimmed_through INTEGER NOT NULL DEFAULT 0,
                PRIMARY KEY(task_id, execution_generation)
              );",
+        )?;
+    }
+    if version < 6 {
+        upgrade(
+            "CREATE TABLE IF NOT EXISTS research_task_findings (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL UNIQUE,
+                task_id TEXT NOT NULL REFERENCES research_tasks(id) ON DELETE CASCADE,
+                execution_generation INTEGER NOT NULL,
+                finding_json TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS research_task_findings_scope
+               ON research_task_findings(task_id, execution_generation, sequence);
+             CREATE TABLE IF NOT EXISTS research_task_finding_dispositions (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_id TEXT NOT NULL REFERENCES research_task_findings(id) ON DELETE CASCADE,
+                decision_json TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS research_task_finding_dispositions_history
+               ON research_task_finding_dispositions(finding_id, sequence);",
         )?;
     }
     upgrade(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;

@@ -312,7 +312,7 @@ describe("progressive skill disclosure", () => {
     expect(skillCatalogPrompt(many)).toContain("skill-64");
   });
 
-  it("groups the catalog by phase and states the workflow rules", () => {
+  it("groups enabled skill metadata by phase", () => {
     const prompt = skillCatalogPrompt([
       skill({
         id: "oleafly-research-loop",
@@ -335,10 +335,8 @@ describe("progressive skill disclosure", () => {
     expect(prompt.indexOf("## research")).toBeLessThan(prompt.indexOf("## authoring"));
     expect(prompt.indexOf("## authoring")).toBeLessThan(prompt.indexOf("## other"));
     expect(prompt).toContain('"phase":"research"');
-    expect(prompt).toContain(
-      'call load_skill with "oleafly-research-loop" first and follow the handoffs it names',
-    );
-    expect(prompt).toContain("Never say you are using a skill before you have loaded it");
+    expect(prompt).toContain('"id":"oleafly-research-loop"');
+    expect(prompt).toContain('"id":"scientific-writing"');
     expect(prompt).toContain("read_skill_file");
   });
 

@@ -190,7 +190,7 @@ pub fn t_with(key: &str, params: &[(&str, &str)]) -> String {
 pub fn startup() {
     let preference = crate::config::read_config()
         .map(|config| config.ui_locale)
-        .unwrap_or_else(|_| "system".to_string());
+        .unwrap_or_else(|_| "zh-Hans".to_string());
     set_current(resolve_preference(&preference));
 }
 

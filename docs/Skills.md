@@ -48,11 +48,11 @@ from scratch.
 
 ## The research loop
 
-`oleafly-research-loop` is the entry point for anything that spans more than
-one step. It sets the project layout every other research skill reads and
-writes (a `research/` folder for sources, notes, and the claim audit; a
-`review/` folder for review and response material; `figures/` for generated
-figures), then names the skill for the stage you are actually in:
+`oleafly-research-loop` helps coordinate work across several research or
+writing stages. Focused tasks can load a specialist directly. The router
+lists the shared locations for new research artifacts and helps select the
+skills needed for the requested outcome; existing project files and
+conventions take precedence:
 
 | Stage | You are doing this | Load |
 |---|---|---|
@@ -85,18 +85,19 @@ figures), then names the skill for the stage you are actually in:
 | Communication | Beamer decks and poster layouts in detail | `scientific-slides`, `pptx-posters` |
 | Tooling | Driving an OpenResearch experiment from the project | `openresearch` |
 
-The full table, with the file-layout contract and citation-key convention it
-sets up, lives in `oleafly-research-loop`'s own `references/project-layout.md`
-and `references/handoffs.md`.
+Additional routing examples, artifact formats and citation-key conventions
+live in `oleafly-research-loop`'s own `references/project-layout.md` and
+`references/handoffs.md`. Create those artifacts when the task needs them.
 
 ## How the assistant picks a skill
 
 The assistant does not read every skill's full instructions on every turn.
-The system prompt carries a short "research workflow map": every enabled
-skill's id, name, phase, and description, grouped by phase, with a rule that
-for a research task spanning more than one step it should call `load_skill`
-on `oleafly-research-loop` first and follow the handoff it names, and that it
-should never say it is using a skill before it has actually loaded one.
+The system prompt carries a short skill catalog: every enabled skill's id,
+name, phase, and description, grouped by phase. The assistant loads a skill
+when its knowledge or tools help the current task, then reads supporting
+references as needed. There is no mandatory router-first or fixed sequence
+of research, writing and review stages. The assistant should only say it is
+using a skill after actually loading it.
 
 `load_skill({"id": "..."})` returns the skill's full instructions, its
 absolute directory on disk, the list of files inside it with their sizes, and
@@ -105,9 +106,10 @@ an absolute path from `/usr/bin`, `/bin`, `/usr/local/bin`, or
 `/opt/homebrew/bin`. `read_skill_file({"id": "...", "path":
 "references/handoffs.md"})` reads one of those files. A bundled script is run
 with `run_command` and the command `load_skill` listed for it, for example
-`python3 "<skill dir>/scripts/search_openalex.py" --help`. Python scripts need
-Python 3.11 or newer, which the assistant checks once per session before
-relying on them and falls back to the native project tools when it is missing.
+`python3 "<skill dir>/scripts/search_openalex.py" --help`. Check a script's
+runtime and package requirements when using it; several bundled scripts need
+Python 3.11 or newer. Native project tools can provide an equivalent operation
+when their capabilities cover the task.
 
 The MCP server in Settings and the research bridge that CLI agents and
 research tasks talk to build that payload from the same function in
@@ -276,13 +278,14 @@ approve it. The task then carries it out in the same workspace.
 
 ### The research record
 
-Each task keeps a record in `research/<task>/` inside its workspace:
-`brief.md`, `plan.md`, `ledger.tsv` (one row per result), `hypotheses.md`,
-`sources.md`, `handoff.md` and `report.md`. Retrying a task with Resume
-continues from `handoff.md` in the same workspace. Start over begins from the
-current project and brings the record along. When the task finishes, the
-record comes back with its review under Research record, so applying it keeps
-it in the project. Those files don't need a preview first.
+Each task starts a record in `research/<task>/` inside its workspace with
+`brief.md` and `handoff.md`. A plan, experiment ledger, hypotheses, source
+notes or report is created only when that task needs it; `ledger.tsv` gets one
+row per recorded result. Retrying a task with Resume continues from
+`handoff.md` in the same workspace. Start over begins from the current project
+and carries the existing record along. When the task finishes, the record comes
+back with its review under Research record, so applying it keeps it in the
+project. Those files don't need a preview first.
 
 ### Runs
 

@@ -87,7 +87,7 @@ export type GrammarDialect =
   | "australian"
   | "canadian"
   | "indian";
-import { isLocalePreference, type LocalePreference } from "@oleafly/i18n-contract";
+import { DEFAULT_LOCALE_PREFERENCE, isLocalePreference, type LocalePreference } from "@oleafly/i18n-contract";
 import { i18n } from "@/i18n";
 import { changeLocalePreference } from "@/i18n/desktop";
 
@@ -715,13 +715,13 @@ export function fileTreePathIsHidden(
 
 export const GRAMMAR_DIALECTS: {
   id: GrammarDialect;
-  name: string;
+  locale: string;
 }[] = [
-  { id: "american", name: "English (US)" },
-  { id: "british", name: "English (UK)" },
-  { id: "australian", name: "English (Australia)" },
-  { id: "canadian", name: "English (Canada)" },
-  { id: "indian", name: "English (India)" },
+  { id: "american", locale: "en_US" },
+  { id: "british", locale: "en_GB" },
+  { id: "australian", locale: "en_AU" },
+  { id: "canadian", locale: "en_CA" },
+  { id: "indian", locale: "en_IN" },
 ];
 
 export type EditorKeymapMode = "default" | "vim" | "emacs";
@@ -1197,7 +1197,7 @@ const PREF_DEFAULTS = {
   spellcheck: true,
   harper: true,
   grammarDialect: "american" as GrammarDialect,
-  uiLocalePreference: "system" as LocalePreference,
+  uiLocalePreference: DEFAULT_LOCALE_PREFERENCE,
   dictionaryLocale: DEFAULT_DICTIONARY_LOCALE,
   showRegionalism: true,
   showWordChoice: true,
@@ -1605,7 +1605,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     notifyProofreadingSettingsChanged("grammarDialect", get());
   },
   uiLocalePreference: (() => {
-    const raw = ls("oleafly.locale", "system");
+    const raw = ls("oleafly.locale", DEFAULT_LOCALE_PREFERENCE);
     return isLocalePreference(raw) ? raw : PREF_DEFAULTS.uiLocalePreference;
   })(),
   setUiLocalePreference: (v) => {

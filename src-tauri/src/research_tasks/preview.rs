@@ -14,6 +14,73 @@ use crate::collab::live::write::SharedDocument;
 const MAX_TEXT_BYTES: u64 = 400_000;
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSourcePreview {
+    pub source: oleafly_research::observations::ReadSource,
+    pub text: String,
+}
+
+pub(crate) fn source_preview(
+    store: &TaskStore,
+    task_id: &str,
+    generation: u64,
+    sequence: u64,
+) -> Result<TaskSourcePreview, String> {
+    use oleafly_research::{model::TaskRuntimeEvent, observations::TaskObservation};
+    let task = store.require(task_id)?;
+    let view = store.observations(
+        &task.project_id,
+        task_id,
+        generation,
+        sequence.saturating_sub(1),
+        1,
+    )?;
+    let row = view
+        .page
+        .events
+        .into_iter()
+        .next()
+        .filter(|row| row.sequence == sequence)
+        .ok_or("This observation has no retained source locator.")?;
+    let TaskRuntimeEvent::Observation {
+        observation:
+            TaskObservation::ToolExecution {
+                source: Some(source),
+                ..
+            },
+    } = row.event
+    else {
+        return Err("This observation has no retained source locator.".into());
+    };
+    let isolation = task
+        .isolation
+        .ok_or("This task has no retained workspace.")?;
+    let relative = normalized_relative(&source.path)?;
+    for root in [&isolation.baseline_root, &isolation.execution_root] {
+        let root = PreviewRoot::open(Path::new(root))?;
+        if !root.exists(&relative)? {
+            continue;
+        }
+        let content = read_existing(&root, &relative)?;
+        if content.sha256.as_deref() != Some(&source.file_sha256) {
+            continue;
+        }
+        let text = content
+            .text
+            .ok_or("This source exceeds the text preview limit.")?;
+        let text = text
+            .get(source.offset..source.end_offset)
+            .ok_or("The recorded byte range is not valid for this source.")?
+            .to_owned();
+        return Ok(TaskSourcePreview { source, text });
+    }
+    Err(
+        "The source revision is no longer retained in the starting baseline or task workspace."
+            .into(),
+    )
+}
+
 pub(crate) fn file_preview(
     store: &TaskStore,
     task_id: &str,
@@ -353,6 +420,8 @@ mod tests {
             allowed_paths: vec!["main.tex".into()],
             created_at: now_ms(),
             skipped: Vec::new(),
+            initial_git_status: None,
+            initial_git_status_complete: None,
         };
         store
             .set_isolation(&task.id, running.execution_generation, &isolation)

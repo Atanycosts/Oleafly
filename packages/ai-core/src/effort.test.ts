@@ -37,7 +37,7 @@ describe("effortChoicesFor", () => {
         { type: "effort", values: ["ultra", "high", "default", "low"] },
       ],
     } as unknown as ModelReasoningMetadata;
-    expect(effortChoicesFor("openai", "gpt-6.1-sol", metadata)).toEqual(["low", "high"]);
+    expect(effortChoicesFor("openai", "gpt-6.1-sol", metadata)).toEqual(["low", "high", "ultra"]);
   });
 });
 

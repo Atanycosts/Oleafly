@@ -1,11 +1,11 @@
 ---
 name: oleafly-experiment-loop
-description: Run a series of small, recorded experiments toward one goal inside an Oleafly research task. Use when the task is to improve a metric, tune a model or analysis, compare methods, or reproduce a result. Measures a baseline first, changes one thing per run, keeps only changes that help, records every result in the task's ledger, and writes the numbers into the manuscript with run markers.
+description: Run and interpret experiments for an Oleafly research task using its existing run tools and ledger. Use for tuning, method comparisons or reproduction; choose experiments and stopping decisions from the question and task budget.
 license: MIT
 compatibility: Made for Oleafly research tasks, which provide start_run, wait_runs, read_run_log, ledger_append and results_table. Commands follow the task's brief (allowed, ask first, or off).
 allowed-tools: start_run wait_runs run_status read_run_log cancel_run ledger_append results_table read_file write_file list_files search_project update_todos get_todos remember_note compile
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   skill-author: "Oleafly"
   oleafly:
     tier: native
@@ -30,63 +30,49 @@ metadata:
 
 # Oleafly Experiment Loop
 
-An experiment loop answers one question with evidence: does this change move the main metric, and by how much. Every run is recorded, including the ones that fail, so the user can see what was tried and the manuscript can point at the run behind each number.
+Read the task brief for the question, success criteria, metric and budget. Inspect useful
+existing results before choosing the next experiment. For a comparison, measure or use a
+comparable reference result and keep the evaluation consistent. Record any intentional
+change in measurement so unlike results are not treated as directly comparable.
 
-The task's brief sets the goal, the success criteria, the main metric and which direction is better, and the budget. Read it before the first run. The research record lives in the record folder the brief names (`research/<slug>/`).
+Choose runs that distinguish plausible explanations. A single controlled change can
+isolate an effect; factorial or exploratory work can need several factors together. Use
+the design that answers the question. Preserve failed and negative results as well as
+improvements. The task's criteria determine which implementation to keep.
 
-## The rules
+## Run and inspect
 
-1. **One evaluation command.** Fix the command that measures the metric before the first run and keep it for every run. Write it into `plan.md`. Variation lives in committed code and config, never in a different command line or in environment variables you change between runs.
-2. **Baseline first.** The first run measures the project as it is. Every later result is compared with it.
-3. **One change per run.** Each run tests one hypothesis. Two changes in one run cannot tell you which one helped.
-4. **Keep or discard by the brief's rule.** A change is kept when the main metric moves in the better direction by more than run-to-run noise, and the success criteria still hold. Otherwise revert it and record it as discarded.
-5. **Two repair attempts, then ask.** When a run crashes, fix it at most twice in a row. After that, write what is broken into `handoff.md` and stop that line of work.
-6. **Stop when it stops paying.** Stop after three runs in a row without an improvement, when the success criteria are met, or when the budget runs out.
-
-## Running
-
-Start runs with `start_run`, never with a blocking command:
+Use `start_run` for long commands in a research task, for example:
 
 ```json
-{"name": "baseline", "command": "python train.py --config configs/base.yaml", "timeout": 30}
+{"name": "reference", "command": "python train.py --config configs/base.yaml", "timeout": 30}
 ```
 
-`start_run` returns at once with the run id. The run keeps going after your turn; its output goes to a log and lines like `loss=0.25` or JSON objects with numbers become metrics.
+It returns a run id immediately. `wait_runs` waits for completion and returns state,
+exit code, metrics and log tail. Use `read_run_log` for a relevant failure or
+`cancel_run` when a run no longer serves the task. Inspect the actual result before
+interpreting it or choosing the next run.
 
-Then call `wait_runs`. It returns as soon as a run finishes, with its state, exit code, last metrics and the end of its log. Never poll in a tight loop. If your turn ends while runs are still going, the task wakes you with their results.
+Use `ledger_append` to record the hypothesis, change, run id, verdict and interpretation.
+The tool attaches the command and metrics from the run. Its `keep`, `discard` and `crash`
+labels describe outcomes; discarded results remain available. Update the existing plan
+or handoff when the direction changes or work must continue in another session.
 
-Use `read_run_log` with `{"id": "r003", "grep": "Traceback"}` to find a failure, and `cancel_run` for a run that is clearly wasted.
+## Report
 
-## Recording
+Use `results_table` for tables of recorded metrics and retain its run markers when
+inserting them into the manuscript. Explain comparisons using the run ids, settings and
+uncertainty that support them. Results from other sources need their own attribution.
+Generate requested figures from the recorded results and compile when incorporating
+changes into the document.
 
-After every finished run, before the next step:
+Finish when the question is answered, the task's stopping condition is met, or the budget
+ends. A remaining failure can motivate another informative experiment within that budget.
+Report what was learned and any unresolved question in the requested deliverable or
+existing handoff; this skill does not require an additional report or hypothesis file.
 
-1. `ledger_append` with the hypothesis, the change, the run id, the verdict (`keep`, `discard` or `crash`) and a note on what the changed parameter did. The command and the metrics come from the run itself.
-2. Update the queue in `hypotheses.md`: mark the tested idea, add the ideas the result suggests.
-3. Rewrite `handoff.md`: where things stand, the best run so far, what to try next. A new session must be able to continue from it alone.
+## Reference
 
-Make figures only with scripts saved under `analysis/`, so they can be run again.
+`references/ledger.md` describes the ledger fields used by the task UI.
 
-## Writing results into the manuscript
-
-Numbers in the manuscript come from `results_table`, which prints a LaTeX, Typst or Markdown table with one row per run and a run marker comment (`% run: r004`). Keep the markers. Evidence checks before review compare each marked number with the run's recorded metrics.
-
-Never type a result by hand. If there is no run behind a number, the number does not go in.
-
-## Before the budget ends
-
-Write `report.md` in the record folder: the question, the baseline, what was tried, what was kept and why, the best result with its run id, and what remains open. Update `handoff.md` one last time.
-
-## Done when
-
-- [ ] `plan.md` names the evaluation command, and every run used it.
-- [ ] A baseline run exists and every result is compared with it.
-- [ ] Every run has a ledger row with a verdict.
-- [ ] `handoff.md` and `report.md` describe the current state.
-- [ ] Every number in the manuscript came from `results_table` and carries its run marker.
-
-## Reference files
-
-- `references/ledger.md` explains the ledger columns and verdicts.
-
-Parts of this policy follow ideas from OpenResearch (MIT License, © 2026 alphaXiv).
+Parts of this skill follow ideas from OpenResearch (MIT License, copyright 2026 alphaXiv).

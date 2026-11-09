@@ -31,5 +31,10 @@
  {"provider":"ollama","model":"gpt-oss:20b","metadata":null,"expected":["low","medium","high"]},
  {"provider":"ollama","model":"qwen3:8b","metadata":{"reasoning":true},"expected":["none"]},
  {"provider":"ollama","model":"llama3.2","metadata":null,"expected":[]},
- {"provider":"my-gateway","model":"gpt-6.1-sol","metadata":{"reasoning":true,"reasoningOptions":[{"type":"effort","values":["low","high"]}]},"expected":[]}
+ {"provider":"my-gateway","model":"gpt-6.1-sol","metadata":{"reasoning":true,"reasoningOptions":[{"type":"effort","values":["low","high"]}]},"expected":["low","high"]},
+ {"provider":"my-gateway","model":"auto/gpt-6.1-sol","metadata":{"reasoning":true,"reasoningOptions":[{"type":"effort","values":["low","medium","high","xhigh","max","ultra"]}]},"expected":["low","medium","high","xhigh","max","ultra"]},
+ {"provider":"my-gateway","model":"workbuddy/hy4free","metadata":{"reasoning":true,"reasoningOptions":[{"type":"effort","values":["high"]}]},"expected":["high"]},
+ {"provider":"xiaobai-best","model":"gpt-6.1-sol","metadata":null,"expected":[]},
+ {"provider":"my-gateway","model":"custom-reasoner-v1","metadata":{"reasoning":true,"reasoningOptions":[{"type":"effort","values":["low","high"]}]},"expected":["low","high"]},
+ {"provider":"my-gateway","model":"custom-chat-model","metadata":null,"expected":[]}
 ]

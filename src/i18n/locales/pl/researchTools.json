@@ -197,6 +197,7 @@
       "agentLabel": "Agent i model",
       "noAgents": "Brak dostępnych agentów",
       "chooseAgent": "Wybierz agenta i model",
+      "unsupportedEffort": "Ten model nie obsługuje już zapisanego poziomu rozumowania. Wybierz Automatycznie lub inny obsługiwany poziom.",
       "configureAgent": "Skonfiguruj agenta w ustawieniach asystenta przed utworzeniem zadania.",
       "dependencies": "Poczekaj na te zadania",
       "dependencyStatus": "({{status}})",

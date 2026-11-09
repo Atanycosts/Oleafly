@@ -1505,9 +1505,6 @@ impl ResearchTaskState {
                     .await
                     .map_err(|error| format!("Task isolation stopped unexpectedly: {error}"))
                     .and_then(|result| result)?;
-                if !store.set_isolation(&task.id, generation, &isolation)? {
-                    return Err("The task changed before its workspace was ready.".into());
-                }
                 if let Some(PendingStart::Fresh {
                     carry_from: Some(from),
                 }) = &task.pending_start
@@ -1517,12 +1514,20 @@ impl ResearchTaskState {
                         PathBuf::from(&isolation.execution_root),
                         slug.clone(),
                     );
-                    let _ = self
-                        .runtime()
+                    self.runtime()
                         .spawn_blocking(move || {
                             isolation::carry_over_record(&from, &to, &carried_slug)
                         })
-                        .await;
+                        .await
+                        .map_err(|error| {
+                            format!("Research record carry-over stopped unexpectedly: {error}")
+                        })?
+                        .map_err(|error| {
+                            format!("The research record could not be carried over: {error}")
+                        })?;
+                }
+                if !store.set_isolation(&task.id, generation, &isolation)? {
+                    return Err("The task changed before its workspace was ready.".into());
                 }
                 if let (Ok(host), Ok(services)) = (self.host(), self.services()) {
                     let state = self.clone();
@@ -1752,16 +1757,9 @@ impl ResearchTaskState {
         let services = self.services().ok();
         let runs = services
             .as_ref()
-            .and_then(|services| services.runs.list(&task.id).ok())
-            .unwrap_or_default();
-        let ledger = record::read_record_file(
-            Path::new(&isolation.execution_root),
-            &task.record_slug,
-            "ledger.tsv",
-            4 * 1024 * 1024,
-        )
-        .map(|text| record::parse_ledger(&text))
-        .unwrap_or_default();
+            .ok_or_else(|| "The run evidence store is unavailable.".to_string())
+            .and_then(|services| services.runs.list(&task.id));
+        let ledger = record::read_ledger(Path::new(&isolation.execution_root), &task.record_slug);
         let project_root = self
             .host()
             .and_then(|host| host.locate_project(&task.project_id))

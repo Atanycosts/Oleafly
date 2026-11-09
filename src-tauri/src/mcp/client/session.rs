@@ -57,7 +57,7 @@ impl McpStdioSession {
         let discovery =
             tokio::time::timeout(limits.probe_timeout, discover_server(&mut probe)).await;
         match discovery {
-            Ok(Ok(true)) => {
+            Ok(Ok((true, _))) => {
                 let tools = list_tools(&mut probe, 2, true).await?;
                 Ok(Self {
                     transport: probe,
@@ -70,7 +70,7 @@ impl McpStdioSession {
                 probe.shutdown().await;
                 Err(error)
             }
-            Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {
+            Ok(Ok((false, _))) | Ok(Err(_)) | Err(_) => {
                 probe.shutdown().await;
                 let mut transport = StdioTransport::spawn(command, args, env).await?;
                 transport.max_message_bytes = limits.max_message_bytes;
@@ -102,7 +102,7 @@ impl McpStdioSession {
     ) -> Result<Result<Value, String>, String> {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
-        let request = tool_call_request(id, name, arguments, self.modern);
+        let request = tool_call_request(id, name, arguments, None, self.modern);
         self.transport
             .write_message(&request)
             .await

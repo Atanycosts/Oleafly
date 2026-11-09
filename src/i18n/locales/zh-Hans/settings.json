@@ -157,7 +157,7 @@
         "profileName": "配置文件 {{name}}",
         "memory": "项目记忆",
         "memoryDescription": "Hermes 会在此项目的不同对话之间记住信息。",
-        "toolGateway": "Tool Gateway",
+        "toolGateway": "工具网关",
         "toolGatewayDescription": "使用你的 Nous 订阅中托管的网页搜索、图像、语音和浏览器工具。",
         "status": {
           "ready": "网关正在运行",
@@ -1698,8 +1698,8 @@
       "gitFailed": "Oleafly 无法保存 Git 令牌。请检查是否粘贴了完整的令牌。"
     },
     "desktopApps": {
-      "tab": "Computer Use",
-      "title": "Computer Use",
+      "tab": "电脑操作",
+      "title": "电脑操作",
       "description": "让代理通过 Cua Driver 使用这台电脑上的应用和网站。代理只能访问你在这里列出的应用和网站。",
       "docsLink": "Cua Driver 文档",
       "status": {
@@ -1800,7 +1800,7 @@
         "note": "只在你允许的应用和网站中工作。开启“每次操作前询问”时，操作前会先询问。"
       },
       "task": {
-        "label": "Computer Use",
+        "label": "电脑操作",
         "description": "允许此任务使用你允许的桌面应用。开启“每次操作前询问”时，你需要在计算机前批准操作。",
         "off": "请先在设置中开启 Computer Use。",
         "unattended": "按计划运行或在 Oleafly 关闭后运行的任务无法使用桌面应用。"

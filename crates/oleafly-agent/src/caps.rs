@@ -166,7 +166,7 @@ mod tests {
         );
         assert_eq!(
             caps.efforts,
-            Some(vec![Effort::Off, Effort::Low, Effort::High])
+            Some(vec![Effort::Off, Effort::Low, Effort::High, Effort::Ultra])
         );
         assert!(caps.toggle);
         assert_eq!(

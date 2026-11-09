@@ -43,7 +43,6 @@ const PROJECT_MOVED: &str = "The project folder is no longer where it was when O
 const LINKED_MOVED: &str =
     "A linked folder of this project is no longer where it was when Oleafly closed.";
 const NO_SEARCH_KEY: &str = "Web search needs a search key. Add one in Oleafly's settings.";
-const MAX_WEB_TEXT: usize = 48 * 1024;
 
 fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     value
@@ -605,14 +604,12 @@ impl WebTools for CliWebTools {
         let page = oleafly_agent::tools::web::web_fetch(&self.client, url, &options)
             .await
             .map_err(|error| error.to_string())?;
-        let truncated = page.truncated || page.markdown.len() > MAX_WEB_TEXT;
-        let text = oleafly_research::task_tools::bounded(&page.markdown, MAX_WEB_TEXT);
         Ok(json!({
             "url": page.url,
             "title": page.title,
             "contentType": page.content_type,
-            "text": text,
-            "truncated": truncated,
+            "text": page.markdown,
+            "truncated": page.truncated,
         }))
     }
 
@@ -731,14 +728,16 @@ impl DaemonTaskHost {
 }
 
 impl TaskHost for DaemonTaskHost {
-    fn skills(&self, context: &TaskRunContext) -> Result<String, String> {
+    fn skills(
+        &self,
+        context: &TaskRunContext,
+    ) -> Result<oleafly_research::observations::TaskSkills, String> {
         if context.skill_ids.is_empty() {
-            return Ok(String::new());
+            return Ok(Default::default());
         }
         let grant = self.grant(&context.task_id)?;
-        skill_prompt(
+        crate::agent::tools::skills::task_skills(
             &self.skills(&grant),
-            Some(&context.project_id),
             &context.skill_ids,
             SkillAudience::Task,
         )
@@ -782,9 +781,9 @@ impl TaskHost for DaemonTaskHost {
             log.add_secrets([resolved.resolved.credential.clone()]);
             if let Some(entry) = &grant.model_metadata {
                 resolved.resolved.caps = oleafly_agent::ModelCaps::from_metadata_json(entry);
-                resolved.price = Price::from_entry(entry)
-                    .map(|price| price.for_provider(&resolved.resolved.provider_id))
-                    .or(resolved.price);
+                let grant_price = Price::from_entry(entry)
+                    .map(|price| price.for_provider(&resolved.resolved.provider_id));
+                resolved.price = grant_price;
             }
             let usage = SpoolUsage::new(
                 &data_root,
@@ -893,6 +892,9 @@ impl TaskHost for DaemonTaskHost {
     fn task_mcp_tools(&self, context: &TaskRunContext) -> TaskRuntimeFuture<Vec<TaskMcpTool>> {
         let reader = self.reader();
         let task_id = context.task_id.clone();
+        let caller_task_id = context.task_id.clone();
+        let project_id = context.project_id.clone();
+        let generation = context.execution_generation;
         let brief = context.brief.clone();
         let log = self.log.clone();
         Box::pin(async move {
@@ -936,7 +938,14 @@ impl TaskHost for DaemonTaskHost {
             for warning in warnings {
                 log.event("warning", "task_mcp", &[("message", &warning)]);
             }
-            Ok(Arc::new(hub).as_task_tools())
+            Ok(Arc::new(hub).as_task_tools(serde_json::json!({
+                "com.oleafly/research-task": {
+                    "system": "oleafly",
+                    "project_id": project_id,
+                    "task_id": caller_task_id,
+                    "generation": generation,
+                }
+            })))
         })
     }
 

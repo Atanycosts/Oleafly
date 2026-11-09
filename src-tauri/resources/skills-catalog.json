@@ -4,7 +4,7 @@
   "packs": [
     {
       "id": "research-core",
-      "version": "2026.10.19.fa83f292",
+      "version": "2026.10.19.82ebb937",
       "kind": "bundled"
     }
   ],
@@ -120,22 +120,33 @@
     {
       "id": "oleafly-data-analysis",
       "name": "Data analysis",
-      "description": "Take data files that live in the project through to numbers, figures, and tables in the manuscript. Picks the method with the statistics skills, runs it as a saved script rather than an inline command, writes figures to figures/ and LaTeX tables to tables/, and reports effect sizes and confidence intervals in APA style.",
+      "description": "Analyze project data and connect computed results to the requested report, figure, table or manuscript. Use existing scripts and outputs; load specialist statistics guidance when the method needs it.",
       "phase": "authoring",
       "license": "MIT",
-      "version": "1.0.1",
-      "bytes": 27548,
+      "version": "1.1.0",
+      "bytes": 15153,
       "files": 3,
+      "pack": "research-core"
+    },
+    {
+      "id": "oleafly-development",
+      "name": "oleafly-development",
+      "description": "Implement, debug, refactor or review software in the current project. Covers code ownership, existing contracts and behavior-focused verification.",
+      "phase": "tooling",
+      "license": "CC-BY-4.0",
+      "version": "1.1.0",
+      "bytes": 1817,
+      "files": 1,
       "pack": "research-core"
     },
     {
       "id": "oleafly-experiment-loop",
       "name": "oleafly-experiment-loop",
-      "description": "Run a series of small, recorded experiments toward one goal inside an Oleafly research task. Use when the task is to improve a metric, tune a model or analysis, compare methods, or reproduce a result. Measures a baseline first, changes one thing per run, keeps only changes that help, records every result in the task's ledger, and writes the numbers into the manuscript with run markers.",
+      "description": "Run and interpret experiments for an Oleafly research task using its existing run tools and ledger. Use for tuning, method comparisons or reproduction; choose experiments and stopping decisions from the question and task budget.",
       "phase": "research",
       "license": "MIT",
-      "version": "1.0.0",
-      "bytes": 6559,
+      "version": "1.1.0",
+      "bytes": 4884,
       "files": 2,
       "pack": "research-core"
     },
@@ -208,11 +219,11 @@
     {
       "id": "oleafly-research-loop",
       "name": "oleafly-research-loop",
-      "description": "Entry point for research writing in Oleafly. Load this first when the user says they are writing a paper, starting a literature review, drafting related work, checking citations, preparing figures, responding to reviewers, or getting a submission ready. It sets the project layout every other research skill honours, plans the work with update_todos, and names the exact skill to load at each stage of the loop.",
+      "description": "Coordinate research writing across several stages in Oleafly. Use when the work needs a project-wide plan or help choosing specialist skills; focused tasks can use a specialist directly.",
       "phase": "research",
       "license": "MIT",
-      "version": "1.0.1",
-      "bytes": 31773,
+      "version": "1.1.0",
+      "bytes": 22063,
       "files": 7,
       "pack": "research-core"
     },

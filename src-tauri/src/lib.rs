@@ -55,6 +55,7 @@ mod fsperm;
 mod git;
 mod i18n;
 mod initial_state;
+mod journal_workbench;
 mod known_folders;
 mod language_service;
 mod latex_engine;
@@ -504,6 +505,7 @@ pub fn run() {
         .manage(AppState::default())
         .manage(updater::UpdateState::default())
         .manage(research_tasks::new_state())
+        .manage(journal_workbench::JournalWorkbenchState::default())
         .manage(agent::AgentState::default())
         .manage(agent_exec::AgentExecState::default())
         .manage(agent_server::AgentServerState::default())
@@ -516,6 +518,11 @@ pub fn run() {
         .on_window_event(on_window_event)
         .setup(setup_app)
         .invoke_handler(traced_commands(tauri::generate_handler![
+            journal_workbench::journal_workbench_connect,
+            journal_workbench::journal_workbench_request,
+            journal_workbench::journal_workbench_link,
+            journal_workbench::journal_research_create,
+            journal_workbench::journal_research_result,
             ad_hoc_conversion::convert_ad_hoc,
             typst_render::render_typst_snippet,
             typst_query::typst_document_insights,
@@ -529,6 +536,11 @@ pub fn run() {
             research_tasks::research_task_cancel,
             research_tasks::research_task_retry,
             research_tasks::research_task_events,
+            research_tasks::research_task_observations,
+            research_tasks::research_task_findings,
+            research_tasks::research_task_finding_decide,
+            research_tasks::research_task_finding_source,
+            research_tasks::research_task_source_preview,
             research_tasks::research_task_file_preview,
             research_tasks::research_task_artifact_preview,
             research_tasks::research_task_apply,
@@ -1232,8 +1244,9 @@ pub fn run() {
         ]))
         .build(tauri::generate_context!())
         .expect("error while running Oleafly")
-        .run(|_, event| {
+        .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                journal_workbench::shutdown(app);
                 collab::live::finish_for_quit(collab::live::QUIT_WAIT);
                 cua_driver::shutdown_for_quit(std::time::Duration::from_millis(1500));
                 quit_gate::on_app_exit();

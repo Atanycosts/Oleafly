@@ -574,6 +574,16 @@ pub fn model_entry(
     provider: &str,
     model: &str,
 ) -> Option<Value> {
+    let stored = config
+        .stored_metadata
+        .get(&(provider.to_string(), model.to_string()));
+    if stored
+        .and_then(|entry| entry.get("metadataSource"))
+        .and_then(Value::as_str)
+        == Some("provider")
+    {
+        return stored.cloned();
+    }
     snapshot_entry(
         &root.join("catalogs").join("model-metadata.json"),
         provider,
@@ -586,12 +596,7 @@ pub fn model_entry(
                 snapshot_entry(&resources.join("model-metadata.json"), provider, model)
             })
     })
-    .or_else(|| {
-        config
-            .stored_metadata
-            .get(&(provider.to_string(), model.to_string()))
-            .cloned()
-    })
+    .or_else(|| stored.cloned())
 }
 
 #[cfg(test)]
@@ -883,6 +888,23 @@ mod tests {
             8192
         );
         assert!(model_entry(root.path(), &config, "openai", "missing").is_none());
+    }
+
+    #[test]
+    fn provider_metadata_takes_priority_without_inheriting_catalog_price() {
+        let root = data_root_with(
+            r#"{"ai_provider_models":{"gateway":[{"id":"model","metadata":{"name":"route","metadataSource":"provider","contextWindow":922000}}]}}"#,
+        );
+        std::fs::create_dir_all(root.path().join("catalogs")).unwrap();
+        std::fs::write(
+            root.path().join("catalogs/model-metadata.json"),
+            r#"{"providers":{"gateway":{"model":{"contextWindow":100000,"cost":{"input":10,"output":50}}}}}"#,
+        )
+        .unwrap();
+        let config = load(root.path()).unwrap();
+        let entry = model_entry(root.path(), &config, "gateway", "model").unwrap();
+        assert_eq!(entry["contextWindow"], 922000);
+        assert!(entry.get("cost").is_none());
     }
 
     #[test]

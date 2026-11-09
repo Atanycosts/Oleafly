@@ -24,6 +24,8 @@ export interface ResearchWorkspace {
   version: number;
   primaryProjectId: string;
   roots: LinkedResearchRoot[];
+  journalProjectId?: string;
+  journalResearch?: { taskId: string; worldVersionId: string; checkId?: string };
   updatedAtMs: number;
 }
 

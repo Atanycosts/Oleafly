@@ -6,6 +6,7 @@ import { logError } from "@/lib/log";
 import { useUpdatesStore } from "@/store/updates";
 
 const UPDATE_WINDOW_LABEL = "update";
+export const localWorkbenchBuild = import.meta.env.VITE_LOCAL_WORKBENCH === "1";
 
 // Talks to the GitHub Releases `latest.json` (configured in tauri.conf.json),
 // verifies the download's minisign signature against the embedded public
@@ -25,6 +26,7 @@ let checking: Promise<Update | null> | null = null;
 
 export async function findUpdate(): Promise<Update | null> {
   if (!isTauri()) return null;
+  if (localWorkbenchBuild) throw new Error(i18n.t(($) => $.shell.updateWindow.localBuildHelp));
   checking ??= check({ timeout: 15000 }).then((update) => update ?? null).finally(() => { checking = null; });
   return checking;
 }
@@ -106,7 +108,7 @@ export async function openUpdateWindow(opts: { manual?: boolean } = {}): Promise
 }
 
 export function checkForUpdatesOnStartup(): void {
-  if (import.meta.env.DEV || import.meta.env.VITE_E2E_HOOKS === "1") return;
+  if (localWorkbenchBuild || import.meta.env.DEV || import.meta.env.VITE_E2E_HOOKS === "1") return;
   void (async () => {
     const update = await runUpdateCheck();
     if (update) await openUpdateWindow();

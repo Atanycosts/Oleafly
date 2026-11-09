@@ -46,10 +46,7 @@ pub fn record_slug(title: &str, task_id: &str) -> String {
     format!("{slug}-{suffix}")
 }
 
-const HYPOTHESES_TEMPLATE: &str = "# Hypotheses\n\nOne line per idea: what you expect, why, and its status (queued, testing, kept, dropped).\n";
-const SOURCES_TEMPLATE: &str =
-    "# Sources\n\nEvery source you rely on, with what you read and a page anchor such as [p. 4].\n";
-const HANDOFF_TEMPLATE: &str = "# Handoff\n\nWhat was done, what is running, what comes next. Rewrite this after every result.\n";
+const HANDOFF_TEMPLATE: &str = "# Handoff\n\nCurrent goal, progress, verification, unfinished work and next action. Update at meaningful checkpoints and before stopping.\n";
 
 fn open_record(execution_root: &Path, slug: &str) -> Result<TaskFiles, String> {
     TaskFiles::open(execution_root, &[record_dir(slug)])
@@ -58,14 +55,7 @@ fn open_record(execution_root: &Path, slug: &str) -> Result<TaskFiles, String> {
 pub fn init_record(execution_root: &Path, slug: &str, brief_md: &str) -> Result<(), String> {
     let files = open_record(execution_root, slug)?;
     let dir = record_dir(slug);
-    let header = format!("{LEDGER_HEADER}\n");
-    for (name, content) in [
-        ("brief.md", brief_md),
-        ("ledger.tsv", header.as_str()),
-        ("hypotheses.md", HYPOTHESES_TEMPLATE),
-        ("sources.md", SOURCES_TEMPLATE),
-        ("handoff.md", HANDOFF_TEMPLATE),
-    ] {
+    for (name, content) in [("brief.md", brief_md), ("handoff.md", HANDOFF_TEMPLATE)] {
         let path = format!("{dir}/{name}");
         if !files.exists(&path)? {
             files.write(&path, content)?;
@@ -104,6 +94,9 @@ pub fn render_brief_markdown(title: &str, prompt: &str, brief: &ResearchBrief) -
             metric.name
         ));
     }
+    if let Some(effort) = brief.reasoning_effort {
+        out.push_str(&format!("\n## Reasoning effort\n\n{}\n", effort.as_str()));
+    }
     out
 }
 
@@ -132,6 +125,10 @@ fn parse_metrics(cell: &str) -> BTreeMap<String, f64> {
 }
 
 pub fn parse_ledger(text: &str) -> Vec<LedgerRow> {
+    parse_ledger_rows(text, MAX_LEDGER_ROWS)
+}
+
+fn parse_ledger_rows(text: &str, max_rows: usize) -> Vec<LedgerRow> {
     let mut lines = text.lines().map(|line| line.trim_end_matches('\r'));
     let Some(header) = lines.next() else {
         return Vec::new();
@@ -153,7 +150,7 @@ pub fn parse_ledger(text: &str) -> Vec<LedgerRow> {
         index("notes"),
     );
     let rows: Vec<&str> = lines.filter(|line| !line.trim().is_empty()).collect();
-    let skipped = rows.len().saturating_sub(MAX_LEDGER_ROWS);
+    let skipped = rows.len().saturating_sub(max_rows);
     rows.into_iter()
         .skip(skipped)
         .map(|line| {
@@ -246,6 +243,27 @@ pub fn parse_plan_checklist(markdown: &str) -> Vec<PlanItem> {
         .collect()
 }
 
+/// A missing ledger is a known empty basis; unreadable or oversized records
+/// remain errors so checkers cannot claim absence from a failed read.
+pub fn read_ledger(execution_root: &Path, slug: &str) -> Result<Vec<LedgerRow>, String> {
+    let files = open_record(execution_root, slug)?;
+    let path = format!("{}/ledger.tsv", record_dir(slug));
+    if !files.exists(&path)? {
+        return Ok(Vec::new());
+    }
+    let text = files.read(&path)?;
+    if !text.lines().next().is_some_and(|header| {
+        header
+            .split('\t')
+            .any(|column| column.trim().eq_ignore_ascii_case("id"))
+    }) {
+        return Err("The ledger has no id column.".into());
+    }
+    // Evidence checks need membership across this entire bounded file. The
+    // shorter UI/reasoning window must not manufacture an absent run.
+    Ok(parse_ledger_rows(&text, usize::MAX))
+}
+
 pub fn read_record_file(
     execution_root: &Path,
     slug: &str,
@@ -301,14 +319,32 @@ mod tests {
     }
 
     #[test]
-    fn init_record_writes_templates_once_and_keeps_existing_files() {
+    fn evidence_ledger_keeps_old_run_membership_and_reports_invalid_records() {
+        let root = tempfile::tempdir().unwrap();
+        let files = open_record(root.path(), "study-ab12").unwrap();
+        let path = "research/study-ab12/ledger.tsv";
+        let rows = (0..2100)
+            .map(|index| format!("r{index:04}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        files.write(path, &format!("id\n{rows}\n")).unwrap();
+        let ledger = read_ledger(root.path(), "study-ab12").unwrap();
+        assert_eq!(ledger.len(), 2100);
+        assert_eq!(ledger[0].id, "r0000");
+        files.write(path, "metrics\nloss=0.5\n").unwrap();
+        assert!(read_ledger(root.path(), "study-ab12").is_err());
+    }
+
+    #[test]
+    fn init_record_creates_only_recovery_files_and_keeps_existing_records() {
         let root = workspace();
         init_record(root.path(), "study-ab12", "# Brief\n").unwrap();
-        let ledger =
-            std::fs::read_to_string(root.path().join("research/study-ab12/ledger.tsv")).unwrap();
-        assert!(ledger.starts_with(LEDGER_HEADER));
         let handoff = root.path().join("research/study-ab12/handoff.md");
         std::fs::write(&handoff, "next: r003").unwrap();
+        let ledger = root.path().join("research/study-ab12/ledger.tsv");
+        assert!(!ledger.exists());
+        assert_eq!(ledger_tail(root.path(), "study-ab12", 5), "");
+        std::fs::write(&ledger, format!("{LEDGER_HEADER}\nr001\n")).unwrap();
         init_record(root.path(), "study-ab12", "# Changed brief\n").unwrap();
         assert_eq!(std::fs::read_to_string(&handoff).unwrap(), "next: r003");
         assert_eq!(
@@ -316,6 +352,15 @@ mod tests {
             "# Brief\n"
         );
         assert!(!root.path().join("research/study-ab12/plan.md").exists());
+        assert!(!root
+            .path()
+            .join("research/study-ab12/hypotheses.md")
+            .exists());
+        assert!(!root.path().join("research/study-ab12/sources.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(&ledger).unwrap(),
+            format!("{LEDGER_HEADER}\nr001\n")
+        );
     }
 
     #[cfg(unix)]

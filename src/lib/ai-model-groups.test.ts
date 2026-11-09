@@ -67,6 +67,19 @@ describe("configured model groups", () => {
     ]);
   });
 
+  it("keeps provider-reported route labels even for catalog models", () => {
+    const [model] = getProvider("openai")?.models ?? [];
+    const groups = configuredModelGroups(
+      source({
+        keys: { openai: "sk" },
+        providerModels: {
+          openai: [stored(model.id, true, { name: "Gateway route", metadata: { name: "Gateway route", metadataSource: "provider" } })],
+        },
+      }),
+    );
+    expect(groups[0].models).toEqual([{ id: model.id, name: "Gateway route" }]);
+  });
+
   it("an empty stored list leaves a provider without models; dropEmpty false keeps the group", () => {
     const empty = source({ keys: { openai: "sk" }, providerModels: { openai: [] } });
     expect(configuredModelGroups(empty).find((group) => group.id === "openai")).toBeUndefined();
@@ -133,7 +146,7 @@ describe("configured model groups", () => {
       }),
       {
         toModel: (providerId, model) => ({ id: model.id, name: `${providerId}:${model.name}`, metadata: model.metadata }),
-        include: (_providerId, model) => model.metadata?.inputModalities.includes("image") === true,
+        include: (_providerId, model) => model.metadata?.inputModalities?.includes("image") === true,
       },
     );
     expect(groups).toEqual([{ id: "openai", name: "OpenAI", models: [{ id: "sees", name: "openai:SEES", metadata }] }]);

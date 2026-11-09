@@ -33,7 +33,7 @@ describe("missing translations", () => {
 });
 
 describe("cached preference without storage", () => {
-  it("falls back to the system preference and ignores failed writes", async () => {
+  it("uses the Chinese default and ignores failed writes", async () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("blocked");
     });
@@ -41,7 +41,7 @@ describe("cached preference without storage", () => {
       throw new Error("blocked");
     });
     const { cachePreference, readCachedPreference } = await import("./index");
-    expect(readCachedPreference()).toBe("system");
+    expect(readCachedPreference()).toBe("zh-Hans");
     expect(() => cachePreference("zh-Hans")).not.toThrow();
   });
 });

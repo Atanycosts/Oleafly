@@ -5,8 +5,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   findUpdate: vi.fn(), installUpdate: vi.fn(), close: vi.fn(), invoke: vi.fn(),
   open: vi.fn(), celebrate: vi.fn(), logError: vi.fn(), setTitle: vi.fn(),
+  localBuild: false,
 }));
-vi.mock("@/lib/updater", () => ({ findUpdate: mocks.findUpdate, installUpdate: mocks.installUpdate }));
+vi.mock("@/lib/updater", () => ({ findUpdate: mocks.findUpdate, installUpdate: mocks.installUpdate, get localWorkbenchBuild() { return mocks.localBuild; } }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ close: mocks.close, setTitle: mocks.setTitle }),
 }));
@@ -23,6 +24,7 @@ import enErrors from "@/i18n/locales/en/errors.json" with { type: "json" };
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.localBuild = false;
   clearReleasePageCache();
   window.history.replaceState({}, "", "/?manual=1");
   mocks.invoke.mockImplementation(async (command: string) => (command === "release_notes_page" ? [] : true));
@@ -32,6 +34,14 @@ beforeEach(() => {
   mocks.logError.mockResolvedValue(undefined);
 });
 afterEach(() => { cleanup(); window.history.replaceState({}, "", "/"); });
+
+it("explains local Workbench updates without contacting the official updater", async () => {
+  mocks.localBuild = true;
+  render(<UpdateWindow />);
+  expect(await screen.findByText(enShell.updateWindow.localBuildHelp)).toBeInTheDocument();
+  expect(mocks.findUpdate).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: enShell.updateChecker.updateNow })).not.toBeInTheDocument();
+});
 
 it("keeps installation single-flight and restores close controls after failure", async () => {
   let fail!: (error: Error) => void;

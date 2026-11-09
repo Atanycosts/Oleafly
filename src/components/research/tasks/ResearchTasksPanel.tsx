@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
+import type { EffortLevel } from "@oleafly/ai-core";
 import { AlertCircle, Link2, Plus, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +38,7 @@ export interface ResearchTaskAgentOption {
   label: string;
   agentName?: string;
   modelLabel?: string;
+  effortChoices?: readonly EffortLevel[];
   available?: boolean;
   unavailableReason?: string;
 }

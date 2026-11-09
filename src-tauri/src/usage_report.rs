@@ -1711,13 +1711,24 @@ mod tests {
         unpriced.estimated_cost_usd = None;
         unpriced.price_version = None;
         record_usage_observation(root.path(), &unpriced).unwrap();
+        let mut gateway = event("gateway", "gateway", Some(15));
+        gateway.session_id = "gateway-session".into();
+        gateway.provider_id = Some("gateway".into());
+        gateway.billing_mode =
+            crate::ai_model_metadata::classify_billing("gateway", "http://127.0.0.1:3425/v1")
+                .as_str()
+                .into();
+        gateway.estimated_cost_usd = None;
+        gateway.price_version = None;
+        assert!(!apply_model_metadata_cost(&snapshot, &mut gateway));
+        record_usage_observation(root.path(), &gateway).unwrap();
 
         let result = report(root.path());
-        assert_eq!(result.totals.input_total, 140);
+        assert_eq!(result.totals.input_total, 155);
         assert_eq!(result.totals.estimated_cost_usd, 0.0);
         assert_eq!(result.totals.cost_known_records, 0);
         assert_eq!(result.totals.plan_records, 2);
-        assert_eq!(result.totals.unpriced_records, 1);
+        assert_eq!(result.totals.unpriced_records, 2);
         let plan_row = result
             .sessions
             .items
