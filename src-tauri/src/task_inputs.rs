@@ -1,7 +1,12 @@
 //! Captured application inputs, retained beside the task store rather than in agent workspaces.
+pub mod pdf;
+
 use oleafly_research::{
-    model::{ResearchTaskDraft, ResearchTaskView, TaskRunContext},
+    annotations::{Annotation, AnnotationDraft},
+    model::{ResearchTaskDraft, ResearchTaskEdit, ResearchTaskView, TaskRunContext},
     observations::content_hash,
+    scheduler::ResearchTaskState,
+    store::TaskStore,
     task_tools::TaskFiles,
 };
 use serde::{Deserialize, Serialize};
@@ -35,6 +40,8 @@ pub struct AssistantDelegation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JournalInput {
     pub library_root: String,
+    #[serde(default)]
+    pub manuscript_id: Option<String>,
     pub world_version_id: String,
     pub check_id: Option<String>,
     pub baseline_id: String,
@@ -48,6 +55,8 @@ struct Inputs {
     journal_input: Option<JournalInput>,
     #[serde(default)]
     compile_manifest: Option<oleafly_core::ProjectManifest>,
+    #[serde(default)]
+    pdf_selection: Option<pdf::RetainedPdfSelection>,
     #[serde(default)]
     prepared_workspaces: Vec<String>,
 }
@@ -113,7 +122,10 @@ pub(crate) fn main_document(tasks_root: &Path, task_id: &str) -> Result<Option<S
         Err(error) => return Err(error.to_string()),
     };
     let inputs: Inputs = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    Ok(inputs.delegation.map(|delegation| delegation.main_document))
+    Ok(inputs
+        .delegation
+        .map(|delegation| delegation.main_document)
+        .or_else(|| inputs.pdf_selection.map(|pdf| pdf.input.main_document)))
 }
 pub(crate) fn compile_manifest(
     tasks_root: &Path,
@@ -127,6 +139,32 @@ pub(crate) fn compile_manifest(
     let inputs: Inputs = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     Ok(inputs.compile_manifest)
 }
+
+pub(crate) fn journal_input(
+    tasks_root: &Path,
+    task_id: &str,
+) -> Result<Option<JournalInput>, String> {
+    let bytes = match std::fs::read(input_path(tasks_root, task_id)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let inputs: Inputs = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let Some(mut input) = inputs.journal_input else {
+        return Ok(None);
+    };
+    if content_hash(&serde_json::to_vec(&input.snapshot).map_err(|e| e.to_string())?)
+        != input.snapshot_sha256
+    {
+        return Err("Retained journal snapshot hash mismatch.".into());
+    }
+    if input.manuscript_id.is_none() {
+        input.manuscript_id = input.snapshot["baseline"]["project"]["project_id"]
+            .as_str()
+            .map(str::to_owned);
+    }
+    Ok(Some(input))
+}
 fn save(path: &Path, inputs: &Inputs) -> Result<(), String> {
     std::fs::create_dir_all(path.parent().expect("task inputs directory"))
         .map_err(|e| e.to_string())?;
@@ -134,6 +172,124 @@ fn save(path: &Path, inputs: &Inputs) -> Result<(), String> {
         path,
         &serde_json::to_vec_pretty(inputs).map_err(|e| e.to_string())?,
     )
+}
+fn project_manifest(
+    project_id: &str,
+    main_document: Option<&str>,
+) -> Result<oleafly_core::ProjectManifest, String> {
+    let mut manifest: oleafly_core::ProjectManifest = serde_json::from_value(
+        serde_json::to_value(crate::project::read_meta(project_id)?).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(main_document) = main_document {
+        manifest.main_doc = main_document.into();
+    }
+    manifest.validate().map_err(|e| e.to_string())?;
+    Ok(manifest)
+}
+
+pub(crate) fn rollback_input(store: &TaskStore, task: &str) -> Result<(), String> {
+    store.rollback_unstarted_task(task)?;
+    let mut errors = Vec::new();
+    if let Err(error) = std::fs::remove_file(input_path(store.root(), task)) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            errors.push(format!("task input: {error}"));
+        }
+    }
+    let artifacts = store.root().join("compiled-artifacts").join(task);
+    if let Err(error) = std::fs::remove_dir_all(artifacts.join("0")) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            errors.push(format!("task PDF input: {error}"));
+        }
+    }
+    if let Err(error) = std::fs::remove_dir(&artifacts) {
+        if !matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+        ) {
+            errors.push(format!("task input directory: {error}"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// Initialize the captured domain input and current annotation before exposing
+/// a runnable task. Starting remains an explicit application action.
+pub(crate) async fn create_journal_task(
+    state: &ResearchTaskState,
+    mut draft: ResearchTaskDraft,
+    input: JournalInput,
+    mut annotation: AnnotationDraft,
+) -> Result<(Annotation, ResearchTaskView), String> {
+    if !state.enabled() {
+        return Err(crate::research_tasks::TASKS_OFF.into());
+    }
+    if annotation.target.project_id != draft.project_id
+        || annotation.target.task_id.is_some()
+        || !annotation.explicit_request
+    {
+        return Err("The journal request must belong to this project and a new task.".into());
+    }
+    if content_hash(&serde_json::to_vec(&input.snapshot).map_err(|e| e.to_string())?)
+        != input.snapshot_sha256
+    {
+        return Err("Journal snapshot hash mismatch.".into());
+    }
+    let compile_manifest = project_manifest(&draft.project_id, None)?;
+    let run_after = draft.run_after.take();
+    let state = state.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = state.store()?;
+        let task = state.create_pending_inputs(draft)?;
+        let initialized = (|| {
+            save(
+                &input_path(store.root(), &task.id),
+                &Inputs {
+                    journal_input: Some(input),
+                    compile_manifest: Some(compile_manifest),
+                    ..Default::default()
+                },
+            )?;
+            annotation.target.task_id = Some(task.id.clone());
+            let annotation = store.submit_task_annotation(&annotation)?;
+            let prompt = format!(
+                "{}\n\nCurrent journal request: {}. Read the retained historical source and current comment through annotation_context. This task's captured input is {}/journal-context.json; discover journal_ tools if needed, then use journal_context for current Workbench state and journal_read for retained evidence. Workbench checks concern their selected DOCX, not this task's LaTeX. Use existing editing, compile and PDF tools when this request requires task-copy changes, and link concrete results with annotation_handle.",
+                task.prompt, annotation.id, task.record_dir()
+            );
+            let completed = store.complete_input_initialization(
+                &task.id,
+                ResearchTaskEdit {
+                    title: task.title.clone(),
+                    prompt,
+                    runtime_id: task.runtime_id.clone(),
+                    agent_id: task.agent_id.clone(),
+                    model_id: task.model_id.clone(),
+                    skill_ids: task.skill_ids.clone(),
+                    dependency_ids: task.dependency_ids.clone(),
+                    brief: Some(task.brief.clone()),
+                    run_after,
+                    keep_running_after_quit: task.keep_running_after_quit,
+                },
+            )?;
+            state.emit_task(&completed);
+            Ok((annotation, (&completed).into()))
+        })();
+        match initialized {
+            Ok(result) => Ok(result),
+            Err(error) => match rollback_input(&store, &task.id) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!(
+                    "{error}\nCould not finish initialization rollback: {cleanup}"
+                )),
+            },
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub async fn research_task_create_with_inputs(
@@ -152,15 +308,12 @@ pub async fn research_task_create_with_inputs(
             return Err("Journal snapshot hash mismatch.".into());
         }
     }
-    let mut compile_manifest: oleafly_core::ProjectManifest = serde_json::from_value(
-        serde_json::to_value(crate::project::read_meta(&draft.project_id)?)
-            .map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    if let Some(input) = &delegation {
-        compile_manifest.main_doc.clone_from(&input.main_document);
-    }
-    compile_manifest.validate().map_err(|e| e.to_string())?;
+    let compile_manifest = project_manifest(
+        &draft.project_id,
+        delegation
+            .as_ref()
+            .map(|input| input.main_document.as_str()),
+    )?;
     let store = state.store()?;
     let task = crate::research_tasks::research_task_create(state, draft).await?;
     save(
@@ -169,6 +322,7 @@ pub async fn research_task_create_with_inputs(
             delegation,
             journal_input,
             compile_manifest: Some(compile_manifest),
+            pdf_selection: None,
             prepared_workspaces: vec![],
         },
     )?;
@@ -217,6 +371,18 @@ fn prepare_in(root: &Path, context: &TaskRunContext) -> Result<(), String> {
         }
         files.write(
             &format!("{}/journal-context.json", context.record_dir),
+            &serde_json::to_string_pretty(input).map_err(|e| e.to_string())?,
+        )?;
+    }
+    if let Some(input) = &inputs.pdf_selection {
+        oleafly_research::compiled_artifacts::read_for_task(
+            root,
+            &context.task_id,
+            context.execution_generation,
+            &input.reference,
+        )?;
+        files.write(
+            &format!("{}/pdf-selection.json", context.record_dir),
             &serde_json::to_string_pretty(input).map_err(|e| e.to_string())?,
         )?;
     }
@@ -373,6 +539,7 @@ mod tests {
             let snapshot = serde_json::json!({"world": {"id": world}, "review": {}, "check": null, "baseline": {"id": "baseline"}});
             let input = JournalInput {
                 library_root: "/selected/library".into(),
+                manuscript_id: None,
                 world_version_id: world.into(),
                 check_id: None,
                 baseline_id: "baseline".into(),

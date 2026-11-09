@@ -268,6 +268,11 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     "Research task recovery failed: {error}"
                 ));
             }
+            if let Err(error) = journal_workbench::resume(&handle).await {
+                let _ = crate::project::append_app_log(format!(
+                    "Workbench task reconnection remains pending: {error}"
+                ));
+            }
         });
     }
     crate::stall_trace::mark_ui_thread();
@@ -524,6 +529,9 @@ pub fn run() {
             journal_workbench::journal_workbench_link,
             journal_workbench::journal_research_create,
             journal_workbench::journal_research_result,
+            journal_workbench::annotations::journal_annotation_object,
+            journal_workbench::annotations::journal_annotation_save,
+            journal_workbench::annotations::journal_annotation_request,
             ad_hoc_conversion::convert_ad_hoc,
             typst_render::render_typst_snippet,
             typst_query::typst_document_insights,
@@ -533,12 +541,18 @@ pub fn run() {
             research_tasks::research_task_list,
             research_tasks::research_task_create,
             task_inputs::research_task_create_with_inputs,
+            task_inputs::pdf::research_pdf_selection_save,
+            task_inputs::pdf::research_pdf_selection_read,
+            task_inputs::pdf::research_pdf_selections,
+            task_inputs::pdf::research_task_create_from_pdf_selection,
+            task_inputs::pdf::research_task_pdf_selection,
             research_tasks::research_task_edit,
             research_tasks::research_task_start,
             research_tasks::research_task_cancel,
             research_tasks::research_task_retry,
             research_tasks::research_task_events,
             research_tasks::research_task_observations,
+            research_tasks::research_task_observation_call,
             research_tasks::research_task_findings,
             research_tasks::research_task_finding_decide,
             research_tasks::research_task_finding_source,

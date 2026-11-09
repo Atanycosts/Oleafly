@@ -7,7 +7,7 @@ import { listTaskCompiledPdfs, readTaskCompiledPdf, type TaskCompiledArtifact } 
 import { Button } from "@/components/ui/button";
 import { CopyableBlock } from "@/components/ui/copyable-block";
 
-export function TaskCompiledPdfs({ taskId, generation, status }: { taskId: string; generation: number; status: string }) {
+export function TaskCompiledPdfs({ taskId, generation, status, reference }: { taskId: string; generation: number; status: string; reference?: TaskCompiledArtifact }) {
   const { t } = useTranslation(["researchTools"]);
   const [artifacts, setArtifacts] = useState<TaskCompiledArtifact[]>([]);
   const [selected, setSelected] = useState<TaskCompiledArtifact | null>(null);
@@ -23,13 +23,14 @@ export function TaskCompiledPdfs({ taskId, generation, status }: { taskId: strin
   };
   useEffect(() => {
     let active = true;
-    setArtifacts([]); setSelected(null); setBytes(null); setText(null); setImage(null); setError(null);
+    setArtifacts(reference ? [reference] : []); setSelected(reference ?? null); setBytes(null); setText(null); setImage(null); setError(null);
+    if (reference) return;
     if (status === "queued") return;
     void listTaskCompiledPdfs(taskId, generation)
       .then((rows) => { if (active) setArtifacts(rows); })
       .catch((cause) => { if (active) setError(String(cause)); });
     return () => { active = false; };
-  }, [taskId, generation, status]);
+  }, [taskId, generation, status, reference]);
   useEffect(() => {
     let active = true;
     setBytes(null); setText(null); setImage(null);

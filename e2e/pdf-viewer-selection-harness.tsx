@@ -1,8 +1,8 @@
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import "/packages/preview/src/polyfills";
-import { PdfViewer } from "/packages/preview/src/PdfViewer";
+import { PdfViewer, type PdfViewerHandle, type PdfTextSelection } from "/packages/preview/src/PdfViewer";
 import { prepareHarnessI18n } from "./harness-i18n";
 import "/src/styles/globals.css";
 
@@ -37,7 +37,13 @@ async function makeSelectionFixture(): Promise<Uint8Array> {
   return document.save({ useObjectStreams: false });
 }
 
+declare global {
+  interface Window { readPdfSelection: () => PdfTextSelection | null; }
+}
+
 function Harness({ bytes }: { bytes: Uint8Array }) {
+  const viewer = useRef<PdfViewerHandle>(null);
+  useEffect(() => { window.readPdfSelection = () => viewer.current?.getTextSelection() ?? null; }, []);
   return (
     <main
       id="pdf-viewport"
@@ -49,7 +55,7 @@ function Harness({ bytes }: { bytes: Uint8Array }) {
         background: "#e7e7e7",
       }}
     >
-      <PdfViewer data={bytes} scale={1} expectText />
+      <PdfViewer ref={viewer} documentIdentity="selection-fixture" data={bytes} scale={1} expectText />
     </main>
   );
 }

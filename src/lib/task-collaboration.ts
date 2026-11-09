@@ -9,6 +9,15 @@ export interface AnnotationTarget {
   path: string | null;
 }
 
+export interface AnnotationSourceDraft {
+  kind: string;
+  content: string;
+}
+
+export interface AnnotationSource extends AnnotationSourceDraft {
+  sha256: string;
+}
+
 export interface AnnotationAuthor {
   kind: "user" | "member" | "model" | "system";
   id: string;
@@ -19,6 +28,7 @@ export interface TaskAnnotation {
   target: AnnotationTarget;
   author: AnnotationAuthor;
   body: string;
+  source?: AnnotationSource | null;
   parentId: string | null;
   mentions: string[];
   explicitRequest: boolean;
@@ -75,7 +85,7 @@ export interface Distillation {
 
 export interface AnnotationContext {
   annotations: TaskAnnotation[];
-  deliveries: { annotationId: string; deliveredGeneration: number | null; deliveredAt: number | null }[];
+  deliveries: { annotationId: string; preparedGeneration: number | null; preparedAt: number | null; deliveredGeneration: number | null; deliveredAt: number | null }[];
   requirements: EnduringRequirement[];
   handlings: AnnotationHandling[];
   distillations: Distillation[];
@@ -84,6 +94,7 @@ export interface AnnotationContext {
 export interface TaskAnnotationDraft {
   target: AnnotationTarget;
   body: string;
+  source?: AnnotationSourceDraft;
   parentId: string | null;
   mentions: string[];
   explicitRequest: boolean;
@@ -161,6 +172,13 @@ export interface GroupMessage extends MessageDraft {
   createdAt: number;
 }
 
+export interface WorkReason {
+  kind: string;
+  object?: GroupObject;
+  sourceId?: string;
+  executionId?: string;
+}
+
 export interface GroupWork {
   id: string;
   groupId: string;
@@ -171,8 +189,28 @@ export interface GroupWork {
   status: "pending" | "running" | "waiting" | "completed" | "failed";
   executionId: string | null;
   resultMessageId: string | null;
+  reasons?: WorkReason[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface MemberAttention {
+  memberId: string;
+  object: GroupObject;
+  relation: "read" | "wrote" | "handled";
+  sourceId: string;
+  executionId: string | null;
+  updatedAt: number;
+}
+
+export interface GroupEvent {
+  id: string;
+  groupId: string;
+  kind: string;
+  object: GroupObject;
+  author: GroupActor;
+  detail: string;
+  createdAt: number;
 }
 
 export interface MemberExecution {
@@ -196,9 +234,11 @@ export interface GroupSnapshot {
   group: TaskGroup;
   members: GroupMember[];
   interests: MemberInterest[];
+  attentions?: MemberAttention[];
   messages: GroupMessage[];
   work: GroupWork[];
   executions: MemberExecution[];
+  events?: GroupEvent[];
   nextSequence: number;
 }
 

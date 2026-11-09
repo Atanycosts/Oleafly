@@ -29,7 +29,7 @@ export function ChatAnnotationsDialog({ open, onOpenChange, target, source, onOp
               </blockquote>
             </CopyableBlock>
           ) : null}
-          <TaskAnnotations contextScope="object" objectTarget={target} onOpenTarget={onOpenTarget} onSaved={onSaved} />
+          <TaskAnnotations contextScope="object" objectTarget={target} source={source ? { kind: `chat_message:${source.role}`, content: source.content } : undefined} onOpenTarget={onOpenTarget} onSaved={onSaved} />
         </div>
       </DialogContent>
     </Dialog>

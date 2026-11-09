@@ -1,6 +1,6 @@
 import type { ResearchTask, TaskCompiledArtifact } from "../../src/lib/research-tasks";
 import { test, expect } from "../fixtures";
-import { createBlankProject } from "../helpers";
+import { createBlankProject, openRailTab } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 
@@ -15,7 +15,7 @@ function compileReference(request: Record<string, unknown>): TaskCompiledArtifac
 }
 
 // Scripted model sequencing verifies application delivery, not visual reasoning quality.
-test("native task PDF pages reach the next model request as user image parts", async ({ tauriPage: page }) => {
+test("native task retains read source through edits and delivers compiled PDF pages", async ({ tauriPage: page }) => {
   test.setTimeout(240_000);
   const server = await startMockAiServer();
   let usedReference: TaskCompiledArtifact | undefined;
@@ -26,8 +26,11 @@ test("native task PDF pages reach the next model request as user image parts", a
     await page.evaluate(`window.__researchTasksSet?.(true)`);
     const projectId = await page.evaluate<string>(`document.querySelector('[data-e2e-project-id]')?.getAttribute('data-e2e-project-id') ?? ''`);
     const original = await page.evaluate<string>(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m => m.readFileContent(${scriptValue(projectId)}, 'main.tex'))`);
-    const revised = original.replace("\\end{document}", "\\par RetainedPageImageEvidence\n\\end{document}");
+    const archivedSource = original.replace("\\end{document}", "\\par ARCHIVED_SOURCE_SENTINEL\n\\end{document}");
+    await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m => m.writeFileContent(${scriptValue(projectId)}, 'main.tex', ${scriptValue(archivedSource)}))`);
+    const revised = archivedSource.replace("ARCHIVED_SOURCE_SENTINEL", "RetainedPageImageEvidence");
     server.setToolSequence([
+      { name: "read_file", args: { path: "main.tex" } },
       { name: "write_file", args: { path: "main.tex", content: revised } },
       { name: "compile", args: {} },
       { name: "discover_tools", args: { query: "task_pdf_pages" } },
@@ -51,6 +54,16 @@ test("native task PDF pages reach the next model request as user image parts", a
     const pageCall = nextRequest!.messages.find(message => message.role === "tool" && typeof message.content === "string" && message.content.includes('"pages":[1]'));
     expect(pageCall).toBeDefined();
     expect(JSON.parse(pageCall!.content as string).artifact).toEqual(usedReference);
-    expect(await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m => m.readFileContent(${scriptValue(projectId)}, 'main.tex'))`)).toBe(original);
+    expect(await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m => m.readFileContent(${scriptValue(projectId)}, 'main.tex'))`)).toBe(archivedSource);
+
+    await openRailTab(page, "Research workspace");
+    await page.evaluate(`window.__oleaflyE2EImport('/src/store/research-tasks.ts').then(async m => { await m.useResearchTasksStore.getState().bindProject(${scriptValue(projectId)}); m.useResearchTasksStore.getState().receiveTask(${scriptValue(task)}); m.useResearchTasksStore.getState().openTaskDetail(${scriptValue(task.id)}, 'activity'); })`);
+    const detail = page.locator('[data-testid="research-task-detail"]');
+    await expect(detail).toBeVisible();
+    await detail.getByText("Observation records and source locators").click();
+    await detail.getByText("Read recorded source range", { exact: true }).click();
+    const retainedSource = detail.locator('[data-testid="task-observations"] ol pre');
+    await expect(retainedSource).toContainText("\\par ARCHIVED_SOURCE_SENTINEL");
+    await expect(retainedSource).not.toContainText("\\par RetainedPageImageEvidence");
   } finally { await server.close(); }
 });

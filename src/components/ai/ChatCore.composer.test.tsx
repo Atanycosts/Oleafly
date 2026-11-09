@@ -1942,8 +1942,9 @@ describe("ChatCore retained annotations", () => {
     expect(mocks.runs).toHaveLength(0);
     await act(async () => dialog.onSaved?.(savedAnnotation(dialog, true)));
     await waitFor(() => expect(mocks.runs).toHaveLength(1));
-    expect(lastUserContent(0)).toContain("Address retained annotation annotation-real");
-    expect(lastUserContent(0)).toContain("Revisit the original decision.\nUse its retained evidence.");
+    expect(lastUserContent(0)).toContain("Handle explicitly requested retained annotation annotation-real");
+    expect(lastUserContent(0)).toContain("annotation_context");
+    expect(lastUserContent(0)).not.toContain("Revisit the original decision.");
     expect(JSON.stringify(mocks.runs[0].options.messages)).not.toContain("Private unsent attachment");
     expect(savedMessages().find((message) => message.role === "user")?.attachments).toBeUndefined();
     expect(composerBox()).toHaveValue("My unsent draft");
@@ -1962,12 +1963,13 @@ describe("ChatCore retained annotations", () => {
     await act(async () => dialog.onSaved?.(savedAnnotation(dialog, true)));
 
     await waitFor(() => expect(mocks.agentSteer).toHaveBeenCalledWith("request-1", {
-      role: "user", content: [{ type: "text", text: expect.stringContaining("Address retained annotation annotation-real") }],
+      role: "user", content: [{ type: "text", text: expect.stringContaining("Handle explicitly requested retained annotation annotation-real") }],
     }));
     const queued = useAgentTurnsStore.getState().queuedByChat["chat-1"];
     expect(queued).toHaveLength(1);
     expect(queued[0]).toMatchObject({ status: "steered", attachments: [] });
-    expect(queued[0].text).toContain("Revisit the original decision.\nUse its retained evidence.");
+    expect(queued[0].text).toContain("annotation_context");
+    expect(queued[0].text).not.toContain("Revisit the original decision.");
     expect(mocks.runs).toHaveLength(1);
     await completeRun(0, "Handled within the current run.");
     expect(mocks.runs).toHaveLength(1);

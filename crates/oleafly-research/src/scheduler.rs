@@ -468,6 +468,18 @@ impl ResearchTaskState {
     }
 
     pub fn create(&self, draft: ResearchTaskDraft) -> Result<ResearchTask, String> {
+        self.create_with_inputs(draft, false)
+    }
+
+    pub fn create_pending_inputs(&self, draft: ResearchTaskDraft) -> Result<ResearchTask, String> {
+        self.create_with_inputs(draft, true)
+    }
+
+    fn create_with_inputs(
+        &self,
+        draft: ResearchTaskDraft,
+        pending_inputs: bool,
+    ) -> Result<ResearchTask, String> {
         let host = self.host()?;
         host.admit_project(&draft.project_id)?;
         if !draft.skill_ids.is_empty() {
@@ -478,7 +490,12 @@ impl ResearchTaskState {
         if let Some(brief) = &draft.brief {
             self.check_compute(&brief.compute)?;
         }
-        let task = self.store()?.create(draft)?;
+        let store = self.store()?;
+        let task = if pending_inputs {
+            store.create_pending_inputs(draft)?
+        } else {
+            store.create(draft)?
+        };
         self.emit_task(&task);
         Ok(task)
     }
@@ -871,7 +888,11 @@ impl ResearchTaskState {
                 self.wake_at_next_start(&store);
                 return Ok(());
             };
-            let adapter = match self.runtime_for(&task.runtime_id, &task.agent_id) {
+            // Claim the automatic attempt even if runtime validation fails.
+            let adapter = match store
+                .prepare_task_annotations(&task.id, task.execution_generation)
+                .and_then(|_| self.runtime_for(&task.runtime_id, &task.agent_id))
+            {
                 Ok(adapter) => adapter,
                 Err(error) => {
                     store.finish_failure(&task.id, task.execution_generation, &error)?;
@@ -1411,6 +1432,7 @@ impl ResearchTaskState {
             execution_root: isolation.execution_root.clone(),
             title: task.title.clone(),
             prompt: task.prompt.clone(),
+            annotations: Vec::new(),
             runtime_id: task.runtime_id.clone(),
             agent_id: task.agent_id.clone(),
             model_id: task.model_id.clone(),
@@ -1436,16 +1458,10 @@ impl ResearchTaskState {
         // ACP receives these at its supported prompt boundary; built-in execution
         // also refreshes newly arriving requests before every provider call.
         if task.runtime_id != "builtin" {
-            match store.pending_task_annotations(&task.id, generation, true) {
-                Ok(annotations) if !annotations.is_empty() => {
-                    context.prompt.push_str("\n\nNew retained requests on earlier work. Read their sources, handle them with concrete results, and use annotation_handle/annotation_distill when relevant:\n");
-                    context.prompt.push_str(
-                        &serde_json::to_string(&annotations).expect("annotations serialize"),
-                    );
-                }
-                Ok(_) => {}
+            context.annotations = match store.prepare_task_annotations(&task.id, generation) {
+                Ok(annotations) => annotations,
                 Err(error) => return RunEnd::Finished(Err(error)),
-            }
+            };
         }
         let _ = store.clear_pending_start(&task.id, generation);
         self.set_phase(
@@ -1776,17 +1792,42 @@ impl ResearchTaskState {
         changes: &[TaskFileChange],
         previous: &[TaskFileChange],
     ) -> Result<(), String> {
-        let actor = GroupActor {
-            kind: ActorKind::System,
-            id: "workspace-observer".into(),
-            execution_id: None,
-        };
         for change in changes.iter().filter(|change| !previous.contains(change)) {
             let revision = change
                 .after_sha256
                 .clone()
                 .unwrap_or_else(|| "deleted".into());
-            store.record_group_event(&turn.group.project_id,&turn.group.id,&format!("file:{}:{revision}",change.path),"file_changed",&GroupObject {kind:"file".into(),id:change.path.clone(),revision:Some(revision),path:Some(change.path.clone())},&actor,"The task workspace changed; inspect this revision if it affects your responsibility.")?;
+            store.record_group_file_change(
+                &turn.group.project_id,
+                &turn.group.id,
+                &GroupObject {
+                    kind: "file".into(),
+                    id: change.path.clone(),
+                    revision: Some(revision),
+                    path: Some(change.path.clone()),
+                },
+            )?;
+        }
+        // A restoration of the task baseline disappears from collect_review_changes.
+        // It is still a real transition from the last observed modified/deleted state.
+        for change in previous
+            .iter()
+            .filter(|old| !changes.iter().any(|current| current.path == old.path))
+        {
+            let revision = change
+                .before_sha256
+                .clone()
+                .unwrap_or_else(|| "deleted".into());
+            store.record_group_file_change(
+                &turn.group.project_id,
+                &turn.group.id,
+                &GroupObject {
+                    kind: "file".into(),
+                    id: change.path.clone(),
+                    revision: Some(revision),
+                    path: Some(change.path.clone()),
+                },
+            )?;
         }
         Ok(())
     }

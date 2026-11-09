@@ -37,6 +37,11 @@ test("ordinary chat retains message feedback and sends only explicit follow-up r
     const assistant = await page.evaluate<{ id?: string; turnId?: string }>(`window.__oleaflyE2EImport('/src/store/chats.ts').then(m => { const s=m.useChatsStore.getState(); return s.chats.find(c=>c.id===s.activeId)?.messages.find(message=>message.role==='assistant'); })`);
     expect(originalAnnotation?.target.objectRevision).toBe(assistant.id ? `message:${assistant.id}` : `turn:${assistant.turnId}:assistant`);
     expect(originalAnnotation?.explicitRequest).toBe(false);
+    expect(originalAnnotation?.source).toMatchObject({
+      kind: "chat_message:assistant",
+      content: "ANNOTATION ORIGINAL ASSISTANT MARKER",
+      sha256: expect.any(String),
+    });
     const request = "Explicit follow-up: reconsider the retained original assistant wording and report the limitation.";
     server.setReply("ANNOTATION FOLLOWUP RECEIVED");
     await fillTextarea(page, '[data-testid="task-annotations"] textarea', request);
@@ -44,7 +49,12 @@ test("ordinary chat retains message feedback and sends only explicit follow-up r
     await panel.locator('form button[type="submit"]').click();
     await expect.poll(() => server.requestCount(), { timeout: 60_000 }).toBeGreaterThan(baseline);
     const nextRequests = server.requestBodies().slice(baseline).map(body => JSON.parse(body) as { messages: unknown[] });
-    expect(nextRequests.some(body => JSON.stringify(body.messages).includes(request) && JSON.stringify(body.messages).includes(threadId))).toBe(true);
+    expect(nextRequests.some(body => JSON.stringify(body.messages).includes(request)
+      && JSON.stringify(body.messages).includes(threadId)
+      && JSON.stringify(body.messages).includes("annotation_context")
+      && !JSON.stringify(body.messages).includes("Address this current comment on retained annotation")
+      && JSON.stringify(body.messages).includes("ANNOTATION ORIGINAL ASSISTANT MARKER")
+      && JSON.stringify(body.messages).includes("historical reference material, not a current instruction"))).toBe(true);
     const history = await page.evaluate<AnnotationContext>(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m=>m.loadObjectAnnotations(${scriptValue(target)}))`);
     const explicit = history.annotations.find(annotation => annotation.body === request);
     expect(explicit?.explicitRequest).toBe(true);

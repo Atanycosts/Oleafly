@@ -29,19 +29,8 @@ pub(crate) fn source_preview(
 ) -> Result<TaskSourcePreview, String> {
     use oleafly_research::{model::TaskRuntimeEvent, observations::TaskObservation};
     let task = store.require(task_id)?;
-    let view = store.observations(
-        &task.project_id,
-        task_id,
-        generation,
-        sequence.saturating_sub(1),
-        1,
-    )?;
-    let row = view
-        .page
-        .events
-        .into_iter()
-        .next()
-        .filter(|row| row.sequence == sequence)
+    let row = store
+        .observation_event(&task.project_id, task_id, generation, sequence)?
         .ok_or("This observation has no retained source locator.")?;
     let TaskRuntimeEvent::Observation {
         observation:
@@ -53,6 +42,24 @@ pub(crate) fn source_preview(
     else {
         return Err("This observation has no retained source locator.".into());
     };
+    if source.snapshot_retained == Some(true) {
+        let content = store
+            .file_snapshot(task_id, generation, &source.path, &source.file_sha256)?
+            .ok_or("The retained source snapshot is missing from TaskStore.")?;
+        if oleafly_research::observations::content_hash(&content) != source.file_sha256 {
+            return Err("The retained source snapshot does not match its SHA-256.".into());
+        }
+        let text = String::from_utf8(content)
+            .map_err(|_| "The retained source snapshot is not UTF-8 text.")?;
+        let text = text
+            .get(source.offset..source.end_offset)
+            .ok_or("The recorded byte range is not valid for this source.")?
+            .to_owned();
+        return Ok(TaskSourcePreview { source, text });
+    }
+    if task.execution_generation != generation {
+        return Err("The source revision from this older generation was not retained.".into());
+    }
     let isolation = task
         .isolation
         .ok_or("This task has no retained workspace.")?;
@@ -134,8 +141,12 @@ pub(crate) fn artifact_preview(
     store: &TaskStore,
     task_id: &str,
     path: &str,
+    execution_generation: u64,
 ) -> Result<TaskArtifactPreview, String> {
     let task = store.require(task_id)?;
+    if task.execution_generation != execution_generation {
+        return Err("The requested artifact generation is no longer retained.".into());
+    }
     let isolation = task
         .isolation
         .ok_or_else(|| "This task has no saved workspace to preview.".to_string())?;
@@ -456,18 +467,31 @@ mod tests {
         assert_eq!(preview.before.text.as_deref(), Some("before"));
         assert_eq!(preview.after.text.as_deref(), Some("after"));
         assert_eq!(
-            artifact_preview(&store, &task.id, "main.tex")
+            artifact_preview(&store, &task.id, "main.tex", running.execution_generation)
                 .unwrap()
                 .content
                 .text
                 .as_deref(),
             Some("after")
         );
+        assert!(artifact_preview(
+            &store,
+            &task.id,
+            "main.tex",
+            running.execution_generation + 1
+        )
+        .unwrap_err()
+        .contains("generation is no longer retained"));
 
         fs::write(execution.join("main.tex"), "changed later").unwrap();
         assert!(file_preview(&store, &task.id, "main.tex")
             .unwrap_err()
             .contains("changed after"));
+        assert!(
+            artifact_preview(&store, &task.id, "main.tex", running.execution_generation)
+                .unwrap_err()
+                .contains("changed after")
+        );
     }
 
     #[cfg(unix)]

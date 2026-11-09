@@ -362,10 +362,11 @@ export type TaskObservation =
   | { type: "runtime"; runtimeId: string; providerId: string; modelId: string; sessionId: string;
       tools: { name: string; source: string; schemaSha256: string }[]; declaredSkills: string[];
       injectedSkills: { id: string; sectionSha256: string }[]; unavailable: string[] }
-  | { type: "toolRequested"; callId: string; name: string; inputSha256: string }
+  | { type: "toolRequested"; callId: string; name: string; inputSha256: string; actor?: string | null }
   | { type: "toolExecution"; callId: string; name: string; status: string; inputSha256: string; outputSha256: string;
       skillId: string | null; skillInstructionsSha256: string | null;
-      source: { path: string; fileSha256: string; offset: number; endOffset: number; truncated: boolean } | null }
+      source: { path: string; fileSha256: string; offset: number; endOffset: number; truncated: boolean; snapshotRetained: boolean | null } | null;
+      actor?: string | null }
   | { type: "usage"; inputTokens: number | null; outputTokens: number | null };
 
 export interface TaskObservationView {
@@ -382,6 +383,9 @@ export interface TaskObservationView {
 
 export const loadResearchTaskObservations = (taskId: string, executionGeneration: number, afterSequence = 0, limit = 20) =>
   invoke<TaskObservationView>("research_task_observations", { taskId, executionGeneration, afterSequence, limit });
+
+export const loadResearchTaskObservationCall = (taskId: string, executionGeneration: number, callId: string) =>
+  invoke<TaskTranscriptEvent | null>("research_task_observation_call", { taskId, executionGeneration, callId });
 
 export const previewResearchTaskSource = (taskId: string, executionGeneration: number, sequence: number) =>
   invoke<{ source: NonNullable<Extract<TaskObservation, { type: "toolExecution" }>["source"]>; text: string }>(
@@ -527,8 +531,8 @@ export const loadResearchTaskEventsBefore = (
 export const previewResearchTaskFile = (taskId: string, path: string) =>
   invoke<TaskFilePreview>("research_task_file_preview", { taskId, path });
 
-export const previewResearchTaskArtifact = (taskId: string, path: string) =>
-  invoke<TaskArtifactPreview>("research_task_artifact_preview", { taskId, path });
+export const previewResearchTaskArtifact = (taskId: string, path: string, executionGeneration: number) =>
+  invoke<TaskArtifactPreview>("research_task_artifact_preview", { taskId, path, executionGeneration });
 
 export const listenForResearchTaskChanges = (
   onTask: (task: ResearchTask) => void,

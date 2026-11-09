@@ -37,11 +37,17 @@ pub trait LinkedRoots: Send + Sync {
     fn resolve(&self, project_id: &str, root_id: &str) -> Result<PathBuf, String>;
 }
 
+pub trait ApplicationTools: Send + Sync {
+    fn definitions(&self) -> Vec<protocol::ToolMeta>;
+    fn call(&self, name: String, args: Value) -> TaskRuntimeFuture<Value>;
+}
+
 #[derive(Clone)]
 pub struct BridgeServices {
     pub skills: Arc<dyn SkillSource>,
     pub linked: Arc<dyn LinkedRoots>,
     pub secrets: Arc<dyn ConnectorSecrets>,
+    pub application: Option<Arc<dyn ApplicationTools>>,
 }
 
 pub struct McpStart {

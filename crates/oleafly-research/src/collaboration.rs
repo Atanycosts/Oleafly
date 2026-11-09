@@ -158,7 +158,33 @@ pub struct GroupWork {
     pub status: WorkStatus,
     pub execution_id: Option<String>,
     pub result_message_id: Option<String>,
+    #[serde(default)]
+    pub reasons: Vec<WorkReason>,
     pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkReason {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<GroupObject>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+}
+
+/// A concrete contribution or evidence read, not inferred natural-language expertise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberAttention {
+    pub member_id: String,
+    pub object: GroupObject,
+    pub relation: String,
+    pub source_id: String,
+    pub execution_id: Option<String>,
     pub updated_at: i64,
 }
 
@@ -194,13 +220,38 @@ pub struct MemberTurn {
     pub annotations: Vec<crate::annotations::Annotation>,
 }
 
+impl MemberTurn {
+    /// Preserve the persisted turn shape while marking annotation source
+    /// snapshots as historical evidence in every model-facing context.
+    pub fn context_record(&self) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).expect("member turn is serializable");
+        value["annotations"] = serde_json::Value::Array(
+            self.annotations
+                .iter()
+                .map(crate::annotations::Annotation::context_record)
+                .collect(),
+        );
+        value
+    }
+
+    pub fn context_reference(&self) -> serde_json::Value {
+        serde_json::json!({"group":self.group,"member":self.member,"execution":self.execution,
+            "work":self.work,"messages":self.messages,"events":self.events,
+            "annotations":self.annotations.iter().map(crate::annotations::Annotation::context_reference).collect::<Vec<_>>()})
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupSnapshot {
     pub group: TaskGroup,
     pub members: Vec<GroupMember>,
     pub interests: Vec<MemberInterest>,
+    #[serde(default)]
+    pub attentions: Vec<MemberAttention>,
     pub messages: Vec<GroupMessage>,
+    #[serde(default)]
+    pub events: Vec<GroupEvent>,
     pub work: Vec<GroupWork>,
     pub executions: Vec<MemberExecution>,
     pub next_sequence: u64,

@@ -5,7 +5,12 @@ import type { PdfViewerHandle, PdfViewerProps } from "@oleafly/preview";
 import { safePdfExternalUrl } from "@oleafly/preview/controller";
 import "@/components/pdf/pdfController";
 
-export type { PdfViewerHandle };
+export type {
+  PdfViewerHandle,
+  PdfTextSelection,
+  PdfTextSelectionPage,
+  PdfTextSelectionRect,
+} from "@oleafly/preview";
 export type {
   PdfLayout,
   PdfRotation,

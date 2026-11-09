@@ -19,3 +19,11 @@ it("queries the exact task generation and refreshes after the task finishes", as
   expect(await screen.findByRole("button", { name: /main.tex/ })).toBeInTheDocument();
   expect(invoke).toHaveBeenCalledTimes(2);
 });
+
+it("reads a referenced historical PDF directly through the verified artifact reader", async () => {
+  const reference = { taskId: "task-a", generation: 2, inputFingerprint: "input", sourceRevision: "source", outputId: "output", pdfSha256: "0123456789abcdef", mainDocument: "main.tex", size: 42, path: "compiled-artifacts/old.pdf" };
+  invoke.mockResolvedValue(new ArrayBuffer(42));
+  render(<TaskCompiledPdfs taskId="task-a" generation={2} status="awaiting_review" reference={reference} />);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("research_task_compiled_pdf_read", { taskId: "task-a", generation: 2, reference }));
+  expect(invoke).not.toHaveBeenCalledWith("research_task_compiled_pdfs", expect.anything());
+});

@@ -3208,7 +3208,7 @@ ${sandboxedCustom}`;
 
   const continueFromAnnotation = (annotation: TaskAnnotation) => {
     if (!annotation.explicitRequest || !activeChatId || annotation.target.projectId !== projectId || annotation.target.objectId !== annotationThreadId) return;
-    const text = `Address retained annotation ${annotation.id} on ${annotation.target.objectKind}:${annotation.target.objectId} (${annotation.target.objectRevision ?? "current"}). Read its original record and record the actual handling result.\n\n${annotation.body}`;
+    const text = `Handle explicitly requested retained annotation ${annotation.id} on ${annotation.target.objectKind}:${annotation.target.objectId} (${annotation.target.objectRevision ?? "current"}). Read its current comment and verified historical source with annotation_context, then record the actual handling result.`;
     const run = activeChatRun();
     if (run && run.chatId === activeChatId && run.projectId === projectId) {
       const turns = useAgentTurnsStore.getState();

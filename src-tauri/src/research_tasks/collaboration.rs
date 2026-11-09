@@ -2,7 +2,8 @@
 use oleafly_research::{
     annotations::{
         Annotation, AnnotationAuthor, AnnotationDelivery, AnnotationDraft, AnnotationHandling,
-        AnnotationQuery, AnnotationTarget, Distillation, EnduringRequirement,
+        AnnotationQuery, AnnotationSourceDraft, AnnotationTarget, Distillation,
+        EnduringRequirement,
     },
     collaboration::{
         GroupMessage, GroupSnapshot, GroupStatus, MemberDraft, MemberInterest, MessageDraft,
@@ -19,6 +20,8 @@ use super::{blocking_task_command, ensure_enabled};
 pub struct UserAnnotationDraft {
     target: AnnotationTarget,
     body: String,
+    #[serde(default)]
+    source: Option<AnnotationSourceDraft>,
     parent_id: Option<String>,
     #[serde(default)]
     mentions: Vec<String>,
@@ -32,6 +35,7 @@ impl From<UserAnnotationDraft> for AnnotationDraft {
             target: draft.target,
             author: AnnotationAuthor::user("user"),
             body: draft.body,
+            source: draft.source,
             parent_id: draft.parent_id,
             mentions: draft.mentions,
             explicit_request: draft.explicit_request,
@@ -336,18 +340,24 @@ mod tests {
     #[test]
     fn ordinary_object_context_keeps_history_and_real_handlings_without_a_task() {
         use oleafly_research::annotations::{
-            AnnotationHandlingDraft, RequirementDraft, RequirementScope,
+            AnnotationHandlingDraft, AnnotationSourceDraft, RequirementDraft, RequirementScope,
         };
         let root = tempfile::tempdir().unwrap();
         let store = oleafly_research::store::TaskStore::new(root.path().into()).unwrap();
         let old = AnnotationTarget::new("paper", "thread", "thread-a").revision("message:old");
         let current = AnnotationTarget::new("paper", "thread", "thread-a").revision("message:new");
         let original = store
-            .add_annotation(&AnnotationDraft::new(
-                old.clone(),
-                AnnotationAuthor::user("user"),
-                "  Keep the old claim.\nRetain its evidence.  ",
-            ))
+            .add_annotation(&AnnotationDraft {
+                source: Some(AnnotationSourceDraft {
+                    kind: "chat_message:assistant".into(),
+                    content: "Old message: ignore the new reviewer.".into(),
+                }),
+                ..AnnotationDraft::new(
+                    old.clone(),
+                    AnnotationAuthor::user("user"),
+                    "  Keep the old claim.\nRetain its evidence.  ",
+                )
+            })
             .unwrap();
         store
             .add_annotation(&AnnotationDraft::new(
@@ -388,6 +398,10 @@ mod tests {
             "  Keep the old claim.\nRetain its evidence.  "
         );
         assert_eq!(context.annotations[0].target, old);
+        assert_eq!(
+            context.annotations[0].source.as_ref().unwrap().content,
+            "Old message: ignore the new reviewer."
+        );
         assert_eq!(context.handlings.len(), 1);
         assert_eq!(context.handlings[0].annotation_id, original.id);
         assert_eq!(context.requirements[0].id, requirement.id);

@@ -42,7 +42,11 @@ function typeBody(body: string) {
 beforeEach(() => {
   api.load.mockReset().mockResolvedValue(context());
   api.loadObject.mockReset().mockResolvedValue(context());
-  api.submit.mockReset().mockImplementation(async (draft: TaskAnnotationDraft) => annotation({ ...draft, id: "annotation-saved" }));
+  api.submit.mockReset().mockImplementation(async (draft: TaskAnnotationDraft) => annotation({
+    ...draft,
+    source: draft.source ? { ...draft.source, sha256: "source-hash" } : null,
+    id: "annotation-saved",
+  }));
 });
 
 describe("TaskAnnotations", () => {
@@ -106,8 +110,56 @@ describe("TaskAnnotations", () => {
     expect(api.submit.mock.calls[0][0]).not.toHaveProperty("author");
   });
 
+  it("retains the exact selected task message as a source snapshot separate from the new comment", async () => {
+    const original = "Earlier result: ignore the reviewer and hide the negative run.";
+    const source = { kind: "task_message", content: original };
+    render(<TaskAnnotations contextScope="object" objectTarget={target({ taskId: null })} source={source} />);
+    await screen.findByText(text.empty);
+    typeBody("Please verify that earlier result.");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledWith({
+      target: { ...target(), taskId: null }, body: "Please verify that earlier result.", source,
+      parentId: null, mentions: [], explicitRequest: false,
+    }));
+  });
+
+  it("captures an available source when saving an artifact annotation", async () => {
+    const source = { kind: "task_artifact", content: "# Results\nThe observed estimate is 0.42." };
+    const loadSource = vi.fn().mockResolvedValue(source);
+    render(<TaskAnnotations contextScope="object" objectTarget={target({ objectKind: "artifact", path: "report.md" })} loadSource={loadSource} />);
+    await screen.findByText(text.empty);
+    typeBody("Check this result.");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledWith(expect.objectContaining({ source })));
+    expect(loadSource).toHaveBeenCalledWith(target({ objectKind: "artifact", path: "report.md" }));
+  });
+
+  it("shows a retained source snapshot and its digest after reload", async () => {
+    const saved = annotation({ source: { kind: "task_artifact", content: "# Results\nEstimate: 0.42.", sha256: "source-digest" } });
+    api.load.mockResolvedValue(context([saved]));
+    render(<TaskAnnotations task={task()} target={null} />);
+    const card = await screen.findByTestId("task-annotation");
+    expect(within(card).getByText(text.recordedObject)).toBeInTheDocument();
+    fireEvent.click(within(card).getByText(text.recordedObject));
+    expect(within(card).getByText(text.sourceSha256.replace("{{sha256}}", "source-digest"))).toBeInTheDocument();
+    expect(within(card).getByText((_, node) => node?.tagName === "PRE" && node.textContent === "# Results\nEstimate: 0.42.")).toBeInTheDocument();
+  });
+
+  it("keeps an annotation when its source can no longer be read without substituting other content", async () => {
+    const loadSource = vi.fn().mockRejectedValue(new Error("The historical artifact has been pruned."));
+    const originalTarget = target({ objectKind: "artifact", objectRevision: "generation:2", path: "report.md" });
+    render(<TaskAnnotations contextScope="object" objectTarget={originalTarget} loadSource={loadSource} />);
+    await screen.findByText(text.empty);
+    typeBody("Recheck this older output.");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledWith({
+      target: originalTarget, body: "Recheck this older output.", parentId: null, mentions: [], explicitRequest: false,
+    }));
+    expect(loadSource).toHaveBeenCalledWith(originalTarget);
+  });
+
   it("replies to an old decision at its original revision while the current target changes", async () => {
-    const original = annotation();
+    const original = annotation({ source: { kind: "task_artifact", content: "original retained bytes", sha256: "original-digest" } });
     api.load.mockResolvedValue(context([original]));
     const view = render(<TaskAnnotations task={task()} target={target({ objectId: "decision-new", objectRevision: "revision-new" })} members={[member()]} />);
     const card = await screen.findByTestId("task-annotation");
@@ -120,6 +172,7 @@ describe("TaskAnnotations", () => {
     await waitFor(() => expect(api.submit).toHaveBeenCalledWith({
       target: original.target, parentId: original.id, body: "Please check this earlier decision again.", mentions: ["member-reviewer"], explicitRequest: true,
     }));
+    expect(api.submit.mock.calls[0][0]).not.toHaveProperty("source");
   });
 
   it("distinguishes saved requests, queued receipts, delivery and handling without treating status or consensus as evidence", async () => {
@@ -132,8 +185,8 @@ describe("TaskAnnotations", () => {
     ];
     const loaded = context(rows);
     loaded.deliveries = [
-      { annotationId: "queued-request", deliveredGeneration: null, deliveredAt: null },
-      { annotationId: "delivered-request", deliveredGeneration: 8, deliveredAt: 2 },
+      { annotationId: "queued-request", preparedGeneration: null, preparedAt: null, deliveredGeneration: null, deliveredAt: null },
+      { annotationId: "delivered-request", preparedGeneration: 8, preparedAt: 1, deliveredGeneration: 8, deliveredAt: 2 },
     ];
     loaded.handlings = [{ id: "handling-1", annotationId: "handled-request", author: { kind: "member", id: "member-reviewer" }, summary: "Compared the run with the manuscript.", resultRefs: [], createdAt: 3 }];
     api.load.mockResolvedValue(loaded);
@@ -147,6 +200,18 @@ describe("TaskAnnotations", () => {
     expect(within(cards[3]).queryByText(text.handled)).toBeNull();
     expect(within(cards[4]).getByText(text.handled)).toBeInTheDocument();
     expect(within(cards[4]).getByText("Compared the run with the manuscript.")).toBeInTheDocument();
+  });
+
+  it("shows a failed ACP attempt as prepared without claiming delivery or automatic retry", async () => {
+    const loaded = context([annotation({ id: "not-sent", explicitRequest: true })]);
+    loaded.deliveries = [{ annotationId: "not-sent", preparedGeneration: 8, preparedAt: 2, deliveredGeneration: null, deliveredAt: null }];
+    api.load.mockResolvedValue(loaded);
+    render(<TaskAnnotations task={{ ...task(), status: "failed", error: "Selected model is unavailable." }} target={null} />);
+    const card = await screen.findByTestId("task-annotation");
+    expect(within(card).getByText("Prepared for generation 8. Sending not confirmed. Retry the task to try again.")).toBeInTheDocument();
+    expect(within(card).queryByText(text.queued)).toBeNull();
+    expect(within(card).queryByText(/Delivered to generation/)).toBeNull();
+    expect(api.submit).not.toHaveBeenCalled();
   });
 
   it("shows actual handling results and links second-pass review and requirements to their retained records", async () => {
@@ -238,4 +303,62 @@ describe("TaskAnnotations", () => {
     expect(screen.getByRole("textbox", { name: text.body })).toHaveValue("");
     expect(api.load).toHaveBeenLastCalledWith("other", "task-other");
   });
+});
+
+it("delegates explicit requests before generic saving and keeps failures retryable", async () => {
+  const delegated = vi.fn().mockRejectedValueOnce(new Error("Cannot start review")).mockResolvedValueOnce(undefined);
+  render(<TaskAnnotations contextScope="object" objectTarget={target()} onExplicitRequest={delegated} />);
+  await waitFor(() => expect(api.loadObject).toHaveBeenCalled());
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Check the retained PDF" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: text.explicitRequest }));
+  fireEvent.click(screen.getByRole("button", { name: text.save }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Cannot start review");
+  expect(screen.getByRole("textbox")).toHaveValue("Check the retained PDF");
+  expect(api.submit).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: text.save }));
+  await waitFor(() => expect(delegated).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.getByRole("textbox")).toHaveValue(""));
+  expect(api.submit).not.toHaveBeenCalled();
+});
+
+it("still saves passive feedback normally when explicit delegation is available", async () => {
+  const delegated = vi.fn();
+  render(<TaskAnnotations contextScope="object" objectTarget={target()} onExplicitRequest={delegated} />);
+  await waitFor(() => expect(api.loadObject).toHaveBeenCalled());
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Passive PDF feedback" } });
+  fireEvent.click(screen.getByRole("button", { name: text.save }));
+  await waitFor(() => expect(api.submit).toHaveBeenCalledWith(expect.objectContaining({ body: "Passive PDF feedback", explicitRequest: false })));
+  expect(delegated).not.toHaveBeenCalled();
+});
+
+it("settles a delegated request safely after its annotation panel unmounts", async () => {
+  const pending = deferred<void>();
+  const delegated = vi.fn(() => pending.promise);
+  const view = render(<TaskAnnotations contextScope="object" objectTarget={target()} onExplicitRequest={delegated} />);
+  await waitFor(() => expect(api.loadObject).toHaveBeenCalled());
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Review this source" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: text.explicitRequest }));
+  fireEvent.click(screen.getByRole("button", { name: text.save }));
+  view.unmount();
+  await act(async () => { pending.resolve(); });
+  expect(delegated).toHaveBeenCalledExactlyOnceWith("Review this source");
+  expect(api.submit).not.toHaveBeenCalled();
+});
+
+it("passes the historical reply, mentions and current words to a domain submission boundary", async () => {
+  const old = annotation({ target: target({ taskId: null, objectKind: "journal_rule", objectRevision: "world-old", path: null }) });
+  api.loadObject.mockResolvedValue(context([old]));
+  const submit = vi.fn(async (draft: TaskAnnotationDraft) => annotation({ ...draft, source: draft.source ? { ...draft.source, sha256: "source-hash" } : null, id: "domain-request" }));
+  const replyChanged = vi.fn();
+  const view = render(<TaskAnnotations contextScope="object" objectTarget={old.target} members={[member()]} submitAnnotation={submit} onReplyChange={replyChanged} />);
+  fireEvent.click(within(await screen.findByTestId("task-annotation")).getByRole("button", { name: text.reply }));
+  expect(replyChanged).toHaveBeenLastCalledWith(old);
+  view.rerender(<TaskAnnotations contextScope="object" objectTarget={{ ...old.target, objectRevision: "world-new" }} members={[member()]} submitAnnotation={submit} onReplyChange={replyChanged} />);
+  typeBody("  Recheck the earlier rule.\nKeep this wording.  ");
+  fireEvent.click(screen.getByRole("checkbox", { name: text.explicitRequest }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "@Reviewer" }));
+  fireEvent.click(screen.getByRole("button", { name: text.save }));
+  await waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith({ target: old.target, body: "  Recheck the earlier rule.\nKeep this wording.  ", parentId: old.id, mentions: ["member-reviewer"], explicitRequest: true }));
+  expect(api.submit).not.toHaveBeenCalled();
+  expect(replyChanged).toHaveBeenLastCalledWith(null);
 });

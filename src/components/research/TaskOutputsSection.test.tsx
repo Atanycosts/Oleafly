@@ -256,7 +256,7 @@ describe("TaskOutputsSection", () => {
 
     await waitFor(() => expect(page().getByText("# Findings")).toBeInTheDocument());
     expect(page().getByText(enResearchTools.outputs.previewTruncated)).toBeInTheDocument();
-    expect(api.previewResearchTaskArtifact).toHaveBeenCalledWith("review", "review.md");
+    expect(api.previewResearchTaskArtifact).toHaveBeenCalledWith("review", "review.md", 1);
   });
 
   it("explains binary artifacts, binary files and deleted files", async () => {

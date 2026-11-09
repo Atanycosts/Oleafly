@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use oleafly_research::mcp::{BridgeServices, LinkedRootInfo, LinkedRoots, McpStart, SkillSource};
+use oleafly_research::mcp::{
+    ApplicationTools, BridgeServices, LinkedRootInfo, LinkedRoots, McpStart, SkillSource,
+};
 use oleafly_research::task_tools::extra::TaskBinding;
 use serde_json::{json, Value};
 
@@ -15,7 +17,7 @@ pub async fn start(
     execution_root: Option<PathBuf>,
 ) -> Result<ScopedResearchMcp, String> {
     let pack = crate::skills_pack::pack_root(&app);
-    start_inner(pack, project_id, execution_root, None, None).await
+    start_inner(app, pack, project_id, execution_root, None, None).await
 }
 
 pub async fn start_restricted(
@@ -27,6 +29,7 @@ pub async fn start_restricted(
 ) -> Result<ScopedResearchMcp, String> {
     let pack = crate::skills_pack::pack_root(&app);
     start_inner(
+        app,
         pack,
         project_id,
         Some(execution_root),
@@ -51,6 +54,7 @@ fn admit(project_id: &str) -> Result<PathBuf, String> {
 }
 
 async fn start_inner(
+    app: tauri::AppHandle,
     skills_pack: Option<PathBuf>,
     project_id: String,
     execution_root: Option<PathBuf>,
@@ -80,18 +84,28 @@ async fn start_inner(
             Vec::new()
         }
     };
+    let application =
+        crate::journal_workbench::tools::application_tools(app, project_id.clone(), task.clone());
     oleafly_research::mcp::serve(McpStart {
         project_id,
         root,
         allowed: allowed_paths,
         linked_roots,
-        services: services(crate::paths::oleafly_root()?, skills_pack),
+        services: services(
+            crate::paths::oleafly_root()?,
+            skills_pack,
+            Some(application),
+        ),
         task,
     })
     .await
 }
 
-fn services(skills_root: PathBuf, skills_pack: Option<PathBuf>) -> BridgeServices {
+fn services(
+    skills_root: PathBuf,
+    skills_pack: Option<PathBuf>,
+    application: Option<Arc<dyn ApplicationTools>>,
+) -> BridgeServices {
     BridgeServices {
         skills: Arc::new(AppSkills {
             root: skills_root,
@@ -99,6 +113,7 @@ fn services(skills_root: PathBuf, skills_pack: Option<PathBuf>) -> BridgeService
         }),
         linked: Arc::new(AppLinkedRoots),
         secrets: Arc::new(crate::literature::AppSecrets),
+        application,
     }
 }
 

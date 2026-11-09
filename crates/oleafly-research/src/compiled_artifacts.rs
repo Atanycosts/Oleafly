@@ -1,4 +1,4 @@
-//! Immutable compiled PDFs, separate from task result/application authority.
+//! Immutable task PDFs: captured inputs and fresh compiled outputs.
 use std::path::{Path, PathBuf};
 
 use oleafly_agent::CancellationToken;
@@ -35,9 +35,9 @@ pub struct TaskCompiledArtifact {
 pub fn reference_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
-        "description": "The complete artifact object returned by compile. Copy the values without constructing a filesystem path.",
+        "description": "The complete retained task PDF reference, from compile or captured task input. Generation 0 identifies an input, not a compile. Copy the values without constructing a filesystem path.",
         "properties": {
-            "taskId": {"type":"string"}, "generation": {"type":"integer"},
+            "taskId": {"type":"string"}, "generation": {"type":"integer","minimum":0},
             "inputFingerprint": {"type":"string"}, "sourceRevision": {"type":"string"},
             "outputId": {"type":["string","null"]}, "pdfSha256": {"type":"string"},
             "size": {"type":"integer"}, "mainDocument": {"type":"string"}, "path": {"type":"string"}
@@ -108,37 +108,78 @@ pub fn retain(
     if !bytes.starts_with(b"%PDF-") {
         return Err("The compiled output is not a PDF.".into());
     }
-    let hash = digest(&bytes);
-    let dir = directory(&request.tasks_root, &request.task_id, request.generation)?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let identity = digest(
-        &serde_json::to_vec(&(&request.source_revision, &build.output_id))
-            .map_err(|e| e.to_string())?,
-    );
-    let name = format!("{fingerprint}-{hash}-{identity}");
-    let path = dir.join(format!("{name}.pdf"));
     let artifact = TaskCompiledArtifact {
         task_id: request.task_id.clone(),
         generation: request.generation,
         input_fingerprint: fingerprint,
         source_revision: request.source_revision.clone(),
         output_id: build.output_id.clone(),
-        pdf_sha256: hash,
+        pdf_sha256: digest(&bytes),
         size: bytes.len() as u64,
         main_document: build.main_document.clone(),
-        path: path
-            .strip_prefix(&request.tasks_root)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned(),
+        path: String::new(),
     };
-    oleafly_core::atomic::write_atomic(&path, &bytes).map_err(|e| e.to_string())?;
+    persist(&request.tasks_root, artifact, &bytes).map(Some)
+}
+
+/// Register the actual PDF supplied by a user as immutable generation 0 input.
+/// No compiler execution or correspondence with current source is implied.
+pub fn retain_input(
+    root: &Path,
+    task: &str,
+    main_document: &str,
+    fingerprint: String,
+    bytes: &[u8],
+) -> Result<TaskCompiledArtifact, String> {
+    if !bytes.starts_with(b"%PDF-") {
+        return Err("The captured input is not a PDF.".into());
+    }
+    let hash = digest(bytes);
+    persist(
+        root,
+        TaskCompiledArtifact {
+            task_id: task.into(),
+            generation: 0,
+            input_fingerprint: fingerprint,
+            source_revision: format!("pdf-input:sha256:{hash}"),
+            output_id: None,
+            pdf_sha256: hash,
+            size: bytes.len() as u64,
+            main_document: main_document.into(),
+            path: String::new(),
+        },
+        bytes,
+    )
+}
+
+fn persist(
+    root: &Path,
+    mut artifact: TaskCompiledArtifact,
+    bytes: &[u8],
+) -> Result<TaskCompiledArtifact, String> {
+    let dir = directory(root, &artifact.task_id, artifact.generation)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let identity = digest(
+        &serde_json::to_vec(&(&artifact.source_revision, &artifact.output_id))
+            .map_err(|e| e.to_string())?,
+    );
+    let name = format!(
+        "{}-{}-{identity}",
+        artifact.input_fingerprint, artifact.pdf_sha256
+    );
+    let path = dir.join(format!("{name}.pdf"));
+    artifact.path = path
+        .strip_prefix(root)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    oleafly_core::atomic::write_atomic(&path, bytes).map_err(|e| e.to_string())?;
     oleafly_core::atomic::write_atomic(
         &dir.join(format!("{name}.json")),
         &serde_json::to_vec(&artifact).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    Ok(Some(artifact))
+    Ok(artifact)
 }
 
 pub fn list(root: &Path, task: &str, generation: u64) -> Result<Vec<TaskCompiledArtifact>, String> {
@@ -205,9 +246,77 @@ pub fn read(
     Ok(bytes)
 }
 
+/// A live execution may inspect its own outputs and the original task input.
+/// Older compiled outputs remain readable by history, not by a newer run.
+pub fn read_for_task(
+    root: &Path,
+    task: &str,
+    current_generation: u64,
+    reference: &TaskCompiledArtifact,
+) -> Result<Vec<u8>, String> {
+    if reference.generation != 0 && reference.generation != current_generation {
+        return Err("Unknown compiled artifact reference for this execution.".into());
+    }
+    read(root, task, reference.generation, reference)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_input_remains_available_across_runs_without_admitting_old_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let artifact = retain_input(
+            root.path(),
+            "task-a",
+            "main.tex",
+            "a".repeat(64),
+            b"%PDF-user-selected",
+        )
+        .unwrap();
+        assert_eq!(artifact.generation, 0);
+        assert!(artifact.output_id.is_none());
+        assert!(artifact.source_revision.starts_with("pdf-input:sha256:"));
+        for generation in [0, 1, 4] {
+            assert_eq!(
+                read_for_task(root.path(), "task-a", generation, &artifact).unwrap(),
+                b"%PDF-user-selected"
+            );
+        }
+        assert!(read_for_task(root.path(), "task-b", 4, &artifact).is_err());
+        let mut forged = artifact.clone();
+        forged.main_document = "other.tex".into();
+        assert!(read_for_task(root.path(), "task-a", 4, &forged).is_err());
+
+        let workspace = tempfile::tempdir().unwrap();
+        let output = workspace.path().join("output.pdf");
+        std::fs::write(&output, b"%PDF-compiled").unwrap();
+        let request = TaskCompileRequest {
+            task_id: "task-a".into(),
+            generation: 2,
+            tasks_root: root.path().into(),
+            execution_root: workspace.path().into(),
+            source: None,
+            source_revision: "source:2".into(),
+        };
+        let summary = CompileSummary {
+            ok: true,
+            build: Some(CompileOutput {
+                main_document: "main.tex".into(),
+                output: Some(output),
+                fresh: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let compiled = retain(&request, "b".repeat(64), &summary).unwrap().unwrap();
+        assert!(read_for_task(root.path(), "task-a", 2, &compiled).is_ok());
+        assert!(read_for_task(root.path(), "task-a", 3, &compiled).is_err());
+        std::fs::remove_file(root.path().join(&artifact.path)).unwrap();
+        assert!(read_for_task(root.path(), "task-a", 3, &artifact).is_err());
+        assert!(retain_input(root.path(), "task-a", "main.tex", "a".repeat(64), b"text").is_err());
+    }
 
     #[test]
     fn retained_pdf_survives_later_compiles_and_requires_its_exact_identity() {

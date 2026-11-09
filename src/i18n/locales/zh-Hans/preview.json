@@ -315,5 +315,23 @@
     "end": "结束放映",
     "blank": "观众屏幕已清空。按 B 显示幻灯片。",
     "toggleBlank": "清空观众屏幕"
+  },
+  "selection": {
+    "title": "PDF 标注与审查",
+    "description": "将评论与眼前的 PDF 一同留存。需要所选 Agent 核查时，再发起审查。",
+    "pages": "第 {{pages}} 页",
+    "comment": "评论或本次审查请求",
+    "saveFeedback": "保存反馈",
+    "startReview": "发起审查",
+    "openOriginal": "展开或收起原 PDF",
+    "saved": "已保存的 PDF 标注",
+    "empty": "当前项目尚未保存 PDF 标注。",
+    "selectHint": "在 PDF 中选中文字，再打开此面板添加评论。也可从下方重新打开历史标注。",
+    "taskInput": "原始 PDF 选段",
+    "annotation": "原始标注",
+    "savedNotice": "反馈已保存，尚未发起审查。",
+    "retryStart": "重试启动此任务",
+    "openTask": "打开已创建的任务",
+    "pdfSha256": "PDF SHA-256：{{sha256}}"
   }
 }

@@ -351,19 +351,75 @@ struct UsageRecord {
     output_tokens: Option<u64>,
 }
 
-struct RecordingUsage(Arc<Mutex<UsageRecord>>);
+struct RecordingUsage {
+    record: Arc<Mutex<UsageRecord>>,
+    aggregate: Mutex<crate::usage::TaskUsageAggregator>,
+}
+
+impl RecordingUsage {
+    fn new(record: Arc<Mutex<UsageRecord>>) -> Self {
+        Self {
+            record,
+            aggregate: Mutex::new(crate::usage::TaskUsageAggregator::default()),
+        }
+    }
+}
 
 impl UsageSink for RecordingUsage {
+    fn begin_turn(&self) {
+        let mut aggregate = lock(&self.aggregate);
+        let before = aggregate.counts();
+        aggregate.begin_parent_turn();
+        self.publish_change(&aggregate, before);
+    }
+
     fn observe(&self, event: &AgentEvent) {
-        if let AgentEvent::Usage { usage, .. } = event {
-            let mut record = lock(&self.0);
-            record.input_tokens = usage.reported_input().map(u64::from);
-            record.output_tokens = usage.reported_output().map(u64::from);
+        if !matches!(event, AgentEvent::Usage { .. }) {
+            return;
         }
+        let mut aggregate = lock(&self.aggregate);
+        let before = aggregate.counts();
+        aggregate.observe_parent(event);
+        self.publish_change(&aggregate, before);
+    }
+
+    fn register_helper(&self, actor: &str) {
+        let mut aggregate = lock(&self.aggregate);
+        let before = aggregate.counts();
+        aggregate.register_helper(actor);
+        self.publish_change(&aggregate, before);
+    }
+
+    fn observe_helper(&self, actor: &str, event: &AgentEvent) {
+        let mut aggregate = lock(&self.aggregate);
+        let before = aggregate.counts();
+        aggregate.observe_helper(actor, event);
+        self.publish_change(&aggregate, before);
+    }
+
+    fn task_usage_snapshot(&self) -> Option<(Option<u64>, Option<u64>)> {
+        lock(&self.aggregate).counts()
     }
 
     fn finish(&self, status: &str) {
-        lock(&self.0).status = Some(status.into());
+        lock(&self.record).status = Some(status.into());
+    }
+}
+
+impl RecordingUsage {
+    fn publish_change(
+        &self,
+        aggregate: &crate::usage::TaskUsageAggregator,
+        previous: Option<(Option<u64>, Option<u64>)>,
+    ) {
+        if previous == aggregate.counts() {
+            return;
+        }
+        if let Some((input_tokens, output_tokens)) = aggregate.counts() {
+            let mut record = lock(&self.record);
+            record.input_tokens = input_tokens;
+            record.output_tokens = output_tokens;
+        }
     }
 }
 
@@ -411,7 +467,7 @@ impl TaskHost for FixtureHost {
                     },
                     caps,
                 },
-                usage: Box::new(RecordingUsage(usage)),
+                usage: Box::new(RecordingUsage::new(usage)),
             })
         })
     }
@@ -634,6 +690,83 @@ async fn builtin_adapter_edits_isolated_files_and_records_native_usage() {
     assert!(recorded.iter().any(|event| matches!(event,
         TaskRuntimeEvent::Observation { observation: TaskObservation::ToolExecution { name, status, .. } }
         if name == "write_file" && status == "error"
+    )));
+}
+
+#[tokio::test]
+async fn helper_usage_is_included_in_the_task_outcome_and_native_usage_record() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("main.tex"), "Original manuscript").unwrap();
+    let tasks = root.path().join("tasks");
+    let stored_task = running_task(&tasks, "local");
+    let provider = Scripted::start(script(|request, _index| {
+        let helper = is_helper(request);
+        let outputs = tool_outputs(request);
+        match (helper, outputs.len()) {
+            (false, 0) => tool_delta(vec![(SPAWN_AGENT, json!({"brief":"Read the manuscript."}))]),
+            (true, 0) => tool_delta(Vec::new()),
+            (true, _) => text_reply("Helper checked the manuscript."),
+            (false, _) => text_reply("Parent finished the manuscript check."),
+        }
+    }))
+    .await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host.clone(), services(&tasks));
+    let mut context = task_context(&stored_task, &workspace);
+    context.session_id = "usage-member-session".into();
+    let store = TaskStore::new(tasks.clone()).unwrap();
+    let group = store
+        .create_task_group(
+            "project",
+            Some(&stored_task.id),
+            &[crate::collaboration::MemberDraft {
+                name: "Coordinator".into(),
+                responsibility: "Coordinate a bounded review".into(),
+                runtime_id: "builtin".into(),
+                agent_id: "openai".into(),
+                model_id: "test".into(),
+                coordinator: true,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+    store
+        .group_message(
+            "project",
+            &group.group.id,
+            &crate::collaboration::GroupActor::user(),
+            &crate::collaboration::MessageDraft {
+                body: "Ask one helper to read the manuscript".into(),
+                recipients: vec![group.members[0].id.clone()],
+                request_work: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    context.collaboration = Some(store.claim_member_turn(&stored_task).unwrap().unwrap());
+    let (events, sink) = event_log();
+    let result = within(adapter.run(context, CancellationToken::new(), sink))
+        .await
+        .unwrap();
+    assert_eq!(
+        (result.input_tokens, result.output_tokens),
+        (Some(30), Some(6)),
+        "parent 20/4 plus helper 10/2 are cumulative task totals"
+    );
+    assert_eq!(usage_row(&host), ("completed".into(), Some(30), Some(6)));
+    let recorded = lock(&events);
+    let usage_events: Vec<_> = recorded
+        .iter()
+        .filter(|event| matches!(event, TaskRuntimeEvent::Usage { .. }))
+        .collect();
+    assert!(usage_events.iter().any(|event| matches!(
+        event,
+        TaskRuntimeEvent::Usage {
+            input_tokens: Some(30),
+            output_tokens: Some(6)
+        }
     )));
 }
 
@@ -1154,6 +1287,88 @@ async fn the_agent_is_woken_when_a_run_finishes_after_its_turn() {
 }
 
 #[tokio::test]
+async fn task_usage_counts_pre_step_compaction_once_on_first_and_woken_turns() {
+    for wake_after_run in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("analysis")).unwrap();
+        let tasks = root.path().join("tasks");
+        let task = running_task(&tasks, "held");
+        let release = Arc::new(AtomicBool::new(false));
+        let completed = release.clone();
+        let streamed = std::sync::atomic::AtomicUsize::new(0);
+        let provider = Scripted::start(script(move |request, _| {
+            if request["stream"] != json!(true) {
+                return text_reply("The task history was compacted; preserve current work.");
+            }
+            let step = streamed.fetch_add(1, Ordering::Relaxed);
+            if wake_after_run && step == 0 {
+                return tool_delta(vec![(
+                    "start_run",
+                    json!({"name":"baseline","command":"python train.py"}),
+                )]);
+            }
+            completed.store(true, Ordering::SeqCst);
+            text_reply("Recorded the current result.")
+        }))
+        .await;
+        let host = fixture_host(root.path(), provider.url.clone()).await;
+        let services = services(&tasks);
+        services
+            .runs
+            .register_executor(Arc::new(HeldRuns { release }));
+        let adapter = BuiltinTaskAdapter::new(host.clone(), services);
+        // 130 messages compact before the first step. Starting with 126
+        // reaches 130 only after a tool turn, final reply and run wake-up.
+        let messages = (0..if wake_after_run { 126 } else { 130 })
+            .map(|index| Message::user(format!("Retained historical message {index}")))
+            .collect();
+        let file = conversation::save(
+            &tasks,
+            &ConversationSnapshot {
+                version: CONVERSATION_VERSION,
+                task_id: task.id.clone(),
+                generation: task.execution_generation,
+                provider_id: "openai".into(),
+                model_id: "test".into(),
+                messages,
+                waiting_for_runs: false,
+                saved_at: crate::model::now_ms(),
+            },
+        )
+        .unwrap();
+        let mut context = task_context(&task, &workspace);
+        context.handoff = Some(crate::model::HandoffResume {
+            from_generation: task.execution_generation,
+            conversation: Some(file),
+            ..Default::default()
+        });
+        let result = within(adapter.run(context, CancellationToken::new(), event_log().1))
+            .await
+            .unwrap();
+        let requests = provider.requests();
+        let compactions: Vec<_> = requests
+            .iter()
+            .enumerate()
+            .filter(|(_, request)| request["stream"] != json!(true))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(compactions, vec![if wake_after_run { 2 } else { 0 }]);
+        let input = requests.len() as u64 * 10;
+        let output = requests.len() as u64 * 2;
+        assert_eq!(
+            (result.input_tokens, result.output_tokens),
+            (Some(input), Some(output))
+        );
+        assert_eq!(
+            usage_row(&host),
+            ("completed".into(), Some(input as i64), Some(output as i64))
+        );
+        host.bridge.assert_closed().await;
+    }
+}
+
+#[tokio::test]
 async fn a_task_woken_two_hundred_times_stops_with_a_retry_message() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
@@ -1330,13 +1545,15 @@ fn is_helper(request: &Value) -> bool {
 }
 
 fn helper_script() -> Script {
-    script(
-        |request, _index| match (is_helper(request), tool_outputs(request).is_empty()) {
-            (false, true) => tool_delta(vec![(
+    script(|request, _index| {
+        let outputs = tool_outputs(request);
+        match (is_helper(request), outputs.len()) {
+            (false, 0) => tool_delta(vec![(
                 SPAWN_AGENT,
                 json!({"brief": "Summarize main.tex into the record's notes."}),
             )]),
-            (true, true) => tool_delta(vec![
+            (true, 0) => tool_delta(vec![("read_file", json!({"path": "main.tex"}))]),
+            (true, 1) => tool_delta(vec![
                 (
                     "write_file",
                     json!({"path": "main.tex", "content": "Helper revision"}),
@@ -1351,27 +1568,155 @@ fn helper_script() -> Script {
                 ),
                 (SPAWN_AGENT, json!({"brief": "Go deeper."})),
             ]),
-            (true, false) => text_reply("Read main.tex and wrote notes."),
-            (false, false) => text_reply("The helper finished."),
-        },
-    )
+            (true, _) => text_reply("Read main.tex and wrote notes."),
+            (false, _) => text_reply("The helper finished."),
+        }
+    })
 }
 
 async fn run_with_helper(root: &Path) -> Vec<Value> {
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("main.tex"), "Original manuscript").unwrap();
+    let tasks_root = root.join("tasks");
+    let stored_task = running_task(&tasks_root, "local");
     let provider = Scripted::start(helper_script()).await;
     let host = fixture_host(root, provider.url.clone()).await;
-    let adapter = BuiltinTaskAdapter::new(host.clone(), services(&root.join("tasks")));
-    let mut task = context(&workspace);
+    let adapter = BuiltinTaskAdapter::new(host.clone(), services(&tasks_root));
+    let mut task = task_context(&stored_task, &workspace);
+    let helper_id = format!("{}:helper-1", task.session_id);
     task.allowed_paths = vec!["main.tex".into(), "research".into()];
     task.record_dir = HELPER_RECORD.into();
-    let result = within(adapter.run(task, CancellationToken::new(), event_log().1))
+    let (events, sink) = event_log();
+    let result = within(adapter.run(task, CancellationToken::new(), sink))
         .await
         .unwrap();
     assert_eq!(result.summary, "The helper finished.");
+    let store = TaskStore::new(tasks_root).unwrap();
+    let source_hash = crate::observations::content_hash(b"Original manuscript");
+    assert_eq!(
+        store
+            .file_snapshot(
+                &stored_task.id,
+                stored_task.execution_generation,
+                "main.tex",
+                &source_hash,
+            )
+            .unwrap()
+            .as_deref(),
+        Some(b"Original manuscript".as_slice())
+    );
+    let events = lock(&events);
+    let (call_id, input_hash) = events
+        .iter()
+        .find_map(|event| match event {
+            TaskRuntimeEvent::Observation {
+                observation:
+                    TaskObservation::ToolRequested {
+                        call_id,
+                        input_sha256,
+                        actor: Some(actor),
+                        ..
+                    },
+            } if actor == &helper_id => Some((call_id, input_sha256)),
+            _ => None,
+        })
+        .expect("the helper read must have an attributed request");
+    assert!(call_id.starts_with(&format!("{helper_id}:")));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        TaskRuntimeEvent::Observation {
+            observation: TaskObservation::ToolExecution {
+                actor: Some(actor),
+                call_id: completed_id,
+                input_sha256,
+                status,
+                source: Some(source),
+                ..
+            }
+        } if actor == &helper_id && completed_id == call_id && input_sha256 == input_hash
+            && status == "done" && source.path == "main.tex"
+            && source.file_sha256 == source_hash && source.snapshot_retained == Some(true)
+    )));
     provider.requests()
+}
+
+#[tokio::test]
+async fn helper_read_observations_match_final_backend_limited_output() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source = "\\".repeat(48 * 1024);
+    std::fs::write(workspace.join("main.tex"), &source).unwrap();
+    let tasks = root.path().join("tasks");
+    let stored = running_task(&tasks, "local");
+    let provider = Scripted::start(script(|request, _| {
+        match (is_helper(request), tool_outputs(request).len()) {
+            (false, 0) => tool_delta(vec![(SPAWN_AGENT, json!({"brief":"Read main.tex."}))]),
+            (true, 0) => tool_delta(vec![("read_file", json!({"path":"main.tex"}))]),
+            _ => text_reply("The oversized read must be requested in smaller ranges."),
+        }
+    }))
+    .await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&tasks));
+    let mut context = task_context(&stored, &workspace);
+    context.allowed_paths = vec!["main.tex".into(), "research".into()];
+    let helper = format!("{}:helper-1", context.session_id);
+    let (events, sink) = event_log();
+    within(adapter.run(context, CancellationToken::new(), sink))
+        .await
+        .unwrap();
+    let requests = provider.requests();
+    let delivered = requests
+        .iter()
+        .filter(|request| is_helper(request))
+        .flat_map(tool_outputs)
+        .next()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&delivered).unwrap()["error"],
+        "tool output exceeded the backend safety limit"
+    );
+    let recorded = lock(&events);
+    let reads: Vec<_> = recorded
+        .iter()
+        .filter_map(|event| match event {
+            TaskRuntimeEvent::Observation {
+                observation:
+                    TaskObservation::ToolExecution {
+                        actor: Some(actor),
+                        name,
+                        status,
+                        output_sha256,
+                        source,
+                        ..
+                    },
+            } if actor == &helper && name == "read_file" => Some((status, output_sha256, source)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].0, "error");
+    assert_eq!(*reads[0].1, content_hash(delivered.as_bytes()));
+    assert!(
+        reads[0].2.is_none(),
+        "a retained file is not proof the helper received it"
+    );
+    assert_eq!(
+        TaskStore::new(tasks)
+            .unwrap()
+            .file_snapshot(
+                &stored.id,
+                stored.execution_generation,
+                "main.tex",
+                &content_hash(source.as_bytes()),
+            )
+            .unwrap()
+            .as_deref(),
+        Some(source.as_bytes()),
+        "the file read itself is still retained independently of delivery"
+    );
 }
 
 #[tokio::test]
@@ -1399,14 +1744,16 @@ async fn spawned_readers_can_only_write_inside_the_record() {
     );
     let helper = requests
         .iter()
-        .find(|request| is_helper(request) && !tool_outputs(request).is_empty())
+        .filter(|request| is_helper(request))
+        .max_by_key(|request| tool_outputs(request).len())
         .unwrap();
     let outputs = tool_outputs(helper);
+    assert!(outputs[0].contains("Original manuscript"), "{outputs:?}");
     assert!(
-        outputs[0].contains("outside this task's allowed project files"),
+        outputs[1].contains("outside this task's allowed project files"),
         "{outputs:?}"
     );
-    assert!(!outputs[1].contains("error"), "{outputs:?}");
+    assert!(!outputs[2].contains("error"), "{outputs:?}");
     let parent = requests
         .iter()
         .find(|request| !is_helper(request) && !tool_outputs(request).is_empty())
@@ -1521,10 +1868,11 @@ async fn spawned_readers_cannot_spawn_or_run() {
     );
     let answered = requests
         .iter()
-        .find(|request| is_helper(request) && !tool_outputs(request).is_empty())
+        .filter(|request| is_helper(request))
+        .max_by_key(|request| tool_outputs(request).len())
         .unwrap();
     let refused = json!({"error": "This tool is unavailable to helpers."}).to_string();
-    assert_eq!(&tool_outputs(answered)[2..], [refused.clone(), refused]);
+    assert_eq!(&tool_outputs(answered)[3..], [refused.clone(), refused]);
     let parent = tool_names(requests.iter().find(|request| !is_helper(request)).unwrap());
     for name in [SPAWN_AGENT, "run_command", "start_run"] {
         assert!(

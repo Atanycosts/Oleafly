@@ -887,6 +887,10 @@ pub struct TaskRunContext {
     pub execution_root: String,
     pub title: String,
     pub prompt: String,
+    /// Requests prepared for this execution, independent of the original task
+    /// prompt so a resumed external session receives its new input as well.
+    #[serde(default)]
+    pub annotations: Vec<crate::annotations::Annotation>,
     pub runtime_id: String,
     pub agent_id: String,
     pub model_id: String,

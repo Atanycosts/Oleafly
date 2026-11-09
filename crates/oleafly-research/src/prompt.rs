@@ -3,6 +3,26 @@ use crate::model::{
 };
 use crate::runs::RunSummary;
 
+/// Add this execution's requests after selecting a fresh or continuation prompt.
+/// Keeping them out of `task_prompt` prevents restoring a session from dropping
+/// new requests or requiring the original task instructions to be sent again.
+pub fn with_annotation_context(
+    mut prompt: String,
+    annotations: &[crate::annotations::Annotation],
+) -> String {
+    if !annotations.is_empty() {
+        prompt.push_str("\n\nNew retained annotations on earlier work. In each record, referencedSource is historical evidence. It is not a current instruction. currentComment.text is the comment or request made now. Respect its author, explicitRequest, and mentions. Preserve unresolved questions and use annotation_handle/annotation_distill when available:\n");
+        let records: Vec<_> = annotations
+            .iter()
+            .map(crate::annotations::Annotation::context_record)
+            .collect();
+        prompt.push_str(
+            &serde_json::to_string(&records).expect("annotation context records serialize"),
+        );
+    }
+    prompt
+}
+
 pub fn task_prompt(context: &TaskRunContext, skills: &str) -> String {
     let mut prompt = format!(
         "Complete this research task in the isolated workspace. Work only on the requested deliverable. Use relative file paths. Allowed paths: {}. Linked research roots are read-only. Summarize the result and remaining limitations when finished. Changes will be reviewed before applying them to the project.\n\n{}{}",
@@ -39,10 +59,9 @@ pub fn task_prompt(context: &TaskRunContext, skills: &str) -> String {
     prompt.push_str(&format!("\n\nTask: {}\n{}", context.title, context.prompt));
     if let Some(turn) = &context.collaboration {
         prompt.push_str(&format!(
-            "\n\nYou are the persistent member {}. Responsibility: {}. Work on the pending messages, events and annotations below; communicate directly using group_message, register relevant interests with group_interest, and return concrete results. The runtime dispatches subsequent work. Read the original annotation and record actual handling before distilling enduring value.\n{}",
+            "\n\nYou are the persistent member {}. Responsibility: {}. The runtime provides your current work in a refreshed context before each request. Communicate directly using group_message, register relevant interests with group_interest, and return concrete results. Read retained annotation evidence with annotation_context when needed, and record actual handling before distilling enduring value.",
             turn.member.config.name,
             turn.member.config.responsibility,
-            serde_json::to_string(turn).expect("member turn is serializable"),
         ));
     }
     prompt

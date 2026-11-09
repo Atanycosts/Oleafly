@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { render, screen, waitFor } from "@testing-library/react";
+import { createRef } from "react";
 import { testCatalogTranslator } from "@oleafly/i18n-contract/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PreviewMessageKey } from "./messages";
@@ -560,6 +561,93 @@ describe("PdfViewer loading", () => {
       ),
     );
     expect(harness.textContentCalls).toEqual([1]);
+  });
+
+  it("reads only the current PDF text-layer selection with page-relative rectangles", async () => {
+    harness.pages = [page([text("First page selection")])];
+    const ref = createRef<import("./PdfViewer").PdfViewerHandle>();
+    const view = render(
+      <>
+        <PdfViewer ref={ref} data={new Uint8Array([1])} scale={1} documentIdentity="build-selection" rotation={90} t={t} />
+        <textarea data-testid="selection-editor" defaultValue="unrelated editor text" />
+      </>,
+    );
+    await waitFor(() => expect(renderer().querySelector("[data-page='1'] .textLayer span")).not.toBeNull());
+    const first = renderer().querySelector<HTMLElement>("[data-page='1'] .textLayer span")!;
+    const firstWrap = first.closest<HTMLElement>("[data-page]")!;
+    firstWrap.getBoundingClientRect = () => ({ left: 10, top: 20, right: 110, bottom: 220, width: 100, height: 200, x: 10, y: 20, toJSON() {} });
+    const firstText = first.firstChild!;
+    const range = document.createRange();
+    range.setStart(firstText, 0);
+    range.setEnd(firstText, firstText.textContent?.length ?? 0);
+    first.getBoundingClientRect = () => ({ left: 20, top: 30, right: 60, bottom: 40, width: 40, height: 10, x: 20, y: 30, toJSON() {} });
+    range.getClientRects = () => [first.getBoundingClientRect()] as unknown as DOMRectList;
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    Object.defineProperty(selection, "isCollapsed", { configurable: true, value: false });
+    Object.defineProperty(selection, "toString", { configurable: true, value: () => "First page selection" });
+
+    expect(ref.current?.getTextSelection()).toEqual({
+      documentIdentity: "build-selection",
+      text: "First page selection",
+      pages: [{ page: 1, rects: [{ x: 0.1, y: 0.05, width: 0.4, height: 0.05 }] }],
+      rotation: 90,
+    });
+
+    const outside = document.createElement("p");
+    outside.textContent = "External text must stay outside";
+    view.container.append(outside);
+    const outsideRange = document.createRange();
+    outsideRange.selectNodeContents(outside);
+    Object.defineProperty(selection, "rangeCount", { configurable: true, value: 2 });
+    const getRange = vi.spyOn(selection, "getRangeAt").mockImplementation((index) => index === 0 ? range : outsideRange);
+    expect(ref.current?.getTextSelection()?.text).toBe("First page selection");
+    getRange.mockRestore();
+    Reflect.deleteProperty(selection, "rangeCount");
+    Reflect.deleteProperty(selection, "isCollapsed");
+    Reflect.deleteProperty(selection, "toString");
+
+    const editor = view.getByTestId("selection-editor") as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(0, 8);
+    expect(ref.current?.getTextSelection()).toBeNull();
+    selection.removeAllRanges();
+  });
+
+  it("rejects an old text-layer selection while a new document identity is loading", async () => {
+    harness.pages = [page([text("Document A selection")])];
+    const ref = createRef<import("./PdfViewer").PdfViewerHandle>();
+    const view = render(<PdfViewer ref={ref} data={new Uint8Array([1])} scale={1} documentIdentity="A" t={t} />);
+    await waitFor(() => expect(renderer().dataset.pdfState).toBe("ready"));
+    const layer = await waitFor(() => {
+      const result = renderer().querySelector<HTMLElement>(".textLayer");
+      expect(result?.textContent).toContain("Document A selection");
+      return result!;
+    });
+    const wrap = layer.closest<HTMLElement>("[data-page]")!;
+    wrap.getBoundingClientRect = () => new DOMRect(0, 0, 100, 100);
+    const range = document.createRange();
+    range.selectNodeContents(layer);
+    range.getClientRects = () => [new DOMRect(10, 10, 40, 10)] as unknown as DOMRectList;
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(ref.current?.getTextSelection()?.documentIdentity).toBe("A");
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    harness.beforeLoad = () => pending;
+    view.rerender(<PdfViewer ref={ref} data={new Uint8Array([2])} scale={1} documentIdentity="B" t={t} />);
+    expect(layer.isConnected).toBe(true);
+    expect(layer.dataset.pdfDocumentIdentity).toBe("A");
+    expect(ref.current?.getTextSelection()).toBeNull();
+    harness.pages = [page([text("Document B selection")])];
+    release();
+    await waitFor(() => expect(renderer().dataset.pdfState).toBe("ready"));
+    await waitFor(() => expect(renderer().querySelector(".textLayer")?.textContent).toContain("Document B selection"));
+    expect(layer.isConnected).toBe(false);
+    expect(ref.current?.getTextSelection()).toBeNull();
+    selection.removeAllRanges();
   });
 
   it("reloads on a fresh worker when the probed text pipe comes back empty", async () => {

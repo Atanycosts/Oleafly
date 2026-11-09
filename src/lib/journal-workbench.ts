@@ -3,10 +3,76 @@ import { i18n } from "@/i18n";
 import { bytesToBase64 } from "@/lib/base64";
 import type { ResearchWorkspace } from "@/lib/research-workspace";
 import { normalizeTask, type ResearchTask, type ResearchTaskDraft } from "@/lib/research-tasks";
+import { loadObjectAnnotations, type AnnotationSourceDraft, type AnnotationTarget, type TaskAnnotation } from "@/lib/task-collaboration";
 
 export interface JournalConnection {
   python: string;
   libraryRoot: string;
+}
+
+export interface JournalObjectReference {
+  libraryRoot: string;
+  workbenchProjectId: string;
+  kind: "rule" | "source" | "check" | "world";
+  objectId: string;
+  worldVersionId: string;
+  checkId: string | null;
+}
+
+export interface JournalAnnotationObject {
+  reference: JournalObjectReference;
+  target: AnnotationTarget;
+  source: AnnotationSourceDraft;
+  relatedTasks: ResearchTask[];
+  continuationTaskId: string | null;
+}
+
+export interface JournalAnnotationRequest {
+  annotation: TaskAnnotation;
+  task: ResearchTask;
+  created: boolean;
+  needsStart: boolean;
+}
+
+export const loadJournalAnnotationObject = (projectId: string, reference: JournalObjectReference, annotationId: string | null = null) =>
+  invoke<JournalAnnotationObject>("journal_annotation_object", { projectId, reference, annotationId });
+
+export const saveJournalAnnotation = (projectId: string, reference: JournalObjectReference, body: string, parentId: string | null, mentions: string[] = []) =>
+  invoke<TaskAnnotation>("journal_annotation_save", { projectId, reference, body, parentId, mentions });
+
+export const requestJournalAnnotation = (request: {
+  projectId: string; reference: JournalObjectReference; body: string; parentId: string;
+  mentions: string[]; taskId: string | null; draft: ResearchTaskDraft | null;
+}) => invoke<JournalAnnotationRequest>("journal_annotation_request", request).then((result) => ({ ...result, task: normalizeTask(result.task) }));
+
+export function journalAnnotationSource(annotation: TaskAnnotation): { reference: JournalObjectReference; object: unknown } {
+  if (annotation.source?.kind !== "journal_object") throw new Error("This annotation has no retained journal object.");
+  return JSON.parse(annotation.source.content) as { reference: JournalObjectReference; object: unknown };
+}
+
+export function journalTargetReference(target: AnnotationTarget): JournalObjectReference | null {
+  const kinds: Record<string, JournalObjectReference["kind"]> = { journal_rule: "rule", journal_source: "source", journal_check: "check", journal_world: "world" };
+  const kind = kinds[target.objectKind];
+  if (!kind || !target.objectRevision) return null;
+  const identity = JSON.parse(target.objectId) as { libraryRoot: string; manuscriptId: string; id: string };
+  return {
+    libraryRoot: identity.libraryRoot, workbenchProjectId: identity.manuscriptId, kind,
+    objectId: identity.id, worldVersionId: kind === "check" ? "" : target.objectRevision,
+    checkId: kind === "check" ? target.objectRevision : null,
+  };
+}
+
+export async function loadJournalTarget(target: AnnotationTarget): Promise<JournalAnnotationObject> {
+  const reference = journalTargetReference(target);
+  if (!reference) throw new Error("This reference is not a retained journal object.");
+  const context = await loadObjectAnnotations({ ...target, taskId: null });
+  const original = context.annotations.find((annotation) => annotation.target.objectRevision === target.objectRevision && annotation.source?.kind === "journal_object");
+  if (original) return loadJournalAnnotationObject(target.projectId, journalAnnotationSource(original).reference, original.id);
+  if (reference.kind === "check") {
+    const check = await journalRequest<JournalCheck>(journalQuery("/api/check", { check_id: reference.checkId as string }));
+    reference.worldVersionId = check.world_version_id;
+  }
+  return loadJournalAnnotationObject(target.projectId, reference);
 }
 
 export interface JournalScope {

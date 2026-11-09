@@ -209,6 +209,70 @@ async fn wait_for(mut ready: impl FnMut() -> bool) {
     .expect("the controlled lifecycle boundary did not occur");
 }
 
+#[tokio::test]
+async fn file_routing_retains_rollbacks_and_restoration_of_the_task_baseline() {
+    let fixture = GroupFixture::new();
+    let store = fixture.store();
+    store.request_start(&fixture.task.id).unwrap();
+    let task = store.claim_next().unwrap().unwrap();
+    store.seed_group_work(&task).unwrap();
+    let turn = store.claim_member_turn(&task).unwrap().unwrap();
+    let methods = fixture.member("Methods");
+    store
+        .set_member_interest(
+            "paper",
+            &fixture.group.group.id,
+            &MemberInterest {
+                member_id: methods.clone(),
+                kind: InterestKind::Path,
+                value: "main.tex".into(),
+            },
+            true,
+        )
+        .unwrap();
+    let change = |revision: &str| TaskFileChange {
+        path: "main.tex".into(),
+        kind: crate::model::TaskFileChangeKind::Modified,
+        before_sha256: Some("BASE".into()),
+        after_sha256: Some(revision.into()),
+        before_size: Some(4),
+        after_size: Some(4),
+    };
+    let mut previous = Vec::new();
+    for revision in [Some("H2"), Some("H3"), Some("H2"), None, Some("H3")] {
+        let current = revision
+            .map(|revision| vec![change(revision)])
+            .unwrap_or_default();
+        fixture
+            .state
+            .route_file_changes(&store, &turn, &current, &previous)
+            .unwrap();
+        fixture
+            .state
+            .route_file_changes(&store, &turn, &current, &current)
+            .unwrap();
+        previous = current;
+    }
+    let snapshot = fixture.snapshot();
+    assert_eq!(
+        snapshot
+            .events
+            .iter()
+            .map(|event| event.object.revision.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["H2", "H3", "H2", "BASE", "H3"]
+    );
+    let routed: Vec<_> = snapshot
+        .work
+        .iter()
+        .filter(|work| work.cause_kind == "event")
+        .collect();
+    assert_eq!(routed.len(), 5);
+    assert!(routed.iter().all(|work| work.member_id == methods));
+    store.interrupt_member_turn(&turn, None).unwrap();
+    stop(&fixture.state).await;
+}
+
 struct ExternalStart {
     context: TaskRunContext,
     token: CancellationToken,

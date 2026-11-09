@@ -9,7 +9,7 @@ import { formatDateTime } from "@/lib/intl";
 import type { ResearchTask } from "@/lib/research-tasks";
 import {
   loadObjectAnnotations, loadTaskAnnotations, submitTaskAnnotation,
-  type AnnotationAuthor, type AnnotationContext, type AnnotationTarget, type GroupMember, type TaskAnnotation,
+  type AnnotationAuthor, type AnnotationContext, type AnnotationSourceDraft, type AnnotationTarget, type GroupMember, type TaskAnnotation, type TaskAnnotationDraft,
 } from "@/lib/task-collaboration";
 
 interface AnnotationPanelOptions {
@@ -17,6 +17,12 @@ interface AnnotationPanelOptions {
   revision?: number;
   onOpenTarget?: (target: AnnotationTarget) => void;
   onSaved?: (annotation: TaskAnnotation) => void;
+  onExplicitRequest?: (body: string) => Promise<void>;
+  submitAnnotation?: (draft: TaskAnnotationDraft) => Promise<TaskAnnotation>;
+  onReplyChange?: (annotation: TaskAnnotation | null) => void;
+  requestHint?: string;
+  source?: AnnotationSourceDraft;
+  loadSource?: (target: AnnotationTarget) => Promise<AnnotationSourceDraft | undefined>;
 }
 
 export type TaskAnnotationsProps = AnnotationPanelOptions & (
@@ -48,6 +54,7 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
     projectId: props.task.projectId, taskId: props.task.id, objectKind: "task", objectId: props.task.id,
     objectRevision: `generation:${props.task.executionGeneration}`, path: null,
   };
+  const source = props.source;
   const { projectId, taskId, objectKind, objectId, objectRevision, path } = defaultTarget;
   const queryTarget = useMemo(() => ({ projectId, taskId, objectKind, objectId, objectRevision, path }), [projectId, taskId, objectKind, objectId, objectRevision, path]);
   const { t } = useTranslation(["common", "researchTools"]);
@@ -103,13 +110,26 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
     if (!body.trim() || saving) return;
     setSaving(true); setSaveError(null); setSaved(false);
     try {
-      const annotation = await submitTaskAnnotation({ target: currentTarget, body, parentId: reply?.id ?? null, mentions, explicitRequest });
+      if (explicitRequest && props.onExplicitRequest) {
+        await props.onExplicitRequest(body);
+        if (!mounted.current) return;
+        setBody(""); setReply(null); setMentions([]); setExplicitRequest(false);
+        props.onReplyChange?.(null);
+        return;
+      }
+      const selectedSource = !reply ? source ?? await props.loadSource?.(currentTarget).catch(() => undefined) : undefined;
+      const sourceSnapshot = selectedSource && new TextEncoder().encode(selectedSource.content).byteLength <= 256 * 1024 ? selectedSource : undefined;
+      const annotation = await (props.submitAnnotation ?? submitTaskAnnotation)({
+        target: currentTarget, body, ...(sourceSnapshot ? { source: sourceSnapshot } : {}),
+        parentId: reply?.id ?? null, mentions, explicitRequest,
+      });
       if (!mounted.current) return;
       setContext((previous) => ({
         annotations: [...(previous?.annotations ?? []), annotation], deliveries: previous?.deliveries ?? [],
         requirements: previous?.requirements ?? [], handlings: previous?.handlings ?? [], distillations: previous?.distillations ?? [],
       }));
       setBody(""); setReply(null); setMentions([]); setExplicitRequest(false); setSaved(true);
+      props.onReplyChange?.(null);
       onSaved?.(annotation);
       await refresh();
     } catch (error) {
@@ -120,6 +140,7 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
   };
   const replyTo = (annotation: TaskAnnotation) => {
     setReply(annotation); setSaveError(null); setSaved(false);
+    props.onReplyChange?.(annotation);
     document.getElementById(`${formId}-body`)?.focus();
   };
   return <section data-testid="task-annotations" className="space-y-3 rounded-lg border p-3" aria-label={t(($) => $.researchTools.tasks.annotations.title)}>
@@ -141,11 +162,15 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
         <TargetReference target={annotation.target} onOpen={onOpenTarget} />
         {annotation.parentId ? <p className="text-xs">{t(($) => $.researchTools.tasks.annotations.replyTo)}: {reference("annotation", annotation.parentId)}</p> : null}
         <CopyableBlock source={annotation.body}><p className="whitespace-pre-wrap break-words text-sm">{annotation.body}</p></CopyableBlock>
+        {annotation.source ? <details className="text-xs"><summary>{t(($) => $.researchTools.tasks.annotations.recordedObject)}</summary>
+          <p className="mt-1 break-all font-mono">{t(($) => $.researchTools.tasks.annotations.sourceSha256, { sha256: annotation.source.sha256 })}</p>
+          <CopyableBlock source={annotation.source.content}><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words">{annotation.source.content}</pre></CopyableBlock>
+        </details> : null}
         {annotation.mentions.length > 0 ? <p className="break-all text-xs">{annotation.mentions.map((id) => `@${members.find((member) => member.id === id)?.name ?? id}`).join(" · ")}</p> : null}
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
           <span>{t(($) => $.researchTools.tasks.annotations.saved)}</span>
           <span>{annotation.explicitRequest ? t(($) => $.researchTools.tasks.annotations.requested) : t(($) => $.researchTools.tasks.annotations.feedback)}</span>
-          {delivery ? <span>{delivery.deliveredGeneration === null ? t(($) => $.researchTools.tasks.annotations.queued) : t(($) => $.researchTools.tasks.annotations.delivered, { generation: delivery.deliveredGeneration })}{delivery.deliveredAt !== null ? ` · ${formatDateTime(delivery.deliveredAt)}` : ""}</span> : null}
+          {delivery ? <span>{delivery.deliveredGeneration !== null ? t(($) => $.researchTools.tasks.annotations.delivered, { generation: delivery.deliveredGeneration }) : delivery.preparedGeneration !== null ? t(($) => $.researchTools.tasks.annotations.prepared, { generation: delivery.preparedGeneration }) : t(($) => $.researchTools.tasks.annotations.queued)}{delivery.deliveredAt !== null ? ` · ${formatDateTime(delivery.deliveredAt)}` : ""}</span> : null}
           {annotation.status === "dismissed" ? <span>{t(($) => $.researchTools.tasks.annotations.dismissed)}</span> : null}
           {annotation.status === "handled" && handlings.length > 0 ? <span>{t(($) => $.researchTools.tasks.annotations.handled)}</span> : null}
         </div>
@@ -179,14 +204,14 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
     <form className="space-y-2 border-t pt-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <p className="text-xs font-medium">{t(($) => $.researchTools.tasks.annotations.target)}</p>
       <TargetReference target={currentTarget} onOpen={onOpenTarget} />
-      {reply ? <div className="flex flex-wrap items-center gap-2 text-xs"><span>{t(($) => $.researchTools.tasks.annotations.replyTo)}: {reference("annotation", reply.id)}</span><Button type="button" variant="ghost" size="xs" disabled={saving} onClick={() => setReply(null)}>{t(($) => $.researchTools.tasks.annotations.cancelReply)}</Button></div> : null}
+      {reply ? <div className="flex flex-wrap items-center gap-2 text-xs"><span>{t(($) => $.researchTools.tasks.annotations.replyTo)}: {reference("annotation", reply.id)}</span><Button type="button" variant="ghost" size="xs" disabled={saving} onClick={() => { setReply(null); props.onReplyChange?.(null); }}>{t(($) => $.researchTools.tasks.annotations.cancelReply)}</Button></div> : null}
       <label htmlFor={`${formId}-body`} className="block text-xs">{t(($) => $.researchTools.tasks.annotations.body)}</label>
       <Textarea id={`${formId}-body`} value={body} onChange={(event) => { setBody(event.target.value); setSaved(false); }} rows={3} maxLength={64000} disabled={saving} />
       {members.length > 0 ? <fieldset disabled={saving} className="space-y-1"><legend className="text-xs">{t(($) => $.researchTools.tasks.annotations.mentions)}</legend>
         <div className="flex flex-wrap gap-3">{members.map((member) => <label key={member.id} htmlFor={`${formId}-mention-${member.id}`} className="flex items-center gap-1.5 text-xs"><Checkbox id={`${formId}-mention-${member.id}`} checked={mentions.includes(member.id)} onCheckedChange={(checked) => setMentions((previous) => checked === true ? [...previous, member.id] : previous.filter((id) => id !== member.id))} /><span>{`@${member.name}`}</span></label>)}</div>
       </fieldset> : null}
       <label htmlFor={`${formId}-request`} className="flex items-start gap-2 text-xs"><Checkbox id={`${formId}-request`} checked={explicitRequest} disabled={saving} onCheckedChange={(checked) => setExplicitRequest(checked === true)} /><span>{t(($) => $.researchTools.tasks.annotations.explicitRequest)}</span></label>
-      <p className="text-xs text-muted-foreground">{props.contextScope === "object" ? t(($) => $.researchTools.tasks.annotations.chatRequestHint) : t(($) => $.researchTools.tasks.annotations.requestHint)}</p>
+      <p className="text-xs text-muted-foreground">{props.requestHint ?? (props.contextScope === "object" ? t(($) => $.researchTools.tasks.annotations.chatRequestHint) : t(($) => $.researchTools.tasks.annotations.requestHint))}</p>
       <Button type="submit" size="sm" disabled={saving || !body.trim()}>{saving ? t(($) => $.researchTools.tasks.annotations.saving) : t(($) => $.researchTools.tasks.annotations.save)}</Button>
       {saveError ? <p role="alert" className="break-words text-xs text-destructive">{saveError}</p> : null}
       {saved ? <p role="status" className="text-xs">{t(($) => $.researchTools.tasks.annotations.saved)}</p> : null}

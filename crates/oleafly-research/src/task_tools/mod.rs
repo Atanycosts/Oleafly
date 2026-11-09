@@ -204,6 +204,16 @@ impl TaskFiles {
     }
 
     pub fn read_window(&self, value: &str, offset: usize, limit: usize) -> Result<Value, String> {
+        self.read_window_with_source(value, offset, limit)
+            .map(|(window, _)| window)
+    }
+
+    pub fn read_window_with_source(
+        &self,
+        value: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Value, String), String> {
         let content = self.read(value)?;
         if !content.is_char_boundary(offset) {
             return Err("Use an offset from a previous file read.".into());
@@ -214,7 +224,7 @@ impl TaskFiles {
         while !content.is_char_boundary(end) {
             end -= 1;
         }
-        Ok(json!({
+        let window = json!({
             "content": &content[offset..end],
             "path": value,
             "fileSha256": crate::observations::content_hash(content.as_bytes()),
@@ -223,7 +233,8 @@ impl TaskFiles {
             "nextOffset": (end < content.len()).then_some(end),
             "totalBytes": content.len(),
             "truncated": end < content.len(),
-        }))
+        });
+        Ok((window, content))
     }
 
     pub fn write(&self, value: &str, content: &str) -> Result<Value, String> {

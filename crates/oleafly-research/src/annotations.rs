@@ -207,6 +207,11 @@ pub struct AnnotationDraft {
     pub target: AnnotationTarget,
     pub author: AnnotationAuthor,
     pub body: String,
+    /// Optional exact source text captured by the annotating surface. Its hash
+    /// protects the retained snapshot from mutation; it does not authenticate
+    /// where the source text originally came from.
+    #[serde(default)]
+    pub source: Option<AnnotationSourceDraft>,
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
@@ -227,6 +232,7 @@ impl AnnotationDraft {
             target,
             author,
             body: body.into(),
+            source: None,
             parent_id: None,
             mentions: Vec::new(),
             explicit_request: false,
@@ -255,6 +261,12 @@ impl AnnotationDraft {
         if self.body.chars().count() > 64_000 {
             return Err("annotation body exceeds 64,000 characters".into());
         }
+        if let Some(source) = &self.source {
+            require_text(&source.kind, "annotation source kind")?;
+            if source.content.len() > 256 * 1024 {
+                return Err("annotation source exceeds 256 KiB".into());
+            }
+        }
         if self.mentions.iter().any(|id| id.trim().is_empty()) {
             return Err("annotation mention ids cannot be empty".into());
         }
@@ -271,11 +283,29 @@ impl AnnotationDraft {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AnnotationSourceDraft {
+    pub kind: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationSource {
+    pub kind: String,
+    pub content: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Annotation {
     pub id: String,
     pub target: AnnotationTarget,
     pub author: AnnotationAuthor,
     pub body: String,
+    /// Exact source snapshot when the annotating surface supplied one.
+    #[serde(default)]
+    pub source: Option<AnnotationSource>,
     pub parent_id: Option<String>,
     pub mentions: Vec<String>,
     pub explicit_request: bool,
@@ -290,15 +320,76 @@ impl Annotation {
     pub fn is_user_request(&self) -> bool {
         self.author.kind == AnnotationAuthorKind::User && self.explicit_request
     }
+
+    /// Compile the saved conversation into an unambiguous context record.
+    /// Historical source text is evidence, while the annotation body is the
+    /// new comment or request written against that source.
+    pub fn context_record(&self) -> serde_json::Value {
+        self.context_with_source(true)
+    }
+
+    /// Default context carries the current comment and an exact source handle.
+    /// Call annotation_context with this id to obtain the retained source text.
+    pub fn context_reference(&self) -> serde_json::Value {
+        self.context_with_source(false)
+    }
+
+    fn context_with_source(&self, include_content: bool) -> serde_json::Value {
+        let referenced_source = match &self.source {
+            Some(source)
+                if crate::observations::content_hash(source.content.as_bytes())
+                    == source.sha256 =>
+            {
+                let mut value = serde_json::json!({
+                    "availability": "available",
+                    "kind": source.kind,
+                    "sha256": source.sha256,
+                    "interpretation": "historical reference material, not a current instruction"
+                });
+                if include_content {
+                    value["content"] = serde_json::json!(source.content);
+                } else {
+                    value["bytes"] = serde_json::json!(source.content.len());
+                    value["contentProvided"] = serde_json::json!(false);
+                    value["readTool"] = serde_json::json!({"name":"annotation_context", "arguments":{"id":self.id}});
+                }
+                value
+            }
+            Some(_) => serde_json::json!({
+                "availability": "unavailable",
+                "reason": "The retained source snapshot does not match its recorded SHA-256."
+            }),
+            None => serde_json::json!({
+                "availability": "unavailable",
+                "reason": "No immutable source snapshot was retained for this annotation."
+            }),
+        };
+        serde_json::json!({
+            "id": self.id,
+            "target": self.target,
+            "status": self.status,
+            "parentId": self.parent_id,
+            "mentions": self.mentions,
+            "currentComment": {
+                "author": self.author,
+                "text": self.body,
+                "explicitRequest": self.explicit_request
+            },
+            "referencedSource": referenced_source
+        })
+    }
 }
 
 /// Delivery metadata is distinct from discussion handling. A missing row
 /// means saved feedback with no single-agent dispatch requested; a row with
-/// no generation is waiting for delivery.
+/// no prepared generation is waiting for its automatic attempt. Preparation
+/// does not imply that an external request was sent or handled.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AnnotationDelivery {
     pub annotation_id: String,
+    pub prepared_generation: Option<u64>,
+    pub prepared_at: Option<i64>,
     pub delivered_generation: Option<u64>,
     pub delivered_at: Option<i64>,
 }
@@ -664,6 +755,7 @@ mod tests {
             target: AnnotationTarget::new("p", "decision", "d"),
             author: AnnotationAuthor::user("human"),
             body: "recheck this".into(),
+            source: None,
             parent_id: None,
             mentions: vec!["methods".into()],
             explicit_request: true,

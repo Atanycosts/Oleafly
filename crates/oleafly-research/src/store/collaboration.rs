@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
@@ -7,6 +7,11 @@ use crate::collaboration::*;
 use crate::model::{
     now_ms, PendingStart, ResearchTask, ResearchTaskStatus, ResumeReason, TaskRuntimeOutcome,
 };
+
+#[path = "attention.rs"]
+mod attention;
+pub(super) use attention::record_handling_on;
+pub(super) use attention::SCHEMA_SQL as ATTENTION_SCHEMA_SQL;
 
 pub(super) const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS collaboration_groups (
@@ -68,7 +73,7 @@ fn message_on(connection: &Connection, group: &str, id: &str) -> Result<GroupMes
     connection.query_row("SELECT sequence,id,author_json,content_json,created_at FROM collaboration_messages WHERE id=?1 AND group_id=?2",params![id,group],|r| Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?))).optional().map_err(store_error)?.map(|(sequence,id,author,content,created_at)| -> Result<GroupMessage,String> { Ok(GroupMessage {sequence,id,group_id:group.into(),author:decode_json(&author,"message author")?,content:decode_json(&content,"message")?,created_at}) }).transpose()?.ok_or("The reply or message belongs to another group.".into())
 }
 fn work_on(connection: &Connection, group: &str) -> Result<Vec<GroupWork>, String> {
-    connection.prepare("SELECT id,member_id,cause_kind,cause_id,priority,status,execution_id,result_message_id,created_at,updated_at FROM collaboration_work WHERE group_id=?1 ORDER BY priority DESC,created_at,id").and_then(|mut q|q.query_map([group],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,u32>(4)?,r.get::<_,String>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,i64>(8)?,r.get::<_,i64>(9)?)))?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?.into_iter().map(|(id,member_id,cause_kind,cause_id,priority,status,execution_id,result_message_id,created_at,updated_at)|Ok(GroupWork {id,group_id:group.into(),member_id,cause_kind,cause_id,priority,status:decode_json(&status,"work status")?,execution_id,result_message_id,created_at,updated_at})).collect()
+    connection.prepare("SELECT id,member_id,cause_kind,cause_id,priority,status,execution_id,result_message_id,reasons_json,created_at,updated_at FROM collaboration_work WHERE group_id=?1 ORDER BY priority DESC,created_at,id").and_then(|mut q|q.query_map([group],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,u32>(4)?,r.get::<_,String>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,String>(8)?,r.get::<_,i64>(9)?,r.get::<_,i64>(10)?)))?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?.into_iter().map(|(id,member_id,cause_kind,cause_id,priority,status,execution_id,result_message_id,reasons,created_at,updated_at)|Ok(GroupWork {id,group_id:group.into(),member_id,cause_kind,cause_id,priority,status:decode_json(&status,"work status")?,execution_id,result_message_id,reasons:decode_json(&reasons,"work reasons")?,created_at,updated_at})).collect()
 }
 fn execution_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemberExecution> {
     Ok(MemberExecution {
@@ -97,8 +102,23 @@ pub(super) fn insert_work_on(
     kind: &str,
     cause: &str,
     priority: u32,
+    reasons: &[WorkReason],
 ) -> Result<(), String> {
-    tx.execute("INSERT INTO collaboration_work(id,group_id,member_id,cause_kind,cause_id,priority,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,'\"pending\"',?7,?7) ON CONFLICT(member_id,cause_kind,cause_id) DO NOTHING",params![fresh_id("work"),group,member,kind,cause,priority,now_ms()]).map_err(store_error)?;
+    let existing: Option<(String, String)> = tx.query_row(
+        "SELECT id,reasons_json FROM collaboration_work WHERE member_id=?1 AND cause_kind=?2 AND cause_id=?3",
+        params![member,kind,cause], |row| Ok((row.get(0)?,row.get(1)?)),
+    ).optional().map_err(store_error)?;
+    if let Some((id, saved)) = existing {
+        let mut merged: Vec<WorkReason> = decode_json(&saved, "work reasons")?;
+        for reason in reasons {
+            if !merged.contains(reason) {
+                merged.push(reason.clone());
+            }
+        }
+        tx.execute("UPDATE collaboration_work SET reasons_json=?2,priority=MAX(priority,?3),updated_at=?4 WHERE id=?1",params![id,encode_json(&merged)?,priority,now_ms()]).map_err(store_error)?;
+        return Ok(());
+    }
+    tx.execute("INSERT INTO collaboration_work(id,group_id,member_id,cause_kind,cause_id,priority,status,reasons_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,'\"pending\"',?7,?8,?8) ON CONFLICT(member_id,cause_kind,cause_id) DO NOTHING",params![fresh_id("work"),group,member,kind,cause,priority,encode_json(reasons)?,now_ms()]).map_err(store_error)?;
     Ok(())
 }
 fn validate_actor(tx: &Transaction<'_>, group: &str, actor: &GroupActor) -> Result<(), String> {
@@ -122,24 +142,56 @@ fn validate_actor(tx: &Transaction<'_>, group: &str, actor: &GroupActor) -> Resu
     }
     Ok(())
 }
-fn interested(
+fn interest_reasons(
     member: &str,
     interests: &[MemberInterest],
     kind: &str,
     object: &GroupObject,
-) -> bool {
+) -> Vec<WorkReason> {
     interests
         .iter()
         .filter(|i| i.member_id == member)
-        .any(|i| match i.kind {
-            InterestKind::Path => object
-                .path
-                .as_ref()
-                .is_some_and(|path| path_matches(&i.value, path)),
-            InterestKind::Object => i.value == format!("{}:{}", object.kind, object.id),
-            InterestKind::Event => i.value == kind,
+        .filter_map(|i| {
+            let (matches, reason) = match i.kind {
+                InterestKind::Path => (
+                    object
+                        .path
+                        .as_ref()
+                        .is_some_and(|path| path_matches(&i.value, path)),
+                    "interest_path",
+                ),
+                InterestKind::Object => (
+                    i.value == format!("{}:{}", object.kind, object.id),
+                    "interest_object",
+                ),
+                InterestKind::Event => (i.value == kind, "interest_event"),
+            };
+            matches.then(|| work_reason(reason, Some(object), None, None))
         })
+        .collect()
 }
+
+fn work_reason(
+    kind: &str,
+    object: Option<&GroupObject>,
+    source: Option<&str>,
+    execution: Option<&str>,
+) -> WorkReason {
+    WorkReason {
+        kind: kind.into(),
+        object: object.cloned(),
+        source_id: source.map(str::to_owned),
+        execution_id: execution.map(str::to_owned),
+    }
+}
+
+fn route(routes: &mut BTreeMap<String, Vec<WorkReason>>, member: &str, reason: WorkReason) {
+    let reasons = routes.entry(member.into()).or_default();
+    if !reasons.contains(&reason) {
+        reasons.push(reason);
+    }
+}
+
 fn insert_message_on(
     tx: &Transaction<'_>,
     group: &TaskGroup,
@@ -150,39 +202,84 @@ fn insert_message_on(
     validate_actor(tx, &group.id, actor)?;
     let members = members_on(tx, &group.id)?;
     let interests = interests_on(tx, &group.id)?;
-    let mut recipients: BTreeSet<String> = draft.recipients.iter().cloned().collect();
-    for id in &recipients {
-        if !members.iter().any(|m| &m.id == id) {
-            return Err("A recipient is not in this group.".into());
-        }
+    let attentions = attention::list_on(tx, &group.id)?;
+    let mut routes = BTreeMap::new();
+    for id in &draft.recipients {
+        route(
+            &mut routes,
+            id,
+            work_reason("explicit_recipient", draft.object.as_ref(), None, None),
+        );
     }
     if let Some(reply) = &draft.reply_to {
         let parent = message_on(tx, &group.id, reply)?;
         if parent.author.kind == ActorKind::Member {
-            recipients.insert(parent.author.id);
+            route(
+                &mut routes,
+                &parent.author.id,
+                work_reason(
+                    "reply",
+                    parent.content.object.as_ref(),
+                    Some(&parent.id),
+                    parent.author.execution_id.as_deref(),
+                ),
+            );
         }
     }
     for member in &members {
         let mentioned = draft.body.contains(&format!("@{}", member.config.name))
             || draft.body.contains(&format!("@{}", member.id));
-        let relevant = draft
-            .object
-            .as_ref()
-            .is_some_and(|object| interested(&member.id, &interests, "message", object));
-        if mentioned || relevant {
-            recipients.insert(member.id.clone());
+        if mentioned {
+            route(
+                &mut routes,
+                &member.id,
+                work_reason("mention", draft.object.as_ref(), None, None),
+            );
+        }
+        if let Some(object) = &draft.object {
+            for reason in interest_reasons(&member.id, &interests, "message", object) {
+                route(&mut routes, &member.id, reason);
+            }
+            if draft.request_work {
+                for reason in attention::matching_reasons(&member.id, &attentions, object, false) {
+                    route(&mut routes, &member.id, reason);
+                }
+            }
         }
     }
-    if recipients.is_empty() && draft.request_work {
+    routes.remove(&actor.id);
+    if routes.is_empty() && draft.request_work {
         if let Some(member) = members.iter().find(|m| m.config.coordinator) {
-            recipients.insert(member.id.clone());
+            if member.id != actor.id {
+                route(
+                    &mut routes,
+                    &member.id,
+                    work_reason("coordinator", draft.object.as_ref(), None, None),
+                );
+            }
         }
     }
-    recipients.remove(&actor.id);
+    save_routed_message_on(tx, group, actor, draft, routes, None)
+}
+
+fn save_routed_message_on(
+    tx: &Transaction<'_>,
+    group: &TaskGroup,
+    actor: &GroupActor,
+    draft: &MessageDraft,
+    routes: BTreeMap<String, Vec<WorkReason>>,
+    annotation: Option<&str>,
+) -> Result<GroupMessage, String> {
+    validate_text(&draft.body, "Message", 1, 32_000)?;
+    validate_actor(tx, &group.id, actor)?;
+    let members = members_on(tx, &group.id)?;
+    if routes.keys().any(|id| !members.iter().any(|m| &m.id == id)) {
+        return Err("A recipient is not in this group.".into());
+    }
     let now = now_ms();
     let id = fresh_id("message");
     let mut content = draft.clone();
-    content.recipients = recipients.iter().cloned().collect();
+    content.recipients = routes.keys().cloned().collect();
     tx.execute("INSERT INTO collaboration_messages(id,group_id,author_json,content_json,created_at) VALUES(?1,?2,?3,?4,?5)",params![id,group.id,encode_json(actor)?,encode_json(&content)?,now]).map_err(store_error)?;
     let sequence = tx.last_insert_rowid() as u64;
     let user_request = actor.kind == ActorKind::User && draft.request_work;
@@ -195,18 +292,23 @@ fn insert_message_on(
             .map_err(store_error)?;
         }
         if draft.request_work || !content.recipients.is_empty() {
-            for member in recipients {
+            for (member, reasons) in routes {
                 insert_work_on(
                     tx,
                     &group.id,
                     &member,
-                    "message",
-                    &id,
+                    if annotation.is_some() {
+                        "annotation"
+                    } else {
+                        "message"
+                    },
+                    annotation.unwrap_or(&id),
                     if actor.kind == ActorKind::User {
                         100
                     } else {
                         50
                     },
+                    &reasons,
                 )?;
             }
         }
@@ -270,6 +372,53 @@ fn member_turn_on(
         events,
         annotations,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_group_event_on(
+    tx: &Transaction<'_>,
+    project: &str,
+    group: &str,
+    key: &str,
+    kind: &str,
+    object: &GroupObject,
+    actor: &GroupActor,
+    detail: &str,
+) -> Result<Vec<String>, String> {
+    let g = group_on(tx, project, group)?;
+    validate_actor(tx, group, actor)?;
+    let event = GroupEvent {
+        id: fresh_id("event"),
+        group_id: group.into(),
+        kind: kind.into(),
+        object: object.clone(),
+        author: actor.clone(),
+        detail: detail.into(),
+        created_at: now_ms(),
+    };
+    if tx.execute("INSERT OR IGNORE INTO collaboration_events(id,group_id,dedupe_key,event_json) VALUES(?1,?2,?3,?4)",params![event.id,group,key,encode_json(&event)?]).map_err(store_error)?==0{return Ok(Vec::new());}
+    let mut routed = Vec::new();
+    if g.status != GroupStatus::Closed {
+        let interests = interests_on(tx, group)?;
+        let attentions = attention::list_on(tx, group)?;
+        for member in members_on(tx, group)? {
+            if member.id == actor.id {
+                continue;
+            }
+            let mut reasons = interest_reasons(&member.id, &interests, kind, object);
+            reasons.extend(attention::matching_reasons(
+                &member.id,
+                &attentions,
+                object,
+                true,
+            ));
+            if !reasons.is_empty() {
+                insert_work_on(tx, group, &member.id, "event", &event.id, 25, &reasons)?;
+                routed.push(member.id);
+            }
+        }
+    }
+    Ok(routed)
 }
 
 impl TaskStore {
@@ -374,8 +523,80 @@ impl TaskStore {
             }),
             request_work: draft.explicit_request,
         };
-        let sent = insert_message_on(&tx, &group, &actor, &message)?;
-        tx.execute("UPDATE collaboration_work SET cause_kind='annotation',cause_id=?2 WHERE cause_kind='message' AND cause_id=?1",params![sent.id,annotation.id]).map_err(store_error)?;
+        let mut routes = BTreeMap::new();
+        for member in &draft.mentions {
+            route(
+                &mut routes,
+                member,
+                work_reason(
+                    "mention",
+                    message.object.as_ref(),
+                    Some(&annotation.id),
+                    None,
+                ),
+            );
+        }
+        if draft.explicit_request {
+            let interests = interests_on(&tx, group_id)?;
+            let attentions = attention::list_on(&tx, group_id)?;
+            for member in members_on(&tx, group_id)? {
+                for reason in interest_reasons(
+                    &member.id,
+                    &interests,
+                    "annotation",
+                    message.object.as_ref().unwrap(),
+                )
+                .into_iter()
+                .chain(attention::matching_reasons(
+                    &member.id,
+                    &attentions,
+                    message.object.as_ref().unwrap(),
+                    false,
+                )) {
+                    route(&mut routes, &member.id, reason);
+                }
+            }
+            if let Some(parent) = &annotation.parent_id {
+                for handling in super::annotations::handlings_on(&tx, parent)? {
+                    if handling.author.kind == crate::annotations::AnnotationAuthorKind::Member
+                        && members_on(&tx, group_id)?
+                            .iter()
+                            .any(|m| m.id == handling.author.id)
+                    {
+                        route(
+                            &mut routes,
+                            &handling.author.id,
+                            work_reason(
+                                "parent_handling",
+                                message.object.as_ref(),
+                                Some(&handling.id),
+                                None,
+                            ),
+                        );
+                    }
+                }
+            }
+            routes.remove(&actor.id);
+            if routes.is_empty() {
+                if let Some(member) = members_on(&tx, group_id)?
+                    .iter()
+                    .find(|m| m.config.coordinator && m.id != actor.id)
+                {
+                    route(
+                        &mut routes,
+                        &member.id,
+                        work_reason(
+                            "coordinator",
+                            message.object.as_ref(),
+                            Some(&annotation.id),
+                            None,
+                        ),
+                    );
+                }
+            }
+        }
+        routes.remove(&actor.id);
+        save_routed_message_on(&tx, &group, &actor, &message, routes, Some(&annotation.id))?;
         tx.commit().map_err(store_error)?;
         Ok(annotation)
     }
@@ -446,7 +667,20 @@ impl TaskStore {
             next_sequence: messages.last().map_or(after, |m| m.sequence),
             members: members_on(&tx, id)?,
             interests: interests_on(&tx, id)?,
+            attentions: attention::list_on(&tx, id)?,
             messages,
+            events: tx
+                .prepare(
+                    "SELECT event_json FROM collaboration_events WHERE group_id=?1 ORDER BY rowid",
+                )
+                .and_then(|mut q| {
+                    q.query_map([id], |r| r.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(store_error)?
+                .into_iter()
+                .map(|json| decode_json(&json, "group event"))
+                .collect::<Result<Vec<_>, _>>()?,
             work: work_on(&tx, id)?,
             executions,
             group,
@@ -546,28 +780,49 @@ impl TaskStore {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
-        let g = group_on(&tx, project, group)?;
-        validate_actor(&tx, group, actor)?;
-        let event = GroupEvent {
-            id: fresh_id("event"),
-            group_id: group.into(),
-            kind: kind.into(),
-            object: object.clone(),
-            author: actor.clone(),
-            detail: detail.into(),
-            created_at: now_ms(),
-        };
-        if tx.execute("INSERT OR IGNORE INTO collaboration_events(id,group_id,dedupe_key,event_json) VALUES(?1,?2,?3,?4)",params![event.id,group,key,encode_json(&event)?]).map_err(store_error)?==0{return Ok(Vec::new());}
-        let mut routed = Vec::new();
-        if g.status != GroupStatus::Closed {
-            let interests = interests_on(&tx, group)?;
-            for member in members_on(&tx, group)? {
-                if member.id != actor.id && interested(&member.id, &interests, kind, object) {
-                    insert_work_on(&tx, group, &member.id, "event", &event.id, 25)?;
-                    routed.push(member.id);
-                }
+        let routed = record_group_event_on(&tx, project, group, key, kind, object, actor, detail)?;
+        tx.commit().map_err(store_error)?;
+        Ok(routed)
+    }
+
+    /// A file hash identifies content, not a unique change. Compare with the
+    /// last observed file event so a later rollback to the same bytes is new
+    /// work, while repeated scans of one state remain idempotent.
+    pub fn record_group_file_change(
+        &self,
+        project: &str,
+        group: &str,
+        object: &GroupObject,
+    ) -> Result<Vec<String>, String> {
+        let mut connection = self.open()?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        group_on(&tx, project, group)?;
+        let previous: Option<String> = tx.query_row(
+            "SELECT event_json FROM collaboration_events WHERE group_id=?1 AND json_extract(event_json,'$.kind')='file_changed' AND json_extract(event_json,'$.object.kind')=?2 AND json_extract(event_json,'$.object.id')=?3 ORDER BY rowid DESC LIMIT 1",
+            params![group,object.kind,object.id], |row|row.get(0),
+        ).optional().map_err(store_error)?;
+        if let Some(previous) = previous {
+            let previous: GroupEvent = decode_json(&previous, "group file event")?;
+            if previous.object == *object {
+                return Ok(Vec::new());
             }
         }
+        let routed = record_group_event_on(
+            &tx,
+            project,
+            group,
+            &fresh_id("file-change"),
+            "file_changed",
+            object,
+            &GroupActor {
+                kind: ActorKind::System,
+                id: "workspace-observer".into(),
+                execution_id: None,
+            },
+            "The task workspace changed; inspect this revision if it affects your responsibility.",
+        )?;
         tx.commit().map_err(store_error)?;
         Ok(routed)
     }

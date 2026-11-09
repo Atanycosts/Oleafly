@@ -33,7 +33,11 @@ function context(annotations: TaskAnnotation[] = []): AnnotationContext {
 beforeEach(() => {
   api.loadTask.mockReset();
   api.loadObject.mockReset().mockResolvedValue(context());
-  api.submit.mockReset().mockImplementation(async (draft: TaskAnnotationDraft) => annotation({ ...draft, id: "annotation-saved" }));
+    api.submit.mockReset().mockImplementation(async (draft: TaskAnnotationDraft) => annotation({
+      ...draft,
+      source: draft.source ? { ...draft.source, sha256: "source-hash" } : null,
+      id: "annotation-saved",
+    }));
 });
 
 describe("ChatAnnotationsDialog", () => {
@@ -54,7 +58,7 @@ describe("ChatAnnotationsDialog", () => {
     fireEvent.change(within(dialog).getByRole("textbox", { name: text.body }), { target: { value: body } });
     fireEvent.click(within(dialog).getByRole("button", { name: text.save }));
     await waitFor(() => expect(api.submit).toHaveBeenCalledWith({
-      target: originalTarget, body, parentId: null, mentions: [], explicitRequest: false,
+      target: originalTarget, body, source: { kind: "chat_message:assistant", content: source }, parentId: null, mentions: [], explicitRequest: false,
     }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       id: "annotation-saved", target: originalTarget, body, explicitRequest: false,

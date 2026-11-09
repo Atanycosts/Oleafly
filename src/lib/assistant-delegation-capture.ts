@@ -8,6 +8,29 @@ import { readFileContent } from "@/lib/tauri";
 import { currentModelId, groupControls } from "@/components/ai/acp/acp-controls";
 import { textSha256, type AssistantDelegation } from "@/lib/assistant-delegation";
 
+export async function captureAssistantTarget(projectId: string): Promise<Pick<AssistantDelegation, "runtimeId" | "agentId" | "modelId">> {
+  const runtime = selectActiveRuntime(useAssistantRuntimeStore.getState());
+  const sessions = useAcpSessionsStore.getState();
+  const sessionId = sessions.activeByProject[projectId];
+  const session = sessionId ? sessions.sessions[sessionId] : undefined;
+  const acpAgentId = sessions.composers[projectId]?.agentId ?? session?.agentId;
+  const configured = knownProviderConfig();
+  const provider = runtime === "built-in" ? deriveProviderState(configured ?? await loadProviderConfig()) : null;
+  const agentId = runtime === "acp" ? acpAgentId : provider?.provider;
+  if (!agentId) throw new Error("Choose an agent before sending the request.");
+  if (runtime === "acp") {
+    const agent = sessions.catalog.find((entry) => entry.definition.id === agentId);
+    if (!agent || !acpUsable(agent) || agent.taskUnavailableReason) throw new Error(agent?.taskUnavailableReason ?? "The selected agent cannot run a background task. The request has not been sent.");
+  } else if (!provider?.ready) {
+    throw new Error("Configure the selected provider before sending the request.");
+  }
+  return {
+    runtimeId: runtime === "acp" ? "acp" : "builtin",
+    agentId,
+    modelId: runtime === "acp" ? (session ? currentModelId(groupControls(session.controls).model) ?? session.controls.modelId ?? "" : "") : provider?.model ?? "",
+  };
+}
+
 export async function captureAssistantDelegation(view: EditorView): Promise<AssistantDelegation> {
   const files = useFilesStore.getState();
   if (!files.projectId || !files.activePath) throw new Error("Open a project file before delegating a selection.");
@@ -23,22 +46,8 @@ export async function captureAssistantDelegation(view: EditorView): Promise<Assi
     selection: { from, to, text: view.state.sliceDoc(from, to) },
     sourceContent,
   };
-  const runtime = selectActiveRuntime(useAssistantRuntimeStore.getState());
-  const sessions = useAcpSessionsStore.getState();
-  const sessionId = sessions.activeByProject[projectId];
-  const session = sessionId ? sessions.sessions[sessionId] : undefined;
-  const acpAgentId = sessions.composers[projectId]?.agentId ?? session?.agentId;
-  const configured = knownProviderConfig();
-  const provider = runtime === "built-in" ? deriveProviderState(configured ?? await loadProviderConfig()) : null;
-  const agentId = runtime === "acp" ? acpAgentId : provider?.provider;
-  if (!agentId) throw new Error("Choose an agent before delegating the selection.");
-  if (runtime === "acp") {
-    const agent = sessions.catalog.find((entry) => entry.definition.id === agentId);
-    if (!agent || !acpUsable(agent)) throw new Error(agent?.taskUnavailableReason ?? "The selected agent is unavailable. The request has not been sent.");
-  } else if (!provider?.ready) {
-    throw new Error("Configure the selected provider before delegating the selection.");
-  }
-  const [sourceSha256, diskSha256] = await Promise.all([
+  const [target, sourceSha256, diskSha256] = await Promise.all([
+    captureAssistantTarget(projectId),
     textSha256(sourceContent),
     readFileContent(projectId, path).then((content) => textSha256(content.replace(/\r\n?/gu, "\n"))),
   ]);
@@ -46,8 +55,6 @@ export async function captureAssistantDelegation(view: EditorView): Promise<Assi
     ...frozen,
     sourceSha256,
     diskSha256,
-    runtimeId: runtime === "acp" ? "acp" : "builtin",
-    agentId,
-    modelId: runtime === "acp" ? (session ? currentModelId(groupControls(session.controls).model) ?? session.controls.modelId ?? "" : "") : provider?.model ?? "",
+    ...target,
   };
 }

@@ -65,12 +65,12 @@ pub(crate) fn tool(
     generation: u64,
 ) -> oleafly_research::builtin::TaskMcpTool {
     let reference = json!({"type":"object","additionalProperties":false,"properties":{
-        "taskId":{"type":"string"},"generation":{"type":"integer","minimum":1},
+        "taskId":{"type":"string"},"generation":{"type":"integer","minimum":0},
         "inputFingerprint":{"type":"string"},"sourceRevision":{"type":"string"},"outputId":{"type":["string","null"]},
         "pdfSha256":{"type":"string"},"size":{"type":"integer","minimum":0},"mainDocument":{"type":"string"},"path":{"type":"string"}
     },"required":["taskId","generation","inputFingerprint","sourceRevision","outputId","pdfSha256","size","mainDocument","path"]});
     oleafly_research::builtin::TaskMcpTool {
-        schema: oleafly_agent::ToolSchema { name:"task_pdf_pages".into(), description:"Capture page images from a retained PDF reference returned by this task's compile. Images are evidence for your inspection; capture alone does not establish visual quality.".into(), input_schema:json!({"type":"object","additionalProperties":false,"properties":{"reference":reference,"pages":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"integer","minimum":1,"maximum":2000}},"scale":{"type":"number","minimum":0.5,"maximum":2}},"required":["reference"]}) },
+        schema: oleafly_agent::ToolSchema { name:"task_pdf_pages".into(), description:"Capture page images from a retained task PDF: captured generation 0 input or this execution's compiled output. Images are evidence for your inspection; capture alone does not establish visual quality.".into(), input_schema:json!({"type":"object","additionalProperties":false,"properties":{"reference":reference,"pages":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"integer","minimum":1,"maximum":2000}},"scale":{"type":"number","minimum":0.5,"maximum":2}},"required":["reference"]}) },
         read_only_hint:true,
         call:std::sync::Arc::new(move |arguments| {
             let (app, root, task) = (app.clone(), root.clone(), task.clone());
@@ -78,7 +78,7 @@ pub(crate) fn tool(
                 let request = request(arguments)?;
                 let reference = request.reference.clone();
                 let root = root?;
-                let bytes = tokio::task::spawn_blocking(move || oleafly_research::compiled_artifacts::read(&root, &task, generation, &reference)).await.map_err(|e|e.to_string())??;
+                let bytes = tokio::task::spawn_blocking(move || oleafly_research::compiled_artifacts::read_for_task(&root, &task, generation, &reference)).await.map_err(|e|e.to_string())??;
                 let images = capture(app, bytes, &request.pages, request.scale).await?;
                 let mut content = vec![json!({"type":"text","text":json!({"artifact":request.reference,"pages":request.pages}).to_string()})];
                 content.extend(images.into_iter().map(|image| json!({"type":"image","mimeType":"image/png","data":image})));
@@ -202,12 +202,15 @@ mod tests {
             ..Default::default()
         };
         let reference = retain(&request, "a".repeat(64), &summary).unwrap().unwrap();
-        assert!(
-            oleafly_research::compiled_artifacts::read(root.path(), "task-a", 1, &reference)
-                .is_ok()
-        );
+        assert!(oleafly_research::compiled_artifacts::read_for_task(
+            root.path(),
+            "task-a",
+            1,
+            &reference
+        )
+        .is_ok());
         let captured_generation = 2;
-        assert!(oleafly_research::compiled_artifacts::read(
+        assert!(oleafly_research::compiled_artifacts::read_for_task(
             root.path(),
             "task-a",
             captured_generation,
@@ -215,6 +218,24 @@ mod tests {
         )
         .unwrap_err()
         .contains("Unknown compiled artifact reference"));
+        let input = oleafly_research::compiled_artifacts::retain_input(
+            root.path(),
+            "task-a",
+            "main.tex",
+            "b".repeat(64),
+            b"%PDF-user-input",
+        )
+        .unwrap();
+        assert_eq!(
+            oleafly_research::compiled_artifacts::read_for_task(
+                root.path(),
+                "task-a",
+                captured_generation,
+                &input
+            )
+            .unwrap(),
+            b"%PDF-user-input"
+        );
     }
     #[tokio::test]
     async fn capture_delivers_page_images_once_and_drop_clears_pending_bytes() {

@@ -52,16 +52,39 @@ pub fn tool_definitions() -> Vec<ToolMeta> {
 }
 
 pub(super) fn session_tools(context: &Context) -> Vec<ToolMeta> {
-    let Some(binding) = &context.task else {
-        return tool_definitions();
-    };
-    let task: Vec<ToolMeta> = task_tools(binding);
+    let task = context.task.as_ref().map(task_tools).unwrap_or_default();
     let mut tools: Vec<ToolMeta> = tool_definitions()
         .into_iter()
         .filter(|tool| !task.iter().any(|own| own.name == tool.name))
         .collect();
     tools.extend(task);
+    if let Some(application) = &context.services.application {
+        tools.extend(application.definitions());
+    }
     tools
+}
+
+pub(super) fn validate_application_registration(
+    services: &super::BridgeServices,
+    task: Option<&crate::task_tools::extra::TaskBinding>,
+) -> Result<(), String> {
+    let Some(application) = &services.application else {
+        return Ok(());
+    };
+    let mut names: std::collections::HashSet<String> = tool_definitions()
+        .into_iter()
+        .chain(task.into_iter().flat_map(task_tools))
+        .map(|tool| tool.name)
+        .collect();
+    for tool in application.definitions() {
+        if !names.insert(tool.name.clone()) {
+            return Err(format!(
+                "Application tool name is already registered: {}.",
+                tool.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn task_tools(binding: &crate::task_tools::extra::TaskBinding) -> Vec<ToolMeta> {

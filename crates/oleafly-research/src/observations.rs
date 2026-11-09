@@ -58,6 +58,8 @@ pub enum TaskObservation {
         call_id: String,
         name: String,
         input_sha256: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
     },
     Runtime {
         runtime_id: String,
@@ -78,6 +80,8 @@ pub enum TaskObservation {
         skill_id: Option<String>,
         skill_instructions_sha256: Option<String>,
         source: Option<ReadSource>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
     },
     Usage {
         input_tokens: Option<u64>,
@@ -93,6 +97,9 @@ pub struct ReadSource {
     pub offset: usize,
     pub end_offset: usize,
     pub truncated: bool,
+    /// Whether exact file bytes were retained in TaskStore when this read completed.
+    #[serde(default)]
+    pub snapshot_retained: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -19,7 +19,7 @@ use oleafly_research::model::{
     ApprovalKind, CommandPolicy, ResumeContext, SuspendState, TaskRunContext, TaskRuntimeEvent,
     TaskRuntimeOutcome, ToolPhase,
 };
-use oleafly_research::prompt::{resume_message, task_prompt};
+use oleafly_research::prompt::{resume_message, task_prompt, with_annotation_context};
 use oleafly_research::scheduler::{
     TaskEventSink, TaskRuntimeAdapter, TaskRuntimeFuture, TaskServices,
 };
@@ -1111,6 +1111,7 @@ impl DaemonAcpAdapter {
             ),
             (false, None) => task_prompt(context, skills),
         };
+        let text = with_annotation_context(text, &context.annotations);
         let (step, withdraw) = self.suspend_tokens(&context.task_id);
         let (hold_sender, hold) = watch::channel(false);
         let timing = TurnTiming {
@@ -1130,10 +1131,28 @@ impl DaemonAcpAdapter {
         if cancel.is_cancelled() {
             return Err(CANCELLED.into());
         }
-        let prompt = client.prompt(
+        let task_id = context.task_id.clone();
+        let generation = context.execution_generation;
+        let annotation_ids: Vec<_> = context
+            .annotations
+            .iter()
+            .map(|annotation| annotation.id.clone())
+            .collect();
+        let tasks_root = self.services.tasks_root.clone();
+        let prompt = client.prompt_with_sent(
             &session_id,
             vec![json!({"type": "text", "text": text})],
             timing,
+            Box::new(move || {
+                if annotation_ids.is_empty() {
+                    return Ok(());
+                }
+                oleafly_research::store::TaskStore::new(tasks_root)
+                    .and_then(|store| {
+                        store.mark_task_annotations_delivered(&task_id, generation, &annotation_ids)
+                    })
+                    .map_err(|error| oleafly_acp::RpcError::local(&error))
+            }),
         );
         tokio::pin!(prompt);
         let mut suspending = false;

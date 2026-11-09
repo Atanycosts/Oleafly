@@ -28,6 +28,8 @@ pub mod store;
 pub mod task_tools;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod usage;
+pub mod workbench;
 
 pub use oleafly_sandbox::profile::RunProfile;
 pub use scheduler::{

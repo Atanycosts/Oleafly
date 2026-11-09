@@ -12,6 +12,11 @@ function SourceRead({ taskId, generation, row, source }: Readonly<{ taskId: stri
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const retention = source.snapshotRetained === true
+    ? t(($) => $.researchTools.tasks.observations.sourceRetained)
+    : source.snapshotRetained === false
+      ? t(($) => $.researchTools.tasks.observations.sourceNotArchived)
+      : t(($) => $.researchTools.tasks.observations.sourceRetentionUnknown);
   const preview = async () => {
     setLoading(true);
     setError(null);
@@ -22,6 +27,7 @@ function SourceRead({ taskId, generation, row, source }: Readonly<{ taskId: stri
   };
   return <div className="space-y-1">
     <p className="break-all">{t(($) => $.researchTools.tasks.observations.sourceRange, { path: source.path, start: source.offset, end: source.endOffset })}{source.truncated ? ` · ${t(($) => $.researchTools.tasks.observations.partial)}` : ""}</p>
+    <p className="text-xs text-muted-foreground">{retention}</p>
     <Button variant="outline" size="xs" disabled={loading} onClick={() => void preview()}>{t(($) => $.researchTools.tasks.observations.openSource)}</Button>
     {error ? <p role="alert" className="text-destructive">{error}</p> : null}
     {text !== null ? <CopyableBlock source={text}><pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2">{text}</pre></CopyableBlock> : null}
@@ -80,7 +86,7 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
   const unknown = t(($) => $.researchTools.tasks.observations.unknown);
   const members: { row: TaskTranscriptEvent; observation: Extract<TaskObservation, { type: "member" }> }[] = [];
   const requests: { row: TaskTranscriptEvent; observation: Extract<TaskObservation, { type: "requestContext" }> }[] = [];
-  const calls = new Map<string, { request: TaskTranscriptEvent; name: string; inputSha256: string; result?: TaskTranscriptEvent }>();
+  const calls = new Map<string, { request: TaskTranscriptEvent; name: string; inputSha256: string; actor?: string | null; result?: TaskTranscriptEvent }>();
   for (const row of events) {
     if (row.event.kind !== "observation") continue;
     const event = row.event.observation;
@@ -89,9 +95,9 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
     } else if (event.type === "requestContext") {
       requests.push({ row, observation: event });
     } else if (event.type === "toolRequested") {
-      calls.set(event.callId, { request: row, name: event.name, inputSha256: event.inputSha256 });
+      calls.set(event.callId, { request: row, name: event.name, inputSha256: event.inputSha256, actor: event.actor });
     } else if (event.type === "toolExecution") {
-      const call = calls.get(event.callId) ?? { request: row, name: event.name, inputSha256: event.inputSha256 };
+      const call = calls.get(event.callId) ?? { request: row, name: event.name, inputSha256: event.inputSha256, actor: event.actor };
       calls.set(event.callId, { ...call, result: row });
     }
   }
@@ -150,11 +156,13 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
       {view.summary.coverageGaps.includes("observations.baseline_has_skipped_files") ? <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.tasks.observations.skippedFiles)}</p> : null}
       {view.summary.coverageGaps.includes("observations.file_list_shortened") ? <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.tasks.observations.filesShortened)}</p> : null}
       {view.summary.coverageGaps.includes("observations.check_items_shortened") ? <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.tasks.observations.checksShortened)}</p> : null}
+      {view.summary.coverageGaps.includes("observations.source_snapshot_not_retained") ? <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.tasks.observations.sourceRetentionLimit)}</p> : null}
       <details><summary>{t(($) => $.researchTools.tasks.observations.records)}</summary>
-        <ol className="max-h-96 space-y-3 overflow-auto">{[...calls].map(([callId, { request, name, inputSha256, result: row }]) => {
+        <ol className="max-h-96 space-y-3 overflow-auto">{[...calls].map(([callId, { request, name, inputSha256, actor, result: row }]) => {
           const result = row?.event.kind === "observation" && row.event.observation.type === "toolExecution" ? row.event.observation : null;
           return <li key={callId} className="space-y-1 break-words border-t pt-2 text-xs">
             <p><code>{name}</code> · {result ? (result.status === "done" ? t(($) => $.researchTools.tasks.observations.returned) : t(($) => $.researchTools.tasks.observations.failed)) : t(($) => $.researchTools.tasks.observations.pending)}</p>
+            {actor ? <p>{t(($) => $.researchTools.tasks.observations.execution)}: <code>{actor}</code></p> : null}
             <p className="break-all text-muted-foreground">#{request.sequence}{row && row.sequence !== request.sequence ? ` → #${row.sequence}` : ""} · {callId}</p>
             <Button variant="outline" size="xs" disabled={!availableCalls.has(callId)} onClick={() => onOpenCall(callId)}>{t(($) => $.researchTools.tasks.observations.openCall)}</Button>
             {result?.skillId ? <p>{t(($) => $.researchTools.tasks.observations.loadedSkill)}: {result.skillId} · {result.skillInstructionsSha256 ? t(($) => $.researchTools.tasks.observations.returned) : t(($) => $.researchTools.tasks.observations.noSkillBody)}</p> : null}

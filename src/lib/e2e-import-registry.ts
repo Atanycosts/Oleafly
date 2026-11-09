@@ -2,6 +2,7 @@ import { E2E_HOOKS } from "@/lib/e2e-flags";
 
 const registry: Record<string, () => Promise<unknown>> = !E2E_HOOKS ? {} : {
   "/src/lib/acp.ts": () => import("@/lib/acp"),
+  "/src/lib/assistant-delegation-capture.ts": () => import("@/lib/assistant-delegation-capture"),
   "/src/components/editor/cm/controller.ts": () => import("@/components/editor/cm/controller"),
   "/src/components/editor/SymbolPicker.tsx": () => import("@/components/editor/SymbolPicker"),
   "/src/components/editor/wysiwyg/controller.ts": () =>
@@ -27,6 +28,7 @@ const registry: Record<string, () => Promise<unknown>> = !E2E_HOOKS ? {} : {
   "/src/lib/proofreading/client.ts": () => import("@/lib/proofreading/client"),
   "/src/lib/proofreading/hunspell.ts": () => import("@/lib/proofreading/hunspell"),
   "/src/lib/research-tasks.ts": () => import("@/lib/research-tasks"),
+  "/src/lib/pdf-selection.ts": () => import("@/lib/pdf-selection"),
   "/src/lib/pdf-text.ts": () => import("@/lib/pdf-text"),
   "/src/lib/pdf-image.ts": () => import("@/lib/pdf-image"),
   "/src/lib/research-workspace.ts": () => import("@/lib/research-workspace"),

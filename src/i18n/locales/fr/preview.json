@@ -317,5 +317,23 @@
     "end": "Terminer la présentation",
     "blank": "L'écran du public est noir. Appuyez sur B pour afficher les diapositives.",
     "toggleBlank": "Noircir l'écran du public"
+  },
+  "selection": {
+    "title": "PDF annotations and review",
+    "description": "Keep a comment with the PDF you are viewing. Start a review when you want the selected agent to investigate it.",
+    "pages": "Pages {{pages}}",
+    "comment": "Comment or review request",
+    "saveFeedback": "Save feedback",
+    "startReview": "Start review",
+    "openOriginal": "Show or hide original PDF",
+    "saved": "Saved PDF annotations",
+    "empty": "No PDF annotations saved for this project yet.",
+    "selectHint": "Select text in the PDF, then open this panel to add a comment. Saved annotations can be reopened below.",
+    "taskInput": "Original PDF selection",
+    "annotation": "Original annotation",
+    "savedNotice": "Feedback saved. No review has been started.",
+    "retryStart": "Retry starting this task",
+    "openTask": "Open created task",
+    "pdfSha256": "PDF SHA-256: {{sha256}}"
   }
 }

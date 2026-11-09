@@ -155,7 +155,7 @@ function TaskOutputs() {
   const openArtifact = async (task: ResearchTask, artifact: TaskArtifact) => {
     const request = start(task, artifact.label, artifact.path);
     try {
-      const result = await previewResearchTaskArtifact(task.id, artifact.path);
+      const result = await previewResearchTaskArtifact(task.id, artifact.path, task.executionGeneration);
       settle(request, {
         text: result.content.text,
         truncated: result.content.truncated,

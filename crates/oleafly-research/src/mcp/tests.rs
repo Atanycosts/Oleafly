@@ -59,6 +59,7 @@ fn services(fake: FakeServices) -> BridgeServices {
         skills: fake.clone(),
         linked: fake,
         secrets: std::sync::Arc::new(NoSecrets),
+        application: None,
     }
 }
 
@@ -91,6 +92,153 @@ fn client() -> reqwest::Client {
 
 fn decode(result: &Value) -> Value {
     serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+struct EchoApplication {
+    names: Vec<String>,
+}
+
+impl super::ApplicationTools for EchoApplication {
+    fn definitions(&self) -> Vec<super::protocol::ToolMeta> {
+        self.names.iter().map(|name| super::protocol::ToolMeta::new(
+            name.clone(),
+            "Echo a typed application argument.",
+            json!({"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}),
+        )).collect()
+    }
+
+    fn call(&self, _name: String, args: Value) -> TaskRuntimeFuture<Value> {
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Arguments {
+                message: String,
+            }
+            let args: Arguments =
+                serde_json::from_value(args).map_err(|error| error.to_string())?;
+            Ok(json!({"echo": args.message}))
+        })
+    }
+}
+
+#[tokio::test]
+async fn application_tools_work_through_http_direct_calls_and_task_bridge() {
+    let root = tempfile::tempdir().unwrap();
+    let mut services = no_services();
+    services.application = Some(Arc::new(EchoApplication {
+        names: vec!["application_echo".into()],
+    }));
+    let bridge = Arc::new(
+        transport::serve(
+            "project-a".into(),
+            FileScope::open(root.path(), None).unwrap(),
+            Vec::new(),
+            services,
+            None,
+        )
+        .await
+        .unwrap(),
+    );
+    let response: Value = client()
+        .post(&bridge.url)
+        .bearer_auth(bridge.context.token.as_str())
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(response["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "application_echo"));
+    let response: Value = client().post(&bridge.url)
+        .bearer_auth(bridge.context.token.as_str())
+        .json(&json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"application_echo","arguments":{"message":"http"}}}))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(decode(&response["result"]), json!({"echo":"http"}));
+    let response: Value = client().post(&bridge.url)
+        .bearer_auth(bridge.context.token.as_str())
+        .json(&json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"application_echo","arguments":{"message":42}}}))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(response["result"]["isError"], true);
+    let direct =
+        ScopedResearchMcp::call_tool(&bridge, "application_echo", &json!({"message":"direct"}))
+            .await
+            .unwrap();
+    assert_eq!(decode(&direct), json!({"echo":"direct"}));
+    let task_bridge: Arc<dyn crate::builtin::TaskBridge> = bridge.clone();
+    assert!(task_bridge
+        .tool_definitions()
+        .iter()
+        .any(|tool| tool.name == "application_echo"));
+    assert_eq!(
+        decode(
+            &task_bridge
+                .clone()
+                .call_tool("application_echo".into(), json!({"message":"task"}))
+                .await
+                .unwrap()
+        ),
+        json!({"echo":"task"})
+    );
+    assert!(
+        ScopedResearchMcp::call_tool(&bridge, "application_echo", &json!({"message":42}))
+            .await
+            .is_err()
+    );
+    assert!(
+        ScopedResearchMcp::call_tool(&bridge, "unknown_application", &json!({}))
+            .await
+            .is_err()
+    );
+    bridge.shutdown().await;
+    assert!(task_bridge
+        .call_tool("application_echo".into(), json!({"message":"closed"}))
+        .await
+        .unwrap_err()
+        .contains("closed"));
+}
+
+#[tokio::test]
+async fn application_tool_registration_rejects_builtin_and_duplicate_names() {
+    let root = tempfile::tempdir().unwrap();
+    for names in [
+        vec!["read_file".into()],
+        vec!["application_echo".into(), "application_echo".into()],
+    ] {
+        let mut services = no_services();
+        services.application = Some(Arc::new(EchoApplication { names }));
+        let result = transport::serve(
+            "project-a".into(),
+            FileScope::open(root.path(), None).unwrap(),
+            Vec::new(),
+            services,
+            None,
+        )
+        .await;
+        assert!(result.err().unwrap().contains("already registered"));
+    }
+    let tasks = tempfile::tempdir().unwrap();
+    let binding = task_binding(root.path(), tasks.path());
+    let name =
+        crate::task_tools::extra::task_tool_schemas(&binding.brief, binding.host.web().is_some())
+            [0]
+        .name
+        .clone();
+    let mut services = no_services();
+    services.application = Some(Arc::new(EchoApplication { names: vec![name] }));
+    let result = transport::serve(
+        "project-a".into(),
+        FileScope::open(root.path(), None).unwrap(),
+        Vec::new(),
+        services,
+        Some(binding),
+    )
+    .await;
+    assert!(result.err().unwrap().contains("already registered"));
 }
 
 #[test]

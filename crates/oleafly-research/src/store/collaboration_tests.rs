@@ -120,6 +120,57 @@ fn member(name: &str, responsibility: &str, coordinator: bool) -> MemberDraft {
     }
 }
 
+#[test]
+fn file_observation_repeated_scans_dedupe_but_content_rollbacks_are_new_work() {
+    let fixture = Fixture::new();
+    let methods = fixture.member("Methods");
+    fixture.interest(methods, InterestKind::Path, "main.tex");
+    for revision in ["H2", "H3", "H2", "H3"] {
+        let object = GroupObject {
+            kind: "file".into(),
+            id: "main.tex".into(),
+            revision: Some(revision.into()),
+            path: Some("main.tex".into()),
+        };
+        assert_eq!(
+            fixture
+                .store
+                .record_group_file_change("paper", fixture.id(), &object)
+                .unwrap(),
+            vec![methods.to_owned()]
+        );
+        assert!(fixture
+            .store
+            .record_group_file_change("paper", fixture.id(), &object)
+            .unwrap()
+            .is_empty());
+        let turn = fixture
+            .store
+            .claim_member_turn(&fixture.task)
+            .unwrap()
+            .unwrap();
+        assert_eq!(turn.events.len(), 1);
+        assert_eq!(turn.events[0].object.revision.as_deref(), Some(revision));
+        finish(&fixture.store, &turn);
+    }
+    let reopened = TaskStore::new(fixture.store.root().to_path_buf()).unwrap();
+    let snapshot = reopened.group_snapshot("paper", fixture.id(), 0).unwrap();
+    assert_eq!(snapshot.events.len(), 4);
+    assert_eq!(snapshot.work.len(), 4);
+    assert_eq!(
+        snapshot
+            .events
+            .iter()
+            .map(|event| event.object.revision.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["H2", "H3", "H2", "H3"]
+    );
+    assert!(snapshot
+        .events
+        .iter()
+        .all(|event| event.author.kind == ActorKind::System));
+}
+
 fn actor(member: &str) -> GroupActor {
     GroupActor {
         kind: ActorKind::Member,
