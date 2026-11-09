@@ -6,6 +6,14 @@ This Python service is maintained inside the Oleafly repository at
 `services/research-workbench/`. Oleafly owns the native application, Agent execution and project
 interface; this service owns captured document bytes, journal rules, versions and evidence.
 
+Current cross-system entry points are the
+[Oleafly integration guide](../../docs/research-workbench-integration.md),
+[Agent status](../../docs/agent/status.md) and
+[Agent architecture](../../docs/agent/architecture.md). This module's
+[S1 status](docs/s1-progress.md) records only the Workbench domain slice;
+[the fused architecture](docs/fused-research-agent-architecture.md) is frozen 2026-11-05
+historical design input.
+
 The historical **Phase 0** baseline and the unreleased, partial S1 read-only DOCX
 implementation retain their original scope. Phase 0 covers project contracts, source inventory, environment
 inventory, workspace fingerprinting and validation fixtures. The reader handles selected OOXML
@@ -44,8 +52,8 @@ extras. `pnpm tauri dev` supplies that interpreter when no explicit
 this environment's Python executable once. Existing journal libraries remain in their selected
 application-data directory. A source merge does not relocate data or rewrite saved paths.
 
-The previous standalone Workbench desktop shell is archived locally. Packaging support code
-remains for its existing boundary tests; Oleafly is the active application shell.
+The previous standalone Workbench desktop shell is frozen local history. Packaging support code
+remains for its existing boundary tests; Oleafly is the active application and Agent shell.
 
 ## Development commands
 
@@ -67,8 +75,9 @@ rfw-phase0 validate
 rfw-phase0 build-reports
 ```
 
-Earlier integration audits and private execution reports are retained locally outside the
-public source snapshot. Their verified scope and remaining acceptance limits stay separate
+Earlier integration audits and private execution reports are retained locally under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/`, outside the
+public clean checkout. Their verified scope and remaining acceptance limits stay separate
 from the frozen requirement baseline; current integration status is maintained in the
 [Oleafly integration guide](../../docs/research-workbench-integration.md).
 
@@ -98,7 +107,7 @@ check physical PDF page counts. `pdfinfo` must be on PATH; failure to inspect is
 
 The process-identity export path has unit and refusal tests; historical live smoke evidence is
 stored under `reports/phase0/`. Current implementation status is in `docs/s1-progress.md`.
-The root `方案文档.md` is the requirements baseline, including its original planning status.
+The module-local `方案文档.md` is the requirements baseline, including its original planning status.
 Passing local checks does not substitute for independent S1 acceptance or a release decision.
 
 ## Portable tests and private acceptance evidence

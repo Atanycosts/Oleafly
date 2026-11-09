@@ -1,8 +1,8 @@
-# Desktop research workbench
+# Workbench browser and local service
 
 The active desktop is Oleafly, using one application service for journal review and retained
 manuscript reading. Oleafly `src-tauri/src/journal_workbench.rs` owns the child process and
-shutdown. The earlier standalone shell is archived locally; the packaging section below records
+shutdown. The earlier standalone shell is frozen history; the runtime section below records
 its historical procedure. `workbench/` owns application
 coordination, HTTP transport and browser views. `journals/`, `projects/` and `docx/` retain
 their domain responsibilities. There is one active browser implementation and one service entry.
@@ -42,7 +42,7 @@ The HTTP boundary accepts captured bytes and application identities. Historical 
 uploaded evidence is not opened. Page registration validates physical PDF count and exact PNG
 hashes using the existing project evidence contract; it never runs Office or generates review.
 
-## Runtime and verification
+## Historical standalone runtime and verification
 
 Build using `tools/desktop/build.ps1`. The resulting directory contains the executable and
 isolated Python/application/PDF runtime. The shell starts its own service on an available

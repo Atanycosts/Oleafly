@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "pack": "research-core",
-  "version": "2026.10.19.82ebb937",
+  "version": "2026.10.19.435d6a6c",
   "skills": [
     {
       "id": "citation-management",
@@ -138,10 +138,10 @@
       "tier": "native",
       "phase": "tooling",
       "license": "CC-BY-4.0",
-      "treeSha256": "611c44d01a628ea559b4e4f440b979c2f7f7c11787f58daac871cec8384894ad",
+      "treeSha256": "9259d6f95647d3eac4c48aac8364dea3b33a957d99f351e3c016364befc6a433",
       "files": 1,
-      "bytes": 1817,
-      "version": "1.1.0"
+      "bytes": 2064,
+      "version": "1.2.0"
     },
     {
       "id": "oleafly-experiment-loop",
@@ -182,14 +182,14 @@
     {
       "id": "oleafly-literature-sweep",
       "name": "oleafly-literature-sweep",
-      "description": "Turn a research question into an annotated reading list with provenance. Use when the user asks to find papers, survey the literature, gather background on a topic, collect sources for a section, or fill out a thin bibliography. Searches OpenAlex, Semantic Scholar, Crossref, arXiv and PubMed at once with literature_search, reads the strongest papers with read_paper, resolves canonical BibTeX with verify_citation, dedupes against the project bibliography before writing anything, and leaves behind research/reading-list.md plus one source note per paper.",
+      "description": "Turn a research question into an annotated reading list with provenance. Use when the user asks to find papers, gather background, collect sources, or fill out a bibliography. Searches literature APIs, reads selected papers, verifies BibTeX, and reuses existing source records or creates source notes when needed.",
       "tier": "native",
       "phase": "research",
       "license": "MIT",
-      "treeSha256": "925e55ff815c2d0d4e59b8c1f2ecd55b0ad131dd7df97c0e79c7db3158a48530",
+      "treeSha256": "b012858c71e78f2444a629895c21ab4a2654bdff2801dfe3986b496f66bf7f59",
       "files": 5,
-      "bytes": 27230,
-      "version": "1.1.1"
+      "bytes": 27523,
+      "version": "1.2.0"
     },
     {
       "id": "oleafly-manuscript-scaffold",
@@ -234,10 +234,10 @@
       "tier": "native",
       "phase": "research",
       "license": "MIT",
-      "treeSha256": "ec2124eb3080873927c95c5f9395162e5790d23cf9f3b92123aa0d0276e5407d",
+      "treeSha256": "4e8099db5b7837f248022dcfe8e33182b8e0cc1b0d79176874fe86f61c2c3e20",
       "files": 7,
-      "bytes": 22063,
-      "version": "1.1.0"
+      "bytes": 23048,
+      "version": "1.2.0"
     },
     {
       "id": "oleafly-response-letter",
@@ -278,14 +278,14 @@
     {
       "id": "oleafly-verify-claims",
       "name": "oleafly-verify-claims",
-      "description": "Audit a section claim by claim and report which statements the cited sources actually support. Use when the user asks to check the citations, verify the claims in a section, find unsupported or overstated statements, confirm nothing was fabricated, or get a manuscript ready for review or submission. Builds research/claims.md with a support level and an evidence note per claim, and reports problems rather than quietly rewriting the prose.",
+      "description": "Audit a section claim by claim and report which statements the cited sources actually support. Use when the user asks to check citations, verify claims, or find unsupported or overstated statements. Maintains a claim record with evidence and proposed fixes, reusing the project's existing record or research/claims.md.",
       "tier": "native",
       "phase": "review",
       "license": "MIT",
-      "treeSha256": "3c8de8a084fcdab03627f77f6efee623dac2c7485d7c55751332506562174ef7",
+      "treeSha256": "34c2bf7f18a16686b2fcc8b6517d5d523d8be3da066aafc35f40b000ceb35338",
       "files": 4,
-      "bytes": 19296,
-      "version": "1.0.1"
+      "bytes": 20078,
+      "version": "1.1.0"
     },
     {
       "id": "openresearch",

@@ -2,6 +2,12 @@
 
 Status date: 2026-11-09
 
+This document records the Workbench-domain slice only. Current cross-system entry points are
+the [Oleafly integration guide](../../../docs/research-workbench-integration.md),
+[Agent status](../../../docs/agent/status.md) and
+[Agent architecture](../../../docs/agent/architecture.md). This file does not define
+system-wide Agent status or task-group behavior.
+
 The service now lives in Oleafly at `services/research-workbench/`. Its current
 source snapshot includes the former checkout's uncommitted work; the original
 history and private evidence are retained locally. Oleafly is the active application
@@ -28,14 +34,15 @@ not pending deliverables. Journal-requirement research, source review, versioned
 rules and supported manuscript checks remain in scope.
 
 S1 is unreleased and partial: manuscript analysis is read-only, while project and journal
-management expose local writes. The latest complete Workbench gate run on 2026-11-07
+management expose local writes. Before consolidation, the complete Workbench gate run on 2026-11-07
 passed Ruff format (248 Python files), Ruff lint, mypy (118 source files), and
 pytest (1034 passed, 33 skipped, five PyMuPDF/SWIG warnings). The preceding test cleanup's
-Oleafly frontend checks passed 184 cases; full frontend lint and TypeScript checks passed. See the
-[verification log](../reports/engineering/test-cleanup-20261105.log), which consolidates
-the eight command results. Four mechanical scans were removed, MCP discovery checks were
-merged, and parameterized read/recovery cases retain caller metadata and server-restart
-coverage. Daily updates revise this status in place rather than add per-turn reports.
+Oleafly frontend checks passed 184 cases; full frontend lint and TypeScript checks passed. Its
+verification log consolidates the eight command results and is retained as local historical
+evidence under `.private/workspace-consolidation-20261109/workbench-original-source/reports/`.
+Four mechanical scans were removed, MCP discovery checks were merged, and parameterized
+read/recovery cases retain caller metadata and server-restart coverage. Daily updates revise
+this status in place rather than add per-turn reports.
 
 Phase 0 remains `CONTRACT_INVALID` / `PHASE0_INCOMPLETE` on this Mac: nine registered author
 inputs and the pinned Windows WPS profile are unavailable. Current validation resolves
@@ -44,22 +51,22 @@ hashes and complete render output, and rejects another fixture's source. Earlier
 record points to another source` output was a cross-platform path-comparison false positive.
 Historical source identities, render bytes and acceptance results were not rewritten.
 
-The current [desktop workbench](desktop/workbench.md) has
-[execution evidence](../reports/desktop/workbench/verification.json). The
-[MCP boundary experiment](../reports/integration-investigation/mcp-read-only-boundary.md)
-verified 11 read-only tools, write/typo refusals and persisted recovery. The
-[source-app task](../reports/integration-investigation/oleafly-native-research-task-2026-11-05.md)
-then verified real-provider native execution, caller correlation and exact structured-response
-recovery, ending in `awaiting_review`. Full product and independent S1/IJAM acceptance remain
-pending.
+The current [desktop workbench](desktop/workbench.md) has local execution evidence retained
+under `.private/workspace-consolidation-20261109/workbench-original-source/reports/`. The
+historical MCP boundary experiment verified 11 read-only tools, write/typo refusals and
+persisted recovery; the 2026-11-05 source-app task then verified real-provider native
+execution, caller correlation and exact structured-response recovery, ending in
+`awaiting_review`. Those private reports remain historical evidence and are not available in
+the public clean checkout. The current machine-readable MCP surface is
+[`contracts/s1/mcp-surface.json`](../contracts/s1/mcp-surface.json); current source and the
+[Agent status](../../../docs/agent/status.md) govern present behavior. Full product and
+independent S1/IJAM acceptance remain pending.
 
-Earlier execution counts remain in their original evidence:
-[2026-11-02 investigation](../reports/integration-investigation/verification.json),
-[environment gate](../reports/engineering/environment-gate-20261010.md),
-[integration audit](../reports/engineering/integration-audit-review.md), and
-[standardization review](../reports/engineering/project-standardization-review.md).
+Earlier execution counts remain in their original local evidence under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/`. They are
+historical evidence, not files linked from this clean checkout.
 
-## Oleafly integration status (2026-11-05)
+## Oleafly integration history (2026-11-05, frozen)
 
 The operator confirmed that the project is for private local use and requested
 an Oleafly checkout as a potential primary application foundation. The upstream
@@ -76,15 +83,16 @@ MCP handshake, real-provider CLI Agent calls and native ResearchTask used this r
 in a separate synthetic library. The branch has since built and run as an isolated
 macOS source application; no existing user library was migrated.
 
-The [native ResearchTask experiment](../reports/integration-investigation/oleafly-native-research-task-2026-11-04.md)
-read a hand-authored synthetic DOCX with `read_objects`, recovered the same response
-with `saved_read`, and produced a report citing all delivered objects, source hash,
-baseline and receipt. Its calculations and original-file preservation passed the
-recorded checks. It finished in `awaiting_review`, not applied or completed. The
-model was the supplier's `gpt-6.1-sol`; a temporary real-response forwarder sent
-`reasoning_effort=max` on all 14 requests because native custom-provider requests
+The native ResearchTask experiment of 2026-11-04 read a hand-authored synthetic DOCX with
+`read_objects`, recovered the same response with `saved_read`, and produced a report citing
+all delivered objects, source hash, baseline and receipt. Its calculations and original-file
+preservation passed the recorded checks. It finished in `awaiting_review`, not applied or
+completed. The model was the supplier's `gpt-6.1-sol`; a temporary real-response forwarder
+sent `reasoning_effort=max` on all 14 requests because native custom-provider requests
 contained no effort. The forwarder is stopped and the supplier is restored to direct
-configuration. Reported usage was 259734 input and 8322 output tokens; cost is unknown.
+configuration. Reported usage was 259734 input and 8322 output tokens; cost is unknown. The
+full experiment record remains local historical evidence under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/`.
 
 The original release-app ResearchTask advertised all 18 MCP tools, unlike CLI Agent's
 11-tool filter. The MCP contract is now `workbench-mcp-0.4.1`: `--read-only` registers only the 11
@@ -93,9 +101,8 @@ The default operator surface retains its 18 tools. Read receipts still persist;
 library-wide read scope is not project/task authorization. The isolated preview's
 configured MCP launcher passes `--read-only`.
 
-The [2026-11-05 source-app task](../reports/integration-investigation/oleafly-native-research-task-2026-11-05.md),
-`task-005dd6cfb25a3b2d4101911087c6a6ab`, generation `1`, ran directly against the real
-supplier with `gpt-6.1-sol`. With task commands off, it called `method_versions`,
+The 2026-11-05 source-app task, `task-005dd6cfb25a3b2d4101911087c6a6ab`, generation `1`, ran
+directly against the real supplier with `gpt-6.1-sol`. With task commands off, it called `method_versions`,
 `read_objects` and `saved_read` once each. Modern MCP discovery advertised exactly
 11 read-only tools. The original response, recovered response and SQLite record are
 structurally equal; the persisted caller matches the actual Oleafly project, task
@@ -125,15 +132,16 @@ review and application remain separate. The preview and its Vite server were sto
 after verification; disposable compiler caches were removed while keeping the current
 binary, app and isolated task library.
 
-The [formal product and system architecture](fused-research-agent-architecture.md) is the
-consolidated design entry for the Oleafly integration. It merges the two external design inputs,
-source investigation and review decisions, with one execution owner, the retained domain core,
-enforceable tool admission, explicit budget/recovery semantics, and staged acceptance criteria.
-It is a design document, not a new runtime contract or evidence that integration has shipped.
-The [three-project investigation](oleafly-superagent-research-workbench-investigation.md) and
-its three source reviews remain the fixed-revision research evidence. Task/project-scoped MCP
-access and human-confirmation attribution still require enforcement before autonomous use;
-the existing trusted local-operator boundary is not that contract.
+The [fused product and system architecture](fused-research-agent-architecture.md) is a frozen
+2026-11-05 historical design input. It consolidated the two external design inputs, source
+investigation and review decisions, but it is not a current runtime contract or evidence that
+integration has shipped. The
+[three-project investigation](oleafly-superagent-research-workbench-investigation.md) and its
+three source reviews remain frozen fixed-revision research evidence. Current Agent status and
+architecture are in `../../../docs/agent/status.md` and
+`../../../docs/agent/architecture.md`. Task/project-scoped MCP access and
+human-confirmation attribution still require enforcement before autonomous use; the existing
+trusted local-operator boundary is not that contract.
 
 The reviewed HelloAGENTS ideas are integrated into the adjacent Oleafly branch through its
 existing prompts and skill loader. On 2026-11-07, shared rules and four skills were simplified:
@@ -195,10 +203,11 @@ chat remain in that library. Disposable debugging projects, test outputs and
 compiler caches are cleaned after verification. Reopening the app restores data;
 the user opens the demonstration from the library and selects **期刊检查**.
 The companion Oleafly integration guide documents runtime selection and ownership.
-The retained [desktop view](../reports/integration-investigation/oleafly-journal-workflow.png)
-shows the check panel, demonstration and saved supplier analysis. The final app
-omits test hooks and was reopened through Finder; the retained check and Chinese
-chat were recovered in its normal interface. Compiler output (about 43 GB), the
+The retained desktop view is stored as local historical evidence under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/`;
+it shows the check panel, demonstration and saved supplier analysis. The final app omits test
+hooks and was reopened through Finder; the retained check and Chinese chat were recovered in
+its normal interface. Compiler output (about 43 GB), the
 old preview bundle, temporary logs and seven disposable Oleafly projects were
 removed; that initial slice retained the complete workflow demonstration. The
 following increment adds a second project using the retained real manuscript.
@@ -297,11 +306,13 @@ spelling labels together. The English research action wrapped within the roughly
 frontend build and 37 temporary log/diagnosis files were removed (37.35 GiB); the
 installed app, main library and selected real research/adoption library remain.
 
-## Desktop workbench integration
+## Historical desktop package integration (2026-11-05, frozen)
 
-The desktop now composes journal review, source fragments and retained manuscript capabilities
-through `workbench/`. Native lifecycle code lives in `desktop/shell/`; browser transport,
-views and styles have one active implementation below `workbench/web/`.
+The standalone desktop package composed journal review, source fragments and retained manuscript
+capabilities through `workbench/`. Its native lifecycle code lived in `desktop/shell/`; that
+shell is frozen history. Oleafly is now the active application shell and owns the native window,
+Agent runtime and service lifecycle. Browser transport, views and styles still have one active
+implementation below `workbench/web/`.
 
 - The bubble map supports world, component and rule navigation. Rule review presents current
   question, source candidates and manuscript observations with exact source-unit drill-down.
@@ -313,11 +324,13 @@ views and styles have one active implementation below `workbench/web/`.
   they do not merge sources or produce probability or compliance conclusions.
 - Manuscript object/region queries, continuations, exact saved responses, baseline updates,
   historical checks/bindings/reads and captured page evidence are available in the UI.
-- The desktop package includes an isolated Python/application/PDF-inspection runtime. The shell
-  owns a dynamically bound loopback service through its lifecycle pipe, without a checkout path
-  or attaching to another process on a fixed port.
-- Verification is recorded in `reports/desktop/workbench/verification.json`. Independent S1/IJAM
-  acceptance, full DOCX layout semantics and broader renderer coverage remain separate requirements.
+- The historical desktop package included an isolated Python/application/PDF-inspection runtime.
+  Its shell owned a dynamically bound loopback service through its lifecycle pipe, without a
+  checkout path or attaching to another process on a fixed port.
+- Verification is retained as local historical evidence under
+  `.private/workspace-consolidation-20261109/workbench-original-source/reports/desktop/workbench/`.
+  Independent S1/IJAM acceptance, full DOCX layout semantics and broader renderer coverage remain
+  separate requirements.
 
 ## Implemented
 
@@ -408,9 +421,11 @@ comparison are explained in the IJAM review notes; neither file replaces the oth
 - Independent code review led to regression checks for stale mapping methods, mismatched source
   evidence, incorrect author-root declarations, and storage failure before response publication.
 
-Commands and limits: [on-demand reading](s1-on-demand-reading.md). Evidence:
-[`reports/s1/on-demand-smoke.json`](../reports/s1/on-demand-smoke.json) and
-[`reports/s1/query-verification.json`](../reports/s1/query-verification.json).
+Commands and limits: [on-demand reading](s1-on-demand-reading.md). The 2026-09-25 execution
+evidence (`on-demand-smoke.json` and `query-verification.json`) is retained as local historical
+evidence under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/s1/`, outside the
+public clean checkout.
 
 ## Acceptance still required
 
@@ -451,8 +466,9 @@ retained historical evidence and is never rewritten. The later review notes reco
 macOS WPS 7.2.1 (8947) process-verified export, render-bundle registration and page-6 reading
 chain on 2026-11-01. The 2026-11-02 investigation verified the retained PDF and all ten PNG
 hashes and inspected the current library's saved bundle/read records; it did not rerun WPS.
-Those records remain partial and Agent-reviewed, not independent human acceptance. See
-[the workbench evidence review](../reports/integration-investigation/workbench-source-review.md).
+Those records remain partial and Agent-reviewed, not independent human acceptance. The
+workbench evidence review is retained as local historical evidence under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/`.
 The Mac chain does not clear the separate frozen Windows Phase 0 failures. Broader renderer
 portability and a supported macOS delivery/verification path remain separate platform work.
 
@@ -507,9 +523,10 @@ portability and a supported macOS delivery/verification path remain separate pla
 - Deterministic tests cover concurrent submissions, transaction abort/rollback, malformed or
   tampered sources, durable refusals, wrong baseline receipt bindings, hard links and reparse paths.
 
-See [project storage](s1-project-storage.md),
-[`project-lifecycle-smoke.json`](../reports/s1/project-lifecycle-smoke.json) and
-[`project-storage-verification.json`](../reports/s1/project-storage-verification.json).
+See [project storage](s1-project-storage.md). The lifecycle smoke and storage verification
+records are retained as local historical evidence under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/s1/`, outside the
+public clean checkout.
 
 ## Persistent page-evidence verification on 2026-09-25
 
@@ -522,6 +539,7 @@ See [project storage](s1-project-storage.md),
 - Fault tests cover transaction rollback, concurrent duplicate registration, corrupt PNGs/blobs,
   wrong source/PDF/profile/baseline, stale methods and cursors, and incomplete review metadata.
 
-See [page evidence](s1-page-evidence.md),
-[`render-persistence-smoke.json`](../reports/s1/render-persistence-smoke.json) and
-[`render-verification.json`](../reports/s1/render-verification.json).
+See [page evidence](s1-page-evidence.md). The render persistence and verification records are
+retained as local historical evidence under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/s1/`, outside the
+public clean checkout.

@@ -66,6 +66,12 @@ node scripts/stage-windows-vcruntime.mjs # Windows only
 pnpm tauri dev
 ```
 
+Interactive development uses `~/.oleafly-dev` by default, so reset and seed tools
+cannot touch the library used by an installed Oleafly app. Set
+`OLEAFLY_DATA_DIR` explicitly when you need a different isolated library. The
+fetched sidecars under `src-tauri/binaries/` are git-ignored and must not be
+committed.
+
 On Windows, `stage-windows-vcruntime.mjs` copies Microsoft's
 `vcruntime140.dll` into `src-tauri/binaries/`. Typst and TexLab need it and
 Windows doesn't include it, so Oleafly installs it next to `Oleafly.exe`. The
@@ -102,6 +108,33 @@ Cargo or pnpm workspaces. Application data remains outside source control; the s
 does not relocate existing journal libraries. See the service README for portable tests and
 separate environment-bound acceptance checks.
 
+## Documentation and artifacts
+
+The root [`AGENTS.md`](../AGENTS.md) is the short entry for people and agents
+working in the repository; the [documentation index](README.md) routes to the
+detailed references.
+
+- Keep one authoritative page for each current fact and update it in place.
+  Link to that page instead of copying the same setup, status, or contract into
+  another document.
+- Treat completed plans, release notes, and verification records as dated
+  history. Do not rewrite history to describe later behavior; add a link from
+  the current page when the historical scope still matters.
+- Create a task report, ledger, or evidence bundle only when the task calls for
+  that deliverable. A normal pull request does not need a new report.
+- Keep private evidence and local-only material under `.private/` or another
+  explicitly ignored path. Public documentation may state a supported
+  conclusion without copying private source material or evidence.
+- Generated files must be changed through their generator or source data and
+  then regenerated in the same change. Record intentional local differences
+  from upstream rather than hiding them in a generated file.
+- The English root `README.md` is the translation source. Keep translated
+  README structures, links, and factual changes synchronized with it.
+- Check the documents, links, and generators affected by a documentation
+  change. Broader builds and test suites are needed only when behavior changes
+  make them relevant; documentation work does not require a fixed approval or
+  full-suite run.
+
 ## Day-to-day
 
 ```bash
@@ -110,10 +143,11 @@ pnpm build              # typecheck + build the frontend (tsc -b && vite build)
 pnpm tauri build        # produce a distributable bundle
 ```
 
-The command-line adapter ships inside the desktop app but has no standalone
-package yet. Run it from the workspace. Cargo builds it as `oleaflyc`, because the desktop package already owns the
-name `oleafly` in this workspace. Help, completions, the manual and release
-archives all call it `oleafly`:
+The command-line adapter ships inside the desktop app and has a dedicated
+standalone release workflow. Cargo builds it locally as `oleaflyc`, because the
+desktop package already owns the name `oleafly` in this workspace. The shipped
+command, completions, manual and release archives call it `oleafly`; see
+[CLI install](cli.md#install) for current installation paths and compatibility:
 
 ```bash
 cargo run -p oleafly-cli --bin oleaflyc -- --help

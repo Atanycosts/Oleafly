@@ -112,7 +112,10 @@ IJAM remains `pending_independent_review`. Its physical-page query was refused w
 read receipt. Reviewed page-query behavior is covered by the fixed independently annotated fixtures;
 their synthetic process metadata tests validation and does not claim another WPS execution.
 
-See `reports/s1/render-persistence-smoke.json` and `reports/s1/render-verification.json`.
+The 2026-09-25 `render-persistence-smoke.json` and `render-verification.json` records are
+retained as local historical evidence under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/s1/`, outside the
+public clean checkout.
 This change does not establish full S1 acceptance, scientific correctness or new human annotations.
 
 ## Commands

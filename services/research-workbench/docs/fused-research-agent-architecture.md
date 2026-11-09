@@ -1,10 +1,12 @@
-# 融合型科研 Agent 工作台：产品与系统架构
+# 融合型科研 Agent 工作台：产品与系统架构（2026-11-05 历史设计输入）
 
-> 文档版本：1.3（当前运行状态指针修订版）
+> 文档版本：1.3（2026-11-05 historical design input / frozen）
 > 基线日期：2026-11-02，Asia/Shanghai
 > 修订核对日期：2026-11-05，Asia/Shanghai
-> 事实勘误：2026-11-04，Phase 0 源路径诊断；设计范围未扩展，最新运行状态见 [s1-progress](s1-progress.md)
-> 文档性质：产品定位、架构决策、接口边界与分阶段实施依据
+> 事实勘误：2026-11-04，Phase 0 源路径诊断；设计范围未扩展。当前 Agent 状态与架构见
+> [Agent status](../../../docs/agent/status.md) 和
+> [Agent architecture](../../../docs/agent/architecture.md)
+> 文档性质：冻结的产品定位、架构决策、接口边界与分阶段历史设计输入
 > 实施状态：三方源码摸排已形成记录；现有核心有历史验证及未通过项，融合产品尚未实现和验收
 > 适用范围：个人、本地、自用的科研工作台
 
@@ -30,11 +32,18 @@
 | `feasibility-corrections.md` | 吸收源码纠偏和组件必要性讨论，纠正其中残留矛盾 | 设计输入；未核实的排他结论、配额和生命周期声明不沿用 |
 | `oleafly-fact-check-report.md` | 核对固定源码的能力断言，并补查 O9、API 政策及框架恢复语义 | 审查输入；采用复核成立的结论，不整体继承其外部政策判断或抽样统计 |
 | [三方深度摸排](oleafly-superagent-research-workbench-investigation.md)与三份专项报告 | 固定版本、源码路径、事实纠偏、集成风险与实验依据 | 保留为证据和深入阅读材料 |
-| [GitHub 记忆生态调研](../reports/integration-investigation/github-memory-landscape.md)、[编排生态调研](../reports/integration-investigation/github-orchestration-landscape.md)、[证据与可观测性生态调研](../reports/integration-investigation/github-evidence-observability-landscape.md) | 对记忆、耐久执行、事件、协议与观测候选做固定版本核对，给出吸收机制、PoC 门槛和停止条件 | 决策输入；候选尚未接入、安装或运行验收 |
-| [冻结需求 v1.3](../方案文档.md) | 已有产品要求与阶段边界 | 仍是现有项目的需求基线；本文不静默改写它 |
-| [当前实施状态](s1-progress.md)、`contracts/` 与源码 | 当前真正实现的字段、方法、限制及接受条件 | 当前运行合同与实现依据 |
+| GitHub 记忆生态调研、编排生态调研、证据与可观测性生态调研（均为本地历史证据） | 对记忆、耐久执行、事件、协议与观测候选做固定版本核对，给出吸收机制、PoC 门槛和停止条件 | 决策输入；候选尚未接入、安装或运行验收 |
+| [冻结需求 v1.3](../方案文档.md) | 已有产品要求与阶段边界 | 仍是 Workbench 的需求基线；本文不静默改写它 |
+| 设计复核时的 [S1 状态](s1-progress.md)、`contracts/` 与源码 | 该历史设计复核时可见的字段、方法、限制及接受条件 | 当前合同与状态须从现行入口重新读取 |
 
-本文是本次融合工作的统一设计入口，不是已发布 API 或数据库 schema。设计与现有合同存在差距时，应明确扩展或迁移合同后实施，不得直接把概念表作为第二套产品真源。原始设计输入、作者材料和历史测试报告保持原样。1.0 初版的输入身份与检查记录见[原始整合清单](../reports/integration-investigation/formal-architecture-manifest.json)；1.1 的修订来源、文件摘要与文档校验见[事实核查修订记录](../reports/integration-investigation/formal-architecture-fact-check-revision.json)；1.2 的生态决策、报告摘要和文件校验见[生态复用修订记录](../reports/integration-investigation/formal-architecture-ecosystem-revision.json)；本次 1.3 的版本指针修订见[当前状态修订记录](../reports/integration-investigation/formal-architecture-current-state-revision.json)。这些记录均不覆盖更早证据。
+本文冻结 2026-11-05 的融合设计，不是当前统一入口、已发布 API 或数据库 schema。当前跨系统
+入口是 [Oleafly integration](../../../docs/research-workbench-integration.md)、
+[Agent status](../../../docs/agent/status.md) 和
+[Agent architecture](../../../docs/agent/architecture.md)。设计与现行合同存在差距时，应通过
+合同迁移实施，不得直接把本文概念表作为第二套产品真源。原始设计输入、作者材料和历史测试报告
+保持原样。1.0 至 1.3 的整合清单、修订记录和校验文件保留在
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/`
+下，作为本地历史证据；该目录不属于公开 clean checkout。
 
 ### 1.2 决策、实现与验证分开
 
@@ -62,7 +71,10 @@
 | DeepSeek Super-agent prototype | `6337fc823ce20251c8de8085948165c81aaa701e` | 本地调研克隆、源码与测试源码检查；未启动 DSH 或 worker |
 | research-file-workbench | `8b229c9ae59a76035b90a8b0221ec535abb9842d` 加现有文档改动 | 已有领域实现、合同及 2026-11-02 本地测试日志 |
 
-上述是研究快照，不承诺是读者未来打开文档时的最新版本。上游版本与文件摘要见[来源清单](../reports/integration-investigation/source-manifest.json)。升级前重查相关边界，不把旧行号当作新版本证据。
+上述是研究快照，不承诺是读者未来打开文档时的最新版本。上游版本与文件摘要保留为本地历史
+证据，位于
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/source-manifest.json`。
+升级前重查相关边界，不把旧行号当作新版本证据。
 
 ### 2.2 Oleafly：完整底座而非编辑器外壳
 
@@ -693,7 +705,9 @@ unit 检验纯逻辑；contract 检验接口和拒绝语义；component 使用�
 
 ### 17.1 已保留的本地验证
 
-以下为 2026-11-02 摸排环节实际执行并保存的结果，本次正式文档整理未重跑。完整命令与日志哈希见[验证清单](../reports/integration-investigation/verification.json)。
+以下为 2026-11-02 摸排环节实际执行并保存的结果，本次正式文档整理未重跑。完整命令与日志哈希
+保留为本地历史证据，位于
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/verification.json`。
 
 | 验证 | 已有结果 | 覆盖范围 |
 | --- | --- | --- |
@@ -703,7 +717,12 @@ unit 检验纯逻辑；contract 检验接口和拒绝语义；component 使用�
 | 全套 pytest | 1030 passed，33 skipped，5 warnings | 现有核心回归；skip 明确留在日志 |
 | Phase 0 validate | exit 1：CONTRACT_INVALID / PHASE0_INCOMPLETE | 固定合同与宿主证据未满足，不称全门禁通过 |
 
-Phase 0 的失败包括登记源身份/材料缺失、旧 Windows WPS profile 和绝对路径证据不可用。原日志另报 `Render record points to another source`；2026-11-04 已追到它直接比较 Windows 绝对路径与 Mac 路径，8 个 fixture 的源路径后缀和源哈希均匹配。此前据此认定存在独立串源缺陷的结论撤回；这项核对不验证渲染，也不清除旧门禁失败，见[诊断记录](../reports/integration-investigation/mcp-read-only-boundary.md)。33 项跳过涉及平台和固定工具环境等边界，5 项警告是 PyMuPDF/SWIG 弃用提示；详情以原日志为准。
+Phase 0 的失败包括登记源身份/材料缺失、旧 Windows WPS profile 和绝对路径证据不可用。原日志
+另报 `Render record points to another source`；2026-11-04 已追到它直接比较 Windows 绝对路径
+与 Mac 路径，8 个 fixture 的源路径后缀和源哈希均匹配。此前据此认定存在独立串源缺陷的结论
+撤回；这项核对不验证渲染，也不清除旧门禁失败。诊断记录保留为本地历史证据，位于
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/mcp-read-only-boundary.md`。
+33 项跳过涉及平台和固定工具环境等边界，5 项警告是 PyMuPDF/SWIG 弃用提示；详情以原日志为准。
 
 ### 17.2 历史材料与实际能力
 
@@ -740,21 +759,23 @@ O 类相对固定版本 Oleafly 仓库，S 类相对固定版本 Super-agent 调
 | W1 | [MCP 合同](../contracts/s1/mcp-surface.json)；[MCP 服务](../src/research_file_workbench/workbench/mcp.py)；[工具注册](../src/research_file_workbench/workbench/mcp_tools.py) | 18 工具、版本、全工具入口与未知字段限制 |
 | W2 | [World 合同](../contracts/journals/world-contract.json)；[检查器](../src/research_file_workbench/journals/checker.py)；[检查存储](../src/research_file_workbench/journals/store_checks.py) | basis/verdict、世界引用、派生状态与当前绑定校验 |
 | W3 | [服务入口](../src/research_file_workbench/workbench/service.py)；[读取记录](../src/research_file_workbench/projects/read_records.py)；[渲染服务](../src/research_file_workbench/projects/render_service.py) | 当前执行范围、精确响应与基线依赖 |
-| W4 | [研究核心证据报告](../reports/integration-investigation/workbench-source-review.md)；[标注复核记录](../annotations/s1/ijam-english-working/review-notes.md) | 80/80 Agent 标注、Mac 历史链与当前库实例 |
+| W4 | 研究核心证据报告（本地历史证据，见下方历史报告目录）；[标注复核记录](../annotations/s1/ijam-english-working/review-notes.md) | 80/80 Agent 标注、Mac 历史链与设计复核时的库实例 |
 | W5 | [WorkbenchService.revise](../src/research_file_workbench/workbench/service.py)；[规则修订](../src/research_file_workbench/journals/revisions.py) | local-operator 与 human_decision 归因边界 |
 | E1 | [OpenAlex Authentication](https://help.openalex.org/api/authentication/)，核对 2026-11-03；页面标注更新 2026-10-15 | 无 key/免费 key/计划分层、每日预算、限流与认证；不沿用旧统一配额 |
 | E2 | [Crossref REST API 限流调整公告](https://community.crossref.org/t/refining-rest-api-limits-for-improved-stability-and-reliability/16137)，发布 2026-07-21，核对 2026-11-03 | 请求类型/API pool、响应头及 429 语义 |
 | E3 | [LangGraph Persistence 官方文档源文件](https://raw.githubusercontent.com/langchain-ai/docs/main/src/oss/langgraph/persistence.mdx)，核对 2026-11-03 | checkpointer 保存图状态，store 保存跨线程应用数据；内存 checkpoint 不跨进程重启保留 |
 | E4 | [LangGraph Functional API 官方文档源文件](https://raw.githubusercontent.com/langchain-ai/docs/main/src/oss/langgraph/functional-api.mdx)，核对 2026-11-03 | 区分 Graph API 与 Functional API；entrypoint 重放、已保存结果恢复、非确定性与副作用封装、未完成 task 的幂等要求 |
-| G1 | [GitHub 记忆生态调研](../reports/integration-investigation/github-memory-landscape.md) | Mem0/Letta/Graphiti/LangMem 等固定版本、记忆边界、D-MEM 决策与召回/故障实验门槛 |
-| G2 | [GitHub 编排生态调研](../reports/integration-investigation/github-orchestration-landscape.md) | Temporal/Restate/Inngest/Dapr、LangGraph/MAF/OpenAI Agents、BullMQ/NATS、MCP/ACP/A2A 的固定版本、E1-E9 实验与唯一 owner 门槛 |
-| G3 | [GitHub 证据与可观测性生态调研](../reports/integration-investigation/github-evidence-observability-landscape.md) | OTel/OpenInference、Langfuse/Phoenix、事件/outbox/事件库与 telemetry 隔离、脱敏和二选一 PoC 门槛 |
+| G1 | GitHub 记忆生态调研（本地历史证据） | Mem0/Letta/Graphiti/LangMem 等固定版本、记忆边界、D-MEM 决策与召回/故障实验门槛 |
+| G2 | GitHub 编排生态调研（本地历史证据） | Temporal/Restate/Inngest/Dapr、LangGraph/MAF/OpenAI Agents、BullMQ/NATS、MCP/ACP/A2A 的固定版本、E1-E9 实验与唯一 owner 门槛 |
+| G3 | GitHub 证据与可观测性生态调研（本地历史证据） | OTel/OpenInference、Langfuse/Phoenix、事件/outbox/事件库与 telemetry 隔离、脱敏和二选一 PoC 门槛 |
 
 三份专项报告保留更细的固定提交引用和检查路径：
 
-- [Oleafly 源码与架构](../reports/integration-investigation/oleafly-source-review.md)。
-- [Super-agent 源码与机制](../reports/integration-investigation/superagent-source-review.md)。
-- [工作台实现与证据](../reports/integration-investigation/workbench-source-review.md)。
+- Oleafly 源码与架构、Super-agent 源码与机制、工作台实现与证据三份报告。
+
+这些历史报告、生态调研和修订记录均保留在
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/`；
+它们不属于公开 clean checkout，也不定义当前实现。
 
 ### 18.2 正式版已落实的实质纠偏
 
@@ -783,6 +804,6 @@ O 类相对固定版本 Oleafly 仓库，S 类相对固定版本 Super-agent 调
 
 ### 18.3 维护规则
 
-后续架构变化优先原位修订本文受影响章节及决策表；如果需改变需求或运行语义，同步修订对应合同、实现和测试，保持方法版本。调查报告和运行日志作为历史证据保留，不改成新结果。
-
-正式文件固定为 `docs/fused-research-agent-architecture.md`，不以不断新增 numbered-final 文档分散权威。源码更新时复核第 2、6、8、17、18 节；实际交付后更新 [s1-progress.md](s1-progress.md)，用新增验证记录说明已完成范围。
+本文已冻结为 2026-11-05 历史设计输入，不再原位吸收当前架构变化。后续架构进入
+`docs/agent/architecture.md`，当前状态进入 `docs/agent/status.md`；Workbench 领域状态进入
+[s1-progress.md](s1-progress.md)。调查报告和运行日志作为历史证据保留，不改成新结果。

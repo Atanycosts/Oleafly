@@ -1,11 +1,11 @@
 ---
 name: oleafly-literature-sweep
-description: Turn a research question into an annotated reading list with provenance. Use when the user asks to find papers, survey the literature, gather background on a topic, collect sources for a section, or fill out a thin bibliography. Searches OpenAlex, Semantic Scholar, Crossref, arXiv and PubMed at once with literature_search, reads the strongest papers with read_paper, resolves canonical BibTeX with verify_citation, dedupes against the project bibliography before writing anything, and leaves behind research/reading-list.md plus one source note per paper.
+description: Turn a research question into an annotated reading list with provenance. Use when the user asks to find papers, gather background, collect sources, or fill out a bibliography. Searches literature APIs, reads selected papers, verifies BibTeX, and reuses existing source records or creates source notes when needed.
 license: MIT
 compatibility: Needs network approval for literature_search and verify_citation. The vendored paper-lookup and citation-management scripts need Python 3.11 or newer on the login shell PATH.
 allowed-tools: literature_search read_paper verify_citation alphaxiv_search alphaxiv_paper_content project_library_search project_map search_project read_file write_file replace_in_file create_file compile update_todos remember_note load_skill read_skill_file run_command
 metadata:
-  version: "1.1.1"
+  version: "1.2.0"
   skill-author: "Oleafly"
   oleafly:
     tier: native
@@ -33,7 +33,7 @@ metadata:
 
 # Oleafly Literature Sweep
 
-A sweep produces three things: an annotated reading list, one source note per paper with enough provenance to repeat the search, and verified BibTeX entries in the project's own bibliography. A pile of titles in a chat reply is not a sweep. It disappears when the conversation scrolls.
+A sweep maintains an annotated reading list, a retrievable source record for each kept paper with enough provenance to repeat the search, and verified BibTeX entries in the project's own bibliography. Reuse the existing library or project record when it already carries that content. The paths below are defaults for missing records, not a requirement to export everything again.
 
 The rule that governs everything below: nothing enters the bibliography that has not been resolved through `verify_citation`. A plausible looking entry is worse than a missing one, because it compiles.
 
@@ -145,15 +145,15 @@ With no DOI, call `verify_citation` with `{"title": "<exact title>"}`. It search
 
 Preprints often have no Crossref record. For an arXiv paper, use the arXiv id as the identifier, note `doi: none` in the source note, and say in the reading list that it is a preprint. Do not construct a DOI for it.
 
-## Step 8. Write the source notes
+## Step 8. Retain source provenance
 
-One file per kept paper, at `research/sources/<key>.md`, using the template in `assets/source-note.md`. Create the directory first with `create_file` and `{"path": "research/sources", "is_dir": true}`.
+Find the existing source record for each kept paper and retain its stable ID or path. Update missing provenance through the available owning tool. If there is no equivalent record, write `research/sources/<key>.md` using `assets/source-note.md`. Create the directory only when needed.
 
 The key is `<firstauthor><year>-<slug>`, lowercase, for example `xu2019-gnn-expressivity`, unless the project's bibliography uses another scheme, in which case follow the project.
 
-Every note carries the abstract verbatim in a quote block, and the provenance block with `endpoint`, `query`, `retrieved`, `doi`, `open access` and `pdf`. `none` is a valid value. A missing field is not.
+Every source record carries the abstract verbatim as source text, and provenance with `endpoint`, `query`, `retrieved`, `doi`, `open access` and `pdf`. `none` is a valid value. A missing field is not. Keep synthesis distinct from retrieved text; a record ID is useful only if the actual record can be queried.
 
-If you downloaded a PDF, save it beside the note as `research/sources/<key>.pdf` and point the `pdf` field at it.
+Use an existing retained PDF when available. Otherwise save a downloaded PDF beside a new note as `research/sources/<key>.pdf` and point the `pdf` field at it.
 
 ## Step 9. Append to the bibliography, carefully
 
@@ -169,7 +169,7 @@ Set `remember_note` if you established a key scheme this session.
 
 ## Step 10. Update the reading list
 
-Write `research/reading-list.md` from `assets/reading-list.md`. Group rows by theme, not by the order you found them: the grouping is what the related-work section will reuse.
+Update the project's existing reading list or equivalent queryable record. If none exists, use `research/reading-list.md` and `assets/reading-list.md`. Group rows by theme, not by the order you found them: the grouping is what the related-work section will reuse.
 
 Fill the searches table with one row per query you ran. Fill the dropped table with the papers you rejected and why.
 
@@ -203,10 +203,10 @@ A `.bib` entry with a syntax error takes the whole bibliography down, so a green
 ## Done when
 
 - [ ] Every query run is recorded in the searches table with endpoint, query and date.
-- [ ] Every kept paper has a `research/sources/<key>.md` with a verbatim abstract and a complete provenance block.
+- [ ] Every kept paper has a retrievable source record with a verbatim abstract and complete provenance; a new source note is needed only when no equivalent record exists.
 - [ ] Every kept paper was checked against the existing bibliography before anything was written.
 - [ ] Every `.bib` entry came from `verify_citation`, none was hand written.
-- [ ] `research/reading-list.md` is grouped by theme, with dropped papers and their reasons.
+- [ ] The reading-list record is grouped by theme, with dropped papers and their reasons; no duplicate file is required for an existing queryable record.
 - [ ] `compile` is green and `unresolvedCites` holds nothing you were asked to resolve.
 - [ ] The user has been told what was not covered, including any database skipped for a missing key or a missing interpreter.
 

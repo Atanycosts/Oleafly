@@ -1,11 +1,11 @@
 ---
 name: oleafly-verify-claims
-description: Audit a section claim by claim and report which statements the cited sources actually support. Use when the user asks to check the citations, verify the claims in a section, find unsupported or overstated statements, confirm nothing was fabricated, or get a manuscript ready for review or submission. Builds research/claims.md with a support level and an evidence note per claim, and reports problems rather than quietly rewriting the prose.
+description: Audit a section claim by claim and report which statements the cited sources actually support. Use when the user asks to check citations, verify claims, or find unsupported or overstated statements. Maintains a claim record with evidence and proposed fixes, reusing the project's existing record or research/claims.md.
 license: MIT
 compatibility: Reads and reports only. Needs network approval for verify_citation. The optional scientific-writing audit script needs Python 3.11 or newer on the login shell PATH.
-allowed-tools: read_file search_project project_map project_library_search verify_citation write_file create_file compile get_pdf_text update_todos load_skill read_skill_file run_command
+allowed-tools: read_file search_project project_map project_library_search verify_citation write_file replace_in_file create_file compile get_pdf_text update_todos load_skill read_skill_file run_command
 metadata:
-  version: "1.0.1"
+  version: "1.1.0"
   skill-author: "Oleafly"
   oleafly:
     tier: native
@@ -17,6 +17,7 @@ metadata:
       - project_library_search
       - verify_citation
       - write_file
+      - replace_in_file
       - create_file
       - compile
       - get_pdf_text
@@ -28,9 +29,9 @@ metadata:
 
 # Oleafly Verify Claims
 
-This skill answers one question for every factual sentence in a section: does the source it cites actually say that? The output is a table, a report, and a list of proposed fixes. It is not a rewrite.
+This skill answers one question for every factual sentence in a section: does the source it cites actually say that? Maintain one claim record containing the evidence table, summary and proposed fixes. Reuse an existing project record; `research/claims.md` is the default when there is none. Export a separate report only when the requested deliverable needs it.
 
-**Never edit the user's prose in this skill.** A claim audit that silently corrects what it finds destroys the evidence of what was wrong, and the user cannot check your judgement afterwards. Propose the fix, name the file and line, and let them decide. The only files this skill writes are `research/claims.md` and a report under `review/`.
+**A review request does not authorize editing the user's prose.** Propose fixes with file and line locations. Write the claim record and requested exports; preserve the manuscript being audited.
 
 ## Step 1. Fix the scope
 
@@ -38,7 +39,7 @@ Audit one section, or one file, at a time. A whole manuscript in one pass produc
 
 Confirm with the user which file, or infer from what they just asked about. `project_map` with `{}` returns `sections` with the file and line of each heading, so you can name the boundaries precisely.
 
-Set the plan with `update_todos`, one item per step below.
+For substantial work, use the host's existing task state to track scope and remaining claims.
 
 ## Step 2. Read the text with line anchors
 
@@ -101,13 +102,13 @@ Exactly one of three, defined in full in `references/support-levels.md`.
 
 The evidence note must say what the source actually says, not just that it disagrees. "Measured on graphs up to 10k nodes; the sentence says arbitrary scale" is actionable. "Overstated" is not.
 
-## Step 7. Write research/claims.md
+## Step 7. Update the claim record
 
-Create the directory if needed with `create_file` and `{"path": "research", "is_dir": true}`, then `write_file` the table from `assets/claims.md`.
+Read the project's existing claim record first. If there is none, create `research/claims.md` using `assets/claims.md`. If an available application tool owns an equivalent claim record, update it through that tool and retain its identifiers rather than copying it to a second file. The task Finding tools cover deterministic numeric checks; do not use them as a substitute for this claim audit.
 
-Columns: number, claim, location as `file:line`, cited key, support level, evidence note. Then a summary count, then a proposed fixes table.
+Include the audit scope and input revision or hash when available. Columns: claim ID, claim, location as `file:line`, cited key, support level, evidence note. Add summary counts, proposed fixes and any material coverage gaps. Unsupported claims must be identifiable in full, with what evidence is missing.
 
-If `research/claims.md` already exists, `read_file` it first and merge rather than replacing. An earlier audit's findings on other sections are not yours to discard.
+Merge the current scope without discarding other sections. Preserve existing claim IDs and distinguish results against an older manuscript revision from the current audit.
 
 ## Step 8. Optional deeper audit with the vendored script
 
@@ -129,13 +130,13 @@ Read either template with `read_skill_file` and `{"id": "scientific-writing", "p
 
 Two related scripts from the same skill: `scripts/check_references.py <sources.json>` validates the manifest alone, and `scripts/lint_manuscript.py <manuscript.md>` checks the prose against the skill's writing rules.
 
-Write script output to a file under `research/` and read it back with `read_file`. Command output is capped and truncates silently.
+Read the script result. If output would be truncated, capture it in the host's disposable run directory and read the needed parts. Retain raw output only when the audit needs it as evidence; do not create another summary of the same findings.
 
 The script checks structure and completeness. It does not read the sources. It never replaces steps 5 and 6.
 
-## Step 9. Report, and hard fail on the unsupported
+## Step 9. Present the result
 
-Write the report to `review/claim-audit-<section>.md` from `assets/audit-report.md`, and give the user the summary in your reply.
+Give the user the summary and a link or record ID for the claim record. When a separate report is requested, derive it from that record using `assets/audit-report.md`; the export does not become a second status owner.
 
 Lead with the count at each level. Then list every `unsupported` claim in full, with its location and what is missing. These are the ones that must be resolved before submission, and burying them under the verified ones is how they get missed.
 
@@ -176,9 +177,9 @@ If you added nothing and edited no source, `compile` is not required. If the use
 
 - [ ] Every factual claim in the scope has a row, with a `file:line` location that `search_project` confirms.
 - [ ] Every row has a support level and an evidence note that says what the source actually says.
-- [ ] Every `unsupported` claim is listed in full in the report, not only counted.
+- [ ] Every `unsupported` claim is listed in full in the claim record, not only counted.
 - [ ] Every proposed fix names the file, the line, and the specific change.
-- [ ] `research/claims.md` and `review/claim-audit-<section>.md` are written.
+- [ ] The existing claim record is updated, or `research/claims.md` is created when needed. A separate report is exported only when requested.
 - [ ] No sentence of the user's prose was changed without them asking for it in this turn.
 
 ## Reference files

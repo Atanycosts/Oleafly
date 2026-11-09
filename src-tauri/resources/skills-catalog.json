@@ -4,7 +4,7 @@
   "packs": [
     {
       "id": "research-core",
-      "version": "2026.10.19.82ebb937",
+      "version": "2026.10.19.435d6a6c",
       "kind": "bundled"
     }
   ],
@@ -134,8 +134,8 @@
       "description": "Implement, debug, refactor or review software in the current project. Covers code ownership, existing contracts and behavior-focused verification.",
       "phase": "tooling",
       "license": "CC-BY-4.0",
-      "version": "1.1.0",
-      "bytes": 1817,
+      "version": "1.2.0",
+      "bytes": 2064,
       "files": 1,
       "pack": "research-core"
     },
@@ -175,11 +175,11 @@
     {
       "id": "oleafly-literature-sweep",
       "name": "oleafly-literature-sweep",
-      "description": "Turn a research question into an annotated reading list with provenance. Use when the user asks to find papers, survey the literature, gather background on a topic, collect sources for a section, or fill out a thin bibliography. Searches OpenAlex, Semantic Scholar, Crossref, arXiv and PubMed at once with literature_search, reads the strongest papers with read_paper, resolves canonical BibTeX with verify_citation, dedupes against the project bibliography before writing anything, and leaves behind research/reading-list.md plus one source note per paper.",
+      "description": "Turn a research question into an annotated reading list with provenance. Use when the user asks to find papers, gather background, collect sources, or fill out a bibliography. Searches literature APIs, reads selected papers, verifies BibTeX, and reuses existing source records or creates source notes when needed.",
       "phase": "research",
       "license": "MIT",
-      "version": "1.1.1",
-      "bytes": 27230,
+      "version": "1.2.0",
+      "bytes": 27523,
       "files": 5,
       "pack": "research-core"
     },
@@ -222,8 +222,8 @@
       "description": "Coordinate research writing across several stages in Oleafly. Use when the work needs a project-wide plan or help choosing specialist skills; focused tasks can use a specialist directly.",
       "phase": "research",
       "license": "MIT",
-      "version": "1.1.0",
-      "bytes": 22063,
+      "version": "1.2.0",
+      "bytes": 23048,
       "files": 7,
       "pack": "research-core"
     },
@@ -263,11 +263,11 @@
     {
       "id": "oleafly-verify-claims",
       "name": "oleafly-verify-claims",
-      "description": "Audit a section claim by claim and report which statements the cited sources actually support. Use when the user asks to check the citations, verify the claims in a section, find unsupported or overstated statements, confirm nothing was fabricated, or get a manuscript ready for review or submission. Builds research/claims.md with a support level and an evidence note per claim, and reports problems rather than quietly rewriting the prose.",
+      "description": "Audit a section claim by claim and report which statements the cited sources actually support. Use when the user asks to check citations, verify claims, or find unsupported or overstated statements. Maintains a claim record with evidence and proposed fixes, reusing the project's existing record or research/claims.md.",
       "phase": "review",
       "license": "MIT",
-      "version": "1.0.1",
-      "bytes": 19296,
+      "version": "1.1.0",
+      "bytes": 20078,
       "files": 4,
       "pack": "research-core"
     },

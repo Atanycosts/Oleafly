@@ -101,10 +101,12 @@ idempotent replay after deleting the test source, and an explicit historical rea
 two baselines and 606 old observations from the application-owned IJAM snapshot. Old observations
 became STALE while remaining NOT_REVIEWED. SQLite `integrity_check` returned `ok`.
 
-Evidence is in `reports/s1/project-lifecycle-smoke.json` and
-`reports/s1/project-storage-verification.json`. The smoke project is disposable test data under
-`var/`; its simulated external revision and deletion affected only its copied test input.
-No author manuscript, live WPS run, independent IJAM annotation or full S1 acceptance was changed.
+The 2026-09-25 `project-lifecycle-smoke.json` and `project-storage-verification.json` records are
+retained as local historical evidence under
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/s1/`, outside the
+public clean checkout. The smoke project was disposable test data under the original `var/`;
+its simulated external revision and deletion affected only its copied test input. No author
+manuscript, live WPS run, independent IJAM annotation or full S1 acceptance was changed.
 
 ## Local commands
 
