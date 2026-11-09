@@ -654,7 +654,7 @@ capability-to-output evaluation; wave 4 remains optional OTel/UI interoperabilit
 only when a concrete consumer demonstrates value.
 
 The Windows location was learned from the supplied integration prompt and its
-referenced `/Users/mayuheng/Documents/Trae-CN/temp_20261107_01/local-review-plan.md`,
+referenced `local-review-plan.md (operator-supplied local document)`,
 not from a live Windows check or an established deployed-model inventory. The
 prompt mentions Qwen/MiniCheck; the referenced deployment plan instead names
 Qwen3.5/Mellum candidates. No reviewer model/version or availability is asserted
