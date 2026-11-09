@@ -264,7 +264,7 @@ fn an_oversized_reply_still_ends_the_stream() {
 #[tokio::test]
 async fn the_sink_refuses_a_line_at_the_frame_limit() {
     let (writer, _reader) = tokio::io::duplex(4 * MAX_FRAME);
-    let mut sink = Box::pin(outgoing_lines(writer));
+    let mut sink = Box::pin(outgoing_lines(writer, |_| Ok(())));
     let line = "x".repeat(MAX_FRAME - 1);
     assert!(sink.send(line).await.is_err());
 }
@@ -272,7 +272,31 @@ async fn the_sink_refuses_a_line_at_the_frame_limit() {
 #[tokio::test(start_paused = true)]
 async fn the_sink_times_out_a_stuck_writer() {
     let (writer, _reader) = tokio::io::duplex(16);
-    let mut sink = Box::pin(outgoing_lines(writer));
+    let mut sink = Box::pin(outgoing_lines(writer, |_| Ok(())));
     let error = sink.send("x".repeat(1024)).await.unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+}
+
+#[tokio::test]
+async fn the_sink_emits_a_receipt_only_after_a_complete_flush() {
+    let (writer, mut reader) = tokio::io::duplex(16);
+    let line = "x".repeat(1024);
+    let expected = line.clone();
+    let (sent, mut receipt) = tokio::sync::mpsc::unbounded_channel();
+    let writing = tokio::spawn(async move {
+        let mut sink = Box::pin(outgoing_lines(writer, move |line| {
+            sent.send(line.to_owned()).unwrap();
+            Ok(())
+        }));
+        sink.send(line).await.unwrap();
+    });
+    let mut first = [0u8; 16];
+    use tokio::io::AsyncReadExt;
+    reader.read_exact(&mut first).await.unwrap();
+    assert!(receipt.try_recv().is_err());
+    let mut rest = Vec::new();
+    reader.read_to_end(&mut rest).await.unwrap();
+    writing.await.unwrap();
+    assert_eq!(receipt.recv().await.unwrap(), expected);
+    assert_eq!(rest.last(), Some(&b'\n'));
 }

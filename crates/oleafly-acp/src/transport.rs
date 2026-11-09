@@ -352,38 +352,49 @@ where
     )
 }
 
-pub(crate) fn outgoing_lines<W>(stdin: W) -> impl Sink<String, Error = io::Error> + Send + 'static
+pub(crate) fn outgoing_lines<W, F>(
+    stdin: W,
+    on_sent: F,
+) -> impl Sink<String, Error = io::Error> + Send + 'static
 where
     W: AsyncWrite + Send + Unpin + 'static,
+    F: FnMut(&str) -> io::Result<()> + Send + 'static,
 {
-    futures::sink::unfold(stdin, |mut stdin, line: String| async move {
-        if line.len() + 1 >= MAX_FRAME {
-            return Err(io::Error::other(
-                "This ACP request exceeds the 1 MiB message limit.",
-            ));
-        }
-        let mut bytes = line.into_bytes();
-        bytes.push(b'\n');
-        match tokio::time::timeout(WRITE_TIMEOUT, async {
-            stdin.write_all(&bytes).await?;
-            stdin.flush().await
-        })
-        .await
-        {
-            Ok(Ok(())) => Ok(stdin),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "The agent input is blocked.",
-            )),
-        }
-    })
+    futures::sink::unfold(
+        (stdin, on_sent),
+        |(mut stdin, mut on_sent), line: String| async move {
+            if line.len() + 1 >= MAX_FRAME {
+                return Err(io::Error::other(
+                    "This ACP request exceeds the 1 MiB message limit.",
+                ));
+            }
+            let mut bytes = line.as_bytes().to_vec();
+            bytes.push(b'\n');
+            match tokio::time::timeout(WRITE_TIMEOUT, async {
+                stdin.write_all(&bytes).await?;
+                stdin.flush().await
+            })
+            .await
+            {
+                Ok(Ok(())) => {
+                    on_sent(&line)?;
+                    Ok((stdin, on_sent))
+                }
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "The agent input is blocked.",
+                )),
+            }
+        },
+    )
 }
 
-pub(crate) fn line_transport<R, W, F>(
+pub(crate) fn line_transport<R, W, F, S>(
     stdout: R,
     stdin: W,
     on_stray: F,
+    on_sent: S,
 ) -> Lines<
     impl Sink<String, Error = io::Error> + Send + 'static,
     impl Stream<Item = io::Result<String>> + Send + 'static,
@@ -392,8 +403,12 @@ where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
     F: FnMut(&[u8]) + Send + 'static,
+    S: FnMut(&str) -> io::Result<()> + Send + 'static,
 {
-    Lines::new(outgoing_lines(stdin), incoming_lines(stdout, on_stray))
+    Lines::new(
+        outgoing_lines(stdin, on_sent),
+        incoming_lines(stdout, on_stray),
+    )
 }
 
 #[cfg(test)]

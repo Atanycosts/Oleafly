@@ -113,6 +113,86 @@ fn connect(host: Arc<dyn ClientHost>) -> (Arc<AcpClient>, FakeAgent) {
     )
 }
 
+#[tokio::test]
+async fn prompt_sent_receipt_follows_the_frame_and_survives_disconnect_before_reply() {
+    let (client, mut agent) = connect(Arc::new(NullHost));
+    let (sent, receipt) = tokio::sync::oneshot::channel();
+    let waiting = {
+        let client = client.clone();
+        tokio::spawn(async move {
+            client
+                .prompt_with_sent(
+                    "s1",
+                    vec![json!({"type": "text", "text": "retained annotation"})],
+                    TurnTiming::default(),
+                    Box::new(move || {
+                        sent.send(()).unwrap();
+                        Ok(())
+                    }),
+                )
+                .await
+        })
+    };
+    let request = agent.next().await;
+    assert_eq!(request["method"], "session/prompt");
+    assert_eq!(
+        request["params"]["prompt"][0]["text"],
+        "retained annotation"
+    );
+    tokio::time::timeout(Duration::from_secs(5), receipt)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(agent);
+    assert!(waiting.await.unwrap().is_err());
+}
+
+#[tokio::test]
+async fn invalid_prompt_never_emits_a_sent_receipt() {
+    let (client, _agent) = connect(Arc::new(NullHost));
+    let (sent, receipt) = tokio::sync::oneshot::channel();
+    let error = client
+        .prompt_with_sent(
+            "s1",
+            vec![json!({"type": "text", "text": "x".repeat(oleafly_acp::limits::MAX_FRAME)})],
+            TurnTiming::default(),
+            Box::new(move || {
+                sent.send(()).unwrap();
+                Ok(())
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("1 MiB"));
+    assert!(receipt.await.is_err());
+}
+
+#[tokio::test]
+async fn prompt_write_failure_never_emits_a_sent_receipt() {
+    let (agent_out, client_in) = tokio::io::duplex(1024);
+    let (client_out, agent_in) = tokio::io::duplex(1024);
+    drop(agent_in);
+    let client = AcpClient::from_streams(client_in, client_out, Arc::new(NullHost));
+    let (sent, receipt) = tokio::sync::oneshot::channel();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.prompt_with_sent(
+            "s1",
+            vec![json!({"type": "text", "text": "not written"})],
+            TurnTiming::default(),
+            Box::new(move || {
+                sent.send(()).unwrap();
+                Ok(())
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(result.is_err());
+    assert!(receipt.await.is_err());
+    drop(agent_out);
+}
+
 fn update(index: usize) -> Value {
     json!({"jsonrpc": "2.0", "method": "session/update", "params": {
         "sessionId": "s1",
