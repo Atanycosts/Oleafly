@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { describeError } from "@/lib/app-error";
 import { loadResearchTaskObservationCall, type ResearchTask, type TaskTranscriptEvent } from "@/lib/research-tasks";
 import type { ResearchTaskAgentOption } from "./ResearchTasksPanel";
@@ -179,7 +180,7 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
     if (state.status === "error") return <p role="alert" className="text-destructive">{state.message}</p>;
     if (state.status === "observation") return <div className="space-y-1">
       <p>{t($ => $.researchTools.tasks.group.sourceGeneration, { generation: state.execution.taskGeneration })} · <code>{state.execution.id}</code></p>
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono">{JSON.stringify(state.row, null, 2)}</pre>
+      <CodeBlock code={JSON.stringify(state.row, null, 2)} preClassName="max-h-72 whitespace-pre-wrap break-all" />
       <p className="text-muted-foreground">{t($ => $.researchTools.tasks.group.sourceMetadataOnly)}</p>
     </div>;
     return <div className="space-y-2">

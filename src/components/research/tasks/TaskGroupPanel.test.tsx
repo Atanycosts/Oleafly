@@ -8,7 +8,7 @@ const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/lib/task-collaboration", () => api);
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (selector: (v: unknown) => unknown) => selector({ researchTools: { tasks: { group: new Proxy({}, { get: (_, key) => String(key) }), annotations: { resultRefs: "resultRefs" } } } }) }) }));
+vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (selector: (v: unknown) => unknown) => selector({ common: { actions: { copy: "Copy", copied: "Copied" } }, researchTools: { tasks: { group: new Proxy({}, { get: (_, key) => String(key) }), annotations: { resultRefs: "resultRefs" } } } }) }) }));
 let Panel: typeof import("./TaskGroupPanel").TaskGroupPanel;
 let testing: typeof import("@testing-library/react");
 beforeAll(async () => {
