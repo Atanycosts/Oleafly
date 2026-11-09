@@ -27,11 +27,12 @@ Source and integration checkouts:
   `codex/research-workbench`; fast-forwarded to `72c4c3da` after verifying all
   53 formerly dirty files were byte-identical to that committed baseline.
 - Current Agent integration checkout: `<agent-integration-checkout>`,
-  branch `codex/agent-runtime`. Earlier implementation commits extend through
+  branch `main`, tracking the operator's `origin/main`; delivered from
+  `codex/agent-runtime`. Earlier implementation commits extend through
   `dc287af1`; the source snapshots, helper usage, ACP receipts, PDF selection,
   native journal continuation, actual relationship routing and compact contexts
-  are included in the 2026-11-09 delivery commits. The dependency PR is based
-  on `codex/research-baseline`; the runtime PR targets that baseline.
+  are included in the 2026-11-09 delivery commits. The dependency PR was based
+  on `codex/research-baseline`; both delivery PRs are now merged into fork main.
 - Git history is retained; the clone is non-shallow with lazy historical blobs.
 - The official Apple Silicon 0.4.9 release was launched on 2026-11-02 in an
   isolated preview library; its Chinese welcome screen was visually verified.
@@ -1629,15 +1630,24 @@ fork, retaining the implementation history:
 - [PR #1](https://github.com/Atanycosts/Oleafly/pull/1), `main` ←
   `codex/research-baseline`, retains the original Workbench/observations/findings
   baseline through `72c4c3da`; `3593fc97` removes a machine-specific document path.
+  Merged as `34d212d7` on 2026-11-09.
 - [PR #2](https://github.com/Atanycosts/Oleafly/pull/2),
-  `codex/research-baseline` ← `codex/agent-runtime`, retains the earlier runtime
+  initially `codex/research-baseline` ← `codex/agent-runtime`, retains the earlier runtime
   commits through `dc287af1`, ACP transport correction `3773fc78`, retained
   evidence and application/collaboration increment `656e2a41`, and shared
   CodeBlock correction `469035fe` and legacy migration-fixture correction
   `e8de835`. All 27 previously untracked source/test files are included.
+  Retargeted to `main` after #1, then merged as `ba1cb02c` on 2026-11-09.
 
-These PRs are not merged. No upstream PR, tag, installer update or Windows
-deployment is included.
+The operator subsequently authorized completing the merge. Merge commits preserve
+the delivered history and the stacked PR relationship. Before and after merging
+#2, the complete Git tree matched the tested runtime tree at `9aec8aba` exactly
+(`5da5ded0d2c9ac911117a4177d5cdbd7d54f4bfd`). Only this delivery-status
+documentation is updated afterward. The integrated checkout now follows fork
+`main`; the original development checkout is also synchronized without discarding
+uncommitted edits. No upstream PR, tag, installer update or Windows deployment
+is included. GitHub reported no workflow runs or check results at merge time;
+the local validation and its disclosed failures below remain the evidence.
 
 Delivery review corrected a Workbench event that named the internal
 `task_workbench_context` method instead of the callable `journal_context` tool.
