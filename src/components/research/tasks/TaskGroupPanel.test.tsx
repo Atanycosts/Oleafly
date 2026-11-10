@@ -271,6 +271,23 @@ describe("TaskGroupPanel", () => {
   expect(view.queryByText("file hidden.md · v1")).toBeNull();
  });
 
+ it("shows the retained content and reason for responsibility-based participation", async () => {
+  const loaded = attributedSnapshot();
+  loaded.work[0].causeKind = "event";
+  loaded.work[0].causeId = "e1";
+  loaded.work[0].reasons = [{ kind: "responsibility", detail: "The comparison changed from test to validation.", sourceId: "assessment-1" }];
+  const event = loaded.events?.[0];
+  if (!event) throw new Error("Missing file event fixture");
+  event.evidence = { availability: "available", fileSha256: "retained-hash", content: "validation split" };
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-w1");
+  expect(testing.within(work).getByText("reasonResponsibility")).toBeTruthy();
+  expect(testing.within(work).getByText("The comparison changed from test to validation.")).toBeTruthy();
+  expect(testing.within(work).getByText(/retained-hash/)).toBeTruthy();
+  expect(testing.within(work).getByText(/validation split/)).toBeTruthy();
+ });
+
  it("reads exact old-generation observation calls on demand", async () => {
   api.loadTaskGroup.mockResolvedValue(sourceSnapshot());
   native.invoke

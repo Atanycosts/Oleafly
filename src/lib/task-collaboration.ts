@@ -79,6 +79,7 @@ export interface Distillation {
   rationale: string;
   outcome: "promoted" | "candidate" | "no_enduring_requirement" | "needs_review";
   requirementId: string | null;
+  promotedFromRequirementId?: string | null;
   replacedRequirementId: string | null;
   createdAt: number;
 }
@@ -174,6 +175,7 @@ export interface GroupMessage extends MessageDraft {
 
 export interface WorkReason {
   kind: string;
+  detail?: string;
   object?: GroupObject;
   sourceId?: string;
   executionId?: string;
@@ -211,6 +213,7 @@ export interface GroupEvent {
   object: GroupObject;
   author: GroupActor;
   detail: string;
+  evidence?: unknown;
   createdAt: number;
 }
 

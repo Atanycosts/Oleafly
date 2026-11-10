@@ -13,6 +13,10 @@ mod attention;
 pub(super) use attention::record_handling_on;
 pub(super) use attention::SCHEMA_SQL as ATTENTION_SCHEMA_SQL;
 
+#[path = "responsibility.rs"]
+mod responsibility;
+pub(super) use responsibility::SCHEMA_SQL as RESPONSIBILITY_SCHEMA_SQL;
+
 pub(super) const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS collaboration_groups (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
@@ -333,6 +337,7 @@ fn work_reason(
 ) -> WorkReason {
     WorkReason {
         kind: kind.into(),
+        detail: None,
         object: object.cloned(),
         source_id: source.map(str::to_owned),
         execution_id: execution.map(str::to_owned),
@@ -541,8 +546,36 @@ pub(super) fn record_group_event_on(
     actor: &GroupActor,
     detail: &str,
 ) -> Result<Vec<String>, String> {
+    record_event_with_evidence_on(tx, project, group, key, kind, object, actor, detail, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_event_with_evidence_on(
+    tx: &Transaction<'_>,
+    project: &str,
+    group: &str,
+    key: &str,
+    kind: &str,
+    object: &GroupObject,
+    actor: &GroupActor,
+    detail: &str,
+    evidence: Option<serde_json::Value>,
+) -> Result<Vec<String>, String> {
     let g = group_on(tx, project, group)?;
     validate_actor(tx, group, actor)?;
+    let task = g
+        .task_id
+        .as_deref()
+        .map(|id| TaskStore::require_on(tx, id))
+        .transpose()?;
+    let coordination_update = task.as_ref().is_some_and(|task| {
+        kind == "file_changed"
+            && object.kind == "file"
+            && object
+                .path
+                .as_deref()
+                .is_some_and(|path| crate::record::is_coordination_file(&task.record_slug, path))
+    });
     let event = GroupEvent {
         sequence: 0,
         id: fresh_id("event"),
@@ -551,24 +584,25 @@ pub(super) fn record_group_event_on(
         object: object.clone(),
         author: actor.clone(),
         detail: detail.into(),
+        evidence: if kind == "annotation_requested" {
+            serde_json::from_str(detail).ok()
+        } else {
+            evidence
+        },
         created_at: now_ms(),
     };
     if tx.execute("INSERT OR IGNORE INTO collaboration_events(id,group_id,dedupe_key,event_json) VALUES(?1,?2,?3,?4)",params![event.id,group,key,encode_json(&event)?]).map_err(store_error)?==0{return Ok(Vec::new());}
+    if !coordination_update && crate::responsibility::assesses_event(kind) {
+        tx.execute(
+            "INSERT INTO collaboration_responsibility_receipts(event_id) VALUES(?1)",
+            [&event.id],
+        )
+        .map_err(store_error)?;
+    }
     let mut routed = Vec::new();
-    if g.status != GroupStatus::Closed {
+    if g.status != GroupStatus::Closed && kind != "annotation_requested" {
         let interests = interests_on(tx, group)?;
         let attentions = attention::list_on(tx, group)?;
-        let coordination_update = if kind == "file_changed" && object.kind == "file" {
-            match (&g.task_id, &object.path) {
-                (Some(task), Some(path)) => crate::record::is_coordination_file(
-                    &TaskStore::require_on(tx, task)?.record_slug,
-                    path,
-                ),
-                _ => false,
-            }
-        } else {
-            false
-        };
         for member in members_on(tx, group)? {
             if member.id == actor.id {
                 continue;
@@ -767,6 +801,18 @@ impl TaskStore {
         }
         routes.remove(&actor.id);
         save_routed_message_on(&tx, &group, &actor, &message, routes, Some(&annotation.id))?;
+        if draft.explicit_request {
+            record_group_event_on(
+                &tx,
+                &draft.target.project_id,
+                group_id,
+                &format!("annotation:{}", annotation.id),
+                "annotation_requested",
+                message.object.as_ref().unwrap(),
+                &actor,
+                &annotation.context_reference().to_string(),
+            )?;
+        }
         tx.commit().map_err(store_error)?;
         Ok(annotation)
     }
@@ -1111,10 +1157,25 @@ impl TaskStore {
         detail: &str,
     ) -> Result<Vec<String>, String> {
         let mut c = self.open()?;
+        let evidence = if kind == "run_finished" {
+            group_on(&c, project, group)?.task_id.as_deref().map(|task| {
+                match self.run(task,&object.id) {
+                    Ok(run) => {
+                        let log=crate::runs::log::answer(&std::path::Path::new(&run.run_dir).join("stdout.log"), &crate::runs::LogQuery::Tail{lines:40});
+                        serde_json::json!({"availability":"available","run":run,"logTail":log.as_ref().ok().map(|text|text.chars().take(6000).collect::<String>()),"logError":log.err()})
+                    },
+                    Err(error) => serde_json::json!({"availability":"unavailable","reason":error}),
+                }
+            })
+        } else {
+            None
+        };
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
-        let routed = record_group_event_on(&tx, project, group, key, kind, object, actor, detail)?;
+        let routed = record_event_with_evidence_on(
+            &tx, project, group, key, kind, object, actor, detail, evidence,
+        )?;
         tx.commit().map_err(store_error)?;
         Ok(routed)
     }
@@ -1129,6 +1190,20 @@ impl TaskStore {
         object: &GroupObject,
     ) -> Result<Vec<String>, String> {
         let mut connection = self.open()?;
+        let group_record = group_on(&connection, project, group)?;
+        let task = group_record
+            .task_id
+            .as_deref()
+            .map(|id| Self::require_on(&connection, id))
+            .transpose()?;
+        let evidence = task
+            .as_ref()
+            .filter(|task| {
+                !object.path.as_deref().is_some_and(|path| {
+                    crate::record::is_coordination_file(&task.record_slug, path)
+                })
+            })
+            .map(|task| crate::responsibility::file_evidence(task, object));
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
@@ -1143,7 +1218,7 @@ impl TaskStore {
                 return Ok(Vec::new());
             }
         }
-        let routed = record_group_event_on(
+        let routed = record_event_with_evidence_on(
             &tx,
             project,
             group,
@@ -1156,6 +1231,7 @@ impl TaskStore {
                 execution_id: None,
             },
             "The task workspace changed; inspect this revision if it affects your responsibility.",
+            evidence,
         )?;
         tx.commit().map_err(store_error)?;
         Ok(routed)
@@ -1425,7 +1501,7 @@ impl TaskStore {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
-        let ids = tx.prepare("SELECT DISTINCT g.task_id FROM collaboration_groups g JOIN collaboration_work w ON w.group_id=g.id JOIN collaboration_members m ON m.id=w.member_id JOIN research_tasks t ON t.id=g.task_id WHERE g.status='open' AND w.status='\"pending\"' AND m.paused=0 AND (t.status IN ('awaiting_review','completed') OR (t.status='queued' AND t.start_requested=0)) AND t.apply_state IS NULL")
+        let ids = tx.prepare("SELECT DISTINCT g.task_id FROM collaboration_groups g JOIN research_tasks t ON t.id=g.task_id WHERE g.status='open' AND (EXISTS(SELECT 1 FROM collaboration_work w JOIN collaboration_members m ON m.id=w.member_id WHERE w.group_id=g.id AND w.status='\"pending\"' AND m.paused=0) OR (EXISTS(SELECT 1 FROM collaboration_responsibility_receipts r JOIN collaboration_events e ON e.id=r.event_id WHERE e.group_id=g.id AND r.assessment_id IS NULL) AND EXISTS(SELECT 1 FROM collaboration_members m WHERE m.group_id=g.id AND m.paused=0 AND json_extract(m.config_json,'$.coordinator')=1 AND json_extract(m.config_json,'$.runtimeId')='builtin'))) AND (t.status IN ('awaiting_review','completed') OR (t.status='queued' AND t.start_requested=0)) AND t.apply_state IS NULL")
             .and_then(|mut q|q.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?;
         let mut queued = Vec::new();
         for id in ids {

@@ -671,6 +671,10 @@ pub struct DistillationDraft {
     /// When promotion or candidate extraction produced a requirement, it is
     /// inserted in the same transaction as the distillation record.
     pub requirement: Option<RequirementDraft>,
+    /// An active candidate created by an earlier candidate distillation.
+    /// This is required when a non-user suggestion is promoted on a later pass.
+    #[serde(default)]
+    pub promoted_from_requirement_id: Option<String>,
     pub replaced_requirement_id: Option<String>,
 }
 
@@ -693,6 +697,13 @@ impl DistillationDraft {
         {
             return Err("distillation replacement requirement id cannot be empty".into());
         }
+        if self
+            .promoted_from_requirement_id
+            .as_deref()
+            .is_some_and(|id| id.trim().is_empty())
+        {
+            return Err("distillation source candidate id cannot be empty".into());
+        }
         if matches!(
             self.outcome,
             DistillationOutcome::Promoted | DistillationOutcome::Candidate
@@ -714,6 +725,19 @@ impl DistillationDraft {
         if self.replaced_requirement_id.is_some() && self.requirement.is_none() {
             return Err("replacing a requirement requires a new requirement".into());
         }
+        if self.replaced_requirement_id.is_some() && self.outcome != DistillationOutcome::Promoted {
+            return Err("only a promoted distillation can replace a requirement".into());
+        }
+        if self.promoted_from_requirement_id.is_some()
+            && self.outcome != DistillationOutcome::Promoted
+        {
+            return Err("only a promoted distillation can identify its source candidate".into());
+        }
+        if self.promoted_from_requirement_id == self.replaced_requirement_id
+            && self.promoted_from_requirement_id.is_some()
+        {
+            return Err("the source candidate and replaced requirement must be different".into());
+        }
         Ok(())
     }
 }
@@ -728,6 +752,8 @@ pub struct Distillation {
     pub rationale: String,
     pub outcome: DistillationOutcome,
     pub requirement_id: Option<String>,
+    #[serde(default)]
+    pub promoted_from_requirement_id: Option<String>,
     pub replaced_requirement_id: Option<String>,
     pub created_at: i64,
 }

@@ -10,6 +10,9 @@ use crate::collaboration::{
     ActorKind, GroupActor, GroupObject, GroupSnapshot, GroupStatus, InterestKind, MemberDraft,
     MemberInterest, MessageDraft, WorkStatus,
 };
+use crate::responsibility::{
+    ResponsibilityAssessment, ResponsibilityBatch, ResponsibilityDecision, ResponsibilityResponse,
+};
 use crate::test_support::{draft, FakeEnv, FakeHost, CHILD_PATIENCE};
 
 const ORIGINAL: &str =
@@ -56,6 +59,87 @@ impl TaskRuntimeAdapter for ControlledGroupRuntime {
     }
 }
 
+struct ControlledResponsibilityRuntime {
+    starts: mpsc::UnboundedSender<StartedTurn>,
+    assessments: mpsc::UnboundedSender<AssessmentRequest>,
+    cancellations: Arc<Mutex<Vec<String>>>,
+}
+
+struct AssessmentRequest {
+    batch: ResponsibilityBatch,
+    reply: oneshot::Sender<Result<ResponsibilityAssessment, String>>,
+}
+
+impl AssessmentRequest {
+    fn answer(self, decisions: Vec<ResponsibilityDecision>) {
+        self.reply
+            .send(Ok(ResponsibilityAssessment {
+                provider_id: Some("fixture".into()),
+                model_id: Some("Coordinator-model".into()),
+                effort: None,
+                response: ResponsibilityResponse { decisions },
+                input_tokens: Some(7),
+                output_tokens: Some(2),
+                error: None,
+            }))
+            .unwrap();
+    }
+}
+
+impl TaskRuntimeAdapter for ControlledResponsibilityRuntime {
+    fn supports(&self, agent_id: &str) -> bool {
+        agent_id == "fixture-agent"
+    }
+
+    fn run(
+        &self,
+        context: TaskRunContext,
+        _cancel: CancellationToken,
+        _events: TaskEventSink,
+    ) -> TaskRuntimeFuture<TaskRuntimeOutcome> {
+        let (complete, result) = oneshot::channel();
+        let sent = self
+            .starts
+            .send(StartedTurn { context, complete })
+            .map_err(|_| "the test stopped observing member starts".to_string());
+        Box::pin(async move {
+            sent?;
+            result
+                .await
+                .map_err(|_| "the test dropped the member result".to_string())?
+        })
+    }
+
+    fn cancel(&self, session_id: String) -> TaskRuntimeFuture<()> {
+        lock(&self.cancellations).push(session_id);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn supports_responsibility_assessment(&self) -> bool {
+        true
+    }
+
+    fn assess_responsibilities(
+        &self,
+        _context: TaskRunContext,
+        batch: ResponsibilityBatch,
+        _cancel: CancellationToken,
+        _events: TaskEventSink,
+    ) -> TaskRuntimeFuture<ResponsibilityAssessment> {
+        let (reply, result) = oneshot::channel();
+        let sent = self
+            .assessments
+            .send(AssessmentRequest { batch, reply })
+            .map_err(|_| "the test stopped observing responsibility assessments".to_string());
+        Box::pin(async move {
+            sent?;
+            result
+                .await
+                .map_err(|_| "the test dropped the responsibility result".to_string())?
+        })
+    }
+}
+
 struct GroupFixture {
     _directory: tempfile::TempDir,
     project: PathBuf,
@@ -64,10 +148,23 @@ struct GroupFixture {
     group: GroupSnapshot,
     starts: mpsc::UnboundedReceiver<StartedTurn>,
     base_cancellations: Arc<Mutex<Vec<String>>>,
+    assessments: Option<mpsc::UnboundedReceiver<AssessmentRequest>>,
 }
 
 impl GroupFixture {
     fn new() -> Self {
+        Self::with_runtime(false, false)
+    }
+
+    fn with_responsibility_assessment() -> Self {
+        Self::with_runtime(true, false)
+    }
+
+    fn with_builtin_responsibility_assessment() -> Self {
+        Self::with_runtime(true, true)
+    }
+
+    fn with_runtime(responsibility_assessment: bool, builtin_coordinator: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let project = directory.path().join("paper");
         std::fs::create_dir_all(&project).unwrap();
@@ -77,26 +174,45 @@ impl GroupFixture {
         state.attach(Arc::new(host), tokio::runtime::Handle::current());
         let (starts, receiver) = mpsc::unbounded_channel();
         let base_cancellations = Arc::new(Mutex::new(Vec::new()));
-        state
-            .register_runtime(
-                "fixture",
-                Arc::new(ControlledGroupRuntime {
-                    starts,
-                    cancellations: base_cancellations.clone(),
-                }),
-            )
-            .unwrap();
+        let assessments = if responsibility_assessment {
+            let (assessments, receiver) = mpsc::unbounded_channel();
+            let runtime: Arc<dyn TaskRuntimeAdapter> = Arc::new(ControlledResponsibilityRuntime {
+                starts,
+                assessments,
+                cancellations: base_cancellations.clone(),
+            });
+            state.register_runtime("fixture", runtime.clone()).unwrap();
+            if builtin_coordinator {
+                state.register_runtime("builtin", runtime).unwrap();
+            }
+            Some(receiver)
+        } else {
+            state
+                .register_runtime(
+                    "fixture",
+                    Arc::new(ControlledGroupRuntime {
+                        starts,
+                        cancellations: base_cancellations.clone(),
+                    }),
+                )
+                .unwrap();
+            None
+        };
         let task = state
             .store()
             .unwrap()
             .create(draft("paper", "Preserve the evidence"))
             .unwrap();
+        let mut coordinator = member("Coordinator", true);
+        if builtin_coordinator {
+            coordinator.runtime_id = "builtin".into();
+        }
         let group = state
             .create_task_group(
                 "paper",
                 Some(&task.id),
                 &[
-                    member("Coordinator", true),
+                    coordinator,
                     member("Methods", false),
                     member("Explorer", false),
                 ],
@@ -110,6 +226,7 @@ impl GroupFixture {
             group,
             starts: receiver,
             base_cancellations,
+            assessments,
         }
     }
 
@@ -128,6 +245,19 @@ impl GroupFixture {
             .await
             .expect("the task group did not start the expected member")
             .expect("the member start channel closed")
+    }
+
+    async fn assessment(&mut self) -> AssessmentRequest {
+        tokio::time::timeout(
+            CHILD_PATIENCE,
+            self.assessments
+                .as_mut()
+                .expect("this fixture has no responsibility runtime")
+                .recv(),
+        )
+        .await
+        .expect("the scheduler did not assess retained responsibility inputs")
+        .expect("the responsibility channel closed")
     }
 
     async fn start(&self) {
@@ -191,6 +321,21 @@ async fn settled(state: &ResearchTaskState, task: &str) -> ResearchTask {
     }
     let result = state.store().unwrap().require(task).unwrap();
     assert_eq!(result.status, ResearchTaskStatus::AwaitingReview);
+    result
+}
+
+async fn settled_with_status(
+    state: &ResearchTaskState,
+    task: &str,
+    expected: ResearchTaskStatus,
+) -> ResearchTask {
+    if let Some(waiter) = state.settle_waiter(task) {
+        tokio::time::timeout(CHILD_PATIENCE, waiter)
+            .await
+            .expect("the task group did not settle");
+    }
+    let result = state.store().unwrap().require(task).unwrap();
+    assert_eq!(result.status, expected);
     result
 }
 
@@ -530,6 +675,428 @@ async fn first_generation_routes_real_file_change_to_an_unmentioned_member_and_b
         .group_has_pending(&fixture.group.group.id)
         .unwrap());
     assert!(fixture.starts.try_recv().is_err());
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn responsibility_lifecycle_assessment_wakes_unread_methods() {
+    let mut fixture = GroupFixture::with_responsibility_assessment();
+    fixture.start().await;
+
+    let coordinator = fixture.next().await;
+    assert_eq!(
+        coordinator
+            .context
+            .collaboration
+            .as_ref()
+            .unwrap()
+            .member
+            .config
+            .name,
+        "Coordinator"
+    );
+    std::fs::write(
+        Path::new(&coordinator.context.execution_root).join("main.tex"),
+        REVISED,
+    )
+    .unwrap();
+    complete(coordinator, "Wrote the manuscript revision", 10, 2);
+
+    let assessment = fixture.assessment().await;
+    let methods = fixture.member("Methods");
+    assert_eq!(assessment.batch.inputs.len(), 1);
+    assert_eq!(
+        assessment.batch.inputs[0].event.object.path.as_deref(),
+        Some("main.tex")
+    );
+    assert!(assessment.batch.inputs[0]
+        .eligible_member_ids
+        .contains(&methods));
+    let event_id = assessment.batch.inputs[0].event.id.clone();
+    assessment.answer(vec![ResponsibilityDecision {
+        event_id,
+        member_id: methods.clone(),
+        reason: "Methods owns validity checks for the changed result.".into(),
+    }]);
+
+    let methods_turn = fixture.next().await;
+    let turn = methods_turn.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.id, methods);
+    assert_eq!(turn.events.len(), 1);
+    assert_eq!(turn.events[0].kind, "file_changed");
+    assert_eq!(
+        turn.events[0].evidence.as_ref().unwrap()["availability"],
+        "available"
+    );
+    assert!(turn.messages.is_empty());
+    assert!(turn.work.iter().any(|work| {
+        work.reasons
+            .iter()
+            .any(|reason| reason.kind == "responsibility")
+    }));
+    complete(
+        methods_turn,
+        "Checked the changed result against the methods",
+        20,
+        3,
+    );
+
+    let finished = settled(&fixture.state, &fixture.task.id).await;
+    assert_eq!(finished.status, ResearchTaskStatus::AwaitingReview);
+    assert_eq!(finished.result.unwrap().input_tokens, Some(37));
+    let snapshot = fixture.snapshot();
+    assert!(snapshot.events.iter().any(|event| {
+        event.kind == "responsibility_assessed"
+            && event
+                .evidence
+                .as_ref()
+                .is_some_and(|value| value["assessment"]["modelId"] == "Coordinator-model")
+    }));
+    assert!(!snapshot
+        .events
+        .iter()
+        .any(|event| event.kind == "responsibility_assessment_failed"));
+    assert!(!snapshot
+        .executions
+        .iter()
+        .any(|execution| execution.member_id == methods && execution.status == "failed"));
+    assert!(fixture.starts.try_recv().is_err());
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn responsibility_lifecycle_invalid_assessment_preserves_explicit_work() {
+    let mut fixture = GroupFixture::with_responsibility_assessment();
+    let methods = fixture.member("Methods");
+    fixture.start().await;
+
+    let coordinator = fixture.next().await;
+    let delegation = fixture
+        .store()
+        .group_message(
+            "paper",
+            &fixture.group.group.id,
+            &actor(&coordinator.context),
+            &MessageDraft {
+                body: "Check the methods while the revision is pending.".into(),
+                recipients: vec![methods.clone()],
+                request_work: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    std::fs::write(
+        Path::new(&coordinator.context.execution_root).join("main.tex"),
+        REVISED,
+    )
+    .unwrap();
+    complete(coordinator, "Delegated the methods check", 10, 2);
+
+    let assessment = fixture.assessment().await;
+    assert_eq!(assessment.batch.inputs.len(), 1);
+    let event_id = assessment.batch.inputs[0].event.id.clone();
+    assessment.answer(vec![ResponsibilityDecision {
+        event_id,
+        member_id: "foreign-member".into(),
+        reason: "This target is not a group member.".into(),
+    }]);
+
+    let methods_turn = fixture.next().await;
+    let turn = methods_turn.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.id, methods);
+    assert_eq!(turn.messages, vec![delegation]);
+    assert!(turn.events.is_empty());
+    complete(methods_turn, "Completed the explicit methods check", 20, 3);
+
+    let coordinator_reply = fixture.next().await;
+    let turn = coordinator_reply.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.config.name, "Coordinator");
+    assert_eq!(turn.messages.len(), 1);
+    assert_eq!(
+        turn.messages[0].content.body,
+        "Completed the explicit methods check"
+    );
+    complete(coordinator_reply, "Received the methods result", 4, 1);
+
+    let failed =
+        settled_with_status(&fixture.state, &fixture.task.id, ResearchTaskStatus::Failed).await;
+    assert!(failed
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("ineligible member")));
+    assert!(failed.result.is_none());
+
+    let store = fixture.store();
+    let retained = store.responsibility_batch(&failed).unwrap().unwrap();
+    assert_eq!(retained.inputs.len(), 1);
+    assert_eq!(
+        retained.inputs[0].event.object.path.as_deref(),
+        Some("main.tex")
+    );
+    let snapshot = fixture.snapshot();
+    assert!(snapshot.events.iter().any(|event| {
+        event.kind == "responsibility_assessment_failed"
+            && event.detail.contains("ineligible member")
+    }));
+    assert!(snapshot
+        .executions
+        .iter()
+        .any(|execution| { execution.member_id == methods && execution.status == "completed" }));
+    assert!(snapshot.work.iter().any(|work| {
+        work.member_id == methods
+            && work.cause_kind == "message"
+            && work.status == WorkStatus::Completed
+    }));
+    assert!(fixture.starts.try_recv().is_err());
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn responsibility_lifecycle_pause_during_assessment_retains_source_and_resumes() {
+    let mut fixture = GroupFixture::with_builtin_responsibility_assessment();
+    let methods = fixture.member("Methods");
+    let coordinator = fixture.member("Coordinator");
+    fixture.start().await;
+
+    let initial = fixture.next().await;
+    std::fs::write(
+        Path::new(&initial.context.execution_root).join("main.tex"),
+        REVISED,
+    )
+    .unwrap();
+    complete(initial, "Wrote the manuscript revision", 10, 2);
+
+    let assessment = fixture.assessment().await;
+    assert_eq!(assessment.batch.inputs.len(), 1);
+    let source = assessment.batch.inputs[0].event.id.clone();
+    assert_eq!(
+        assessment.batch.inputs[0].event.object.path.as_deref(),
+        Some("main.tex")
+    );
+    assert!(assessment.batch.inputs[0]
+        .eligible_member_ids
+        .contains(&methods));
+    let store = fixture.store();
+    store
+        .set_group_status("paper", &fixture.group.group.id, GroupStatus::Paused)
+        .unwrap();
+    assessment.answer(vec![ResponsibilityDecision {
+        event_id: source.clone(),
+        member_id: methods.clone(),
+        reason: "Methods should inspect the retained manuscript revision.".into(),
+    }]);
+
+    let paused = settled(&fixture.state, &fixture.task.id).await;
+    assert_eq!(paused.status, ResearchTaskStatus::AwaitingReview);
+    assert_eq!(paused.result.as_ref().unwrap().input_tokens, Some(17));
+    let retained = store.responsibility_batch(&paused).unwrap();
+    assert!(retained.is_none());
+    let snapshot = fixture.snapshot();
+    assert!(snapshot.events.iter().any(|event| event.id == source));
+    assert!(!snapshot.events.iter().any(|event| {
+        event.kind == "responsibility_assessed"
+            && event.evidence.as_ref().is_some_and(|value| {
+                value["assessment"]["response"]["decisions"]
+                    .as_array()
+                    .is_some_and(|decisions| !decisions.is_empty())
+            })
+    }));
+    assert!(snapshot.work.iter().all(|work| work.cause_id != source));
+    assert!(fixture.starts.try_recv().is_err());
+
+    store
+        .set_group_status("paper", &fixture.group.group.id, GroupStatus::Open)
+        .unwrap();
+    store
+        .set_member_paused("paper", &fixture.group.group.id, &coordinator, true)
+        .unwrap();
+    let still_paused = store.require(&fixture.task.id).unwrap();
+    assert!(store.responsibility_batch(&still_paused).unwrap().is_none());
+    fixture.state.launch_ready().await.unwrap();
+    let queued_while_paused = store.require(&fixture.task.id).unwrap();
+    assert_eq!(
+        queued_while_paused.status,
+        ResearchTaskStatus::AwaitingReview
+    );
+    assert!(!queued_while_paused.start_requested);
+    assert!(fixture.starts.try_recv().is_err());
+
+    store
+        .set_member_paused("paper", &fixture.group.group.id, &coordinator, false)
+        .unwrap();
+    fixture.state.launch_ready().await.unwrap();
+    wait_for(|| {
+        store.require(&fixture.task.id).unwrap().status != ResearchTaskStatus::AwaitingReview
+    })
+    .await;
+    let resumed_task = store.require(&fixture.task.id).unwrap();
+    assert_eq!(
+        resumed_task.status,
+        ResearchTaskStatus::Running,
+        "{:?}",
+        resumed_task.error
+    );
+    let reassessment = fixture.assessment().await;
+    assert_eq!(reassessment.batch.inputs.len(), 1);
+    assert_eq!(reassessment.batch.inputs[0].event.id, source);
+    reassessment.answer(vec![ResponsibilityDecision {
+        event_id: source.clone(),
+        member_id: methods.clone(),
+        reason: "Methods should inspect the retained manuscript revision.".into(),
+    }]);
+    let resumed = fixture.next().await;
+    let turn = resumed.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.id, methods);
+    assert_eq!(turn.events.len(), 1);
+    assert_eq!(turn.events[0].id, source);
+    assert!(turn.messages.is_empty());
+    assert!(turn.work.iter().any(|work| {
+        work.reasons
+            .iter()
+            .any(|reason| reason.kind == "responsibility")
+    }));
+    complete(
+        resumed,
+        "Checked the retained revision after the pause",
+        20,
+        3,
+    );
+
+    let finished = settled(&fixture.state, &fixture.task.id).await;
+    let snapshot = fixture.snapshot();
+    assert_eq!(snapshot.executions.len(), 2);
+    assert!(snapshot
+        .executions
+        .iter()
+        .all(|execution| execution.status == "completed"));
+    assert_eq!(
+        snapshot
+            .work
+            .iter()
+            .filter(|work| work.cause_id == source)
+            .count(),
+        1
+    );
+    assert!(snapshot.work.iter().any(|work| {
+        work.cause_id == source && work.member_id == methods && work.status == WorkStatus::Completed
+    }));
+    assert!(!store.group_has_pending(&fixture.group.group.id).unwrap());
+    assert!(fixture.starts.try_recv().is_err());
+    assert_eq!(finished.execution_generation, 2);
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn responsibility_lifecycle_coordinator_pause_during_assessment_retains_source_and_resumes() {
+    let mut fixture = GroupFixture::with_builtin_responsibility_assessment();
+    let methods = fixture.member("Methods");
+    let coordinator = fixture.member("Coordinator");
+    fixture.start().await;
+
+    let initial = fixture.next().await;
+    std::fs::write(
+        Path::new(&initial.context.execution_root).join("main.tex"),
+        REVISED,
+    )
+    .unwrap();
+    complete(initial, "Wrote the manuscript revision", 10, 2);
+
+    let assessment = fixture.assessment().await;
+    assert_eq!(assessment.batch.inputs.len(), 1);
+    let source = assessment.batch.inputs[0].event.id.clone();
+    assert!(assessment.batch.inputs[0]
+        .eligible_member_ids
+        .contains(&methods));
+    let store = fixture.store();
+    store
+        .set_member_paused("paper", &fixture.group.group.id, &coordinator, true)
+        .unwrap();
+    assessment.answer(vec![ResponsibilityDecision {
+        event_id: source.clone(),
+        member_id: methods.clone(),
+        reason: "Methods should inspect the retained manuscript revision.".into(),
+    }]);
+
+    let paused = settled(&fixture.state, &fixture.task.id).await;
+    assert_eq!(paused.status, ResearchTaskStatus::AwaitingReview);
+    assert_eq!(paused.result.as_ref().unwrap().input_tokens, Some(17));
+    assert!(store.responsibility_batch(&paused).unwrap().is_none());
+    let snapshot = fixture.snapshot();
+    assert!(snapshot.events.iter().any(|event| event.id == source));
+    assert!(!snapshot.events.iter().any(|event| {
+        event.kind == "responsibility_assessed"
+            && event.evidence.as_ref().is_some_and(|value| {
+                value["assessment"]["response"]["decisions"]
+                    .as_array()
+                    .is_some_and(|decisions| !decisions.is_empty())
+            })
+    }));
+    assert!(snapshot.work.iter().all(|work| work.cause_id != source));
+    assert!(fixture.starts.try_recv().is_err());
+
+    store
+        .set_member_paused("paper", &fixture.group.group.id, &coordinator, false)
+        .unwrap();
+    fixture.state.launch_ready().await.unwrap();
+    wait_for(|| {
+        store.require(&fixture.task.id).unwrap().status != ResearchTaskStatus::AwaitingReview
+    })
+    .await;
+    let resumed_task = store.require(&fixture.task.id).unwrap();
+    assert_eq!(
+        resumed_task.status,
+        ResearchTaskStatus::Running,
+        "{:?}",
+        resumed_task.error
+    );
+    let reassessment = fixture.assessment().await;
+    assert_eq!(reassessment.batch.inputs.len(), 1);
+    assert_eq!(reassessment.batch.inputs[0].event.id, source);
+    reassessment.answer(vec![ResponsibilityDecision {
+        event_id: source.clone(),
+        member_id: methods.clone(),
+        reason: "Methods should inspect the retained manuscript revision.".into(),
+    }]);
+    let resumed = fixture.next().await;
+    let turn = resumed.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.id, methods);
+    assert_eq!(turn.events.len(), 1);
+    assert_eq!(turn.events[0].id, source);
+    assert!(turn.messages.is_empty());
+    assert!(turn.work.iter().any(|work| {
+        work.reasons
+            .iter()
+            .any(|reason| reason.kind == "responsibility")
+    }));
+    complete(
+        resumed,
+        "Checked the retained revision after the coordinator resumed",
+        20,
+        3,
+    );
+
+    let finished = settled(&fixture.state, &fixture.task.id).await;
+    assert_eq!(finished.result.as_ref().unwrap().input_tokens, Some(27));
+    let snapshot = fixture.snapshot();
+    assert_eq!(snapshot.executions.len(), 2);
+    assert!(snapshot
+        .executions
+        .iter()
+        .all(|execution| execution.status == "completed"));
+    assert_eq!(
+        snapshot
+            .work
+            .iter()
+            .filter(|work| work.cause_id == source)
+            .count(),
+        1
+    );
+    assert!(snapshot.work.iter().any(|work| {
+        work.cause_id == source && work.member_id == methods && work.status == WorkStatus::Completed
+    }));
+    assert!(!store.group_has_pending(&fixture.group.group.id).unwrap());
+    assert!(fixture.starts.try_recv().is_err());
+    assert_eq!(finished.execution_generation, 2);
     stop(&fixture.state).await;
 }
 
