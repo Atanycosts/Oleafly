@@ -8,7 +8,8 @@ use crate::annotations::{
     AnnotationSourceDraft, AnnotationStatus, AnnotationTarget, DistillationDraft,
 };
 use crate::collaboration::{
-    ActorKind, GroupActor, InterestKind, MemberInterest, MessageDraft, WorkSettlementDraft,
+    ActorKind, GroupActor, GroupEvent, InterestKind, MemberInterest, MessageDraft,
+    WorkSettlementDraft,
 };
 use crate::store::TaskStore;
 
@@ -18,7 +19,7 @@ pub fn schemas() -> Vec<ToolSchema> {
     let scope = json!({"type":"object","properties":{"taskId":{"type":"string"},"objectKind":{"type":"string"},"objectId":{"type":"string"},"objectRevision":{"type":"string"},"path":{"type":"string"}},"additionalProperties":false});
     let requirement = json!({"type":"object","properties":{"scope":scope,"text":{"type":"string"},"kind":{"type":"string","enum":["enduring","candidate"]}},"required":["scope","text","kind"],"additionalProperties":false});
     [
-        ("group_context","Read this task group's members, pending work, replies and recent shared messages. after_sequence reads incremental messages.",json!({"after_sequence":{"type":"integer","minimum":0}}),Vec::<&str>::new()),
+        ("group_context","Read this task group's members, pending work, replies and recent shared messages. after_sequence reads incremental messages. eventId reads one exact retained event, including its original detail and evidence. In the default list, detailRepeatedInEvidence means detail parsed to the same JSON value as evidence, which is provided in full.",json!({"after_sequence":{"type":"integer","minimum":0},"eventId":{"type":"string"}}),Vec::<&str>::new()),
         ("group_message","Send a direct message or reply to a persistent member. Recipients are stable member IDs; omit them to request the coordinator. To wait on colleagues for specific current work, pass workIds with requestWork=true: sending and waiting are atomic, and your other work can continue. A further request can add another dependency to the same workIds during this execution. Without workIds a delivered request yields the whole member after this tool batch. Plain progress replies do not complete requested work. No other model is called inside this tool.",json!({"body":{"type":"string"},"recipients":{"type":"array","items":{"type":"string"}},"replyTo":{"type":"string"},"requestWork":{"type":"boolean"},"workIds":{"type":"array","items":{"type":"string"},"minItems":1},"object":{"type":"object","properties":{"kind":{"type":"string"},"id":{"type":"string"},"revision":{"type":"string"},"path":{"type":"string"}},"required":["kind","id"]}}),vec!["body"]),
         ("group_work_settle","Report the actual result of specific workIds from group_context. Use completed or failed with a concrete summary and available resultRefs, or waiting with waitFor containing your delivered colleague request message IDs. Each item retains its own result; a reply alone does not complete it. You can continue other running work in the same execution. Previously waiting work belonging to you can be explicitly handled once its dependencies end. Work not reported after using this tool remains unfinished. Completed is a reported handling result, not proof that a claim is true. For PDFs pass the full compiled artifact object.",json!({"workIds":{"type":"array","items":{"type":"string"},"minItems":1},"status":{"type":"string","enum":["completed","failed","waiting"]},"summary":{"type":"string"},"waitFor":{"type":"array","items":{"type":"string"}},"resultRefs":{"type":"array","items":result_ref}}),vec!["workIds","status","summary"]),
         ("group_interest","Subscribe your member to a relevant project-relative file/folder, stable object kind:id, or event type (file_changed, member_finished, run_finished). Related future changes wake you without an @mention. active=false ends this interest.",json!({"kind":{"type":"string","enum":["path","object","event"]},"value":{"type":"string"},"active":{"type":"boolean"}}),vec!["kind","value"]),
@@ -45,12 +46,26 @@ pub fn call(name: &str, args: Value, binding: &TaskBinding) -> Option<Result<Val
                 let group = store
                     .task_group(&binding.project_id, &binding.task_id)?
                     .ok_or("This task has no persistent group.")?;
-                serde_json::to_value(store.group_snapshot(
-                    &binding.project_id,
-                    &group.id,
-                    args["after_sequence"].as_u64().unwrap_or(0),
-                )?)
-                .map_err(|e| e.to_string())
+                if let Some(event_id) = args.get("eventId") {
+                    let event_id = event_id
+                        .as_str()
+                        .filter(|id| !id.trim().is_empty())
+                        .ok_or("eventId must be a nonempty string.")?;
+                    let event = store
+                        .group_event(&binding.project_id, &binding.task_id, &group.id, event_id)?
+                        .ok_or("The requested group event does not exist in this task group.")?;
+                    serde_json::to_value(event).map_err(|e| e.to_string())
+                } else {
+                    let snapshot = store.group_snapshot(
+                        &binding.project_id,
+                        &group.id,
+                        args["after_sequence"].as_u64().unwrap_or(0),
+                    )?;
+                    let mut value = serde_json::to_value(&snapshot).map_err(|e| e.to_string())?;
+                    value["events"] =
+                        Value::Array(snapshot.events.iter().map(GroupEvent::model_view).collect());
+                    Ok(value)
+                }
             }
             "group_message" => {
                 let turn = turn.ok_or("This execution is not a persistent group member.")?;

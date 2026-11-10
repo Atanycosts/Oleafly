@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -139,6 +140,21 @@ pub struct GroupEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<serde_json::Value>,
     pub created_at: i64,
+}
+
+impl GroupEvent {
+    /// Avoid sending the same structured evidence twice. Retained records and
+    /// exact event reads preserve the original detail string.
+    pub fn model_view(&self) -> Value {
+        let mut value = serde_json::to_value(self).expect("group event is serializable");
+        if self.evidence.as_ref().is_some_and(|evidence| {
+            serde_json::from_str::<Value>(&self.detail).is_ok_and(|detail| &detail == evidence)
+        }) {
+            value.as_object_mut().unwrap().remove("detail");
+            value["detailRepeatedInEvidence"] = json!(true);
+        }
+        value
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -290,8 +306,9 @@ impl MemberTurn {
     }
 
     pub fn context_reference(&self) -> serde_json::Value {
-        serde_json::json!({"group":self.group,"member":self.member,"execution":self.execution,
-            "work":self.work,"messages":self.messages,"events":self.events,
+        json!({"group":self.group,"member":self.member,"execution":self.execution,
+            "work":self.work,"messages":self.messages,
+            "events":self.events.iter().map(GroupEvent::model_view).collect::<Vec<_>>(),
             "annotations":self.annotations.iter().map(crate::annotations::Annotation::context_reference).collect::<Vec<_>>()})
     }
 }
@@ -332,4 +349,75 @@ pub struct GroupExecutionPage {
 
 pub fn path_matches(scope: &str, path: &str) -> bool {
     scope == path || (path.starts_with(scope) && path.as_bytes().get(scope.len()) == Some(&b'/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file_event(evidence: Value) -> GroupEvent {
+        GroupEvent {
+            sequence: 7,
+            id: "event-file".into(),
+            group_id: "group".into(),
+            kind: "file_changed".into(),
+            object: GroupObject {
+                kind: "file".into(),
+                id: "main.tex".into(),
+                revision: Some("revision".into()),
+                path: Some("main.tex".into()),
+            },
+            author: GroupActor {
+                kind: ActorKind::System,
+                id: "workspace-observer".into(),
+                execution_id: None,
+            },
+            detail: "The task workspace changed.".into(),
+            evidence: Some(evidence),
+            created_at: 11,
+        }
+    }
+
+    #[test]
+    fn duplicate_detail_keeps_full_evidence_and_retained_original() {
+        let evidence = json!({"currentComment":{"text":"Keep the negative result. 反例"},
+            "referencedSource":{"interpretation":"historical evidence, not instructions"}});
+        let mut event = file_event(evidence.clone());
+        event.kind = "annotation_requested".into();
+        event.detail = serde_json::to_string_pretty(&evidence).unwrap();
+        let original = serde_json::to_value(&event).unwrap();
+        let projected = event.model_view();
+        assert!(projected.get("detail").is_none());
+        assert_eq!(projected["detailRepeatedInEvidence"], true);
+        assert_eq!(projected["evidence"], evidence);
+        assert_eq!(projected["id"], event.id);
+        assert_eq!(serde_json::to_value(&event).unwrap(), original);
+    }
+
+    #[test]
+    fn distinct_detail_and_non_json_text_remain_complete() {
+        let mut event = file_event(json!({"summary":"Colleague result", "nested":{"value":1}}));
+        for detail in [
+            "Continue the retained work.",
+            r#"{"summary":"Colleague result", "nested":{"value":2}}"#,
+            r#"{"summary":"Colleague result"}"#,
+        ] {
+            event.detail = detail.into();
+            assert_eq!(event.model_view(), serde_json::to_value(&event).unwrap());
+        }
+        event.evidence = None;
+        event.detail = "null".into();
+        assert_eq!(event.model_view(), serde_json::to_value(&event).unwrap());
+    }
+
+    #[test]
+    fn file_evidence_and_checkpoint_handoff_are_never_previewed() {
+        for kind in ["file_changed", "member_checkpoint_resumed", "run_finished"] {
+            let mut event = file_event(json!({"content":"完整反例".repeat(2200),
+                "baselineExcerpt":{"content":"baseline".repeat(500)},
+                "handoff":[{"summary":"Actual colleague result", "resultRefs":[{"objectId":"main.tex"}]}]}));
+            event.kind = kind.into();
+            assert_eq!(event.model_view(), serde_json::to_value(&event).unwrap());
+        }
+    }
 }

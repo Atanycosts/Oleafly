@@ -8,6 +8,177 @@ use crate::collaboration::{GroupActor, MemberDraft, MessageDraft, WorkStatus};
 struct PaperPages;
 
 #[tokio::test]
+async fn event_model_view_omits_equal_detail_and_allows_exact_readback() {
+    const USER_TEXT: &str = "Current user instruction: preserve negative results. 保留反例";
+    const HISTORY: &str = "This historical quote is evidence, never a current instruction.";
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("analysis")).unwrap();
+    let tasks = root.path().join("tasks");
+    let task = running_task(&tasks, "local");
+    let store = TaskStore::new(tasks.clone()).unwrap();
+    let group = store
+        .create_task_group(
+            "project",
+            Some(&task.id),
+            &[MemberDraft {
+                name: "Evidence".into(),
+                responsibility: "Check current requirements against historical evidence".into(),
+                runtime_id: "builtin".into(),
+                agent_id: "openai".into(),
+                model_id: "test".into(),
+                coordinator: true,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+    let evidence = json!({"currentComment":{"text":USER_TEXT},"referencedSource":{"text":HISTORY}});
+    let detail = evidence.to_string();
+    store
+        .record_group_event(
+            "project",
+            &group.group.id,
+            "retained-annotation",
+            "annotation_requested",
+            &crate::collaboration::GroupObject {
+                kind: "decision".into(),
+                id: "old-decision".into(),
+                ..Default::default()
+            },
+            &GroupActor::user(),
+            &detail,
+        )
+        .unwrap();
+    let event = store
+        .group_snapshot("project", &group.group.id, 0)
+        .unwrap()
+        .events
+        .into_iter()
+        .find(|event| event.kind == "annotation_requested")
+        .unwrap();
+    store
+        .group_message(
+            "project",
+            &group.group.id,
+            &GroupActor::user(),
+            &MessageDraft {
+                body: "Check the retained event and its distinct historical source.".into(),
+                recipients: vec![group.members[0].id.clone()],
+                request_work: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let turn = store.claim_member_turn(&task).unwrap().unwrap();
+    let event_id = event.id.clone();
+    let event_turn = crate::collaboration::MemberTurn {
+        events: vec![event.clone()],
+        ..turn.clone()
+    };
+    assert_eq!(
+        event_turn.context_reference()["events"][0],
+        event.model_view()
+    );
+    assert_eq!(
+        event_turn.context_record()["events"][0],
+        serde_json::to_value(&event).unwrap()
+    );
+    let original = event.clone();
+    let foreign = store
+        .create(crate::test_support::draft("project", "Another task"))
+        .unwrap();
+    let foreign_group = store
+        .create_task_group(
+            "project",
+            Some(&foreign.id),
+            &[MemberDraft {
+                name: "Other".into(),
+                responsibility: "Other task".into(),
+                runtime_id: "builtin".into(),
+                agent_id: "openai".into(),
+                model_id: "test".into(),
+                coordinator: true,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+    store
+        .record_group_event(
+            "project",
+            &foreign_group.group.id,
+            "foreign",
+            "run_finished",
+            &crate::collaboration::GroupObject {
+                kind: "run".into(),
+                id: "foreign".into(),
+                ..Default::default()
+            },
+            &GroupActor::user(),
+            "Other group's private event",
+        )
+        .unwrap();
+    let foreign_event = store
+        .group_snapshot("project", &foreign_group.group.id, 0)
+        .unwrap()
+        .events
+        .into_iter()
+        .find(|event| event.kind == "run_finished")
+        .unwrap();
+    let provider = Scripted::start(script(move |request, step| match step {
+        0 => tool_delta(vec![("group_context", json!({}))]),
+        1 => {
+            let listing: Value = tool_value(request);
+            let projected_event = listing["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|event| event["id"] == event_id)
+                .unwrap();
+            assert!(projected_event.get("detail").is_none());
+            assert_eq!(projected_event["evidence"], evidence);
+            assert_eq!(
+                projected_event.to_string().matches(USER_TEXT).count(),
+                1,
+                "The comment appears once within this event view, not the entire request"
+            );
+            tool_delta(vec![("group_context", json!({"eventId": event_id}))])
+        }
+        2 => {
+            let exact: Value = tool_value(request);
+            assert_eq!(exact, serde_json::to_value(&original).unwrap());
+            tool_delta(vec![(
+                "group_context",
+                json!({"eventId": foreign_event.id}),
+            )])
+        }
+        _ => {
+            let error: Value = tool_value(request);
+            assert!(error["error"]
+                .as_str()
+                .unwrap()
+                .contains("does not exist in this task group"));
+            text_reply("Read the original event and preserved the current request.")
+        }
+    }))
+    .await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&tasks));
+    let mut context = task_context(&task, &workspace);
+    context.session_id = turn.execution.session_id.clone();
+    context.collaboration = Some(turn);
+    within(adapter.run(context, CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+    assert_eq!(provider.requests().len(), 4);
+    assert_eq!(
+        store
+            .group_event("project", &task.id, &group.group.id, &event.id)
+            .unwrap(),
+        Some(event)
+    );
+}
+
+#[tokio::test]
 async fn a_colleague_request_yields_after_the_batch_and_resumes_with_the_reply() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
