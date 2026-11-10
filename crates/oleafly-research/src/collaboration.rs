@@ -127,6 +127,9 @@ pub struct GroupMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupEvent {
+    /// Durable local event cursor. It is not an external wall-clock assertion.
+    #[serde(default)]
+    pub sequence: u64,
     pub id: String,
     pub group_id: String,
     pub kind: String,
@@ -254,7 +257,25 @@ pub struct GroupSnapshot {
     pub events: Vec<GroupEvent>,
     pub work: Vec<GroupWork>,
     pub executions: Vec<MemberExecution>,
+    #[serde(default)]
+    pub events_has_more: bool,
+    #[serde(default)]
+    pub executions_has_more: bool,
     pub next_sequence: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupEventPage {
+    pub events: Vec<GroupEvent>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupExecutionPage {
+    pub executions: Vec<MemberExecution>,
+    pub has_more: bool,
 }
 
 pub fn path_matches(scope: &str, path: &str) -> bool {

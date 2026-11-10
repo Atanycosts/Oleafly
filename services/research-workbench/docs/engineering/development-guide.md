@@ -2,10 +2,15 @@
 
 ## Sources of authority
 
-- Root `方案文档.md` is the frozen v1.3 requirements baseline, including historical planning language.
+- Module-local `方案文档.md` is the frozen v1.3 requirements baseline, including historical
+  planning language.
 - `contracts/` contains machine-readable requirements and supported runtime contracts.
-- `docs/s1-progress.md` identifies current implementation and acceptance limits.
-- `docs/fused-research-agent-architecture.md` describes the Oleafly integration design;
+- `docs/s1-progress.md` identifies the current Workbench-domain implementation and acceptance
+  limits; it is not the system-wide Agent status.
+- The repository-level `docs/research-workbench-integration.md` describes cross-system
+  integration. Current Agent status and architecture are in `docs/agent/status.md` and
+  `docs/agent/architecture.md`.
+- `docs/fused-research-agent-architecture.md` is frozen 2026-11-05 historical design input;
   current contracts and verified status govern what is implemented.
 - Current tests and generated verification reports identify the checks actually executed.
 - Independent `annotations/` are expected evidence, not parser-generated output.
@@ -94,7 +99,7 @@ Since 2026-11-09 this service lives in `services/research-workbench/` within the
 repository. From the repository root run `pnpm workbench:setup`; `pnpm tauri dev` selects
 that environment unless `OLEAFLY_WORKBENCH_PYTHON` is set. A packaged application still uses
 its existing saved interpreter selector. The HTTP/MCP versions and library ownership are
-unchanged. The earlier standalone shell is retained in local archives, outside the active build.
+unchanged. The earlier standalone shell is frozen local history, outside the active build.
 
 Portable tests use committed synthetic fixtures and test-only Phase 0 contracts. Private author
 catalogs, real render baselines, annotations, reports and libraries remain local. Actual Phase 0
@@ -189,9 +194,12 @@ injection limits are recorded in `docs/s1-progress.md`.
 
 The official Oleafly 0.4.9 application completed the first real-provider native ResearchTask
 over Workbench manuscript content on 2026-11-04. The integration branch now also builds and
-runs as an isolated macOS source application. See the
-[source-build verification](../../reports/integration-investigation/oleafly-native-research-task-2026-11-05.md)
-for current runtime evidence and the earlier release experiment for historical behavior.
+runs as an isolated macOS source application. See the repository-level
+[Agent status](../../../../docs/agent/status.md) and
+[Agent architecture](../../../../docs/agent/architecture.md) for current integration state and
+runtime boundaries. The 2026-11-05 source-build report is retained only as local historical
+evidence under `.private/workspace-consolidation-20261109/workbench-original-source/reports/`;
+it is not part of the public clean checkout.
 Use an application-owned library and start the agent-facing server with explicit read-only scope:
 
 ```sh

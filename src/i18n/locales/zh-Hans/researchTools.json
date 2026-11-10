@@ -591,12 +591,14 @@
       "attentionHandled": "处理",
       "sourceInspect": "读取来源记录",
       "sourceLoading": "正在读取来源记录…",
-      "sourceExecutionUnavailable": "原因对应的执行不在当前 100 条执行快照中。",
-      "sourceRecordUnavailable": "未返回对应的来源记录。",
+      "sourceExecutionUnavailable": "对应的执行记录不可用。",
+      "sourceRecordUnavailable": "对应的来源记录不可用。",
       "sourceGeneration": "执行代次 {{generation}}",
       "sourceMetadataOnly": "此处展示已保存的观测记录、哈希与来源定位。明文输出未保留，因此不会重建原文。",
       "annotationSource": "原始标注",
-      "handlingSource": "处理结果"
+      "handlingSource": "处理结果",
+      "loadEarlierEvents": "加载更早事件",
+      "loadEarlierExecutions": "加载更早执行"
     }
   },
   "tools": {

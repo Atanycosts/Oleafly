@@ -6,7 +6,8 @@ use oleafly_research::{
         EnduringRequirement,
     },
     collaboration::{
-        GroupMessage, GroupSnapshot, GroupStatus, MemberDraft, MemberInterest, MessageDraft,
+        GroupEvent, GroupEventPage, GroupExecutionPage, GroupMessage, GroupSnapshot, GroupStatus,
+        MemberDraft, MemberExecution, MemberInterest, MessageDraft,
     },
     scheduler::ResearchTaskState,
 };
@@ -169,7 +170,7 @@ pub async fn research_task_group(
         }
         store
             .task_group(&project_id, &task_id)?
-            .map(|group| store.group_snapshot(&project_id, &group.id, 0))
+            .map(|group| store.group_ui_snapshot(&project_id, &task_id, &group.id, 0))
             .transpose()
     })
     .await
@@ -179,13 +180,134 @@ pub async fn research_task_group(
 pub async fn research_task_group_snapshot(
     state: State<'_, ResearchTaskState>,
     project_id: String,
+    task_id: String,
     group_id: String,
     after_sequence: u64,
 ) -> Result<GroupSnapshot, String> {
     blocking_task_command(&state, move |state| {
         state
             .store()?
-            .group_snapshot(&project_id, &group_id, after_sequence)
+            .group_ui_snapshot(&project_id, &task_id, &group_id, after_sequence)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_group_events_page(
+    state: State<'_, ResearchTaskState>,
+    project_id: String,
+    task_id: String,
+    group_id: String,
+    before_sequence: Option<u64>,
+    limit: Option<usize>,
+) -> Result<GroupEventPage, String> {
+    blocking_task_command(&state, move |state| {
+        state.store()?.group_events_page(
+            &project_id,
+            &task_id,
+            &group_id,
+            before_sequence,
+            limit.unwrap_or(100),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_group_executions_page(
+    state: State<'_, ResearchTaskState>,
+    project_id: String,
+    task_id: String,
+    group_id: String,
+    before_started_at: Option<i64>,
+    before_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<GroupExecutionPage, String> {
+    blocking_task_command(&state, move |state| {
+        state.store()?.group_executions_page(
+            &project_id,
+            &task_id,
+            &group_id,
+            before_started_at,
+            before_id.as_deref(),
+            limit.unwrap_or(100),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_group_events_after(
+    state: State<'_, ResearchTaskState>,
+    project_id: String,
+    task_id: String,
+    group_id: String,
+    after_sequence: u64,
+    limit: Option<usize>,
+) -> Result<GroupEventPage, String> {
+    blocking_task_command(&state, move |state| {
+        state.store()?.group_events_after_page(
+            &project_id,
+            &task_id,
+            &group_id,
+            after_sequence,
+            limit.unwrap_or(100),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_group_executions_after(
+    state: State<'_, ResearchTaskState>,
+    project_id: String,
+    task_id: String,
+    group_id: String,
+    after_started_at: i64,
+    after_id: String,
+    limit: Option<usize>,
+) -> Result<GroupExecutionPage, String> {
+    blocking_task_command(&state, move |state| {
+        state.store()?.group_executions_after_page(
+            &project_id,
+            &task_id,
+            &group_id,
+            after_started_at,
+            &after_id,
+            limit.unwrap_or(100),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_group_event(
+    state: State<'_, ResearchTaskState>,
+    project_id: String,
+    task_id: String,
+    group_id: String,
+    event_id: String,
+) -> Result<Option<GroupEvent>, String> {
+    blocking_task_command(&state, move |state| {
+        state
+            .store()?
+            .group_event(&project_id, &task_id, &group_id, &event_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn research_task_group_execution(
+    state: State<'_, ResearchTaskState>,
+    project_id: String,
+    task_id: String,
+    group_id: String,
+    execution_id: String,
+) -> Result<Option<MemberExecution>, String> {
+    blocking_task_command(&state, move |state| {
+        state
+            .store()?
+            .group_execution(&project_id, &task_id, &group_id, &execution_id)
     })
     .await
 }

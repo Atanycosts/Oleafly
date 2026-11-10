@@ -622,6 +622,108 @@ impl crate::builtin::TaskHost for NoModelHost {
     }
 }
 
+struct TextPdfHost;
+
+#[async_trait::async_trait]
+impl crate::literature::paper::PdfTextExtractor for TextPdfHost {
+    async fn pages(&self, _path: std::path::PathBuf) -> Result<Vec<String>, String> {
+        Ok(vec!["\"\\🍃\n".repeat(16_000), "FINAL-PDF-EVIDENCE".into()])
+    }
+}
+
+impl crate::builtin::TaskHost for TextPdfHost {
+    fn skills(&self, context: &TaskRunContext) -> Result<crate::observations::TaskSkills, String> {
+        NoModelHost.skills(context)
+    }
+    fn skill_read_paths(&self, context: &TaskRunContext) -> Vec<std::path::PathBuf> {
+        NoModelHost.skill_read_paths(context)
+    }
+    fn provider(&self, context: TaskRunContext) -> TaskRuntimeFuture<crate::builtin::TaskProvider> {
+        NoModelHost.provider(context)
+    }
+    fn bridge(
+        &self,
+        context: TaskRunContext,
+        binding: Option<TaskBinding>,
+    ) -> TaskRuntimeFuture<Arc<dyn crate::builtin::TaskBridge>> {
+        NoModelHost.bridge(context, binding)
+    }
+    fn pdf_extractor(&self) -> Option<Arc<dyn crate::literature::paper::PdfTextExtractor>> {
+        Some(Arc::new(Self))
+    }
+}
+
+#[tokio::test]
+async fn task_pdf_windows_remain_model_visible_and_retain_exact_sources() {
+    let mut fixture = tool_task(ResearchBrief::default());
+    fixture.binding.host = Arc::new(TextPdfHost);
+    let artifact = crate::compiled_artifacts::retain_input(
+        &fixture.binding.services.tasks_root,
+        &fixture.task.id,
+        "paper.pdf",
+        crate::observations::content_hash(b"input"),
+        b"%PDF-fixture",
+    )
+    .unwrap();
+    let mut offset = 0;
+    let mut recovered = String::new();
+    loop {
+        let result = fixture
+            .call(
+                "task_pdf_text",
+                json!({"reference": artifact, "offset":offset, "max_chars":48_000}),
+            )
+            .await
+            .unwrap();
+        let visible =
+            oleafly_agent::bound_tool_output(oleafly_agent::ToolOutput::text(result.to_string()));
+        assert_eq!(visible.output, result.to_string());
+        let source: crate::observations::ReadSource =
+            serde_json::from_value(result["source"].clone()).unwrap();
+        let bytes = fixture
+            .store
+            .file_snapshot(
+                &fixture.task.id,
+                fixture.task.execution_generation,
+                &source.path,
+                &source.file_sha256,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            &bytes[source.offset..source.end_offset],
+            result["text"].as_str().unwrap().as_bytes()
+        );
+        assert_eq!(source.pdf.as_ref().unwrap().sha256, artifact.pdf_sha256);
+        assert_eq!(source.snapshot_retained, Some(true));
+        assert!(source.pdf.as_ref().unwrap().page_start.is_some());
+        recovered.push_str(result["text"].as_str().unwrap());
+        match result["nextOffset"].as_u64() {
+            Some(next) => offset = next as usize,
+            None => break,
+        }
+    }
+    let expected = crate::literature::paper::anchored_text(
+        &crate::literature::paper::PdfTextExtractor::pages(&TextPdfHost, std::path::PathBuf::new())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(recovered, expected.text);
+    let mut wrong = artifact.clone();
+    wrong.task_id = "other-task".into();
+    assert!(fixture
+        .call("task_pdf_text", json!({"reference":wrong}))
+        .await
+        .is_err());
+    assert!(fixture
+        .call(
+            "task_pdf_text",
+            json!({"reference":artifact,"offset":2_000_000})
+        )
+        .await
+        .is_err());
+}
+
 struct RetainedWebHost;
 
 #[async_trait::async_trait]

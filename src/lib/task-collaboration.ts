@@ -204,6 +204,7 @@ export interface MemberAttention {
 }
 
 export interface GroupEvent {
+  sequence: number;
   id: string;
   groupId: string;
   kind: string;
@@ -239,14 +240,44 @@ export interface GroupSnapshot {
   work: GroupWork[];
   executions: MemberExecution[];
   events?: GroupEvent[];
+  eventsHasMore?: boolean;
+  executionsHasMore?: boolean;
   nextSequence: number;
+}
+
+export interface GroupEventPage {
+  events: GroupEvent[];
+  hasMore: boolean;
+}
+
+export interface GroupExecutionPage {
+  executions: MemberExecution[];
+  hasMore: boolean;
 }
 
 export const loadTaskGroup = (projectId: string, taskId: string) =>
   invoke<GroupSnapshot | null>("research_task_group", { projectId, taskId });
 
-export const loadTaskGroupMessages = (projectId: string, groupId: string, afterSequence: number) =>
-  invoke<GroupSnapshot>("research_task_group_snapshot", { projectId, groupId, afterSequence });
+export const loadTaskGroupMessages = (projectId: string, taskId: string, groupId: string, afterSequence: number) =>
+  invoke<GroupSnapshot>("research_task_group_snapshot", { projectId, taskId, groupId, afterSequence });
+
+export const loadTaskGroupEventsPage = (projectId: string, taskId: string, groupId: string, beforeSequence: number | null, limit = 100) =>
+  invoke<GroupEventPage>("research_task_group_events_page", { projectId, taskId, groupId, beforeSequence, limit });
+
+export const loadTaskGroupExecutionsPage = (projectId: string, taskId: string, groupId: string, beforeStartedAt: number | null, beforeId: string | null, limit = 100) =>
+  invoke<GroupExecutionPage>("research_task_group_executions_page", { projectId, taskId, groupId, beforeStartedAt, beforeId, limit });
+
+export const loadTaskGroupEventsAfter = (projectId: string, taskId: string, groupId: string, afterSequence: number, limit = 100) =>
+  invoke<GroupEventPage>("research_task_group_events_after", { projectId, taskId, groupId, afterSequence, limit });
+
+export const loadTaskGroupExecutionsAfter = (projectId: string, taskId: string, groupId: string, afterStartedAt: number, afterId: string, limit = 100) =>
+  invoke<GroupExecutionPage>("research_task_group_executions_after", { projectId, taskId, groupId, afterStartedAt, afterId, limit });
+
+export const loadTaskGroupEvent = (projectId: string, taskId: string, groupId: string, eventId: string) =>
+  invoke<GroupEvent | null>("research_task_group_event", { projectId, taskId, groupId, eventId });
+
+export const loadTaskGroupExecution = (projectId: string, taskId: string, groupId: string, executionId: string) =>
+  invoke<MemberExecution | null>("research_task_group_execution", { projectId, taskId, groupId, executionId });
 
 export const createTaskGroup = (projectId: string, taskId: string, members: MemberDraft[]) =>
   invoke<GroupSnapshot>("research_task_group_create", { projectId, taskId, members });

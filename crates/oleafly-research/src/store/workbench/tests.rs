@@ -1204,6 +1204,7 @@ fn check_origin_requires_real_execution_and_rejects_scope_or_author_conflicts() 
         .finish_member_turn(
             &turn,
             &crate::model::TaskRuntimeOutcome {
+                waiting_for_reply: false,
                 summary: "Native check committed".into(),
                 artifacts: vec![],
                 native_session_id: None,

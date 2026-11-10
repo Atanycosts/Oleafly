@@ -162,6 +162,7 @@ fn http_servers_become_stdio_servers_and_the_others_stay() {
 #[test]
 fn updates_map_like_the_app() {
     let mut outcome = TaskRuntimeOutcome {
+        waiting_for_reply: false,
         summary: String::new(),
         artifacts: Vec::new(),
         native_session_id: None,

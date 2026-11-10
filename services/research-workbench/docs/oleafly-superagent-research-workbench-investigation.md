@@ -1,10 +1,14 @@
-# Oleafly、Super-agent 与科研工作台：深度摸排与融合设计
+# Oleafly、Super-agent 与科研工作台：深度摸排（2026-11-02 frozen）
 
-> 文档状态：调研完成，架构建议待实施；不构成融合版发布或验收声明。
+> 文档状态：冻结的历史调研与设计输入；不构成当前架构入口、融合版发布或验收声明。
 > 调研日期：2026-11-02（Asia/Shanghai）。
 > 使用范围：个人本地科研工作台；本轮交付为 Markdown 研究文档，不实施产品融合。
-> 后续入口：融合设计已整合至[正式产品与系统架构](fused-research-agent-architecture.md)；本文保留为固定版本调查与验证依据。
-> 2026-11-04 勘误：修正 Phase 0 源路径报错的归因；后续真实任务和 MCP 0.4.0 历史证据见 [s1-progress](s1-progress.md)，当前 0.4.1 状态以该文档为准。
+> 后续入口：当前跨系统信息见 [Oleafly integration](../../../docs/research-workbench-integration.md)、
+> [Agent status](../../../docs/agent/status.md) 和
+> [Agent architecture](../../../docs/agent/architecture.md)。本文与
+> [2026-11-05 融合设计](fused-research-agent-architecture.md)均冻结为历史输入。
+> 2026-11-04 勘误：修正 Phase 0 源路径报错的归因；后续真实任务和 MCP 0.4.0 历史证据保留在本地历史
+> 报告中，当前 Agent 与 MCP 状态以 `docs/agent/status.md` 和现行合同为准。
 
 ## 1. 要回答的问题
 
@@ -31,16 +35,24 @@
 | DeepSeek Super-agent prototype | `6337fc823ce20251c8de8085948165c81aaa701e` | 2026-11-02 GitHub API 与调研克隆一致 |
 | research-file-workbench | `8b229c9ae59a76035b90a8b0221ec535abb9842d` + 已有文档改动 | 冻结需求 v1.3 与当前实现分别读取 |
 
-本地路径：Oleafly 位于 `../Oleafly`；Super-agent 调研副本位于 `var/integration-research/dsh-superagent-prototype`；本报告位于原研究核心仓库的 `docs/`。独立审查与本轮运行证据放在 `reports/integration-investigation/`。
+历史本地路径：调研时 Oleafly 位于原 checkout 的 `../Oleafly`；Super-agent 调研副本位于
+`var/integration-research/dsh-superagent-prototype`；本报告当时位于原研究核心仓库的 `docs/`。
+独立审查与本轮运行证据现保留为本地历史材料，位于
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/`，
+不属于公开 clean checkout。
 
 ### 2.1 调研方法与复核范围
 
 三名子 Agent 分别形成 Oleafly、Super-agent、研究核心专项报告；主审复核关键调用链、当前合同、版本、历史实物和本轮测试输出，再作产品取舍。子 Agent 的一致意见不是独立正确性的证明；可核查源码、实际记录和反证实验才是决策依据。
 
-- [Oleafly 源码与架构报告](../reports/integration-investigation/oleafly-source-review.md)：调度、runtime、隔离、恢复、apply、工具与证据诊断。
-- [Super-agent 源码报告](../reports/integration-investigation/superagent-source-review.md)：领域模型、授权、执行、副作用、恢复与采用路线。
-- [研究核心源码与证据报告](../reports/integration-investigation/workbench-source-review.md)：需求/实现区分、MCP、版本与当前证据纠偏。
-- [固定版本与文件哈希](../reports/integration-investigation/source-manifest.json)、[本轮验证清单](../reports/integration-investigation/verification.json)：可复查基线与实际命令。
+- Oleafly 源码与架构报告（本地历史证据）：调度、runtime、隔离、恢复、apply、工具与证据诊断。
+- Super-agent 源码报告（本地历史证据）：领域模型、授权、执行、副作用、恢复与采用路线。
+- 研究核心源码与证据报告（本地历史证据）：需求/实现区分、MCP、版本与当时证据纠偏。
+- 固定版本与文件哈希、本轮验证清单（本地历史证据）：可复查基线与实际命令。
+
+以上文件均在上文所述
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/`
+历史目录中；本报告冻结时不改写其内容，也不把它们当作当前实现或 clean checkout 文件。
 
 上游 main 与发布版本通过 GitHub API 核验；核心结论固定到提交，而不是持续漂移的 main。随后一次重复查询 Super-agent 的网络请求超时，没有据此推定新版本或覆盖此前成功核验结果。Oleafly 与 Super-agent 未安装项目依赖、未构建、未执行上游测试；本轮运行证据集中于现有研究核心。
 
@@ -495,7 +507,9 @@ P1/P2 是本融合范围的优先级，不等于对上游安全漏洞的评级�
 
 ## 16. 本轮实际验证结果
 
-所有命令使用仓库 `.venv`，临时测试目录位于 `var/investigation-tests-*`，新日志位于 `reports/integration-investigation/`；未写作者目录。
+所有命令使用原 checkout 的 `.venv`，临时测试目录位于当时的 `var/investigation-tests-*`，
+新日志位于当时的 `reports/integration-investigation/`；未写作者目录。下列路径与结果描述该次
+调研，不代表当前 checkout 仍可原位打开这些日志。
 
 | 验证 | 实际结果 | 解释 |
 | --- | --- | --- |
@@ -508,7 +522,14 @@ P1/P2 是本融合范围的优先级，不等于对上游安全漏洞的评级�
 
 33 skips 包括 Windows 文件属性、路径/PowerShell/导出边界、冻结 Windows 源目录、固定 Poppler 包和 macOS 备用 loopback 地址等。5 warnings 是 PyMuPDF/SWIG 的弃用提示；本轮没有忽略或改写它们。外层进程耗时与 pytest 内部计时不同，`verification.json` 两者来源明确，不当作性能基准。
 
-Phase 0 失败包括：登记源身份所指材料不齐、旧 `wps-writer-12.1.0.28505` 不可用、Windows 绝对路径的 PDF/page 证据缺失。原日志的 `Render record points to another source` 来自校验器直接比较旧 Windows 绝对路径与 Mac 路径；2026-11-04 核对 8 个 fixture 的源路径后缀、登记/实际源哈希及保留源件均匹配。此前据此认定平台无关串源缺陷的判断撤回，见[诊断记录](../reports/integration-investigation/mcp-read-only-boundary.md)。这不建立渲染验证或门禁通过；新 Mac bundle 的存在也不否定旧基线失败，不应为修旧 gate 篡改历史。
+Phase 0 失败包括：登记源身份所指材料不齐、旧 `wps-writer-12.1.0.28505` 不可用、Windows
+绝对路径的 PDF/page 证据缺失。原日志的 `Render record points to another source` 来自校验器
+直接比较旧 Windows 绝对路径与 Mac 路径；2026-11-04 核对 8 个 fixture 的源路径后缀、
+登记/实际源哈希及保留源件均匹配。此前据此认定平台无关串源缺陷的判断撤回；诊断记录保留为
+本地历史证据，位于
+`.private/workspace-consolidation-20261109/workbench-original-source/reports/integration-investigation/mcp-read-only-boundary.md`。
+这不建立渲染验证或门禁通过；新 Mac bundle 的存在也不否定旧基线失败，不应为修旧 gate
+篡改历史。
 
 本轮没有：Oleafly 源码构建、Oleafly 与工作台握手、上游两项目测试、真实模型任务、跨 agent 接力、自动改稿、重新 WPS 渲染或独立人工 S1 验收。**完成的是摸排、文档与注明范围的本地验证，不是融合产品。**
 
@@ -559,7 +580,7 @@ Oleafly 与 Super-agent 的固定提交已列于第 2 节；各专项报告提�
 | W2 | [World 合同](../contracts/journals/world-contract.json)；`journals/checker.py:32` | 属性、依据、裁决与失效 |
 | W3 | `projects/read_records.py:109`；`render_service.py:185`；`journals/store_checks.py:50` | 历史与依赖 |
 | W4 | [标注复核记录](../annotations/s1/ijam-english-working/review-notes.md) | Agent 标注与 Mac 历史链 |
-| W5 | [研究核心报告第 6 节](../reports/integration-investigation/workbench-source-review.md) | 实物哈希和当前库实例 |
+| W5 | 研究核心报告第 6 节（本地历史证据） | 实物哈希和调研时的库实例 |
 | W6 | `workbench/mcp.py:135`、`:146`、`:167`；`service.py:422` | 工具注册与边界 |
 | W7 | `workbench/mcp_tools.py:403`；`service.py:82`；`journals/revisions.py:52` | 规则确认归因 |
 

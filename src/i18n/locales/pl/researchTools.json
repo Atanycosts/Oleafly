@@ -603,12 +603,14 @@
       "attentionHandled": "Handled",
       "sourceInspect": "Read source record",
       "sourceLoading": "Loading source record…",
-      "sourceExecutionUnavailable": "The reason execution is not present in the current 100-execution snapshot.",
-      "sourceRecordUnavailable": "The source record was not returned.",
+      "sourceExecutionUnavailable": "The execution record is unavailable.",
+      "sourceRecordUnavailable": "The source record is unavailable.",
       "sourceGeneration": "Execution generation {{generation}}",
       "sourceMetadataOnly": "This view shows the stored observation record, hashes, and source locator. Plaintext output is not retained here.",
       "annotationSource": "Original annotation",
-      "handlingSource": "Handling result"
+      "handlingSource": "Handling result",
+      "loadEarlierEvents": "Load earlier events",
+      "loadEarlierExecutions": "Load earlier executions"
     }
   },
   "tools": {

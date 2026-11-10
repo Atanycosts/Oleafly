@@ -195,6 +195,14 @@ fn outcome(summary: &str) -> TaskRuntimeOutcome {
         native_session_id: None,
         input_tokens: None,
         output_tokens: None,
+        waiting_for_reply: false,
+    }
+}
+
+fn waiting_outcome(summary: &str) -> TaskRuntimeOutcome {
+    TaskRuntimeOutcome {
+        waiting_for_reply: true,
+        ..outcome(summary)
     }
 }
 
@@ -206,6 +214,238 @@ fn finish(store: &TaskStore, turn: &MemberTurn) -> GroupMessage {
             None,
         )
         .unwrap()
+}
+
+#[test]
+fn group_ui_history_is_bounded_but_exact_records_survive_reopening() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+
+    let mut oldest_event = None;
+    for index in 0..205 {
+        let object = GroupObject {
+            kind: "file".into(),
+            id: format!("notes-{index}.md"),
+            revision: Some(index.to_string()),
+            path: Some(format!("notes-{index}.md")),
+        };
+        fixture.event(&format!("history-{index}"), "file_changed", &object);
+        if index == 0 {
+            oldest_event = fixture
+                .snapshot()
+                .events
+                .into_iter()
+                .find(|event| event.object.id == object.id);
+        }
+    }
+
+    let mut oldest_execution = None;
+    for index in 0..105 {
+        fixture.message(
+            &GroupActor::user(),
+            request(&format!("Execution {index}"), &[&coordinator]),
+        );
+        let turn = fixture
+            .store
+            .claim_member_turn(&fixture.task)
+            .unwrap()
+            .unwrap();
+        if index == 0 {
+            oldest_execution = Some(turn.execution.clone());
+        }
+        finish(&fixture.store, &turn);
+    }
+
+    let reopened = TaskStore::new(fixture.store.root().to_path_buf()).unwrap();
+    let runtime = reopened.group_snapshot("paper", fixture.id(), 0).unwrap();
+    assert_eq!(runtime.executions.len(), 105);
+    assert!(!runtime.executions_has_more);
+    assert_eq!(runtime.events.len(), 205);
+    assert!(!runtime.events_has_more);
+
+    let ui = reopened
+        .group_ui_snapshot("paper", &fixture.task.id, fixture.id(), 0)
+        .unwrap();
+    assert_eq!(ui.executions.len(), 100);
+    assert!(ui.executions_has_more);
+    assert_eq!(ui.events.len(), 100);
+    assert!(ui.events_has_more);
+
+    let oldest_execution = oldest_execution
+        .map(|execution| {
+            reopened
+                .group_execution("paper", &fixture.task.id, fixture.id(), &execution.id)
+                .unwrap()
+                .unwrap()
+        })
+        .unwrap();
+    let oldest_event = oldest_event.unwrap();
+    assert_eq!(
+        reopened
+            .group_execution(
+                "paper",
+                &fixture.task.id,
+                fixture.id(),
+                &oldest_execution.id,
+            )
+            .unwrap(),
+        Some(oldest_execution.clone())
+    );
+    assert_eq!(
+        reopened
+            .group_event("paper", &fixture.task.id, fixture.id(), &oldest_event.id)
+            .unwrap(),
+        Some(oldest_event.clone())
+    );
+
+    let event_page = reopened
+        .group_events_page(
+            "paper",
+            &fixture.task.id,
+            fixture.id(),
+            ui.events.first().map(|event| event.sequence),
+            100,
+        )
+        .unwrap();
+    assert_eq!(event_page.events.len(), 100);
+    assert!(event_page.has_more);
+    let last_event_page = reopened
+        .group_events_page(
+            "paper",
+            &fixture.task.id,
+            fixture.id(),
+            event_page.events.first().map(|event| event.sequence),
+            100,
+        )
+        .unwrap();
+    assert!(last_event_page
+        .events
+        .iter()
+        .any(|event| event.id == oldest_event.id));
+
+    let execution_page = reopened
+        .group_executions_page(
+            "paper",
+            &fixture.task.id,
+            fixture.id(),
+            ui.executions.last().map(|execution| execution.started_at),
+            ui.executions.last().map(|execution| execution.id.as_str()),
+            100,
+        )
+        .unwrap();
+    assert_eq!(execution_page.executions.len(), 5);
+    assert!(!execution_page.has_more);
+    assert!(execution_page
+        .executions
+        .iter()
+        .any(|execution| execution.id == oldest_execution.id));
+
+    let mut event_cursor = ui.events.last().unwrap().sequence - 125;
+    let mut events_after = Vec::new();
+    loop {
+        let page = reopened
+            .group_events_after_page("paper", &fixture.task.id, fixture.id(), event_cursor, 100)
+            .unwrap();
+        assert!(page
+            .events
+            .iter()
+            .all(|event| event.sequence > event_cursor));
+        event_cursor = page
+            .events
+            .last()
+            .map_or(event_cursor, |event| event.sequence);
+        events_after.extend(page.events);
+        if !page.has_more {
+            break;
+        }
+    }
+    assert_eq!(events_after.len(), 125);
+    assert_eq!(
+        events_after.first().unwrap().sequence,
+        ui.events.last().unwrap().sequence - 124
+    );
+    assert_eq!(
+        events_after.last().unwrap().sequence,
+        ui.events.last().unwrap().sequence
+    );
+
+    let execution_cursor = ui.executions[50].clone();
+    let expected_last_execution = ui.executions.first().unwrap().id.clone();
+    let mut execution_cursor = (execution_cursor.started_at, execution_cursor.id);
+    let mut executions_after = Vec::new();
+    loop {
+        let page = reopened
+            .group_executions_after_page(
+                "paper",
+                &fixture.task.id,
+                fixture.id(),
+                execution_cursor.0,
+                &execution_cursor.1,
+                100,
+            )
+            .unwrap();
+        assert!(page.executions.iter().all(|execution| {
+            execution.started_at > execution_cursor.0
+                || (execution.started_at == execution_cursor.0 && execution.id > execution_cursor.1)
+        }));
+        execution_cursor = page
+            .executions
+            .last()
+            .map_or(execution_cursor, |execution| {
+                (execution.started_at, execution.id.clone())
+            });
+        executions_after.extend(page.executions);
+        if !page.has_more {
+            break;
+        }
+    }
+    assert_eq!(executions_after.len(), ui.executions.len() - 50);
+    assert_eq!(executions_after.last().unwrap().id, expected_last_execution);
+}
+
+#[test]
+fn exact_group_history_queries_reject_another_project_or_task() {
+    let fixture = Fixture::new();
+    fixture.event(
+        "scoped-event",
+        "file_changed",
+        &GroupObject {
+            kind: "file".into(),
+            id: "main.tex".into(),
+            revision: Some("1".into()),
+            path: Some("main.tex".into()),
+        },
+    );
+    let event = fixture.snapshot().events[0].clone();
+    let other_task = fixture
+        .store
+        .create(ResearchTaskDraft {
+            project_id: "paper".into(),
+            title: "Unrelated task".into(),
+            prompt: "Do not expose another task's group history".into(),
+            runtime_id: "fixture".into(),
+            agent_id: "fixture-agent".into(),
+            model_id: "fixture-model".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert!(fixture
+        .store
+        .group_event("paper", &other_task.id, fixture.id(), &event.id)
+        .is_err());
+    assert!(fixture
+        .store
+        .group_events_page("paper", &other_task.id, fixture.id(), None, 10)
+        .is_err());
+    assert!(fixture
+        .store
+        .group_execution("other-project", &fixture.task.id, fixture.id(), "missing")
+        .is_err());
+    assert!(fixture
+        .store
+        .group_ui_snapshot("paper", &other_task.id, fixture.id(), 0)
+        .is_err());
 }
 
 #[test]
@@ -278,6 +518,7 @@ fn member_can_address_another_member_and_reply_directly_to_the_original_author()
         MessageDraft {
             body: "Does run r002 use the test split?".into(),
             recipients: vec![methods.into()],
+            request_work: true,
             ..Default::default()
         },
     );
@@ -305,7 +546,16 @@ fn member_can_address_another_member_and_reply_directly_to_the_original_author()
         reply.content.reply_to.as_deref(),
         Some(question.id.as_str())
     );
-    finish(&fixture.store, &turn);
+    let completion = fixture
+        .store
+        .finish_member_turn(
+            &turn,
+            &outcome("It is a validation result; the manuscript needs a correction."),
+            None,
+        )
+        .unwrap();
+    assert!(completion.content.recipients.is_empty());
+    assert!(completion.content.reply_to.is_none());
 
     let follow_up = fixture
         .store
@@ -315,6 +565,340 @@ fn member_can_address_another_member_and_reply_directly_to_the_original_author()
     assert_eq!(follow_up.member.id, coordinator);
     assert_eq!(follow_up.messages, vec![reply]);
     finish(&fixture.store, &follow_up);
+    assert!(!fixture.store.group_has_pending(fixture.id()).unwrap());
+}
+
+#[test]
+fn progress_reply_does_not_suppress_the_distinct_final_result() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator");
+    let methods = fixture.member("Methods");
+    let question = fixture.message(
+        &actor(coordinator),
+        request("Does run r002 use the test split?", &[methods]),
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.member.id, methods);
+
+    let progress = fixture.message(
+        &GroupActor {
+            execution_id: Some(turn.execution.id.clone()),
+            ..actor(methods)
+        },
+        MessageDraft {
+            body: "I found the run record and am checking the split configuration.".into(),
+            reply_to: Some(question.id.clone()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(progress.content.recipients, vec![coordinator.to_string()]);
+    let completion = fixture
+        .store
+        .finish_member_turn(
+            &turn,
+            &outcome("Run r002 uses the test split; the manuscript needs a correction."),
+            None,
+        )
+        .unwrap();
+    assert_eq!(completion.author.id, methods);
+    assert_eq!(completion.content.recipients, vec![coordinator.to_string()]);
+    assert_eq!(
+        completion.content.reply_to.as_deref(),
+        Some(question.id.as_str())
+    );
+    assert_ne!(completion.id, progress.id);
+
+    let follow_up = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(follow_up.member.id, coordinator);
+    assert_eq!(
+        follow_up
+            .messages
+            .iter()
+            .map(|message| &message.id)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([&progress.id, &completion.id])
+    );
+    finish(&fixture.store, &follow_up);
+    assert!(!fixture.store.group_has_pending(fixture.id()).unwrap());
+}
+
+#[test]
+fn nested_delegation_keeps_the_original_requester_waiting_until_the_final_reply() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    let explorer = fixture.member("Explorer").to_owned();
+    let original = fixture.message(
+        &GroupActor::user(),
+        request("Resolve the evidence question", &[&coordinator]),
+    );
+
+    let coordinator_wait = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(coordinator_wait.member.id, coordinator);
+    assert_eq!(coordinator_wait.messages, vec![original.clone()]);
+    let coordinator_actor = GroupActor {
+        execution_id: Some(coordinator_wait.execution.id.clone()),
+        ..actor(&coordinator)
+    };
+    let to_methods = fixture.message(
+        &coordinator_actor,
+        request("Check the underlying evidence", &[&methods]),
+    );
+    fixture
+        .store
+        .finish_member_turn(
+            &coordinator_wait,
+            &waiting_outcome("Waiting for Methods"),
+            None,
+        )
+        .unwrap();
+
+    let waiting = fixture.snapshot();
+    assert_eq!(
+        waiting
+            .executions
+            .iter()
+            .find(|execution| execution.id == coordinator_wait.execution.id)
+            .unwrap()
+            .status,
+        "waiting"
+    );
+    assert_eq!(
+        waiting
+            .work
+            .iter()
+            .find(|work| work.cause_id == original.id)
+            .unwrap()
+            .status,
+        WorkStatus::Waiting
+    );
+    assert_eq!(
+        waiting
+            .work
+            .iter()
+            .find(|work| work.cause_id == to_methods.id)
+            .unwrap()
+            .status,
+        WorkStatus::Pending
+    );
+    let coordinator_waiting_message = waiting
+        .messages
+        .iter()
+        .find(|message| {
+            message.author.execution_id == Some(coordinator_wait.execution.id.clone())
+                && message.content.recipients.is_empty()
+        })
+        .expect("the waiting execution should retain a non-delivered status record");
+    assert!(!coordinator_waiting_message.content.request_work);
+    assert!(!coordinator_waiting_message
+        .content
+        .recipients
+        .contains(&coordinator));
+
+    let methods_wait = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_wait.member.id, methods);
+    assert_eq!(methods_wait.messages, vec![to_methods.clone()]);
+    let methods_actor = GroupActor {
+        execution_id: Some(methods_wait.execution.id.clone()),
+        ..actor(&methods)
+    };
+    let to_explorer = fixture.message(
+        &methods_actor,
+        request("Resolve the independent evidence question", &[&explorer]),
+    );
+    fixture
+        .store
+        .finish_member_turn(
+            &methods_wait,
+            &waiting_outcome("Waiting for Explorer"),
+            None,
+        )
+        .unwrap();
+
+    let nested = fixture.snapshot();
+    assert_eq!(
+        nested
+            .executions
+            .iter()
+            .find(|execution| execution.id == methods_wait.execution.id)
+            .unwrap()
+            .status,
+        "waiting"
+    );
+    assert_eq!(
+        nested
+            .work
+            .iter()
+            .find(|work| work.cause_id == to_methods.id)
+            .unwrap()
+            .status,
+        WorkStatus::Waiting
+    );
+    assert_eq!(
+        nested
+            .work
+            .iter()
+            .find(|work| work.cause_id == to_explorer.id)
+            .unwrap()
+            .status,
+        WorkStatus::Pending
+    );
+    assert!(nested
+        .messages
+        .iter()
+        .any(|message| message.id == original.id));
+    assert!(nested
+        .messages
+        .iter()
+        .any(|message| message.id == to_methods.id));
+    assert!(nested
+        .messages
+        .iter()
+        .any(|message| message.id == to_explorer.id));
+    let methods_waiting_message = nested
+        .messages
+        .iter()
+        .find(|message| {
+            message.author.execution_id == Some(methods_wait.execution.id.clone())
+                && message.content.recipients.is_empty()
+        })
+        .expect("the nested waiting execution should retain a non-delivered status record");
+    assert!(!methods_waiting_message.content.request_work);
+    assert!(!methods_waiting_message
+        .content
+        .recipients
+        .contains(&coordinator));
+    assert!(
+        !nested
+            .messages
+            .iter()
+            .any(|message| message.author.id == methods
+                && message.content.recipients.contains(&coordinator)),
+        "a local yield must not reply before the delegated work finishes"
+    );
+
+    let explorer_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(explorer_turn.member.id, explorer);
+    assert_eq!(explorer_turn.messages, vec![to_explorer.clone()]);
+    let explorer_reply = fixture
+        .store
+        .finish_member_turn(
+            &explorer_turn,
+            &outcome("Explorer found the decisive evidence"),
+            None,
+        )
+        .unwrap();
+    assert_eq!(explorer_reply.author.id, explorer);
+    assert_eq!(explorer_reply.content.recipients, vec![methods.clone()]);
+    assert_eq!(
+        explorer_reply.content.reply_to.as_deref(),
+        Some(to_explorer.id.as_str())
+    );
+
+    let methods_finish = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_finish.member.id, methods);
+    assert_eq!(methods_finish.work.len(), 2);
+    assert!(methods_finish
+        .work
+        .iter()
+        .all(|work| work.status == WorkStatus::Running));
+    assert_eq!(
+        methods_finish
+            .messages
+            .iter()
+            .map(|message| &message.id)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([&to_methods.id, &explorer_reply.id])
+    );
+    let final_reply = fixture
+        .store
+        .finish_member_turn(
+            &methods_finish,
+            &outcome("Methods integrated the final evidence"),
+            None,
+        )
+        .unwrap();
+    assert_eq!(final_reply.author.id, methods);
+    assert_eq!(final_reply.content.recipients, vec![coordinator.clone()]);
+    assert_eq!(
+        final_reply.content.reply_to.as_deref(),
+        Some(to_methods.id.as_str())
+    );
+
+    let coordinator_finish = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(coordinator_finish.member.id, coordinator);
+    assert_eq!(coordinator_finish.work.len(), 2);
+    assert!(coordinator_finish
+        .work
+        .iter()
+        .all(|work| work.status == WorkStatus::Running));
+    assert_eq!(
+        coordinator_finish
+            .messages
+            .iter()
+            .map(|message| &message.id)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([&original.id, &final_reply.id])
+    );
+    fixture
+        .store
+        .finish_member_turn(
+            &coordinator_finish,
+            &outcome("Coordinator integrated the final evidence"),
+            None,
+        )
+        .unwrap();
+
+    let finished = fixture.snapshot();
+    assert_eq!(finished.executions.len(), 5);
+    assert_eq!(
+        finished
+            .executions
+            .iter()
+            .filter(|execution| execution.status == "waiting")
+            .count(),
+        2
+    );
+    assert_eq!(
+        finished
+            .executions
+            .iter()
+            .filter(|execution| execution.status == "completed")
+            .count(),
+        3
+    );
+    assert!(finished
+        .work
+        .iter()
+        .all(|work| work.status == WorkStatus::Completed));
     assert!(!fixture.store.group_has_pending(fixture.id()).unwrap());
 }
 
@@ -392,7 +976,19 @@ fn a_busy_member_keeps_distinct_new_messages_and_events_for_the_next_turn() {
     assert_eq!(next.events.len(), 1);
     assert_eq!(next.events[0].object.revision.as_deref(), Some("sha256-v2"));
     finish(&fixture.store, &next);
-    assert_eq!(fixture.snapshot().work.len(), 4);
+    assert_eq!(fixture.snapshot().work.len(), 5);
+    let response = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.member.id, fixture.member("Methods"));
+    assert_eq!(response.messages.len(), 1);
+    assert_eq!(
+        response.messages[0].content.reply_to.as_deref(),
+        Some(second.id.as_str())
+    );
+    finish(&fixture.store, &response);
     assert!(!fixture.store.group_has_pending(fixture.id()).unwrap());
 }
 
@@ -476,10 +1072,14 @@ fn only_an_explicit_user_request_reopens_a_closed_group() {
             ..Default::default()
         },
     );
-    fixture.message(
+    let undelivered = fixture.message(
         &actor(fixture.member("Explorer")),
         request("I suggest another check", &[methods]),
     );
+    assert!(!fixture
+        .store
+        .message_has_work(fixture.id(), &undelivered.id)
+        .unwrap());
     assert_eq!(fixture.snapshot().group.status, GroupStatus::Closed);
     assert!(fixture.snapshot().work.is_empty());
     assert!(!fixture.store.group_has_pending(fixture.id()).unwrap());
@@ -495,6 +1095,10 @@ fn only_an_explicit_user_request_reopens_a_closed_group() {
         },
     );
     assert_eq!(fixture.snapshot().group.status, GroupStatus::Open);
+    assert!(fixture
+        .store
+        .message_has_work(fixture.id(), &request.id)
+        .unwrap());
     let turn = fixture
         .store
         .claim_member_turn(&fixture.task)
@@ -975,6 +1579,13 @@ fn historical_annotation_is_retained_once_and_claimed_as_original_high_priority_
     assert!(lower_priority.annotations.is_empty());
     assert!(lower_priority.work.iter().all(|work| work.priority == 50));
     finish(&reopened, &lower_priority);
+    let response = reopened.claim_member_turn(&fixture.task).unwrap().unwrap();
+    assert_eq!(response.member.id, explorer);
+    assert!(response
+        .messages
+        .iter()
+        .all(|message| !message.content.request_work));
+    finish(&reopened, &response);
     assert!(!reopened.group_has_pending(fixture.id()).unwrap());
 }
 

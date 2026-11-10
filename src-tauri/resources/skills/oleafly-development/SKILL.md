@@ -3,7 +3,7 @@ name: oleafly-development
 description: Implement, debug, refactor or review software in the current project. Covers code ownership, existing contracts and behavior-focused verification.
 license: CC-BY-4.0
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
   skill-author: "Research Workbench contributors"
   oleafly:
     tier: native
@@ -28,8 +28,11 @@ findings with locations and impact. Keep supported persisted formats and histori
 evidence intact unless the task includes a migration.
 
 Use the host's existing task state for substantial work. Update existing guidance when
-the behavior changes and remove this task's disposable outputs. Report the result and
-the checks actually run; name any remaining blocker that affects delivery.
+the behavior changes and remove this task's disposable outputs. Use Git for source
+history and existing task/run records for progress. A routine change does not need a
+new report, handoff, manifest or source backup. Preserve evidence needed to explain
+acceptance, an important experiment or a useful diagnosis. Report the result and the
+checks actually run; name any remaining blocker that affects delivery.
 
 Workflow adapted from HelloAGENTS by Hellowind, inspected at revision 457d724
 of https://github.com/Atanycosts/AgentSkills. The original documentation is

@@ -88,6 +88,26 @@ conventions take precedence:
 Additional routing examples, artifact formats and citation-key conventions
 live in `oleafly-research-loop`'s own `references/project-layout.md` and
 `references/handoffs.md`. Create those artifacts when the task needs them.
+Reuse existing application and project records before creating files. A claim
+audit keeps its table, evidence and fixes in one record by default; a separate
+report is an export when the requested deliverable needs it. Routine turns do
+not need another progress report or JSON/Markdown copy of stored facts.
+
+## Maintaining the bundled pack
+
+Edit Oleafly-native skills in `src-tauri/resources/skills/`. Vendored origins
+and pins live in `scripts/skills/kdense-manifest.json`. The existing Typst
+adaptations for `citation-management` and `venue-templates` are recorded there
+as patches under `scripts/skills/patches/`, including the Hayagriva asset.
+Update the patch when changing those adaptations. Running
+`pnpm skills:sync --source <clone>` reapplies them after importing the pinned skill and fails visibly if
+the patch no longer fits. A source import must not silently discard them.
+
+After changing a bundled skill or synchronizing its source, run
+`pnpm skills:pack` and `pnpm skills:catalog`, then `pnpm skills:verify` and
+`pnpm skills:check`. The pack and floor catalog are generated views of the
+skill trees, not separately maintained descriptions. Check the affected
+sync tests when changing this import path.
 
 ## How the assistant picks a skill
 

@@ -124,6 +124,7 @@ fn requested(store: &TaskStore, draft: ResearchTaskDraft) -> ResearchTask {
 
 fn outcome(summary: &str) -> TaskRuntimeOutcome {
     TaskRuntimeOutcome {
+        waiting_for_reply: false,
         summary: summary.into(),
         artifacts: Vec::new(),
         native_session_id: None,

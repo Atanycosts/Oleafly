@@ -162,7 +162,11 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
             &["id"],
         ),
         tool("cancel_run", "Stop a run.", json!({"id": run_id}), &["id"]),
-        tool("task_pdf_text", "Read page text from a retained task PDF reference: captured generation 0 input or this execution's compiled output. Pass the complete artifact object.", json!({"reference": crate::compiled_artifacts::reference_schema()}), &["reference"]),
+        tool("task_pdf_text", "Read a bounded text window from a retained task PDF: captured generation 0 input or this execution's compiled output. Pass the complete artifact object. Text has [p. N] page anchors. Continue with nextOffset as offset until null. The source identifies the exact PDF, text bytes and pages read.", json!({
+            "reference": crate::compiled_artifacts::reference_schema(),
+            "offset": {"type":"integer","minimum":0},
+            "max_chars": {"type":"integer","minimum":1,"maximum":48000}
+        }), &["reference"]),
         tool("compile", "Build the task workspace with Oleafly's command-line tool and report errors and warnings.", json!({}), &[]),
         tool("project_map", "The project's outline, labels, references and citations, with any that do not resolve.", json!({}), &[]),
         tool(
@@ -232,7 +236,7 @@ pub fn task_tool_schemas(brief: &ResearchBrief, has_web: bool) -> Vec<ToolSchema
         ),
         tool(
             "read_paper",
-            "Read a paper's full text, a window at a time, with [p. N] page anchors. Give a DOI (its open-access copy), an arXiv id, an https URL of a PDF, or a PDF path in the workspace. The PDF and its text are kept in the record's papers/ folder.",
+            "Read a paper's text a bounded window at a time, with [p. N] page anchors. Give a DOI (its open-access copy), an arXiv id, an https PDF URL, or a workspace PDF path. Continue with nextOffset as offset. The exact PDF and extracted text are retained under papers/. source identifies the text hash, byte range and PDF pages read. Citation identity does not prove claim support.",
             json!({
                 "doi": {"type": "string", "maxLength": 300},
                 "arxiv": {"type": "string", "maxLength": 40},
@@ -773,7 +777,7 @@ async fn paper(binding: &TaskBinding, args: &Value) -> Result<Value, String> {
     };
     let files = binding.files()?;
     let extractor = binding.host.pdf_extractor();
-    let text = read_paper(
+    let mut text = read_paper(
         &binding.host.literature(),
         request,
         &files,
@@ -786,6 +790,14 @@ async fn paper(binding: &TaskBinding, args: &Value) -> Result<Value, String> {
             .map_or(DEFAULT_WINDOW_CHARS, |max| max as usize),
     )
     .await?;
+    let content = files.read(&text.source.path)?;
+    text.source.snapshot_retained = Some(binding.store()?.retain_file_snapshot(
+        &binding.task_id,
+        binding.generation,
+        &text.source.path,
+        &text.source.file_sha256,
+        content.as_bytes(),
+    )?);
     serde_json::to_value(text).map_err(|error| error.to_string())
 }
 
@@ -838,10 +850,21 @@ pub async fn call_task_tool(
         },
         "task_pdf_text" => async {
             let reference: crate::compiled_artifacts::TaskCompiledArtifact = serde_json::from_value(args["reference"].clone()).map_err(|e| e.to_string())?;
-            crate::compiled_artifacts::read_for_task(&binding.services.tasks_root, &binding.task_id, binding.generation, &reference)?;
+            let bytes = crate::compiled_artifacts::read_for_task(&binding.services.tasks_root, &binding.task_id, binding.generation, &reference)?;
             let extractor = binding.host.pdf_extractor().ok_or("Task PDF text extraction is unavailable.")?;
             let pages = extractor.pages(binding.services.tasks_root.join(&reference.path)).await?;
-            Ok(json!({"artifact": reference, "pages": pages}))
+            let content = crate::literature::paper::anchored_text(&pages);
+            let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+            let (text, next_offset) = crate::literature::paper::window(&content.text, offset, args["max_chars"].as_u64().unwrap_or(DEFAULT_WINDOW_CHARS as u64) as usize)?;
+            let mut source = crate::literature::paper::read_source(
+                format!("{}.txt", reference.path), reference.path.clone(), &bytes,
+                pages.len(), &content.text, &content.page_offsets, offset..offset + text.len(),
+            );
+            source.snapshot_retained = Some(binding.store()?.retain_file_snapshot(
+                &binding.task_id, binding.generation, &source.path,
+                &source.file_sha256, content.text.as_bytes(),
+            )?);
+            Ok(json!({"artifact": reference, "pageCount": pages.len(), "text": text, "nextOffset": next_offset, "source": source}))
         }.await,
         "compile" => match &binding.services.workspace {
             Some(workspace) => async {
@@ -1092,6 +1115,7 @@ mod tests {
                         end_offset: 400,
                         truncated: false,
                         snapshot_retained: Some(true),
+                        pdf: None,
                     }),
                     actor: Some("session".into()),
                 },

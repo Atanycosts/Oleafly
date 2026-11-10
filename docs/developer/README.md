@@ -23,23 +23,10 @@ The references below are for contributors, integrators, and release maintainers.
 
 ## Build from source
 
-```bash
-git clone https://github.com/Oleafly/Oleafly.git
-cd Oleafly
-pnpm install
-host_target="$(rustc -vV | sed -n 's/^host: //p')"
-./scripts/fetch-tectonic.sh "$host_target"
-./scripts/fetch-biber.sh "$host_target"
-./scripts/fetch-typst.sh "$host_target"
-pnpm tauri dev
-```
-
-See the [development guide](../development.md) for prerequisites, platform
-setup, production builds, and the source-only command-line workflow.
-
-These scripts download the checksum-pinned compiler sidecars for your current
-platform into `src-tauri/binaries`. The `all` argument is for CI and release
-packaging, where every supported platform must be prepared.
+Follow [First run](../development.md#first-run) as the single setup procedure
+for prerequisites, compiler sidecars, and the first development launch. The
+same guide covers [day-to-day builds](../development.md#day-to-day) and
+production bundles.
 
 Editor intelligence through TexLab and Tinymist is optional for a local run.
 Fetch those language servers with `pnpm language-servers:fetch`. See the
@@ -48,21 +35,12 @@ licensing, and distribution policy.
 
 ### Command line
 
-`oleaflyc` manages Oleafly projects without launching the desktop app. It
-builds from source in this repository and is not published as a standalone
-package yet.
-
-```bash
-cargo run -p oleafly-cli --bin oleaflyc -- init
-cargo run -p oleafly-cli --bin oleaflyc -- doctor
-cargo run -p oleafly-cli --bin oleaflyc -- build
-cargo run -p oleafly-cli --bin oleaflyc -- watch
-cargo run -p oleafly-cli --bin oleaflyc -- project info --json
-```
-
-Commands run against the current directory. Pass `-C <path>` to point at
-another project. `oleaflyc .` opens the current folder in the desktop app. Run
-`oleaflyc --help` for the full command list.
+The command-line adapter ships inside the desktop app and has a dedicated
+standalone release workflow in
+[`release-cli.yml`](../../.github/workflows/release-cli.yml). See
+[CLI install](../cli.md#install) for current installation paths and
+compatibility. Use `cargo run -p oleafly-cli --bin oleaflyc -- --help` for a
+source-checkout build.
 
 ## Contribute
 

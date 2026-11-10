@@ -13,47 +13,14 @@ clone to a working dev build, and covers how we review and land changes.
 For anything larger than a small fix, open an issue first so we can agree on the
 approach before you invest time.
 
-## Prerequisites
-
-| Tool | Version | Notes |
-| --- | --- | --- |
-| [Node.js](https://nodejs.org) | 22.13+ | Required by pnpm 11 |
-| [pnpm](https://pnpm.io) | 11.9+ | Enable Corepack or install the version declared in `package.json` |
-| [Rust](https://rustup.rs) | pinned in `rust-toolchain.toml` | rustup installs that version the first time you run `cargo` in the repo. It is the version CI uses. |
-| Platform deps | - | See the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS (on Linux: `libwebkit2gtk-4.1-dev`, `librsvg2-dev`, `patchelf`, …) |
-
 ## Getting started
 
-```bash
-git clone https://github.com/Oleafly/Oleafly.git
-cd Oleafly
-pnpm install
+Follow [First run](docs/development.md#first-run) for prerequisites, compiler
+sidecars, the isolated development library, and the first launch. The same
+guide covers [day-to-day builds](docs/development.md#day-to-day) and production
+bundles.
 
-# Find your target with `rustc -vV | grep host`.
-bash scripts/fetch-tectonic.sh aarch64-apple-darwin   # or your host triple
-bash scripts/fetch-typst.sh aarch64-apple-darwin
-# Windows only: copy Microsoft's VC++ runtime that Typst and TexLab need.
-node scripts/stage-windows-vcruntime.mjs
-
-# Run the app in dev mode (hot-reloads the frontend, rebuilds Rust on change):
-pnpm tauri dev
-```
-
-Interactive development uses `~/.oleafly-dev` by default, so reset and seed
-tools cannot touch the library used by an installed Oleafly app. Set
-`OLEAFLY_DATA_DIR` explicitly when you need a different isolated test library.
-
-> The Tectonic and Typst binaries are **git-ignored** on
-> purpose - never commit them. The fetch script drops them in
-> `src-tauri/binaries/`, which is where `bundle.externalBin` expects them.
-
-### Building a production bundle locally
-
-```bash
-pnpm tauri build
-```
-
-Installers land in `src-tauri/target/release/bundle/`.
+Fetched files under `src-tauri/binaries/` are git-ignored; never commit them.
 
 ## Project layout
 

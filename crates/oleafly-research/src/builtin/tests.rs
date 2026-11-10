@@ -432,9 +432,13 @@ struct FixtureHost {
     bridge_gate: Option<Arc<tokio::sync::Semaphore>>,
     bridge_started: tokio::sync::Notify,
     mcp_tools: Vec<TaskMcpTool>,
+    pdf: Option<Arc<dyn PdfTextExtractor>>,
 }
 
 impl TaskHost for FixtureHost {
+    fn pdf_extractor(&self) -> Option<Arc<dyn PdfTextExtractor>> {
+        self.pdf.clone()
+    }
     fn task_mcp_tools(&self, _context: &TaskRunContext) -> TaskRuntimeFuture<Vec<TaskMcpTool>> {
         let tools = self.mcp_tools.clone();
         Box::pin(async move { Ok(tools) })
@@ -590,6 +594,7 @@ async fn fixture_host(_root: &Path, url: String) -> Arc<FixtureHost> {
         bridge_gate: None,
         bridge_started: tokio::sync::Notify::new(),
         mcp_tools: Vec::new(),
+        pdf: None,
     })
 }
 
@@ -1863,6 +1868,8 @@ async fn spawned_readers_cannot_spawn_or_run() {
             "read_file",
             "read_paper",
             "search_project",
+            "task_pdf_text",
+            "verify_citation",
             "write_file"
         ]
     );

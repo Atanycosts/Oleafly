@@ -1,11 +1,11 @@
 ---
 name: oleafly-verify-claims
-description: Audit a section claim by claim and report which statements the cited sources actually support. Use when the user asks to check the citations, verify the claims in a section, find unsupported or overstated statements, confirm nothing was fabricated, or get a manuscript ready for review or submission. Builds research/claims.md with a support level and an evidence note per claim, and reports problems rather than quietly rewriting the prose.
+description: Audit a section claim by claim and report which statements the cited sources actually support. Use when the user asks to check citations, verify claims, or find unsupported or overstated statements. Maintains a claim record with evidence and proposed fixes, reusing the project's existing record or research/claims.md.
 license: MIT
-compatibility: Reads and reports only. Needs network approval for verify_citation. The optional scientific-writing audit script needs Python 3.11 or newer on the login shell PATH.
-allowed-tools: read_file search_project project_map project_library_search verify_citation write_file create_file compile get_pdf_text update_todos load_skill read_skill_file run_command
+compatibility: Audit author text unless revision is authorized. Use the current host tools and task permissions. The optional scientific-writing audit script needs Python 3.11 or newer on the login shell PATH.
+allowed-tools: read_file search_project project_map project_library_search read_paper verify_citation write_file replace_in_file create_file compile get_pdf_text task_pdf_text update_todos load_skill read_skill_file run_command
 metadata:
-  version: "1.0.1"
+  version: "1.2.0"
   skill-author: "Oleafly"
   oleafly:
     tier: native
@@ -15,11 +15,14 @@ metadata:
       - search_project
       - project_map
       - project_library_search
+      - read_paper
       - verify_citation
       - write_file
+      - replace_in_file
       - create_file
       - compile
       - get_pdf_text
+      - task_pdf_text
       - update_todos
       - load_skill
       - read_skill_file
@@ -28,9 +31,9 @@ metadata:
 
 # Oleafly Verify Claims
 
-This skill answers one question for every factual sentence in a section: does the source it cites actually say that? The output is a table, a report, and a list of proposed fixes. It is not a rewrite.
+This skill answers one question for every factual sentence in a section: does the source it cites actually say that? Maintain one claim record containing the evidence table, summary and proposed fixes. Reuse an existing project record; `research/claims.md` is the default when there is none. Export a separate report only when the requested deliverable needs it.
 
-**Never edit the user's prose in this skill.** A claim audit that silently corrects what it finds destroys the evidence of what was wrong, and the user cannot check your judgement afterwards. Propose the fix, name the file and line, and let them decide. The only files this skill writes are `research/claims.md` and a report under `review/`.
+**A review request does not authorize editing the user's prose.** Propose fixes with file and line locations. Write the claim record and requested exports; preserve the manuscript being audited.
 
 ## Step 1. Fix the scope
 
@@ -38,11 +41,11 @@ Audit one section, or one file, at a time. A whole manuscript in one pass produc
 
 Confirm with the user which file, or infer from what they just asked about. `project_map` with `{}` returns `sections` with the file and line of each heading, so you can name the boundaries precisely.
 
-Set the plan with `update_todos`, one item per step below.
+For substantial work, use the host's existing task state to track scope and remaining claims.
 
 ## Step 2. Read the text with line anchors
 
-`read_file` with `{"path": "sections/related.tex", "offset": 1, "limit": 200}`. The result carries `offset`, `lines_returned` and `total_lines`. Line N of the returned content is file line `offset + N - 1`. Read further slices until you have covered the section.
+Read the section with the offered `read_file` schema. In a ResearchTask, `offset` and `limit` are UTF-8 byte positions and byte limits, starting at 0. Continue with the returned `nextOffset` until null. Ordinary chat may offer line-based reads. Use the actual schema and returned fields.
 
 To pin a line number exactly, `search_project` with `{"query": "<six distinctive words from the sentence>"}` returns the file and line of every match. That is more reliable than counting, and it is the anchor to record in the table.
 
@@ -79,9 +82,9 @@ For each claim, record which keys the sentence cites. A claim with no citation i
 For each cited key, in this order, stopping when you have enough to judge:
 
 1. `read_file` with `{"path": "research/sources/<key>.md"}`. If the sweep ran, this holds the abstract verbatim and the provenance. This is the cheapest real evidence available.
-2. `project_library_search` with `{"query": "<the claim, in the source's own vocabulary>"}` searches the project's own files, including any imported full text and the user's reading notes.
-3. `read_file` on the PDF at `research/sources/<key>.pdf` when the abstract does not settle it and the paper is in the project.
-4. `verify_citation` with `{"doi": "<doi from the entry>"}` to confirm the entry resolves to a real record with the title, venue and year the entry claims. This checks the citation exists and matches; it does not check that the paper supports the claim. Both checks matter and they are different.
+2. Search existing text and notes with `project_library_search` when offered. In a ResearchTask, use `search_project` with a distinctive literal phrase, then `read_file` on the matches. This is a literal search, not a semantic library index.
+3. Read the actual paper with `read_paper` when offered, using `path`, `doi`, `arxiv` or a public PDF `url`. Continue with `nextOffset` as `offset` while the needed passage remains unread. Keep the source hash, byte range, PDF identity and page anchors. `read_file` reads UTF-8 text and cannot extract a PDF. If only abstracts are available, state that limit.
+4. `verify_citation` with both `doi` and the entry's `title` when available checks their identity. Inspect returned metadata before adopting it. DOI resolution alone does not verify venue/year or claim support. Judge support from the source passage, at its stated scope.
 
 When no evidence is available at all, that is a finding, not a blocker. Record the claim as `unsupported` with the note "no source note, no full text in the project", and propose that the source be added by `oleafly-literature-sweep`.
 
@@ -101,13 +104,13 @@ Exactly one of three, defined in full in `references/support-levels.md`.
 
 The evidence note must say what the source actually says, not just that it disagrees. "Measured on graphs up to 10k nodes; the sentence says arbitrary scale" is actionable. "Overstated" is not.
 
-## Step 7. Write research/claims.md
+## Step 7. Update the claim record
 
-Create the directory if needed with `create_file` and `{"path": "research", "is_dir": true}`, then `write_file` the table from `assets/claims.md`.
+Read the project's existing claim record first. If there is none, create `research/claims.md` using `assets/claims.md`. If an available application tool owns an equivalent claim record, update it through that tool and retain its identifiers rather than copying it to a second file. The task Finding tools cover deterministic numeric checks; do not use them as a substitute for this claim audit.
 
-Columns: number, claim, location as `file:line`, cited key, support level, evidence note. Then a summary count, then a proposed fixes table.
+Include the audit scope and input revision or hash when available. Columns: claim ID, claim, location as `file:line`, cited key, support level, evidence note. Add summary counts, proposed fixes and any material coverage gaps. Unsupported claims must be identifiable in full, with what evidence is missing.
 
-If `research/claims.md` already exists, `read_file` it first and merge rather than replacing. An earlier audit's findings on other sections are not yours to discard.
+Merge the current scope without discarding other sections. Preserve existing claim IDs and distinguish results against an older manuscript revision from the current audit.
 
 ## Step 8. Optional deeper audit with the vendored script
 
@@ -129,13 +132,13 @@ Read either template with `read_skill_file` and `{"id": "scientific-writing", "p
 
 Two related scripts from the same skill: `scripts/check_references.py <sources.json>` validates the manifest alone, and `scripts/lint_manuscript.py <manuscript.md>` checks the prose against the skill's writing rules.
 
-Write script output to a file under `research/` and read it back with `read_file`. Command output is capped and truncates silently.
+Read the script result. If output would be truncated, capture it in the host's disposable run directory and read the needed parts. Retain raw output only when the audit needs it as evidence; do not create another summary of the same findings.
 
 The script checks structure and completeness. It does not read the sources. It never replaces steps 5 and 6.
 
-## Step 9. Report, and hard fail on the unsupported
+## Step 9. Present the result
 
-Write the report to `review/claim-audit-<section>.md` from `assets/audit-report.md`, and give the user the summary in your reply.
+Give the user the summary and a link or record ID for the claim record. When a separate report is requested, derive it from that record using `assets/audit-report.md`; the export does not become a second status owner.
 
 Lead with the count at each level. Then list every `unsupported` claim in full, with its location and what is missing. These are the ones that must be resolved before submission, and burying them under the verified ones is how they get missed.
 
@@ -147,11 +150,11 @@ For each problem, propose a concrete fix and let the user choose:
 - Mark the statement as this work's own contribution rather than a citation.
 - Remove the claim.
 
-Propose. Do not apply. If the user then asks you to make the edits, do them with `replace_in_file` in that turn, one at a time, and `compile` afterwards.
+For an audit-only request, propose the fixes without changing author prose. When the request already authorizes revision, apply supported fixes with the host's editing tools and retain unresolved evidence gaps. In a ResearchTask, read the current file before a version-checked `write_file`.
 
 ## Step 10. Confirm the document still builds
 
-If you added nothing and edited no source, `compile` is not required. If the user accepted fixes and you applied them, `compile` with `{}`, then `project_map` with `{}` to confirm `unresolvedCites` is empty, then `get_pdf_text` with `{}` to confirm no citation renders as `[?]`.
+If no build input changed, `compile` is not required. After authorized fixes, compile and inspect diagnostics. In a ResearchTask, pass the complete `artifact` returned by `compile` to `task_pdf_text` as `reference`. Continue with `nextOffset` until affected passages and citations have been read. Keep the original captured PDF distinct from this new artifact. In ordinary chat, use `get_pdf_text` if offered. Check the actual output and unresolved citations, not just compile success.
 
 ## Step 11. Hand off
 
@@ -164,11 +167,11 @@ If you added nothing and edited no source, `compile` is not required. If the use
 
 | What happened | What to do |
 |---|---|
-| No `research/sources/` directory | The sweep never ran. Audit what you can from `project_library_search` and `verify_citation`, and say clearly that most levels are provisional |
+| No `research/sources/` directory | Look for existing library records or task `papers/` first. Record missing evidence without assuming no previous review exists |
 | A cited key is in `unresolvedCites` | `unsupported`, reason "no bibliography entry". This is a build problem as well as a citation problem |
 | `verify_citation` returns `verified: false` for an existing entry | The entry may be fabricated or the metadata wrong. Flag it prominently. Do not delete it yourself |
-| The PDF for a paper is not in the project | Judge from the abstract in the source note, and cap the level at `partial` unless the abstract states the claim outright. Say the full text was not read |
-| The user asks you to just fix everything | Show the table first. Apply fixes only after they have seen what will change |
+| The PDF is not in the project | Try DOI, arXiv or an open PDF with `read_paper` when offered. If only the abstract is available, state what it supports and that the full text was not read |
+| The user asks you to fix the audited section | Apply supported fixes within that authorization. Ask only about a material choice the request does not resolve |
 | A claim cites six keys at once | Audit the claim against the set. If no single source carries it and the set does not either, it is `unsupported` |
 | `run_command` reports `timed_out` | Skip the script step. It is optional and the manual audit is the real work |
 
@@ -176,10 +179,10 @@ If you added nothing and edited no source, `compile` is not required. If the use
 
 - [ ] Every factual claim in the scope has a row, with a `file:line` location that `search_project` confirms.
 - [ ] Every row has a support level and an evidence note that says what the source actually says.
-- [ ] Every `unsupported` claim is listed in full in the report, not only counted.
+- [ ] Every `unsupported` claim is listed in full in the claim record, not only counted.
 - [ ] Every proposed fix names the file, the line, and the specific change.
-- [ ] `research/claims.md` and `review/claim-audit-<section>.md` are written.
-- [ ] No sentence of the user's prose was changed without them asking for it in this turn.
+- [ ] The existing claim record is updated, or `research/claims.md` is created when needed. A separate report is exported only when requested.
+- [ ] Any author-prose revision is covered by the user's authorization and linked to supporting evidence.
 
 ## Reference files
 

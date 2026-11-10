@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { readFile, writeFile, mkdir, rm, readdir, stat, lstat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm, readdir, stat, lstat, mkdtemp, cp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -136,43 +138,62 @@ async function main() {
 
   const results = [];
   const writtenSkillMd = [];
-  for (const entry of manifest.skills) {
-    const skillSrcDir = join(sourceRoot, "skills", entry.id);
-    const skillMdPath = join(skillSrcDir, "SKILL.md");
-    const skillMdRaw = await readFile(skillMdPath, "utf8");
-    const bounds = findFrontmatterBounds(skillMdRaw);
-    if (!bounds) {
-      throw new Error(`${entry.id}: SKILL.md has no frontmatter block`);
-    }
-    const license = readFrontmatterField(skillMdRaw, "license");
-    if (!license || !LICENSE_OK.test(license)) {
-      throw new Error(
-        `${entry.id}: license "${license ?? "(missing)"}" does not match required MIT pattern, aborting`,
+  const stagingRoot = await mkdtemp(join(tmpdir(), "oleafly-skills-sync-"));
+  try {
+    for (const entry of manifest.skills) {
+      const skillSrcDir = join(sourceRoot, "skills", entry.id);
+      const skillMdPath = join(skillSrcDir, "SKILL.md");
+      const skillMdRaw = await readFile(skillMdPath, "utf8");
+      const bounds = findFrontmatterBounds(skillMdRaw);
+      if (!bounds) {
+        throw new Error(`${entry.id}: SKILL.md has no frontmatter block`);
+      }
+      const license = readFrontmatterField(skillMdRaw, "license");
+      if (!license || !LICENSE_OK.test(license)) {
+        throw new Error(
+          `${entry.id}: license "${license ?? "(missing)"}" does not match required MIT pattern, aborting`,
+        );
+      }
+
+      const destDir = join(DEST_ROOT, entry.id);
+      const stagedDir = join(stagingRoot, "src-tauri", "resources", "skills", entry.id);
+      const { fileCount, byteCount } = await copySkillTree(
+        skillSrcDir,
+        stagedDir,
+        excludeRegexes,
+        maxFileBytes,
       );
+
+      let finalText = injectOleaflyMetadata(skillMdRaw, {
+        tier: "vendored",
+        phase: entry.phase,
+        origin: { repo: manifest.repo, commit: manifest.pin },
+      });
+      if (bodyReferencesExcludedScript(finalText)) {
+        finalText = appendOleaflyNote(finalText);
+      }
+      const destSkillMd = join(stagedDir, "SKILL.md");
+      await writeFile(destSkillMd, finalText, "utf8");
+      if (entry.patch) {
+        const patchPath = resolve(SCRIPT_DIR, entry.patch);
+        const result = spawnSync("git", ["apply", patchPath], {
+          cwd: stagingRoot,
+          encoding: "utf8",
+        });
+        if (result.error) throw result.error;
+        if (result.status !== 0) {
+          throw new Error(`${entry.id}: local adaptation failed: ${result.stderr.trim()}`);
+        }
+      }
+      validateSkillMarkdown(await readFile(destSkillMd, "utf8"), `${entry.id}/SKILL.md`);
+      await rm(destDir, { recursive: true, force: true });
+      await cp(stagedDir, destDir, { recursive: true });
+      writtenSkillMd.push(join(destDir, "SKILL.md"));
+
+      results.push({ id: entry.id, phase: entry.phase, license, files: fileCount, bytes: byteCount });
     }
-
-    const destDir = join(DEST_ROOT, entry.id);
-    const { fileCount, byteCount } = await copySkillTree(
-      skillSrcDir,
-      destDir,
-      excludeRegexes,
-      maxFileBytes,
-    );
-
-    let finalText = injectOleaflyMetadata(skillMdRaw, {
-      tier: "vendored",
-      phase: entry.phase,
-      origin: { repo: manifest.repo, commit: manifest.pin },
-    });
-    if (bodyReferencesExcludedScript(finalText)) {
-      finalText = appendOleaflyNote(finalText);
-    }
-    validateSkillMarkdown(finalText, `${entry.id}/SKILL.md`);
-    const destSkillMd = join(destDir, "SKILL.md");
-    await writeFile(destSkillMd, finalText, "utf8");
-    writtenSkillMd.push(destSkillMd);
-
-    results.push({ id: entry.id, phase: entry.phase, license, files: fileCount, bytes: byteCount });
+  } finally {
+    await rm(stagingRoot, { recursive: true, force: true });
   }
 
   await mkdir(dirname(LICENSE_DEST), { recursive: true });

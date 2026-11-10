@@ -15,6 +15,11 @@ pub fn record_dir(slug: &str) -> String {
     format!("research/{slug}")
 }
 
+pub(crate) fn is_coordination_file(slug: &str, path: &str) -> bool {
+    path.strip_prefix(&format!("{}/", record_dir(slug)))
+        .is_some_and(|name| matches!(name, "handoff.md" | "plan.md"))
+}
+
 pub fn record_slug(title: &str, task_id: &str) -> String {
     let mut slug = String::new();
     let mut dash = false;

@@ -7,7 +7,8 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { describeError } from "@/lib/app-error";
 import { loadResearchTaskObservationCall, type ResearchTask, type TaskTranscriptEvent } from "@/lib/research-tasks";
 import type { ResearchTaskAgentOption } from "./ResearchTasksPanel";
-import { createTaskGroup, loadTaskAnnotations, loadTaskGroup, loadTaskGroupMessages, sendGroupMessage, setTaskGroupStatus, setGroupMemberPaused, setGroupMemberInterest, type AnnotationHandling, type GroupEvent, type GroupMessage, type GroupObject, type GroupSnapshot, type GroupWork, type MemberDraft, type MemberExecution, type MemberInterest, type TaskAnnotation, type WorkReason } from "@/lib/task-collaboration";
+import { TaskSourceRead } from "./TaskObservations";
+import { createTaskGroup, loadTaskAnnotations, loadTaskGroup, loadTaskGroupEvent, loadTaskGroupEventsAfter, loadTaskGroupEventsPage, loadTaskGroupExecution, loadTaskGroupExecutionsAfter, loadTaskGroupExecutionsPage, loadTaskGroupMessages, sendGroupMessage, setTaskGroupStatus, setGroupMemberPaused, setGroupMemberInterest, type AnnotationHandling, type GroupEvent, type GroupEventPage, type GroupExecutionPage, type GroupMessage, type GroupObject, type GroupSnapshot, type GroupWork, type MemberDraft, type MemberExecution, type MemberInterest, type TaskAnnotation, type WorkReason } from "@/lib/task-collaboration";
 
 const objectLabel = (object: GroupObject) => `${object.kind} ${object.path ?? object.id}${object.revision ? ` · v${object.revision}` : ""}`;
 const humanizeKind = (kind: string) => kind.replaceAll("_", " ");
@@ -20,6 +21,22 @@ type SourceReadState =
   | { status: "annotation"; annotation?: TaskAnnotation; handling?: AnnotationHandling }
   | { status: "unavailable"; source: "execution" | "record" }
   | { status: "error"; message: string };
+
+const mergeById = <T extends { id: string }>(current: T[], incoming: T[]) => {
+  const merged = new Map(current.map(item => [item.id, item]));
+  for (const item of incoming) merged.set(item.id, item);
+  return [...merged.values()];
+};
+
+const mergeEvents = (current: GroupEvent[], incoming: GroupEvent[]) =>
+  mergeById(current, incoming).sort((left, right) => left.sequence - right.sequence);
+
+const mergeExecutions = (current: MemberExecution[], incoming: MemberExecution[]) =>
+  mergeById(current, incoming).sort((left, right) => right.startedAt - left.startedAt || right.id.localeCompare(left.id));
+
+const latestExecution = (executions: MemberExecution[]) =>
+  executions.reduce<MemberExecution | undefined>((latest, execution) =>
+    !latest || execution.startedAt > latest.startedAt || (execution.startedAt === latest.startedAt && execution.id > latest.id) ? execution : latest, undefined);
 
 export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task: ResearchTask; agents: ResearchTaskAgentOption[]; onSnapshot?: (snapshot: GroupSnapshot | null) => void; onAnnotate?: (message: GroupMessage) => void }) {
   const { t } = useTranslation("researchTools");
@@ -43,45 +60,97 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
   const [interestKind, setInterestKind] = useState<MemberInterest["kind"]>("path");
   const [interestValue, setInterestValue] = useState("");
   const [sourceReads, setSourceReads] = useState<Record<string, SourceReadState>>({});
+  const [resolvedEvents, setResolvedEvents] = useState<Record<string, GroupEvent | null>>({});
+  const [resolvingEvents, setResolvingEvents] = useState<string[]>([]);
+  const [historyLoading, setHistoryLoading] = useState<"events" | "executions" | "">("");
   const refreshRef = useRef<() => Promise<void>>(async () => {});
+  const refreshQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const lastUpdatedAtRef = useRef(task.updatedAt);
   const sourceReadVersionRef = useRef(0);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Bootstrap once per project/task scope so polling updates never reset editable member drafts.
   useEffect(() => {
     let active = true;
-    let loading = false;
+    refreshQueueRef.current = Promise.resolve();
     sourceReadVersionRef.current += 1;
     snapshotRef.current = null;
     callbackRef.current?.(null);
     setSnapshot(null); setLoaded(false); setError(""); setBusy(false);
     setBody(""); setRecipients([]); setReplyTo(null); setRequestWork(false);
-    setInterestMember(""); setInterestValue(""); setSourceReads({});
+    setInterestMember(""); setInterestValue(""); setSourceReads({}); setHistoryLoading(""); setResolvedEvents({}); setResolvingEvents([]);
     setMembers([{ draftId: "coordinator", name: task.title, responsibility: task.brief.goal, runtimeId: task.runtimeId, agentId: task.agentId, modelId: task.modelId, skillIds: task.skillIds, coordinator: true }]);
     const refresh = async () => {
-      if (loading) return;
-      loading = true;
-      try {
+      const operation = refreshQueueRef.current.then(async () => {
         const previous = snapshotRef.current;
-        const result = previous ? await loadTaskGroupMessages(task.projectId, previous.group.id, previous.nextSequence) : await loadTaskGroup(task.projectId, task.id);
-        if (active) {
-          const merged = result && previous ? {
-            ...result,
-            messages: [...previous.messages, ...result.messages.filter(message => !previous.messages.some(old => old.id === message.id))],
-            events: previous.events || result.events ? [...(previous.events ?? []), ...(result.events ?? []).filter(event => !(previous.events ?? []).some(old => old.id === event.id))] : undefined,
-          } : result;
-          snapshotRef.current = merged;
-          callbackRef.current?.(merged);
-          setSnapshot(merged); setLoaded(true); setError("");
+        const result = previous
+          ? await loadTaskGroupMessages(task.projectId, task.id, previous.group.id, previous.nextSequence)
+          : await loadTaskGroup(task.projectId, task.id);
+        if (!active) return;
+        if (!result) {
+          if (!previous) {
+            callbackRef.current?.(null);
+            setSnapshot(null); setLoaded(true); setError("");
+          }
+          return;
         }
-      } catch (cause) { if (active) { setError(describeError(cause)); } }
-      finally { loading = false; }
+        const current = snapshotRef.current;
+        if (!previous) {
+          snapshotRef.current = result;
+          callbackRef.current?.(result);
+          setSnapshot(result); setLoaded(true); setError("");
+          return;
+        }
+        if (!current || current.group.id !== result.group.id) return;
+        let events = current.events ?? [];
+        const eventsHasMore = current.eventsHasMore;
+        let eventCursor = events.at(-1)?.sequence ?? 0;
+        while (active) {
+          const page = await loadTaskGroupEventsAfter(task.projectId, task.id, current.group.id, eventCursor);
+          events = mergeEvents(events, page.events);
+          eventCursor = page.events.at(-1)?.sequence ?? eventCursor;
+          if (!page.hasMore) break;
+        }
+        const executionCursorBeforeRefresh = latestExecution(current.executions);
+        let executions = mergeExecutions(current.executions, result.executions);
+        const executionsHasMore = current.executionsHasMore;
+        let executionCursor = executionCursorBeforeRefresh;
+        while (active) {
+          const page = executionCursor
+            ? await loadTaskGroupExecutionsAfter(task.projectId, task.id, current.group.id, executionCursor.startedAt, executionCursor.id)
+            : await loadTaskGroupExecutionsAfter(task.projectId, task.id, current.group.id, 0, "");
+          executions = mergeExecutions(executions, page.executions);
+          executionCursor = latestExecution(page.executions) ?? executionCursor;
+          if (!page.hasMore) break;
+        }
+        if (!active || scopeRef.current !== scope) return;
+        const latest = snapshotRef.current;
+        if (!latest || latest.group.id !== result.group.id) return;
+        const merged: GroupSnapshot = {
+          ...result,
+          messages: mergeById(latest.messages, result.messages),
+          events: mergeEvents(latest.events ?? [], events),
+          executions: mergeExecutions(latest.executions, executions),
+          eventsHasMore: latest.eventsHasMore ?? eventsHasMore,
+          executionsHasMore: latest.executionsHasMore ?? executionsHasMore,
+        };
+        snapshotRef.current = merged;
+        callbackRef.current?.(merged);
+        setSnapshot(merged); setLoaded(true); setError("");
+      }).catch(cause => {
+        if (active) setError(describeError(cause));
+      });
+      refreshQueueRef.current = operation;
+      await operation;
     };
     refreshRef.current = refresh;
     void refresh();
     const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, 5000);
     return () => { active = false; sourceReadVersionRef.current += 1; window.clearInterval(timer); };
   }, [scope]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: updatedAt deliberately triggers the current scope-bound refresh without rebuilding its subscription.
-  useEffect(() => { void refreshRef.current(); }, [task.updatedAt]);
+  useEffect(() => {
+    if (lastUpdatedAtRef.current === task.updatedAt) return;
+    lastUpdatedAtRef.current = task.updatedAt;
+    void refreshRef.current();
+  }, [task.updatedAt]);
   const act = async (operation: () => Promise<unknown>, done?: () => void) => {
     const original = scope;
     setBusy(true); setError("");
@@ -96,7 +165,72 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
   const update = (index: number, patch: Partial<MemberDraft>) => setMembers(current => current.map((member, i) => i === index ? { ...member, ...patch } : member));
   const group = snapshot?.group;
   const memberName = (id: string) => snapshot?.members.find(member => member.id === id)?.name ?? id;
-  const eventById = (id: string | undefined): GroupEvent | undefined => id ? snapshot?.events?.find(event => event.id === id) : undefined;
+  const eventById = (id: string | undefined): GroupEvent | undefined => id ? snapshot?.events?.find(event => event.id === id) ?? (resolvedEvents[id] || undefined) : undefined;
+  const loadOlderEvents = async () => {
+    const current = snapshotRef.current;
+    const first = current?.events?.[0];
+    if (!current || !first || !current.eventsHasMore || historyLoading) return;
+    const requestScope = scope;
+    setHistoryLoading("events");
+    try {
+      const page: GroupEventPage = await loadTaskGroupEventsPage(task.projectId, task.id, current.group.id, first.sequence);
+      if (scopeRef.current !== requestScope) return;
+      setSnapshot(latest => {
+        if (!latest) return latest;
+        const merged = {
+          ...latest,
+          events: mergeEvents(latest.events ?? [], page.events),
+          eventsHasMore: page.hasMore,
+        };
+        snapshotRef.current = merged;
+        callbackRef.current?.(merged);
+        return merged;
+      });
+    } catch (cause) {
+      if (scopeRef.current === requestScope) setError(describeError(cause));
+    } finally {
+      if (scopeRef.current === requestScope) setHistoryLoading("");
+    }
+  };
+  const loadOlderExecutions = async () => {
+    const current = snapshotRef.current;
+    const last = current?.executions.at(-1);
+    if (!current || !last || !current.executionsHasMore || historyLoading) return;
+    const requestScope = scope;
+    setHistoryLoading("executions");
+    try {
+      const page: GroupExecutionPage = await loadTaskGroupExecutionsPage(task.projectId, task.id, current.group.id, last.startedAt, last.id);
+      if (scopeRef.current !== requestScope) return;
+      setSnapshot(latest => {
+        if (!latest) return latest;
+        const merged = {
+          ...latest,
+          executions: mergeExecutions(latest.executions, page.executions),
+          executionsHasMore: page.hasMore,
+        };
+        snapshotRef.current = merged;
+        callbackRef.current?.(merged);
+        return merged;
+      });
+    } catch (cause) {
+      if (scopeRef.current === requestScope) setError(describeError(cause));
+    } finally {
+      if (scopeRef.current === requestScope) setHistoryLoading("");
+    }
+  };
+  const inspectEvent = async (id: string) => {
+    if (!group || resolvedEvents[id] !== undefined || resolvingEvents.includes(id)) return;
+    const requestScope = scope;
+    setResolvingEvents(current => [...current, id]);
+    try {
+      const event = await loadTaskGroupEvent(task.projectId, task.id, group.id, id);
+      if (scopeRef.current === requestScope) setResolvedEvents(current => ({ ...current, [id]: event }));
+    } catch (cause) {
+      if (scopeRef.current === requestScope) setError(describeError(cause));
+    } finally {
+      if (scopeRef.current === requestScope) setResolvingEvents(current => current.filter(candidate => candidate !== id));
+    }
+  };
   const reasonLabel = (reason: WorkReason) => {
     switch (reason.kind) {
       case "explicit_recipient": return t($ => $.researchTools.tasks.group.reasonExplicitRecipient);
@@ -141,7 +275,8 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
     update({ status: "loading" });
     try {
       if (reason.kind === "read" || reason.kind === "wrote") {
-        const execution = snapshot?.executions.find(candidate => candidate.id === reason.executionId);
+        const execution = snapshot?.executions.find(candidate => candidate.id === reason.executionId)
+          ?? (group && reason.executionId ? await loadTaskGroupExecution(task.projectId, task.id, group.id, reason.executionId) : null);
         if (!execution) {
           update({ status: "unavailable", source: "execution" });
           return;
@@ -181,7 +316,9 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
     if (state.status === "observation") return <div className="space-y-1">
       <p>{t($ => $.researchTools.tasks.group.sourceGeneration, { generation: state.execution.taskGeneration })} · <code>{state.execution.id}</code></p>
       <CodeBlock code={JSON.stringify(state.row, null, 2)} preClassName="max-h-72 whitespace-pre-wrap break-all" />
-      <p className="text-muted-foreground">{t($ => $.researchTools.tasks.group.sourceMetadataOnly)}</p>
+      {state.row.event.kind === "observation" && state.row.event.observation.type === "toolExecution" && state.row.event.observation.source
+        ? <TaskSourceRead key={`${state.execution.id}:${state.row.sequence}`} taskId={task.id} generation={state.execution.taskGeneration} row={state.row} source={state.row.event.observation.source} />
+        : <p className="text-muted-foreground">{t($ => $.researchTools.tasks.group.sourceMetadataOnly)}</p>}
     </div>;
     return <div className="space-y-2">
       {state.annotation ? <div>
@@ -241,6 +378,7 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
           </details> : null;
         })}
       </details>
+      {snapshot.eventsHasMore && <Button size="xs" variant="outline" disabled={historyLoading !== ""} onClick={() => void loadOlderEvents()}>{t($ => $.researchTools.tasks.group.loadEarlierEvents)}</Button>}
       <ol className="space-y-2">{snapshot.messages.map(message => <li id={`group-message-${message.id}`} key={message.id} className="rounded border p-2 text-sm"><p>{message.author.kind === "member" ? memberName(message.author.id) : message.author.kind}{message.replyTo && ` ↩ ${message.replyTo}`}{message.recipients.map(memberName).map(name => ` @${name}`).join("")}</p><p className="whitespace-pre-wrap">{message.body}</p><Button size="xs" variant="ghost" onClick={() => setReplyTo(message.id)}>{t($ => $.researchTools.tasks.group.reply)}</Button>{onAnnotate ? <Button size="xs" variant="ghost" onClick={() => onAnnotate(message)}>{t($ => $.researchTools.tasks.annotations.annotate)}</Button> : null}</li>)}</ol>
       <fieldset className="space-y-2" disabled={busy}>
         {replyTo && <p>{t($ => $.researchTools.tasks.group.reply)}: {replyTo} <Button size="xs" variant="ghost" onClick={() => setReplyTo(null)}>{t($ => $.researchTools.tasks.group.remove)}</Button></p>}
@@ -259,7 +397,7 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
           {causeEvent ? <div className="rounded bg-muted/40 p-2">
             <p><strong>{t($ => $.researchTools.tasks.group.eventChange)}</strong>: {humanizeKind(causeEvent.kind)} · {objectLabel(causeEvent.object)}</p>
             <p className="whitespace-pre-wrap"><strong>{t($ => $.researchTools.tasks.group.eventDetail)}</strong>: {causeEvent.detail}</p>
-          </div> : work.causeKind === "event" ? <p>{t($ => $.researchTools.tasks.group.eventUnavailable, { id: work.causeId })}</p> : <p>{work.causeKind}: {work.causeId}</p>}
+          </div> : work.causeKind === "event" ? <p>{t($ => $.researchTools.tasks.group.eventUnavailable, { id: work.causeId })} <Button size="xs" variant="ghost" disabled={resolvingEvents.includes(work.causeId)} onClick={() => void inspectEvent(work.causeId)}>{t($ => $.researchTools.tasks.group.sourceInspect)}</Button></p> : <p>{work.causeKind}: {work.causeId}</p>}
           <div>
             <p className="font-medium">{t($ => $.researchTools.tasks.group.wakeReasons)}</p>
             {reasons.length > 0 ? <ul className="list-disc space-y-1 pl-4">{reasons.map(reason => <li key={reasonKey(reason)}>
@@ -289,6 +427,7 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
           {work.resultMessageId && <a className="underline" href={`#group-message-${work.resultMessageId}`}>{snapshot.messages.find(message => message.id === work.resultMessageId)?.body ?? work.resultMessageId}</a>}
         </div>;
       })}
+      {snapshot.executionsHasMore && <Button size="xs" variant="outline" disabled={historyLoading !== ""} onClick={() => void loadOlderExecutions()}>{t($ => $.researchTools.tasks.group.loadEarlierExecutions)}</Button>}
       {snapshot.executions.map(execution => <p key={execution.id} className="text-xs">{execution.id} · {memberName(execution.memberId)} · {execution.runtimeId}/{execution.agentId}/{execution.modelId} · {execution.status} · {execution.inputTokens ?? "?"}/{execution.outputTokens ?? "?"}</p>)}
     </div>}
   </section>;

@@ -39,24 +39,38 @@ Requirements vary by skill and are stated in each skill's `compatibility` line. 
 
 If a script needs a missing module, use an available equivalent method or obtain any permission needed to install it. Preserve the requested operation and explain an unavailable capability when it affects delivery.
 
-## Subagents
+## Delegation
 
-`spawn_agent` returns `{id, taskPath, status}` immediately. Up to eight run at once by default, and a subagent cannot spawn further agents.
+Use the current host's schema. Ordinary chat offers asynchronous `spawn_agent`,
+`wait_agent` and `close_agent`. A ResearchTask's `spawn_agent` instead accepts a bounded
+`brief`, optional `paths` and `max_minutes`, runs a reading helper and returns its result
+in that call. It permits at most three concurrent helpers. Helpers can read project files,
+read paper windows, verify citation identities and read known task PDF references. They
+write only inside the task record and cannot run commands or spawn further helpers.
 
-Subagents share your project tools and your approval gates, so a subagent that writes files will raise approval cards the user has to answer while you are waiting. Give read heavy work to subagents and keep writing in the main run.
-
-`wait_agent` with `{"timeout_ms": 300000}` returns whichever agent finishes first, with a bounded view of its answer. Prefer one long wait over repeated short polls. `close_agent` with `{"agent": "<id>"}` frees the slot: finished agents hold their slot until closed.
-
-An agent's prompt must be self contained. It does not see your conversation.
+Persistent task-group members use the group's messaging and work tools. Their independent
+executions, waiting and shared budget are owned by the runtime. Do not call ordinary-chat
+agent wait/close tools when they are absent from the task's catalogue.
 
 ## Compile
 
-`compile` takes `{}`. It persists the active editor file, builds, and returns `{success, errors, has_pdf, log_tail}`. `log_tail` is the last 4000 characters. `get_log` with `{}` returns the last 20000 characters when you need more context around an error.
+Use the actual compile result schema. Ordinary chat persists the active editor file and
+builds the project. A ResearchTask builds its isolated workspace and returns `ok`,
+diagnostics and, for a fresh successful output, a complete retained `artifact`. A compile
+status alone is not a claim check or visual verification.
 
 Compile changes that affect the document build, using the diagnostics to identify and repair failures.
 
-`get_pdf_text` with `{}` returns the last PDF page by page, capped at 20000 characters. Use it to confirm that what you wrote actually rendered, particularly for citations, which fail silently into a question mark rather than an error.
+In a ResearchTask, pass the complete compile `artifact` as `reference` to `task_pdf_text`.
+It returns bounded `text`, `nextOffset` and an exact source locator. Continue with
+`offset: nextOffset` until the affected passages have been read. `task_pdf_pages` renders
+selected pages when offered. Captured generation 0 inputs and newly compiled PDFs are
+separate artifacts. In ordinary chat, use `get_pdf_text` and the offered preview tools.
+Inspect actual passages and citations rather than assuming a successful build is correct.
 
 ## Notes and todos
 
-`update_todos` replaces the whole checklist on every call, so always send the complete list. `remember_note` content is injected into every later turn, so keep it short and durable. `list_notes` gives ids, `forget_note` removes by id.
+`update_todos` replaces the whole checklist, so send it in full. In a ResearchTask,
+`remember_note` accepts `text` and appends a dated note to the existing task record.
+Ordinary chat has its own note schema and may expose `forget_note`. Use offered tools
+rather than assuming notes have IDs or are injected into every request.

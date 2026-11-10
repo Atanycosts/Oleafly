@@ -42,7 +42,7 @@ it("shows retained member executions and each request's actual tools and context
           type: "toolExecution", callId: "member-session-7:helper-1:read-source", name: "read_file", status: "done",
           inputSha256: "source-input-hash", outputSha256: "source-output-hash", skillId: null, actor: "member-session-7:helper-1",
           skillInstructionsSha256: null,
-          source: { path: "main.tex", fileSha256: "source-hash", offset: 0, endOffset: 10, truncated: false, snapshotRetained: true },
+          source: { path: "papers/source.txt", fileSha256: "source-hash", offset: 0, endOffset: 10, truncated: false, snapshotRetained: true, pdf: { path: "papers/source.pdf", sha256: "pdf-source-hash", pageCount: 12, pageStart: 2, pageEnd: 3 } },
         }),
       ], nextSequence: 6, throughSequence: 6, hasMore: false,
     },
@@ -71,6 +71,8 @@ it("shows retained member executions and each request's actual tools and context
   fireEvent.click(screen.getByText("Observation records and source locators"));
   expect(screen.getByText((_, element) => element?.textContent === "Execution: member-session-7:helper-1")).toBeInTheDocument();
   expect(screen.getByText("The exact file version from this read is retained.")).toBeInTheDocument();
+  expect(screen.getByTestId("pdf-read-source")).toHaveTextContent("papers/source.pdf · Page 2 – 3");
+  expect(screen.getByText("PDF SHA-256 pdf-source-hash")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Read recorded source range" })).toBeInTheDocument();
   expect(native.observations).toHaveBeenCalledWith("task-a", 2, 0);
 });

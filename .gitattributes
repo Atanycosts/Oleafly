@@ -18,6 +18,9 @@
 # Vitest's module runner cannot load a CRLF hashbang in this imported script.
 scripts/update-tagging-status.mjs text eol=lf
 
+# Applied by the skill importer on every host. Blank context lines keep a space.
+scripts/skills/patches/*.patch text eol=lf whitespace=-blank-at-eol
+
 
 src-tauri/resources/templates/**/*.tex text eol=lf
 src-tauri/resources/templates/**/*.typ text eol=lf

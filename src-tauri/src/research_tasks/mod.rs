@@ -421,6 +421,7 @@ mod observation_call_tests {
                             end_offset: 9,
                             truncated: false,
                             snapshot_retained: Some(true),
+                            pdf: None,
                         }),
                     },
                 },

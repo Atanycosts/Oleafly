@@ -319,6 +319,7 @@ mod tests {
                     end_offset: bytes.len(),
                     truncated: false,
                     snapshot_retained: Some(true),
+                    pdf: None,
                 }),
             },
         };

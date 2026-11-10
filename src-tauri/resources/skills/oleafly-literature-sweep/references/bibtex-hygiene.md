@@ -43,16 +43,16 @@ When a preprint has since been published, cite the published version. Note the p
 
 ## Appending safely
 
-`write_file` replaces the whole file. On a bibliography that already has entries, that is data loss the user has to notice before they can complain about it.
+`write_file` replaces the whole file. For an existing bibliography, first read all current entries and retain them in the amended content.
 
 The safe sequence:
 
-1. `read_file` on the bibliography. For a long file, read the tail with `offset` set near `total_lines`.
+1. Read the current bibliography. In a ResearchTask, start at byte offset 0 and continue with `nextOffset` until null. Ordinary chat may expose line offsets.
 2. Pick an anchor string from what you just read. The last entry's key line is a good anchor, for example `@inproceedings{he2016-deep-residual,`. A bare `}` is not: it appears in every entry.
-3. `replace_in_file` with `{"path": "...", "find": "<the whole last entry>", "replace": "<the whole last entry>\n\n<new entries>"}`.
+3. When offered, `replace_in_file` can append against that unique current anchor. In a ResearchTask, use `write_file` with the full amended bibliography after reading its complete current content.
 4. `compile` with `{}` to confirm the file still parses.
 
-`replace_in_file` fails cleanly when `find` is absent, which is what you want. It does not fail when `find` matches in more than one place, so make the anchor long enough to be unique.
+In ordinary chat, `replace_in_file` fails when `find` is absent, which is what you want. It does not fail when `find` matches in more than one place, so make the anchor long enough to be unique.
 
 If the file does not exist, `write_file` is the right tool, once.
 
@@ -62,7 +62,7 @@ If the file does not exist, `write_file` is the right tool, once.
 
 Then `project_map` with `{}` and read `unresolvedCites`. An empty list means every `\cite` in the document resolves. A key still listed there means either the entry did not land or the key in the prose is spelled differently from the key in the file.
 
-`get_pdf_text` with `{}` catches the remaining failure mode: an entry that parses but renders as a question mark in the text because the bibliography style dropped it.
+Inspect the actual PDF for missing citation markers. In a ResearchTask, use `task_pdf_text` with the complete compile `artifact` as `reference` and continue with `nextOffset`. In ordinary chat, use `get_pdf_text` when offered. An entry can parse and still render as a question mark.
 
 ## Handing off
 

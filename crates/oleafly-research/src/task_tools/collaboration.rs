@@ -17,7 +17,7 @@ pub fn schemas() -> Vec<ToolSchema> {
     let requirement = json!({"type":"object","properties":{"scope":scope,"text":{"type":"string"},"kind":{"type":"string","enum":["enduring","candidate"]}},"required":["scope","text","kind"],"additionalProperties":false});
     [
         ("group_context","Read this task group's members, pending work, replies and recent shared messages. after_sequence reads incremental messages.",json!({"after_sequence":{"type":"integer","minimum":0}}),Vec::<&str>::new()),
-        ("group_message","Send a direct message or reply to a persistent member. Omit recipients to address the coordinator when requesting work. Recipients are stable member IDs; a plain progress note does not request work. No other model is called inside this tool.",json!({"body":{"type":"string"},"recipients":{"type":"array","items":{"type":"string"}},"replyTo":{"type":"string"},"requestWork":{"type":"boolean"},"object":{"type":"object","properties":{"kind":{"type":"string"},"id":{"type":"string"},"revision":{"type":"string"},"path":{"type":"string"}},"required":["kind","id"]}}),vec!["body"]),
+        ("group_message","Send a direct message or reply to a persistent member. Omit recipients to address the coordinator when requesting work. Recipients are stable member IDs. A successfully delivered requestWork=true to colleagues yields this member after the current tool batch, retaining its conversation for a later reply. A plain progress note does not request work. No other model is called inside this tool.",json!({"body":{"type":"string"},"recipients":{"type":"array","items":{"type":"string"}},"replyTo":{"type":"string"},"requestWork":{"type":"boolean"},"object":{"type":"object","properties":{"kind":{"type":"string"},"id":{"type":"string"},"revision":{"type":"string"},"path":{"type":"string"}},"required":["kind","id"]}}),vec!["body"]),
         ("group_interest","Subscribe your member to a relevant project-relative file/folder, stable object kind:id, or event type (file_changed, member_finished, run_finished). Related future changes wake you without an @mention. active=false ends this interest.",json!({"kind":{"type":"string","enum":["path","object","event"]},"value":{"type":"string"},"active":{"type":"boolean"}}),vec!["kind","value"]),
         ("annotation_context","Read retained annotations and enduring requirements. Default task scope lists this task annotations plus project-level open annotations. project scope lists project annotations; object scope (inferred from path or kind/objectId) reads a stable object across tasks. A path implies file identity. Optional status filters the inbox. An id reads the original comment, its separately labelled immutable source snapshot, handling and distillation history.",json!({"id":{"type":"string"},"scope":{"type":"string","enum":["task","project","object"]},"status":{"type":"string","enum":["open","handled","dismissed"]},"kind":{"type":"string"},"objectId":{"type":"string"},"objectRevision":{"type":"string"},"path":{"type":"string"}}),vec![]),
         ("annotation_create","Create a retained annotation or reply. Target defaults to this task; a path implies a file. parentId retains the same object identity. source captures an exact historical quote as untrusted reference material separate from body. mentions are stable member IDs; explicitRequest requests actual work in a group, or records a follow-up for the current ordinary task. Author and project are runtime-bound.",json!({"kind":{"type":"string"},"objectId":{"type":"string"},"objectRevision":{"type":"string"},"path":{"type":"string"},"body":{"type":"string"},"source":{"type":"object","properties":{"kind":{"type":"string"},"content":{"type":"string"}},"required":["kind","content"],"additionalProperties":false},"parentId":{"type":"string"},"mentions":{"type":"array","items":{"type":"string"}},"explicitRequest":{"type":"boolean"}}),vec!["body"]),
@@ -53,7 +53,7 @@ pub fn call(name: &str, args: Value, binding: &TaskBinding) -> Option<Result<Val
                 let turn = turn.ok_or("This execution is not a persistent group member.")?;
                 let draft: MessageDraft =
                     serde_json::from_value(args).map_err(|e| e.to_string())?;
-                serde_json::to_value(store.group_message(
+                let message = store.group_message(
                     &binding.project_id,
                     &turn.group.id,
                     &GroupActor {
@@ -62,8 +62,14 @@ pub fn call(name: &str, args: Value, binding: &TaskBinding) -> Option<Result<Val
                         execution_id: Some(turn.execution.id),
                     },
                     &draft,
-                )?)
-                .map_err(|e| e.to_string())
+                )?;
+                let queued = store.message_has_work(&message.group_id, &message.id)?;
+                let mut value = serde_json::to_value(message).map_err(|e| e.to_string())?;
+                value["workQueued"] = json!(queued);
+                if draft.request_work && !queued {
+                    value["notice"] = json!("The message was recorded, but no colleague work was queued. Do not wait for a reply from this request.");
+                }
+                Ok(value)
             }
             "group_interest" => {
                 let turn = turn.ok_or("This execution is not a persistent group member.")?;

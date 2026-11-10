@@ -2,13 +2,17 @@
 
 ## Scope
 
-This repository follows the repository-root `方案文档.md`, requirement baseline version 1.3.
+The root [engineering rules](../../AGENTS.md) apply throughout this module.
+This module follows the module-local `方案文档.md`, requirement baseline version 1.3.
 That frozen document describes requirements, not the current implementation state.
-Read `docs/s1-progress.md` for current status and `docs/engineering/development-guide.md`
-for the change workflow. Module responsibilities are in `docs/engineering/layout-and-naming.md`.
-`docs/fused-research-agent-architecture.md` is the Oleafly integration design entry;
-runtime contracts and verified status take precedence over its planned capabilities.
-Do not treat planned capabilities as implemented.
+Read `docs/s1-progress.md` for Workbench-domain status and
+`docs/engineering/development-guide.md` for the change workflow. Current cross-system
+entries are `../../docs/research-workbench-integration.md`,
+`../../docs/agent/status.md` and `../../docs/agent/architecture.md`; `s1-progress.md`
+is a Workbench-domain slice, not the system-wide Agent status. Module responsibilities are
+in `docs/engineering/layout-and-naming.md`. `docs/fused-research-agent-architecture.md` is
+a frozen 2026-11-05 historical design input; runtime contracts and current verified status
+take precedence over it. Do not treat planned capabilities as implemented.
 
 ## Directory responsibilities
 
@@ -16,21 +20,19 @@ Do not treat planned capabilities as implemented.
 - Put reusable product code in `src/research_file_workbench/`.
 - Put independent verification in `tests/`.
 - Put bounded operator scripts in `tools/`; reusable product logic still belongs in `src/`.
-- Oleafly at the repository root owns the native window and service lifecycle. The earlier
-  standalone desktop shell is archived; do not create a second application shell.
+- Oleafly at the repository root owns the native window, Agent runtime and task groups, and
+  service lifecycle. The earlier standalone desktop shell is frozen history; do not create a
+  second application shell or a second Agent runtime.
 - Portable Phase 0 tests use controlled inputs in `tests/fixtures/phase0/`. The ignored historical
   author catalog and real manuscript evidence remain private acceptance inputs; never generate
   replacements over them or call a placeholder-backed test real rendering acceptance.
 - Put human guidance in `docs/`.
 - Put generated evidence in `reports/`.
 - Put disposable data only in `var/`.
-- Update existing guidance and `docs/s1-progress.md` in place. Routine iterations do not
-  need separate progress reports, handoffs, manifests or copies of source files.
-- Keep routine command logs in `var/` and remove them after recording the result. Retain
-  evidence in `reports/` when it supports acceptance, a significant experiment or a diagnosis
-  that later work needs. Preserve frozen evidence and domain records.
-- Use Git for source history. Remove temporary backups and downloaded build archives after
-  verifying the result; retain the working application, dependencies and selected libraries.
+- Workbench-domain status belongs in `docs/s1-progress.md`; cross-system Agent status is
+  `../../docs/agent/status.md`. Follow the root rules for routine outputs and retention.
+- Routine logs use `var/`. Evidence selected for retention uses `reports/`; private author
+  evidence remains ignored. Preserve frozen evidence and domain records.
 - Never write generated files beside manuscripts or other author inputs.
 
 ## Naming
