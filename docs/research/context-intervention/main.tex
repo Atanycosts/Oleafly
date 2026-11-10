@@ -1,0 +1,108 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=25mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{booktabs,tabularx}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!45!black,urlcolor=blue!45!black,citecolor=blue!45!black]{hyperref}
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+\title{When should collaboration evidence enter an agent's context?\\\large A local Oleafly engineering study}
+\author{AI-assisted research draft; human authorship and approval pending}
+\date{10 November 2026}
+\begin{document}
+\maketitle
+\begin{center}\small\textbf{Local draft.} Descriptive investigation, one native acceptance case, and an aborted paired experiment. No population-level quality or cost claim.\end{center}
+\begin{abstract}
+Oleafly supports persistent research-task members, historical annotations, and source-backed work records. We investigated whether reducing resident context could improve sustained research. A real three-member task generated useful source and method critiques but stopped at its budget without producing the requested manuscript or closing the historical annotation. It exposed a narrower, demonstrable defect: some model-facing events carried the same structured value in both a JSON-encoded \texttt{detail} string and \texttt{evidence}. We implemented conditional deduplication only in model views, retaining full evidence and exact original-event retrieval. A new real-model native case read both forms, corrected a validation/test confusion, retained an unfavorable comparison, and recorded handling. Its annotation event decreased from 2,419 to 1,349 UTF-8 bytes. A planned 16-task comparison aborted after the allowed infrastructure replacements. Separately, two paired replays of one fixed request each reported 345 fewer input tokens with deduplication; there is no task-level quality or total-session token-effect estimate. The selected change removes a proven duplication without adopting untested evidence truncation.
+\end{abstract}
+
+\section{Question and related evidence}
+The product question is not simply how to reduce tokens. A user may revisit an old decision with a counterexample that must affect current work. A colleague's early question can prevent an invalid experiment, whereas delayed review can require reruns. The immediate question was therefore: which context is repeated without adding information, and which proposed reduction would remove evidence needed for a decision?
+
+Liu et al. observed position-dependent retrieval and question-answering performance in the models and tasks they tested \cite{liu2024-middle}. We read the abstract, Figure 1 and opening sections of arXiv v3; this does not establish the same failure rate in the present Sol or Trae executors. MemGPT describes memory tiers and control flow involving external events and yield \cite{packer2024-memgpt}; it supplies prior art for separating durable storage from active context, not a validation of this implementation. Scientific Agent Skills describes progressive disclosure and explicitly reports no task-level evaluation or host selection rate \cite{kassis2026-skills}. Its resident-context measurements are documentation-corpus findings, not evidence of research-quality gain. The experimental-design, lookup and writing procedures from that library informed this local study.
+
+\section{System and investigation}
+All product work used an isolated Oleafly debug application and library. The formal installed application and Windows models were outside scope. Existing TaskStore, members, work queue, provider adapter, file isolation and application tools were reused. No additional scheduler, database, framework or dependency was introduced.
+
+\subsection{Real three-member research task}
+A Sol/high coordinator and two Trae DeepSeek/high members (Explorer and Evidence) received owning-source snapshots, three full papers and a placeholder \texttt{main.tex}. They were asked to compare alternatives, execute a small discriminating experiment, compile and inspect a short manuscript, and preserve negative results. Their shared active-time allowance was 18 minutes; a measurement relay admitted requests until 3,500,000 reported tokens had accumulated. This was an admission threshold, not a hard cap on in-flight usage. Existing budget wrap-up could continue beyond the active allowance.
+
+During execution we added an explicit annotation on the initial decision: fewer interruptions are not automatically better if an incorrect validation/test assumption has already entered an experiment script. The coordinator read the annotation and assigned follow-up analysis. This establishes uptake and delegation, not completed handling.
+
+Explorer produced a 60-cell simulation: four projection policies, five fixtures and three fetch budgets. Actual serialization measured bytes; marker presence and fixed policy constants represented visibility, review timing and reruns. These are simulated outcomes, not observations of model detection or rework. Evidence found that an initial evidence window began at offset zero rather than the product's common-prefix-derived offset; correcting that assumption changed the byte ratios. Consequently, we do not use the original ratio as a product benefit estimate.
+
+Evidence also traced a less invasive alternative. Annotation events encode the annotation context as \texttt{detail} and parse that same JSON into \texttt{evidence}. Default \texttt{group\_context} then exposed both. Annotation work is routed through its annotation cause; we do not assume these events also appear in every automatically refreshed member context.
+
+\subsection{Chosen intervention and alternatives}
+We considered retaining full repeated events, previewing evidence with bounded text plus a lookup handle, and deduplicating equal structured fields. Previewing could hide a distant counterexample and introduces a retrieval obligation. The present data do not establish that tradeoff as beneficial, so previewing was not selected.
+
+The selected rule is exact at the JSON-value level: if parsing \texttt{detail} succeeds and equals \texttt{evidence}, the default model view omits \texttt{detail} and adds \texttt{detailRepeatedInEvidence=true}. Otherwise both fields remain. File evidence, baseline excerpts and colleague results are not shortened. Durable serialization and existing UI event reads retain the original string, including formatting. The new \texttt{group\_context(eventId)} path returns that original record after task/group ownership checks. Equality of the values does not imply equality of their original spelling; exact retrieval preserves that distinction.
+
+The rule is shared by default event listings and events actually present in a member's refreshed context. It does not deduplicate messages, work summaries, annotations against events, or the entire conversation history. Exact reads can deliberately add the duplicate back to a model's history.
+
+\subsection{Registered comparison and stop}
+Before inference we registered four cases (split identification, asymptotic scope, negative comparison, citation support), two fresh repetitions per case, and two randomized transport arms: 16 intended tasks. The duplicate arm would restore the removed field at a measurement relay, using the same application binary and tools. The registration allowed at most two infrastructure replacements and prohibited quality-based retries.
+
+Initialization failed three times: an invalid three-minute task budget; an invalid zero run limit; and a redundant explicit start after opening the group had already triggered scheduling. The third task subsequently failed after temporary-provider cleanup. No complete paired outcomes or persisted forwarded-request series were obtained. We stopped at the replacement limit. This is an aborted comparison, not a null effect, and none of these attempts is counted as an evaluated task pair.
+
+\subsection{Separate native acceptance}
+We separately registered one native acceptance task using Trae at low effort. The task contained a protocol saying that \texttt{heldout} was validation used for window selection, and a CSV with accuracies 0.92 at window 64 and 0.91 at window 128. A current annotation on an old decision required retaining the unfavorable comparison and correcting the split; its separately stored historical quote asserted the opposite.
+
+The member was asked to inspect the default event list, retrieve the exact event, read original files, record annotation handling, and settle its work. It did not use scripted judgments. The relay forwarded requests and recorded bytes, hashes, reported usage and timing. We checked retained application records and actual tool results, rather than inferring delivery from a configured tool list. This acceptance tests integration and a bounded source-checking capability; it does not estimate a treatment effect.
+
+\subsection{Separate fixed-request replay}
+After acceptance we registered a distinct request-level probe: two fresh repetitions of two randomized transport arms, four API calls total, without executing returned tools. We fixed the acceptance's second actual request, which already contained the default event-list and file-list tool results. The duplicate arm changed only the target event inside the former result, replacing the marker with its exact retained \texttt{detail}; reversing that transformation deep-equaled the original request. Model, effort, system messages, tool schemas, other messages, call IDs, sampling parameters and streaming flags were held fixed. Each call had a 60-second timeout, no retries and no replacement for missing usage. The primary observation was provider-reported input-token difference in this fixed context. This probe does not replace the aborted 16-task comparison or measure task quality, whole-session saving, billing or latency benefit.
+
+\section{Observed results}
+\begin{table}[ht]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}lrrX@{}}
+\toprule
+Run & Requests & Reported input/output tokens & Outcome\\
+\midrule
+Three-member study & 77 & 3,415,388 / 85,743 & Budget stop; manuscript and annotation handling unfinished.\\
+Single-path acceptance & 7 & 100,876 / 3,770 & One handling; current work completed; normal awaiting review.\\
+Paired comparison & --- & Unknown / not estimable & Initialization aborted; no paired outcomes.\\
+\bottomrule
+\end{tabularx}
+\caption{Different tasks, models and allowances. Rows are not an efficiency comparison. Requests are repeated observations within a task.}
+\end{table}
+
+The three-member run consumed 20.52 active minutes including wrap-up and stopped with \texttt{budget\_time}. Five member executions left three pending work items, four waiting items and one checkpointed item; seven event-related items were completed. No annotation handling or compiled task PDF existed, and the manuscript remained the initial placeholder. The product's \texttt{awaiting\_review} state therefore did not mean the research deliverable was complete. The final Evidence execution was interrupted with unknown execution-level usage; the table uses relay request records rather than summing cumulative execution snapshots.
+
+The acceptance took 45.52 active seconds and 55.72 wall seconds, with no budget stop. The member actually called default \texttt{group\_context}, exact \texttt{group\_context(eventId)}, original-file reads and \texttt{annotation\_context}. It identified validation rather than test, retained both accuracies and their negative direction, and did not claim a new experiment or significance test. One handling and the work resolution were retained; the original project files were unchanged.
+
+Acceptance was not perfect factual certification. The response called the selected value ``selection-contaminated'' without an observed clean estimate from which to quantify selection bias. Its distillation rationale described project scope while the persisted requirement was task-scoped. It also said no files were edited, although the runtime created task brief and handoff records; the input files were unchanged. These residual interpretation and scope-description issues were retained, not rewritten as successful model output. The twelve observed tool calls, including final work settlement, contained no reported errors. Reading the scaffold and brief added steps beyond the minimal source check; successful transport does not establish minimal execution cost.
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Annotation event & Original bytes & Model-view bytes & Saved bytes\\
+\midrule
+Retained research counterexample & 3,068 & 1,680 & 1,388\\
+New native acceptance event & 2,419 & 1,349 & 1,070\\
+\bottomrule
+\end{tabular}
+\caption{Compact UTF-8 JSON serialization of individual events. The acceptance model view was measured from the actual tool result. The historical projection was replayed with the same value-equality rule. These are not whole-request token savings.}
+\end{table}
+
+The acceptance event lost 44.23\% of its serialized bytes while retaining equal full \texttt{evidence}; its exact event read equaled the retained original. The historical event lost 45.24\%. Whitespace, timestamps and JSON escaping affect absolute sizes; earlier preliminary values used a different serialized snapshot. The figures above all use the retained records and the same compact serialization convention.
+
+All four fixed-request replays completed with status 200, ended streams, parseable usage and no returned tools executed. Both repetitions reported 13,136 input tokens for the duplicate arm and 12,791 for the deduplicated arm: 345 fewer input tokens, or 2.63\% of the duplicate request. Output tokens varied (duplicate: 145 and 141; deduplicated: 144 and 182). All four generated exact event and annotation reads; one deduplicated response additionally requested the protocol and CSV. Their execution and subsequent history costs were not measured. The randomized schedule happened to place duplicate first in both pairs, so order cannot be separated from generation differences. Cache treatment remained unknown. These are two repetitions of one fixed request, not four independent research cases or a task-level effect estimate.
+
+\section{Validation, limitations and next decision}
+Targeted validation passed: 48 collaboration/store tests, 14 dynamic-context tests, and the strengthened exact-readback regression rerun after its assertion was clarified. Tests cover semantically equal JSON with Unicode/formatting differences, distinct or non-JSON detail, full file/run/checkpoint evidence, exact original retrieval and rejection of a foreign group's event. ResearchTask all-target Clippy and the isolated native debug build passed. The build retained the existing large unwind-table linker warning; no release-performance conclusion follows. Final native restart and PDF checks are recorded with the delivered source status.
+
+This is a local engineering investigation with one completed native source-checking case and a fixed-request token probe. It does not show lower omission rates, less rework, better general research, lower billed cost or total session-token reduction. Usage is provider-reported; cache treatment and actual cost are unknown. The paired task experiment did not produce data, and the simulation's quality variables were policy assumptions. The positive case requested exact retrieval explicitly and is not evidence that members autonomously choose that path when needed. The final manuscript was completed by the external controller after the autonomous task stopped; it was not produced by the three-member group.
+
+The supported implementation decision is narrow: adopt conditional model-view deduplication and retain full evidence with exact lookup. Keep broader truncation or reference-first policies as unvalidated alternatives. The next research priority is completion under bounded work: trace why useful independent critiques did not become settled work and a compiled manuscript, then evaluate a specific scheduling or task-decomposition intervention using a functioning, preregistered paired harness. Repeated infrastructure failure must remain visible rather than being converted into an inference-quality result.
+
+\section*{Evidence and reproducibility}
+The companion \texttt{measure-context.mjs} replays the conditional view on exported event arrays and prints byte measurements. Only its built-in synthetic fixture, the Rust regressions and this manuscript source are reproducible from a clean checkout. Table 1's native outcomes, usage and timing, and Table 2's retained-event byte values require local records; they cannot be independently reproduced from the published source alone. Those records remain in the ignored directory \texttt{.private/context-intervention-study/}, not a public benchmark. The maintained Agent status page names the exact local records and task identities. The three papers were resolved via arXiv metadata, with the published Liu et al. identity also resolved through Crossref on 10 November 2026. Source text was checked by the controller; accountable human verification, author approval, venue selection and submission declarations remain pending. This draft is not submission-ready.
+
+\bibliographystyle{plain}
+\bibliography{references}
+\end{document}
