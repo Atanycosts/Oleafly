@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use tempfile::TempDir;
 
 use super::*;
+use crate::annotations::AnnotationTarget;
 use crate::collaboration::{
     ActorKind, GroupActor, GroupEvent, GroupObject, GroupStatus, MemberCheckpointRequest,
     MemberDraft, MemberTurn, MessageDraft, WorkStatus,
@@ -198,6 +199,15 @@ fn evidence_contains(event: &GroupEvent, value: &str) -> bool {
         .as_ref()
         .is_some_and(|evidence| evidence.to_string().contains(value))
         || event.detail.contains(value)
+}
+
+fn checkpoint_evidence(snapshot: &GroupSnapshot) -> Checkpoint {
+    let event = snapshot
+        .events
+        .iter()
+        .find(|event| event.kind == "member_checkpointed")
+        .unwrap();
+    serde_json::from_value(event.evidence.clone().unwrap()).unwrap()
 }
 
 #[test]
@@ -444,6 +454,106 @@ fn matched_colleague_runs_first_and_owner_resumes_with_result_references() {
 }
 
 #[test]
+fn checkpoint_handoff_prefers_resolution_and_preserves_result_refs_without_a_result_message() {
+    let fixture = Fixture::new();
+    let owner = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Complete the owner task", &[&owner]),
+    );
+    let owner_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let changed = fixture.file_event("main.tex", "h1");
+    let checkpoint = fixture
+        .store
+        .member_checkpoint_request(&owner_turn)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .checkpoint_member_turn(
+            &owner_turn,
+            &checkpoint_outcome("Checkpoint for methods review", checkpoint),
+        )
+        .unwrap();
+
+    let batch = fixture
+        .store
+        .responsibility_batch(&fixture.task)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .commit_responsibility_assessment(&fixture.task, &batch, &assessment(&batch, &methods))
+        .unwrap();
+    let methods_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_turn.member.id, methods);
+    let methods_work = methods_turn
+        .work
+        .iter()
+        .find(|work| work.cause_id == changed.id)
+        .unwrap()
+        .clone();
+    let summary = "Methods confirmed the changed comparison.";
+    let reference = AnnotationTarget::new("paper", "file", "main.tex")
+        .task(&fixture.task.id)
+        .revision("h1");
+    fixture
+        .store
+        .settle_member_work(
+            &methods_turn,
+            &crate::collaboration::WorkSettlementDraft {
+                work_ids: vec![methods_work.id.clone()],
+                status: WorkStatus::Completed,
+                summary: summary.into(),
+                wait_for: Vec::new(),
+                result_refs: vec![reference.clone()],
+            },
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(
+            &methods_turn,
+            &outcome("Methods completed the event work"),
+            None,
+        )
+        .unwrap();
+
+    let after_methods = fixture.snapshot();
+    let settled = work(&after_methods, &methods_work.id);
+    assert_eq!(settled.status, WorkStatus::Completed);
+    assert!(settled.result_message_id.is_none());
+    assert_eq!(settled.resolution.as_ref().unwrap().summary, summary);
+    assert_eq!(
+        settled.resolution.as_ref().unwrap().result_refs,
+        vec![reference.clone()]
+    );
+
+    let owner_resumed = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner_resumed.member.id, owner);
+    let resumed = event(&owner_resumed, "member_checkpoint_resumed");
+    let handoff = &resumed.evidence.as_ref().unwrap()["handoff"][0];
+    assert_eq!(handoff["summary"], summary);
+    assert_eq!(
+        handoff["resultRefs"][0],
+        serde_json::to_value(reference).unwrap()
+    );
+}
+
+#[test]
 fn waiting_colleague_can_request_owner_without_releasing_the_original_checkpoint() {
     let fixture = Fixture::new();
     let owner = fixture.member("Coordinator").to_owned();
@@ -572,6 +682,356 @@ fn waiting_colleague_can_request_owner_without_releasing_the_original_checkpoint
         .events
         .iter()
         .any(|event| event.kind == "member_checkpoint_resumed"));
+}
+
+#[test]
+fn read_receipt_does_not_freeze_the_owner_waiting_on_it() {
+    let fixture = Fixture::new();
+    let owner = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Resolve the original question", &[&owner]),
+    );
+    let owner_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let owner_work = owner_turn.work[0].id.clone();
+    fixture
+        .store
+        .request_member_work(
+            &owner_turn,
+            &request("Check the methods evidence", &[&methods]),
+            std::slice::from_ref(&owner_work),
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(
+            &owner_turn,
+            &waiting_outcome("Waiting for the methods evidence"),
+            None,
+        )
+        .unwrap();
+
+    let methods_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_turn.member.id, methods);
+    let methods_work = methods_turn.work[0].id.clone();
+    fixture.file_event("main.tex", "h1");
+    let checkpoint = fixture
+        .store
+        .member_checkpoint_request(&methods_turn)
+        .unwrap()
+        .unwrap();
+    assert!(!checkpoint.event_ids.is_empty());
+    fixture
+        .store
+        .checkpoint_member_turn(
+            &methods_turn,
+            &checkpoint_outcome("Reading the evidence", checkpoint),
+        )
+        .unwrap();
+
+    let checkpointed = fixture.snapshot();
+    assert_eq!(work(&checkpointed, &owner_work).status, WorkStatus::Waiting);
+    assert!(checkpoint_evidence(&checkpointed)
+        .colleague_work_ids
+        .is_empty());
+    let batch = fixture
+        .store
+        .responsibility_batch(&fixture.task)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .commit_responsibility_assessment(&fixture.task, &batch, &empty_assessment())
+        .unwrap();
+
+    let methods_resumed = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_resumed.member.id, methods);
+    assert!(methods_resumed
+        .work
+        .iter()
+        .any(|work| work.id == methods_work));
+    fixture
+        .store
+        .finish_member_turn(
+            &methods_resumed,
+            &outcome("Methods supplied the evidence"),
+            None,
+        )
+        .unwrap();
+    let owner_resumed = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner_resumed.member.id, owner);
+    assert!(owner_resumed.work.iter().any(|work| work.id == owner_work));
+}
+
+#[test]
+fn nested_waiters_do_not_freeze_onto_a_deeper_read_receipt() {
+    let fixture = Fixture::new();
+    let owner = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    let explorer = fixture.member("Explorer").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Resolve the original question", &[&owner]),
+    );
+    let owner_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let owner_work = owner_turn.work[0].id.clone();
+    fixture
+        .store
+        .request_member_work(
+            &owner_turn,
+            &request("Ask methods", &[&methods]),
+            std::slice::from_ref(&owner_work),
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(&owner_turn, &waiting_outcome("Waiting for methods"), None)
+        .unwrap();
+
+    let methods_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let methods_work = methods_turn.work[0].id.clone();
+    fixture
+        .store
+        .request_member_work(
+            &methods_turn,
+            &request("Ask explorer", &[&explorer]),
+            std::slice::from_ref(&methods_work),
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(
+            &methods_turn,
+            &waiting_outcome("Waiting for explorer"),
+            None,
+        )
+        .unwrap();
+
+    let explorer_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(explorer_turn.member.id, explorer);
+    fixture.file_event("main.tex", "h1");
+    let checkpoint = fixture
+        .store
+        .member_checkpoint_request(&explorer_turn)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .checkpoint_member_turn(
+            &explorer_turn,
+            &checkpoint_outcome("Reading the evidence", checkpoint),
+        )
+        .unwrap();
+
+    let checkpointed = fixture.snapshot();
+    assert!(checkpoint_evidence(&checkpointed)
+        .colleague_work_ids
+        .is_empty());
+    assert_eq!(
+        work(&checkpointed, &methods_work).status,
+        WorkStatus::Waiting
+    );
+    assert_eq!(work(&checkpointed, &owner_work).status, WorkStatus::Waiting);
+    let batch = fixture
+        .store
+        .responsibility_batch(&fixture.task)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .commit_responsibility_assessment(&fixture.task, &batch, &empty_assessment())
+        .unwrap();
+
+    let explorer_resumed = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(explorer_resumed.member.id, explorer);
+    fixture
+        .store
+        .finish_member_turn(
+            &explorer_resumed,
+            &outcome("Explorer supplied the evidence"),
+            None,
+        )
+        .unwrap();
+    let methods_resumed = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_resumed.member.id, methods);
+    fixture
+        .store
+        .finish_member_turn(
+            &methods_resumed,
+            &outcome("Methods supplied the evidence"),
+            None,
+        )
+        .unwrap();
+    let owner_resumed = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner_resumed.member.id, owner);
+    assert!(owner_resumed.work.iter().any(|work| work.id == owner_work));
+}
+
+#[test]
+fn independent_pending_work_is_frozen_without_pulling_in_waiting_ancestors() {
+    let fixture = Fixture::new();
+    let owner = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    let explorer = fixture.member("Explorer").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Resolve the original question", &[&owner]),
+    );
+    let owner_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let owner_work = owner_turn.work[0].id.clone();
+    fixture
+        .store
+        .request_member_work(
+            &owner_turn,
+            &request("Ask methods", &[&methods]),
+            std::slice::from_ref(&owner_work),
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(&owner_turn, &waiting_outcome("Waiting for methods"), None)
+        .unwrap();
+
+    let methods_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let methods_work = methods_turn.work[0].id.clone();
+    let independent = fixture.message(
+        &GroupActor::user(),
+        request("Check an independent result", &[&explorer]),
+    );
+    let independent_work = fixture
+        .snapshot()
+        .work
+        .into_iter()
+        .find(|work| work.cause_id == independent.id)
+        .unwrap()
+        .id;
+    let stale_waits = serde_json::to_string(&vec![crate::collaboration::WorkWait {
+        request_message_id: independent.id.clone(),
+        work: vec![crate::collaboration::WorkWaitResult {
+            work_id: methods_work.clone(),
+            member_id: methods.clone(),
+            status: WorkStatus::Completed,
+            result_message_id: None,
+        }],
+    }])
+    .unwrap();
+    fixture
+        .store
+        .open()
+        .unwrap()
+        .execute(
+            "UPDATE collaboration_work SET waits_json=?2 WHERE id=?1",
+            params![independent_work, stale_waits],
+        )
+        .unwrap();
+
+    fixture.file_event("main.tex", "h1");
+    let checkpoint = fixture
+        .store
+        .member_checkpoint_request(&methods_turn)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .checkpoint_member_turn(
+            &methods_turn,
+            &checkpoint_outcome("Reading the evidence", checkpoint),
+        )
+        .unwrap();
+
+    let checkpointed = fixture.snapshot();
+    assert_eq!(
+        checkpoint_evidence(&checkpointed).colleague_work_ids,
+        vec![independent_work.clone()]
+    );
+    assert_eq!(work(&checkpointed, &owner_work).status, WorkStatus::Waiting);
+    let batch = fixture
+        .store
+        .responsibility_batch(&fixture.task)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .commit_responsibility_assessment(&fixture.task, &batch, &empty_assessment())
+        .unwrap();
+
+    let explorer_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(explorer_turn.member.id, explorer);
+    fixture
+        .store
+        .finish_member_turn(
+            &explorer_turn,
+            &outcome("Explorer completed the independent result"),
+            None,
+        )
+        .unwrap();
+    let methods_resumed = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_resumed.member.id, methods);
+    assert!(methods_resumed
+        .work
+        .iter()
+        .any(|work| work.id == methods_work));
+    assert_eq!(
+        work(&fixture.snapshot(), &owner_work).status,
+        WorkStatus::Waiting
+    );
 }
 
 #[test]
@@ -733,4 +1193,112 @@ fn stopped_or_applying_checkpoint_is_not_released_by_automatic_followup_reconcil
             .iter()
             .any(|event| event.kind == "member_checkpoint_resumed"));
     }
+}
+
+#[test]
+fn waiting_work_parks_without_freezing_settled_items() {
+    use crate::model::{TaskIsolation, TaskIsolationKind};
+
+    let fixture = Fixture::new();
+    let owner = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Complete the owner task", &[&owner]),
+    );
+    let owner_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let workspace = fixture.store.root().join("waiting-workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    assert!(fixture
+        .store
+        .set_isolation(
+            &fixture.task.id,
+            fixture.task.execution_generation,
+            &TaskIsolation {
+                kind: TaskIsolationKind::StagedProject,
+                execution_root: workspace.to_string_lossy().into_owned(),
+                baseline_root: fixture
+                    .store
+                    .root()
+                    .join("waiting-baseline")
+                    .to_string_lossy()
+                    .into_owned(),
+                source_revision: "snapshot:waiting".into(),
+                baseline_hash: "waiting".into(),
+                baseline: Vec::new(),
+                allowed_paths: Vec::new(),
+                created_at: now_ms(),
+                skipped: Vec::new(),
+                initial_git_status: None,
+                initial_git_status_complete: None,
+            },
+        )
+        .unwrap());
+    let owner_work = owner_turn.work[0].id.clone();
+    let request = fixture
+        .store
+        .request_member_work(
+            &owner_turn,
+            &request("Check the methods evidence", &[&methods]),
+            std::slice::from_ref(&owner_work),
+        )
+        .unwrap();
+    let mut finish = outcome("Waiting for the methods evidence");
+    finish.waiting_for_reply = true;
+    fixture
+        .store
+        .finish_member_turn(&owner_turn, &finish, None)
+        .unwrap();
+    let parked = fixture.snapshot();
+    assert_eq!(work(&parked, &owner_work).status, WorkStatus::Waiting);
+    assert_eq!(parked.executions[0].status, "waiting");
+    assert!(parked
+        .work
+        .iter()
+        .find(|work| work.cause_id == request.id)
+        .is_some());
+    assert!(fixture.store.park_member_checkpoint(&fixture.task).unwrap());
+    assert_eq!(
+        fixture.store.require(&fixture.task.id).unwrap().status,
+        ResearchTaskStatus::Queued
+    );
+    assert!(
+        !fixture
+            .store
+            .require(&fixture.task.id)
+            .unwrap()
+            .start_requested
+    );
+    fixture
+        .store
+        .open()
+        .unwrap()
+        .execute(
+            "UPDATE research_tasks SET start_requested=1 WHERE id=?1",
+            [&fixture.task.id],
+        )
+        .unwrap();
+    let resumed_task = fixture.store.claim_next().unwrap().unwrap();
+    assert_eq!(resumed_task.id, fixture.task.id);
+    let methods_turn = fixture
+        .store
+        .claim_member_turn(&resumed_task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_turn.member.id, methods);
+    fixture
+        .store
+        .finish_member_turn(&methods_turn, &outcome("Methods completed the check"), None)
+        .unwrap();
+    let released = fixture
+        .store
+        .claim_member_turn(&resumed_task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(released.member.id, owner);
+    assert!(released.work.iter().any(|work| work.id == owner_work));
 }

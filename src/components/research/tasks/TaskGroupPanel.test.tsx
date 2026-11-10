@@ -2,13 +2,13 @@ import { JSDOM } from "jsdom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { researchTaskFixture } from "./tests/task-fixtures";
 import type { TaskObservation, TaskTranscriptEvent } from "@/lib/research-tasks";
-import type { AnnotationContext, GroupEvent, GroupSnapshot, MemberExecution, TaskAnnotation } from "@/lib/task-collaboration";
-const api = vi.hoisted(() => ({ loadTaskGroup: vi.fn(), loadTaskGroupMessages: vi.fn(), loadTaskGroupEventsPage: vi.fn(), loadTaskGroupExecutionsPage: vi.fn(), loadTaskGroupEventsAfter: vi.fn(), loadTaskGroupExecutionsAfter: vi.fn(), loadTaskGroupEvent: vi.fn(), loadTaskGroupExecution: vi.fn(), createTaskGroup: vi.fn(), sendGroupMessage: vi.fn(), setTaskGroupStatus: vi.fn(), setGroupMemberPaused: vi.fn(), setGroupMemberInterest: vi.fn(), loadTaskAnnotations: vi.fn() }));
+import type { AnnotationContext, GroupEvent, GroupMessage, GroupSnapshot, GroupWork, MemberExecution, TaskAnnotation } from "@/lib/task-collaboration";
+const api = vi.hoisted(() => ({ loadTaskGroup: vi.fn(), loadTaskGroupMessages: vi.fn(), loadTaskGroupMessage: vi.fn(), loadTaskGroupEventsPage: vi.fn(), loadTaskGroupExecutionsPage: vi.fn(), loadTaskGroupEventsAfter: vi.fn(), loadTaskGroupExecutionsAfter: vi.fn(), loadTaskGroupEvent: vi.fn(), loadTaskGroupExecution: vi.fn(), createTaskGroup: vi.fn(), sendGroupMessage: vi.fn(), setTaskGroupStatus: vi.fn(), setGroupMemberPaused: vi.fn(), setGroupMemberInterest: vi.fn(), loadTaskAnnotations: vi.fn() }));
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/lib/task-collaboration", () => api);
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (selector: (v: unknown) => unknown) => selector({ common: { actions: { copy: "Copy", copied: "Copied" } }, researchTools: { tasks: { group: new Proxy({}, { get: (_, key) => String(key) }), annotations: { resultRefs: "resultRefs" }, observations: new Proxy({}, { get: (_, key) => String(key) }) } } }) }) }));
+vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (selector: (v: unknown) => unknown) => selector({ common: { actions: { copy: "Copy", copied: "Copied", close: "Close" } }, researchTools: { tasks: { group: new Proxy({}, { get: (_, key) => String(key) }), annotations: { resultRefs: "resultRefs", annotate: "annotate" }, observations: new Proxy({}, { get: (_, key) => String(key) }) } } }) }) }));
 let Panel: typeof import("./TaskGroupPanel").TaskGroupPanel;
 let testing: typeof import("@testing-library/react");
 beforeAll(async () => {
@@ -22,6 +22,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   api.loadTaskGroup.mockResolvedValue(null);
   api.loadTaskGroupMessages.mockResolvedValue(snapshot());
+  api.loadTaskGroupMessage.mockResolvedValue(null);
   api.loadTaskGroupEventsPage.mockResolvedValue({ events: [], hasMore: false });
   api.loadTaskGroupExecutionsPage.mockResolvedValue({ executions: [], hasMore: false });
   api.loadTaskGroupEventsAfter.mockResolvedValue({ events: [], hasMore: false });
@@ -36,6 +37,35 @@ const task = researchTaskFixture({ id: "t1", projectId: "p1", runtimeId: "builti
 const agents = [{ runtimeId: "builtin", agentId: "agent", modelId: "cli-model", label: "Second model" }];
 function snapshot(): GroupSnapshot {
  return { group: { id: "g1", projectId: "p1", taskId: "t1", status: "open", createdAt: 1, updatedAt: 1 }, members: [{ id: "m1", groupId: "g1", name: "Reviewer", responsibility: "Check evidence", runtimeId: "acp", agentId: "agent", modelId: "actual-model", skillIds: [], coordinator: true, paused: false, joinedAt: 1 }], interests: [], messages: [{ id: "msg1", sequence: 1, groupId: "g1", author: { kind: "member", id: "m1", executionId: "x1" }, body: "Returned evidence", recipients: [], replyTo: null, object: null, requestWork: false, createdAt: 1 }], work: [{ id: "w1", groupId: "g1", memberId: "m1", causeKind: "message", causeId: "msg1", priority: 1, status: "completed", executionId: "x1", resultMessageId: "msg1", createdAt: 1, updatedAt: 1 }], executions: [], nextSequence: 1 };
+}
+function groupMessage(id: string, sequence: number, body: string, replyTo: string | null = null): GroupMessage {
+  return {
+    id,
+    sequence,
+    groupId: "g1",
+    author: { kind: "member", id: "m1", executionId: null },
+    body,
+    recipients: [],
+    replyTo,
+    object: null,
+    requestWork: false,
+    createdAt: sequence,
+  };
+}
+function groupWork(id: string, status: GroupWork["status"]): GroupWork {
+  return {
+    id,
+    groupId: "g1",
+    memberId: "m1",
+    causeKind: "message",
+    causeId: `source-${id}`,
+    priority: 1,
+    status,
+    executionId: null,
+    resultMessageId: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
 }
 function annotationContext(): AnnotationContext {
   const annotation: TaskAnnotation = {
@@ -210,7 +240,8 @@ describe("TaskGroupPanel", () => {
   testing.fireEvent.click(view.getByLabelText("requestWork"));
   testing.fireEvent.click(view.getByText("send"));
   await testing.waitFor(() => expect(api.sendGroupMessage).toHaveBeenCalledWith("p1", "g1", { body: "Check this claim", recipients: ["m1"], replyTo: "msg1", requestWork: true, object: null }));
-  expect(view.getByText(/completed/)).toBeTruthy();
+  expect(view.getByText("statusCompleted")).toBeTruthy();
+  expect(view.getByText("workCompletedWithoutOutcome")).toBeTruthy();
   expect(view.getAllByText("Returned evidence").length).toBe(2);
  });
  it("ignores a late group response after switching task scope", async () => {
@@ -239,13 +270,265 @@ describe("TaskGroupPanel", () => {
   expect(view.getAllByText("Returned evidence").length).toBe(2);
  });
 
- it("shares the loaded snapshot and links returned work to its message", async () => {
+ it("shares the loaded snapshot and shows the source and result message once", async () => {
   const group = snapshot(); api.loadTaskGroup.mockResolvedValue(group);
   const callback = vi.fn();
   const view = testing.render(<Panel task={task} agents={agents} onSnapshot={callback} />);
   await testing.waitFor(() => expect(callback).toHaveBeenCalledWith(group));
-  expect(view.getByRole("link", { name: "Returned evidence" }).getAttribute("href")).toBe("#group-message-msg1");
+  expect(view.getAllByText("Returned evidence")).toHaveLength(2);
   expect(view.container.querySelector("#group-message-msg1")).toBeTruthy();
+ });
+
+ it("shows one member's independent work states and nested waits", async () => {
+  const loaded = snapshot();
+  loaded.members.push(
+    { id: "m2", groupId: "g1", name: "Analyst", responsibility: "Check the data", runtimeId: "builtin", agentId: "analyst", modelId: "analyst-model", skillIds: [], coordinator: false, paused: true, joinedAt: 2 },
+    { id: "m3", groupId: "g1", name: "Editor", responsibility: "Revise the prose", runtimeId: "builtin", agentId: "editor", modelId: "editor-model", skillIds: [], coordinator: false, paused: false, joinedAt: 3 },
+  );
+  const completed = groupWork("done", "completed");
+  completed.resolution = { summary: "The claim now matches the retained source.", resultRefs: [] };
+  const waiting = groupWork("waiting", "waiting");
+  waiting.resultMessageId = "request-a";
+  waiting.resolution = { summary: "Wait for both assistants", resultRefs: [] };
+  waiting.waits = [
+    {
+      requestMessageId: "request-a",
+      work: [
+        { workId: "dep-a1", memberId: "m2", status: "running", resultMessageId: null },
+        { workId: "dep-a2", memberId: "m3", status: "failed", resultMessageId: "result-a" },
+      ],
+    },
+    {
+      requestMessageId: "request-b",
+      work: [
+        { workId: "dep-b1", memberId: "m2", status: "checkpointed", resultMessageId: null },
+        { workId: "dep-b2", memberId: "m3", status: "completed", resultMessageId: null },
+      ],
+    },
+  ];
+  const unreported = groupWork("unreported", "waiting");
+  const running = groupWork("running", "running");
+  const failed = groupWork("failed", "failed");
+  loaded.messages.push(
+    groupMessage("source-done", 2, "Check the claim"),
+    groupMessage("source-waiting", 3, "Check both tables"),
+    groupMessage("source-unreported", 4, "Resolve the unreported outcome"),
+    groupMessage("source-running", 5, "Draft the paragraph"),
+    groupMessage("source-failed", 6, "Verify the citation"),
+    groupMessage("request-a", 7, "Wait for both assistants"),
+    groupMessage("request-b", 8, "Wait for the checkpoint"),
+    groupMessage("result-a", 9, "The failed helper left a result"),
+  );
+  loaded.work = [completed, waiting, unreported, running, failed];
+  loaded.nextSequence = 9;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByTestId("work-waiting")).toBeTruthy());
+  const followUp = view.getByRole("region", { name: "workNeedsFollowUp" });
+  expect(testing.within(followUp).getByTestId("work-waiting")).toBeTruthy();
+  expect(testing.within(followUp).getByTestId("work-unreported")).toBeTruthy();
+  expect(testing.within(followUp).getByTestId("work-failed")).toBeTruthy();
+  expect(testing.within(view.getByRole("region", { name: "workInProgress" })).getByTestId("work-running")).toBeTruthy();
+  expect(testing.within(view.getByRole("region", { name: "workHandled" })).getByTestId("work-done")).toBeTruthy();
+  expect(testing.within(view.getByTestId("work-failed")).getByText("statusFailed")).toBeTruthy();
+  expect(testing.within(view.getByTestId("work-waiting")).getByText("statusWaiting")).toBeTruthy();
+  expect(testing.within(view.getByTestId("work-unreported")).getByText("statusWaitingFollowUp")).toBeTruthy();
+  expect(testing.within(view.getByTestId("work-unreported")).queryByText("statusWaiting")).toBeNull();
+  expect(testing.within(view.getByTestId("resolution-failed")).getByText("workNoOutcome")).toBeTruthy();
+
+  const waitRegion = view.getByTestId("waits-waiting");
+  expect(testing.within(waitRegion).getByText("Wait for both assistants")).toBeTruthy();
+  expect(testing.within(waitRegion).getByText("Wait for the checkpoint")).toBeTruthy();
+  expect(testing.within(view.getByTestId("work-waiting")).queryByText("workOutcome")).toBeNull();
+  expect(testing.within(view.getByTestId("work-waiting")).getAllByText("Wait for both assistants")).toHaveLength(1);
+  expect(testing.within(view.getByTestId("work-waiting")).getAllByText("workOpenResult")).toHaveLength(1);
+  expect(testing.within(waitRegion).getAllByText("Analyst")).toHaveLength(2);
+  expect(testing.within(waitRegion).getAllByText("Editor")).toHaveLength(2);
+  expect(testing.within(waitRegion).getAllByText("paused")).toHaveLength(2);
+  expect(testing.within(waitRegion).getByText("statusCheckpointed")).toBeTruthy();
+  expect(testing.within(view.getByTestId("resolution-done")).getByText("The claim now matches the retained source.")).toBeTruthy();
+ });
+
+ it("keeps old work fixtures renderable without resolution or waits", async () => {
+  const loaded = snapshot();
+  loaded.work = [groupWork("legacy", "completed")];
+  loaded.work[0].causeId = "msg1";
+  api.loadTaskGroup.mockResolvedValue(loaded);
+
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-legacy");
+  expect(testing.within(work).getByText("workCompletedWithoutOutcome")).toBeTruthy();
+  expect(testing.within(work).queryByText("workWaitingFor")).toBeNull();
+ });
+
+ it("reads an old source outside the loaded message window by exact identity", async () => {
+  const loaded = snapshot();
+  const historical = groupMessage("historical-source", 2, "Historical request");
+  loaded.messages = [groupMessage("current", 20, "Current message")];
+  loaded.work = [groupWork("old", "pending")];
+  loaded.work[0].causeId = historical.id;
+  loaded.nextSequence = 20;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupMessage.mockResolvedValue(historical);
+
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-old");
+  testing.fireEvent.click(testing.within(work).getByText("workReadSource"));
+  await testing.waitFor(() => expect(testing.within(work).getByText("Historical request")).toBeTruthy());
+  expect(api.loadTaskGroupMessage).toHaveBeenCalledTimes(1);
+  expect(api.loadTaskGroupMessage).toHaveBeenCalledWith("p1", "t1", "g1", "historical-source");
+  expect(api.loadTaskGroupMessages).not.toHaveBeenCalled();
+ });
+
+ it("follows reply ancestry by exact reads without looping on a cycle", async () => {
+  const loaded = snapshot();
+  loaded.messages = [groupMessage("current-reply", 10, "Loaded current reply", "old-ancestor")];
+  loaded.work = [groupWork("thread", "completed")];
+  loaded.work[0].causeId = "current-reply";
+  loaded.nextSequence = 10;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupMessage.mockImplementation(async (_projectId, _taskId, _groupId, messageId) => {
+    if (messageId === "old-ancestor") return groupMessage("old-ancestor", 3, "Old ancestor", "current-reply");
+    return null;
+  });
+
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-thread");
+  testing.fireEvent.click(testing.within(work).getByText("workViewThread"));
+  await testing.waitFor(() => expect(view.getAllByText("Old ancestor")).toHaveLength(2));
+  expect(view.getAllByText("Loaded current reply").length).toBeGreaterThanOrEqual(2);
+  expect(view.getByText("workThreadScope")).toBeTruthy();
+  expect(api.loadTaskGroupMessage).toHaveBeenCalledTimes(1);
+ });
+
+ it("keeps a loaded reply and annotation controls available in the thread", async () => {
+  const loaded = snapshot();
+  loaded.messages = [
+    groupMessage("root", 1, "Root question"),
+    groupMessage("reply", 2, "Old reply", "root"),
+  ];
+  loaded.work = [groupWork("thread-controls", "pending")];
+  loaded.work[0].causeId = "root";
+  loaded.nextSequence = 2;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  const onAnnotate = vi.fn();
+
+  const view = testing.render(<Panel task={task} agents={agents} onAnnotate={onAnnotate} />);
+  const work = await view.findByTestId("work-thread-controls");
+  testing.fireEvent.click(testing.within(work).getByText("workViewThread"));
+  const thread = await view.findByRole("region", { name: "workThread" });
+  const reply = testing.within(thread).getByText("Old reply").closest("li");
+  if (!reply) throw new Error("The loaded reply is missing");
+  testing.fireEvent.click(testing.within(reply).getByText("reply"));
+  expect(view.getByText("reply: reply")).toBeTruthy();
+  testing.fireEvent.click(testing.within(reply).getByText("annotate"));
+  expect(onAnnotate).toHaveBeenCalledWith(expect.objectContaining({ id: "reply" }));
+ });
+
+ it("keeps an unsupported artifact result static with its revision", async () => {
+  const loaded = snapshot();
+  const work = groupWork("result-ref", "completed");
+  work.causeId = "msg1";
+  work.resolution = {
+    summary: "The corrected result is recorded in the output.",
+    resultRefs: [{
+      projectId: "p1",
+      taskId: "t1",
+      objectKind: "artifact",
+      objectId: "t1:2:12",
+      objectRevision: "generation:2",
+      path: "results/table.csv",
+    }],
+  };
+  loaded.work = [work];
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  const onOpenResult = vi.fn();
+
+  const view = testing.render(<Panel task={task} agents={agents} onOpenResult={onOpenResult} />);
+  const result = await view.findByTestId("work-result-ref");
+  expect(testing.within(result).getByText("results/table.csv · generation:2")).toBeTruthy();
+  expect(testing.within(result).getByText("workResultUnavailable")).toBeTruthy();
+  expect(testing.within(result).queryByRole("button", { name: /results\/table\.csv/ })).toBeNull();
+  expect(onOpenResult).not.toHaveBeenCalled();
+ });
+
+ it("keeps unsupported file results static and opens supported result kinds", async () => {
+  const loaded = snapshot();
+  const work = groupWork("result-kinds", "completed");
+  work.causeId = "msg1";
+  work.resolution = {
+    summary: "The result set and compiled output are retained.",
+    resultRefs: [
+      {
+        projectId: "p1",
+        taskId: "t1",
+        objectKind: "file",
+        objectId: "results/table.csv",
+        objectRevision: "sha256:abc",
+        path: "results/table.csv",
+      },
+      {
+        projectId: "p1",
+        taskId: "t1",
+        objectKind: "task_pdf",
+        objectId: "pdf-hash",
+        objectRevision: "generation:2",
+        path: "compiled-artifacts/result.pdf",
+      },
+      {
+        projectId: "p1",
+        taskId: "t1",
+        objectKind: "group_message",
+        objectId: "invalid-result-message",
+        objectRevision: "sequence:999",
+        path: null,
+      },
+    ],
+  };
+  loaded.work = [work];
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupMessage.mockResolvedValue(groupMessage("historical-result-message", 2, "Historical result"));
+  const onOpenResult = vi.fn();
+
+  const view = testing.render(<Panel task={task} agents={agents} onOpenResult={onOpenResult} />);
+  const result = await view.findByTestId("work-result-kinds");
+  expect(testing.within(result).getByText("results/table.csv · sha256:abc")).toBeTruthy();
+  expect(testing.within(result).getByText("workFileReferenceUnavailable")).toBeTruthy();
+  expect(testing.within(result).queryByRole("button", { name: /results\/table\.csv/ })).toBeNull();
+
+  testing.fireEvent.click(testing.within(result).getByRole("button", { name: /compiled-artifacts\/result\.pdf/ }));
+  expect(onOpenResult).toHaveBeenCalledWith(expect.objectContaining({ objectKind: "task_pdf", objectId: "pdf-hash" }));
+
+  testing.fireEvent.click(testing.within(result).getByRole("button", { name: "invalid-result-message · sequence:999" }));
+  expect(onOpenResult).toHaveBeenCalledWith(expect.objectContaining({
+    objectKind: "group_message",
+    objectId: "invalid-result-message",
+    objectRevision: "sequence:999",
+  }));
+  expect(api.loadTaskGroupMessage).not.toHaveBeenCalled();
+  expect(view.queryByRole("region", { name: "workThread" })).toBeNull();
+ });
+
+ it("ignores a late exact message read after the task scope changes", async () => {
+  const loaded = snapshot();
+  loaded.messages = [groupMessage("current", 20, "Current message")];
+  loaded.work = [groupWork("old", "pending")];
+  loaded.work[0].causeId = "late-source";
+  loaded.nextSequence = 20;
+  api.loadTaskGroup.mockReset().mockResolvedValueOnce(loaded).mockResolvedValueOnce(null);
+  let resolveMessage!: (message: GroupMessage | null) => void;
+  api.loadTaskGroupMessage.mockImplementationOnce(() => new Promise<GroupMessage | null>(done => { resolveMessage = done; }));
+
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-old");
+  testing.fireEvent.click(testing.within(work).getByText("workReadSource"));
+  await testing.waitFor(() => expect(api.loadTaskGroupMessage).toHaveBeenCalledWith("p1", "t1", "g1", "late-source"));
+  view.rerender(<Panel task={{ ...task, id: "t2", projectId: "p2" }} agents={agents} />);
+  await testing.waitFor(() => expect(api.loadTaskGroup).toHaveBeenCalledWith("p2", "t2"));
+  await testing.act(async () => resolveMessage(groupMessage("late-source", 2, "Late source")));
+  expect(view.queryByText("Late source")).toBeNull();
+  expect(view.getByText("create")).toBeTruthy();
  });
 
  it("shows work attribution, event details, and member-owned attentions", async () => {

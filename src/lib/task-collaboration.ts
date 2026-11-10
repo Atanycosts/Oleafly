@@ -181,6 +181,23 @@ export interface WorkReason {
   executionId?: string;
 }
 
+export interface WorkResolution {
+  summary: string;
+  resultRefs: AnnotationTarget[];
+}
+
+export interface WorkWaitDependency {
+  workId: string;
+  memberId: string;
+  status: GroupWork["status"];
+  resultMessageId: string | null;
+}
+
+export interface WorkWait {
+  requestMessageId: string;
+  work: WorkWaitDependency[];
+}
+
 export interface GroupWork {
   id: string;
   groupId: string;
@@ -192,6 +209,8 @@ export interface GroupWork {
   executionId: string | null;
   resultMessageId: string | null;
   reasons?: WorkReason[];
+  resolution?: WorkResolution | null;
+  waits?: WorkWait[];
   createdAt: number;
   updatedAt: number;
 }
@@ -263,6 +282,9 @@ export const loadTaskGroup = (projectId: string, taskId: string) =>
 
 export const loadTaskGroupMessages = (projectId: string, taskId: string, groupId: string, afterSequence: number) =>
   invoke<GroupSnapshot>("research_task_group_snapshot", { projectId, taskId, groupId, afterSequence });
+
+export const loadTaskGroupMessage = (projectId: string, taskId: string, groupId: string, messageId: string) =>
+  invoke<GroupMessage | null>("research_task_group_message_read", { projectId, taskId, groupId, messageId });
 
 export const loadTaskGroupEventsPage = (projectId: string, taskId: string, groupId: string, beforeSequence: number | null, limit = 100) =>
   invoke<GroupEventPage>("research_task_group_events_page", { projectId, taskId, groupId, beforeSequence, limit });

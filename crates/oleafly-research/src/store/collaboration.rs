@@ -20,6 +20,9 @@ pub(super) use responsibility::SCHEMA_SQL as RESPONSIBILITY_SCHEMA_SQL;
 #[path = "checkpoints.rs"]
 mod checkpoints;
 
+#[path = "work_settlement.rs"]
+mod work_settlement;
+
 pub(super) const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS collaboration_groups (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
@@ -59,6 +62,8 @@ CREATE TABLE IF NOT EXISTS collaboration_work (
  member_id TEXT NOT NULL REFERENCES collaboration_members(id), cause_kind TEXT NOT NULL,
  cause_id TEXT NOT NULL, priority INTEGER NOT NULL, status TEXT NOT NULL,
  execution_id TEXT REFERENCES collaboration_executions(id), result_message_id TEXT REFERENCES collaboration_messages(id),
+ resolution_json TEXT, waits_json TEXT NOT NULL DEFAULT '[]',
+ settled_execution_id TEXT,
  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
  UNIQUE(member_id,cause_kind,cause_id)
 );
@@ -80,7 +85,7 @@ fn message_on(connection: &Connection, group: &str, id: &str) -> Result<GroupMes
     connection.query_row("SELECT sequence,id,author_json,content_json,created_at FROM collaboration_messages WHERE id=?1 AND group_id=?2",params![id,group],|r| Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?))).optional().map_err(store_error)?.map(|(sequence,id,author,content,created_at)| -> Result<GroupMessage,String> { Ok(GroupMessage {sequence,id,group_id:group.into(),author:decode_json(&author,"message author")?,content:decode_json(&content,"message")?,created_at}) }).transpose()?.ok_or("The reply or message belongs to another group.".into())
 }
 fn work_on(connection: &Connection, group: &str) -> Result<Vec<GroupWork>, String> {
-    connection.prepare("SELECT id,member_id,cause_kind,cause_id,priority,status,execution_id,result_message_id,reasons_json,created_at,updated_at FROM collaboration_work WHERE group_id=?1 ORDER BY priority DESC,created_at,id").and_then(|mut q|q.query_map([group],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,u32>(4)?,r.get::<_,String>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,String>(8)?,r.get::<_,i64>(9)?,r.get::<_,i64>(10)?)))?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?.into_iter().map(|(id,member_id,cause_kind,cause_id,priority,status,execution_id,result_message_id,reasons,created_at,updated_at)|Ok(GroupWork {id,group_id:group.into(),member_id,cause_kind,cause_id,priority,status:decode_json(&status,"work status")?,execution_id,result_message_id,reasons:decode_json(&reasons,"work reasons")?,created_at,updated_at})).collect()
+    connection.prepare("SELECT id,member_id,cause_kind,cause_id,priority,status,execution_id,result_message_id,resolution_json,waits_json,reasons_json,created_at,updated_at FROM collaboration_work WHERE group_id=?1 ORDER BY priority DESC,created_at,id").and_then(|mut q|q.query_map([group],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,u32>(4)?,r.get::<_,String>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,Option<String>>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?,r.get::<_,i64>(11)?,r.get::<_,i64>(12)?)))?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?.into_iter().map(|(id,member_id,cause_kind,cause_id,priority,status,execution_id,result_message_id,resolution,waits,reasons,created_at,updated_at)|Ok(GroupWork {id,group_id:group.into(),member_id,cause_kind,cause_id,priority,status:decode_json(&status,"work status")?,execution_id,result_message_id,resolution:resolution.map(|value|decode_json(&value,"work resolution")).transpose()?,waits:decode_json(&waits,"work waits")?,reasons:decode_json(&reasons,"work reasons")?,created_at,updated_at})).collect()
 }
 fn execution_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemberExecution> {
     Ok(MemberExecution {
@@ -629,6 +634,41 @@ fn record_event_with_evidence_on(
 }
 
 impl TaskStore {
+    pub fn member_execution_has_settlements(&self, execution: &str) -> Result<bool, String> {
+        work_settlement::execution_has_settlements_on(&self.open()?, execution)
+    }
+
+    pub fn request_member_work(
+        &self,
+        turn: &MemberTurn,
+        draft: &MessageDraft,
+        work_ids: &[String],
+    ) -> Result<GroupMessage, String> {
+        let mut connection = self.open()?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        work_settlement::active_member_on(&tx, turn)?;
+        let message = work_settlement::request_work_on(&tx, turn, draft, work_ids)?;
+        tx.commit().map_err(store_error)?;
+        Ok(message)
+    }
+
+    pub fn settle_member_work(
+        &self,
+        turn: &MemberTurn,
+        draft: &WorkSettlementDraft,
+    ) -> Result<Vec<GroupWork>, String> {
+        let mut connection = self.open()?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        work_settlement::active_member_on(&tx, turn)?;
+        let work = work_settlement::settle_on(&tx, turn, draft)?;
+        tx.commit().map_err(store_error)?;
+        Ok(work)
+    }
+
     pub fn task_member_turn(
         &self,
         task_id: &str,
@@ -1069,6 +1109,49 @@ impl TaskStore {
             .optional()
             .map_err(store_error)
     }
+    pub fn group_message_record(
+        &self,
+        project: &str,
+        task: &str,
+        group: &str,
+        id: &str,
+    ) -> Result<Option<GroupMessage>, String> {
+        let connection = self.open()?;
+        let group_record = group_on(&connection, project, group)?;
+        if group_record.task_id.as_deref() != Some(task) {
+            return Err("This task group belongs to another task.".into());
+        }
+        connection
+            .query_row(
+                "SELECT sequence,id,author_json,content_json,created_at
+                 FROM collaboration_messages WHERE id=?1 AND group_id=?2",
+                params![id, group],
+                |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(store_error)?
+            .map(
+                |(sequence, id, author, content, created_at)| -> Result<GroupMessage, String> {
+                    Ok(GroupMessage {
+                        sequence,
+                        id,
+                        group_id: group.into(),
+                        author: decode_json(&author, "message author")?,
+                        content: decode_json(&content, "message")?,
+                        created_at,
+                    })
+                },
+            )
+            .transpose()
+    }
     pub fn group_message(
         &self,
         project: &str,
@@ -1240,7 +1323,8 @@ impl TaskStore {
         Ok(routed)
     }
     /// One member at a time uses a task's shared workspace and budget. The same transaction
-    /// closes the idle/claim gap and assigns all currently pending causes for that member.
+    /// closes the idle/claim gap and assigns the member's pending causes. Waiting work is
+    /// released only when all of its recorded request dependencies are terminal.
     pub fn claim_member_turn(&self, task: &ResearchTask) -> Result<Option<MemberTurn>, String> {
         let mut c = self.open()?;
         let tx = c
@@ -1270,6 +1354,7 @@ impl TaskStore {
             return Ok(None);
         }
         checkpoints::release_ready_on(&tx, &group)?;
+        work_settlement::release_ready_waits_on(&tx, &group_id)?;
         let member_id:Option<String>=tx.query_row("SELECT w.member_id FROM collaboration_work w JOIN collaboration_members m ON m.id=w.member_id WHERE w.group_id=?1 AND w.status='\"pending\"' AND m.paused=0 ORDER BY w.priority DESC,w.created_at,w.id LIMIT 1",[&group_id],|r|r.get(0)).optional().map_err(store_error)?;
         let Some(member_id) = member_id else {
             return Ok(None);
@@ -1295,7 +1380,7 @@ impl TaskStore {
             finished_at: None,
         };
         tx.execute("INSERT INTO collaboration_executions(id,group_id,member_id,task_generation,session_id,runtime_id,agent_id,model_id,status,started_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'running',?9)",params![execution.id,group_id,member_id,task.execution_generation,execution.session_id,execution.runtime_id,execution.agent_id,execution.model_id,execution.started_at]).map_err(store_error)?;
-        tx.execute("UPDATE collaboration_work SET status='\"running\"',execution_id=?3,updated_at=?4 WHERE group_id=?1 AND member_id=?2 AND status IN ('\"pending\"','\"waiting\"')",params![group_id,member_id,execution.id,now_ms()]).map_err(store_error)?;
+        tx.execute("UPDATE collaboration_work SET status='\"running\"',execution_id=?3,updated_at=?4 WHERE group_id=?1 AND member_id=?2 AND status='\"pending\"'",params![group_id,member_id,execution.id,now_ms()]).map_err(store_error)?;
         let turn = member_turn_on(&tx, group, member, execution)?;
         tx.commit().map_err(store_error)?;
         Ok(Some(turn))
@@ -1314,14 +1399,7 @@ impl TaskStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
         let group = group_on(&tx, &turn.group.project_id, &turn.group.id)?;
-        let status = if error.is_some() {
-            "failed"
-        } else if outcome.waiting_for_reply {
-            "waiting"
-        } else {
-            "completed"
-        };
-        let changed=tx.execute("UPDATE collaboration_executions SET status=?2,input_tokens=?3,output_tokens=?4,finished_at=?5 WHERE id=?1 AND status='running'",params![turn.execution.id,status,outcome.input_tokens,outcome.output_tokens,now_ms()]).map_err(store_error)?;
+        let changed=tx.execute("UPDATE collaboration_executions SET input_tokens=?2,output_tokens=?3,finished_at=?4 WHERE id=?1 AND status='running'",params![turn.execution.id,outcome.input_tokens,outcome.output_tokens,now_ms()]).map_err(store_error)?;
         if changed != 1 {
             return Err("This member execution already ended.".into());
         }
@@ -1343,54 +1421,137 @@ impl TaskStore {
                 outcome.summary.clone()
             }
         });
-        let requests: Vec<_> = claimed
-            .messages
-            .iter()
-            .filter(|message| {
-                !outcome.waiting_for_reply
-                    && message.content.request_work
-                    && message.author.kind == ActorKind::Member
-                    && message.author.id != turn.member.id
-            })
-            .map(|message| {
-                let replied: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM collaboration_messages m
-                     WHERE m.group_id=?1 AND json_extract(m.author_json,'$.executionId')=?2
-                       AND json_extract(m.content_json,'$.replyTo')=?3
-                       AND json_extract(m.content_json,'$.requestWork')=0
-                       AND json_extract(m.content_json,'$.body')=?5
-                       AND EXISTS(SELECT 1 FROM json_each(m.content_json,'$.recipients') r WHERE r.value=?4))",
-                    params![group.id, turn.execution.id, message.id, message.author.id, body],
-                    |row| row.get(0),
-                ).map_err(store_error)?;
-                Ok((message, replied))
-            })
-            .collect::<Result<Vec<_>, String>>()?
-            .into_iter()
-            .filter_map(|(message, replied)| (!replied).then_some(message))
-            .collect();
-        let mut recipients: Vec<_> = requests
-            .iter()
-            .map(|message| message.author.id.clone())
-            .collect();
-        recipients.sort();
-        recipients.dedup();
-        let content = MessageDraft {
-            body,
-            recipients,
-            reply_to: (requests.len() == 1).then(|| requests[0].id.clone()),
-            request_work: false,
-            ..Default::default()
-        };
-        let message = insert_message_on(&tx, &group, &actor, &content)?;
-        let work_status = if error.is_some() {
-            WorkStatus::Failed
-        } else if outcome.waiting_for_reply {
-            WorkStatus::Waiting
+        let explicit = work_settlement::execution_has_settlements_on(&tx, &turn.execution.id)?;
+        if error.is_some() {
+            work_settlement::fail_running_on(&tx, turn, &body)?;
         } else {
-            WorkStatus::Completed
+            if outcome.waiting_for_reply {
+                work_settlement::bind_running_to_execution_requests_on(&tx, turn, &body)?;
+            }
+            if explicit {
+                let resolution = WorkResolution {
+                    summary: body.clone(),
+                    result_refs: Vec::new(),
+                };
+                tx.execute(
+                    "UPDATE collaboration_work
+                     SET status='\"waiting\"',execution_id=?2,resolution_json=?3,
+                         settled_execution_id=?2,updated_at=?4
+                     WHERE execution_id=?1 AND status='\"running\"'",
+                    params![
+                        turn.execution.id,
+                        turn.execution.id,
+                        encode_json(&resolution)?,
+                        now_ms()
+                    ],
+                )
+                .map_err(store_error)?;
+            }
+        }
+        let requests: Vec<_> = if error.is_none() && !outcome.waiting_for_reply && !explicit {
+            claimed
+                .messages
+                .iter()
+                .filter(|message| {
+                    message.content.request_work
+                        && message.author.kind == ActorKind::Member
+                        && message.author.id != turn.member.id
+                })
+                .map(|message| {
+                    let replied: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM collaboration_messages m
+                         WHERE m.group_id=?1 AND json_extract(m.author_json,'$.executionId')=?2
+                           AND json_extract(m.content_json,'$.replyTo')=?3
+                           AND json_extract(m.content_json,'$.requestWork')=0
+                           AND json_extract(m.content_json,'$.body')=?5
+                           AND EXISTS(SELECT 1 FROM json_each(m.content_json,'$.recipients') r WHERE r.value=?4))",
+                        params![group.id, turn.execution.id, message.id, message.author.id, body],
+                        |row| row.get(0),
+                    ).map_err(store_error)?;
+                    Ok((message, replied))
+                })
+                .collect::<Result<Vec<_>, String>>()?
+                .into_iter()
+                .filter_map(|(message, replied)| (!replied).then_some(message))
+                .collect()
+        } else {
+            Vec::new()
         };
-        tx.execute("UPDATE collaboration_work SET status=?2,result_message_id=?3,updated_at=?4 WHERE execution_id=?1 AND status='\"running\"'",params![turn.execution.id,encode_json(&work_status)?,message.id,now_ms()]).map_err(store_error)?;
+        let mut replies = Vec::new();
+        for request in &requests {
+            replies.push(insert_message_on(
+                &tx,
+                &group,
+                &actor,
+                &MessageDraft {
+                    body: body.clone(),
+                    recipients: vec![request.author.id.clone()],
+                    reply_to: Some(request.id.clone()),
+                    request_work: false,
+                    ..Default::default()
+                },
+            )?);
+        }
+        let message = if let Some(message) = replies.first() {
+            message.clone()
+        } else {
+            insert_message_on(
+                &tx,
+                &group,
+                &actor,
+                &MessageDraft {
+                    body,
+                    request_work: false,
+                    ..Default::default()
+                },
+            )?
+        };
+        let work_status = WorkStatus::Completed;
+        if error.is_none() && !explicit && !outcome.waiting_for_reply {
+            let resolution = WorkResolution {
+                summary: message.content.body.clone(),
+                result_refs: Vec::new(),
+            };
+            for work in &claimed.work {
+                let result_message_id = replies
+                    .iter()
+                    .find(|reply| {
+                        work.cause_kind == "message"
+                            && reply.content.reply_to.as_deref() == Some(&work.cause_id)
+                    })
+                    .unwrap_or(&message)
+                    .id
+                    .clone();
+                tx.execute("UPDATE collaboration_work SET status=?2,result_message_id=?3,resolution_json=?4,updated_at=?5 WHERE id=?1 AND status='\"running\"'",params![work.id,encode_json(&work_status)?,result_message_id,encode_json(&resolution)?,now_ms()]).map_err(store_error)?;
+            }
+        }
+        let actual: Vec<WorkStatus> = tx
+            .prepare("SELECT status FROM collaboration_work WHERE execution_id=?1")
+            .and_then(|mut query| {
+                query
+                    .query_map([&turn.execution.id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(store_error)?
+            .into_iter()
+            .map(|status| decode_json(&status, "work status"))
+            .collect::<Result<Vec<_>, String>>()?;
+        let execution_status = if error.is_some() {
+            "failed"
+        } else if actual.contains(&WorkStatus::Waiting) {
+            "waiting"
+        } else if actual.contains(&WorkStatus::Failed) {
+            "failed"
+        } else {
+            "completed"
+        };
+        tx.execute(
+            "UPDATE collaboration_executions SET status=?2 WHERE id=?1 AND status='running'",
+            params![turn.execution.id, execution_status],
+        )
+        .map_err(store_error)?;
+        work_settlement::refresh_wait_snapshots_on(&tx, &group.id)?;
+        work_settlement::release_ready_waits_on(&tx, &group.id)?;
         tx.commit().map_err(store_error)?;
         Ok(message)
     }
@@ -1508,6 +1669,17 @@ impl TaskStore {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
+        let wait_groups = tx
+            .prepare("SELECT id FROM collaboration_groups WHERE status='open'")
+            .and_then(|mut query| {
+                query
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(store_error)?;
+        for group in wait_groups {
+            work_settlement::release_ready_waits_on(&tx, &group)?;
+        }
         let checkpoint_groups = tx.prepare(
             "SELECT DISTINCT g.project_id,g.id FROM collaboration_groups g
              JOIN collaboration_work w ON w.group_id=g.id

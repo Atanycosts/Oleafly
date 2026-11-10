@@ -572,6 +572,7 @@ pub fn run() {
             research_tasks::collaboration::research_task_group_executions_after,
             research_tasks::collaboration::research_task_group_event,
             research_tasks::collaboration::research_task_group_execution,
+            research_tasks::collaboration::research_task_group_message_read,
             research_tasks::collaboration::research_task_group_create,
             research_tasks::collaboration::research_task_group_message,
             research_tasks::collaboration::research_task_group_status,

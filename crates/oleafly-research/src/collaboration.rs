@@ -171,9 +171,50 @@ pub struct GroupWork {
     pub execution_id: Option<String>,
     pub result_message_id: Option<String>,
     #[serde(default)]
+    pub resolution: Option<WorkResolution>,
+    #[serde(default)]
+    pub waits: Vec<WorkWait>,
+    #[serde(default)]
     pub reasons: Vec<WorkReason>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkResolution {
+    pub summary: String,
+    #[serde(default)]
+    pub result_refs: Vec<crate::annotations::AnnotationTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkWait {
+    pub request_message_id: String,
+    #[serde(default)]
+    pub work: Vec<WorkWaitResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkWaitResult {
+    pub work_id: String,
+    pub member_id: String,
+    pub status: WorkStatus,
+    pub result_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkSettlementDraft {
+    pub work_ids: Vec<String>,
+    pub status: WorkStatus,
+    pub summary: String,
+    #[serde(default)]
+    pub wait_for: Vec<String>,
+    #[serde(default)]
+    pub result_refs: Vec<crate::annotations::AnnotationTarget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

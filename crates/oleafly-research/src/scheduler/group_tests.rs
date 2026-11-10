@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::*;
 use crate::collaboration::{
     ActorKind, GroupActor, GroupObject, GroupSnapshot, GroupStatus, InterestKind, MemberDraft,
-    MemberInterest, MessageDraft, WorkStatus,
+    MemberInterest, MessageDraft, WorkSettlementDraft, WorkStatus,
 };
 use crate::responsibility::{
     ResponsibilityAssessment, ResponsibilityBatch, ResponsibilityDecision, ResponsibilityResponse,
@@ -1594,5 +1594,108 @@ async fn checkpoint_scheduler_parks_paused_work_and_obeys_budget_before_resuming
         .any(|work| work.id == original_work));
     complete(resumed, "Finished retained original work", 5, 1);
     settled(&fixture.state, &fixture.task.id).await;
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn individual_work_results_park_unreported_items_and_do_not_emit_false_completion() {
+    let mut fixture = GroupFixture::new();
+    let coordinator = fixture.member("Coordinator");
+    let store = fixture.store();
+    for body in ["Verify the split", "Retain the counterexample"] {
+        store
+            .group_message(
+                "paper",
+                &fixture.group.group.id,
+                &GroupActor::user(),
+                &MessageDraft {
+                    body: body.into(),
+                    recipients: vec![coordinator.clone()],
+                    request_work: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.start().await;
+    let initial = fixture.next().await;
+    let turn = initial.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.work.len(), 2);
+    let finished = turn.work[0].id.clone();
+    let unfinished = turn.work[1].id.clone();
+    store
+        .settle_member_work(
+            turn,
+            &WorkSettlementDraft {
+                work_ids: vec![finished.clone()],
+                status: WorkStatus::Completed,
+                summary: "The current manuscript retains the counterexample".into(),
+                wait_for: vec![],
+                result_refs: vec![],
+            },
+        )
+        .unwrap();
+    complete(
+        initial,
+        "One check was handled; the split check is still unresolved",
+        10,
+        2,
+    );
+    let task =
+        settled_with_status(&fixture.state, &fixture.task.id, ResearchTaskStatus::Queued).await;
+    assert!(!task.start_requested);
+    assert!(
+        task.result.is_none(),
+        "A partial execution must not produce a finished task result"
+    );
+    let snapshot = fixture.snapshot();
+    assert_eq!(
+        snapshot
+            .work
+            .iter()
+            .find(|w| w.id == finished)
+            .unwrap()
+            .status,
+        WorkStatus::Completed
+    );
+    assert_eq!(
+        snapshot
+            .work
+            .iter()
+            .find(|w| w.id == unfinished)
+            .unwrap()
+            .status,
+        WorkStatus::Waiting
+    );
+    assert_eq!(snapshot.executions[0].status, "waiting");
+    assert!(!snapshot
+        .events
+        .iter()
+        .any(|event| event.kind == "member_finished"));
+    assert!(fixture.starts.try_recv().is_err());
+    fixture.state.request_start(&fixture.task.id).unwrap();
+    fixture.state.launch_ready().await.unwrap();
+    let resumed = fixture.next().await;
+    let resumed_turn = resumed.context.collaboration.as_ref().unwrap();
+    assert_eq!(resumed_turn.work.len(), 1);
+    assert_eq!(resumed_turn.work[0].id, unfinished);
+    assert_eq!(
+        resumed.context.execution_root,
+        task.isolation.as_ref().unwrap().execution_root,
+        "Explicit continuation must reuse the retained task workspace"
+    );
+    complete(
+        resumed,
+        "Checked and handled the retained split question",
+        5,
+        1,
+    );
+    let final_task = settled(&fixture.state, &fixture.task.id).await;
+    assert!(final_task.execution_generation > task.execution_generation);
+    assert!(fixture
+        .snapshot()
+        .work
+        .iter()
+        .all(|work| work.status == WorkStatus::Completed));
     stop(&fixture.state).await;
 }

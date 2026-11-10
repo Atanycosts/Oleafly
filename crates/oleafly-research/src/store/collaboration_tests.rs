@@ -1962,3 +1962,1062 @@ fn pending_group_work_admits_an_unstarted_task_once_and_paused_groups_hold() {
     assert!(store.queue_group_followups().unwrap().is_empty());
     assert_eq!(store.claim_next().unwrap().unwrap().id, task.id);
 }
+
+#[test]
+fn per_work_requests_and_settlements_keep_unrelated_work_moving() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    let explorer = fixture.member("Explorer").to_owned();
+    let original = fixture.message(
+        &GroupActor::user(),
+        request("Resolve the evidence question", &[&coordinator]),
+    );
+    fixture.message(
+        &GroupActor::user(),
+        request("Retain a separate limitation", &[&coordinator]),
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.member.id, coordinator);
+    assert_eq!(turn.work.len(), 2);
+    let original_work = turn
+        .work
+        .iter()
+        .find(|work| work.cause_id == original.id)
+        .unwrap()
+        .clone();
+    let other_work = turn
+        .work
+        .iter()
+        .find(|work| work.id != original_work.id)
+        .unwrap()
+        .clone();
+    let request = fixture
+        .store
+        .request_member_work(
+            &turn,
+            &request("Ask both colleagues", &[&methods, &explorer]),
+            std::slice::from_ref(&original_work.id),
+        )
+        .unwrap();
+    assert_eq!(request.content.recipients.len(), 2);
+    assert!(fixture
+        .store
+        .member_execution_has_settlements(&turn.execution.id)
+        .unwrap());
+    assert!(!fixture
+        .store
+        .task_member_turn(&fixture.task.id, fixture.task.execution_generation)
+        .unwrap()
+        .unwrap()
+        .work
+        .is_empty());
+    let waiting = fixture.snapshot();
+    let original = waiting
+        .work
+        .iter()
+        .find(|work| work.id == original_work.id)
+        .unwrap();
+    assert_eq!(original.status, WorkStatus::Waiting);
+    assert_eq!(original.waits.len(), 1);
+    assert_eq!(original.waits[0].request_message_id, request.id);
+    assert_eq!(original.waits[0].work.len(), 2);
+    assert_eq!(
+        waiting
+            .work
+            .iter()
+            .find(|work| work.id == other_work.id)
+            .unwrap()
+            .status,
+        WorkStatus::Running
+    );
+
+    fixture
+        .store
+        .settle_member_work(
+            &turn,
+            &WorkSettlementDraft {
+                work_ids: vec![other_work.id.clone()],
+                status: WorkStatus::Completed,
+                summary: "Retained the separate limitation.".into(),
+                wait_for: Vec::new(),
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap();
+    let partial = fixture.snapshot();
+    assert_eq!(
+        partial
+            .work
+            .iter()
+            .find(|work| work.id == other_work.id)
+            .unwrap()
+            .status,
+        WorkStatus::Completed
+    );
+    assert_eq!(
+        partial
+            .work
+            .iter()
+            .find(|work| work.id == original_work.id)
+            .unwrap()
+            .status,
+        WorkStatus::Waiting
+    );
+
+    fixture
+        .store
+        .finish_member_turn(&turn, &outcome("Finished the explicit portion"), None)
+        .unwrap();
+    let finished = fixture.snapshot();
+    assert_eq!(
+        finished
+            .executions
+            .iter()
+            .find(|execution| execution.id == turn.execution.id)
+            .unwrap()
+            .status,
+        "waiting"
+    );
+    assert_eq!(
+        finished
+            .work
+            .iter()
+            .find(|work| work.id == original_work.id)
+            .unwrap()
+            .status,
+        WorkStatus::Waiting
+    );
+    assert!(!finished.messages.iter().any(|message| {
+        message.content.request_work
+            && message.author.id == coordinator
+            && message
+                .content
+                .body
+                .contains("Finished the explicit portion")
+    }));
+
+    let methods_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_ne!(methods_turn.member.id, coordinator);
+    let first_colleague = methods_turn.member.id.clone();
+    fixture
+        .store
+        .finish_member_turn(&methods_turn, &outcome("Methods result"), None)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .snapshot()
+            .work
+            .iter()
+            .find(|work| work.id == original_work.id)
+            .unwrap()
+            .status,
+        WorkStatus::Waiting,
+        "one recipient finishing must not release the waiting work"
+    );
+    let explorer_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_ne!(explorer_turn.member.id, coordinator);
+    assert_ne!(explorer_turn.member.id, first_colleague);
+    fixture
+        .store
+        .finish_member_turn(&explorer_turn, &outcome("Explorer result"), None)
+        .unwrap();
+    let released = fixture
+        .snapshot()
+        .work
+        .into_iter()
+        .find(|work| work.id == original_work.id)
+        .unwrap();
+    assert_eq!(released.status, WorkStatus::Pending);
+    assert_eq!(
+        released
+            .waits
+            .iter()
+            .flat_map(|wait| &wait.work)
+            .map(|work| work.status)
+            .collect::<Vec<_>>(),
+        vec![WorkStatus::Completed, WorkStatus::Completed]
+    );
+}
+
+#[test]
+fn one_work_can_accumulate_two_requests_from_the_same_execution() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    let explorer = fixture.member("Explorer").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Resolve the evidence question", &[&coordinator]),
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let work = turn.work[0].id.clone();
+    let first = fixture
+        .store
+        .request_member_work(
+            &turn,
+            &request("Ask methods", &[&methods]),
+            std::slice::from_ref(&work),
+        )
+        .unwrap();
+    let second = fixture
+        .store
+        .request_member_work(
+            &turn,
+            &request("Ask explorer", &[&explorer]),
+            std::slice::from_ref(&work),
+        )
+        .unwrap();
+    let waiting = fixture
+        .snapshot()
+        .work
+        .into_iter()
+        .find(|item| item.id == work)
+        .unwrap();
+    assert_eq!(waiting.status, WorkStatus::Waiting);
+    assert_eq!(
+        waiting
+            .waits
+            .iter()
+            .map(|wait| wait.request_message_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![first.id.as_str(), second.id.as_str()]
+    );
+    assert_eq!(
+        waiting
+            .waits
+            .iter()
+            .flat_map(|wait| &wait.work)
+            .map(|item| item.member_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([methods.as_str(), explorer.as_str()])
+    );
+}
+
+#[test]
+fn explicit_start_requeues_empty_waiting_work_for_the_same_task_group() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Settle one of these checks", &[&coordinator]),
+    );
+    fixture.message(
+        &GroupActor::user(),
+        request("Keep this check for the next run", &[&coordinator]),
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let settled = turn.work[0].id.clone();
+    let unreported = turn.work[1].id.clone();
+    fixture
+        .store
+        .settle_member_work(
+            &turn,
+            &WorkSettlementDraft {
+                work_ids: vec![settled.clone()],
+                status: WorkStatus::Completed,
+                summary: "Completed one check.".into(),
+                wait_for: Vec::new(),
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(&turn, &outcome("Finished the reported work"), None)
+        .unwrap();
+    let parked = fixture
+        .snapshot()
+        .work
+        .into_iter()
+        .find(|work| work.id == unreported)
+        .unwrap();
+    assert_eq!(parked.status, WorkStatus::Waiting);
+    assert!(parked.waits.is_empty());
+    fixture
+        .store
+        .open()
+        .unwrap()
+        .execute(
+            "UPDATE research_tasks SET status = 'queued' WHERE id = ?1",
+            [&fixture.task.id],
+        )
+        .unwrap();
+    fixture.store.request_start(&fixture.task.id).unwrap();
+    assert_eq!(
+        fixture
+            .snapshot()
+            .work
+            .into_iter()
+            .find(|work| work.id == unreported)
+            .unwrap()
+            .status,
+        WorkStatus::Pending
+    );
+    let running = fixture.store.claim_next().unwrap().unwrap();
+    let resumed = fixture.store.claim_member_turn(&running).unwrap().unwrap();
+    assert!(resumed.work.iter().any(|work| work.id == unreported));
+}
+
+#[test]
+fn explicit_start_keeps_empty_waiting_work_when_a_stop_reason_remains() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request(
+            "Leave this check waiting after a budget stop",
+            &[&coordinator],
+        ),
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let work = turn.work[0].id.clone();
+    fixture
+        .store
+        .finish_member_turn(
+            &turn,
+            &waiting_outcome("Waiting for a later decision"),
+            None,
+        )
+        .unwrap();
+    fixture
+        .store
+        .open()
+        .unwrap()
+        .execute(
+            "UPDATE research_tasks
+             SET status = 'queued', stop_reason = 'budget_cost'
+             WHERE id = ?1",
+            [&fixture.task.id],
+        )
+        .unwrap();
+    fixture.store.request_start(&fixture.task.id).unwrap();
+    assert_eq!(
+        fixture
+            .snapshot()
+            .work
+            .into_iter()
+            .find(|item| item.id == work)
+            .unwrap()
+            .status,
+        WorkStatus::Waiting
+    );
+}
+
+#[test]
+fn resume_requeues_empty_waiting_work_but_preserves_dependency_waits() {
+    use crate::model::{TaskIsolation, TaskIsolationKind};
+
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Settle one of these resumed checks", &[&coordinator]),
+    );
+    fixture.message(
+        &GroupActor::user(),
+        request("Keep this resumed check for later", &[&coordinator]),
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let settled = turn.work[0].id.clone();
+    let unreported = turn.work[1].id.clone();
+    fixture
+        .store
+        .settle_member_work(
+            &turn,
+            &WorkSettlementDraft {
+                work_ids: vec![settled],
+                status: WorkStatus::Completed,
+                summary: "Completed one check.".into(),
+                wait_for: Vec::new(),
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(&turn, &outcome("Finished the reported work"), None)
+        .unwrap();
+    fixture.message(
+        &GroupActor::user(),
+        request("A dependency must remain waiting", &[&coordinator]),
+    );
+    let dependency = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let dependency_work = dependency.work[0].id.clone();
+    let dependency_request = fixture
+        .store
+        .request_member_work(
+            &dependency,
+            &request(
+                "Ask methods before the dependency can finish",
+                &[fixture.member("Methods")],
+            ),
+            std::slice::from_ref(&dependency_work),
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(&dependency, &outcome("Delegated the dependency"), None)
+        .unwrap();
+    let workspace = fixture.store.root().join("resume-workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    assert!(fixture
+        .store
+        .set_isolation(
+            &fixture.task.id,
+            fixture.task.execution_generation,
+            &TaskIsolation {
+                kind: TaskIsolationKind::StagedProject,
+                execution_root: workspace.to_string_lossy().into_owned(),
+                baseline_root: fixture
+                    .store
+                    .root()
+                    .join("resume-baseline")
+                    .to_string_lossy()
+                    .into_owned(),
+                source_revision: "snapshot:resume".into(),
+                baseline_hash: "resume".into(),
+                baseline: Vec::new(),
+                allowed_paths: Vec::new(),
+                created_at: now_ms(),
+                skipped: Vec::new(),
+                initial_git_status: None,
+                initial_git_status_complete: None,
+            },
+        )
+        .unwrap());
+    fixture
+        .store
+        .finish_failure(
+            &fixture.task.id,
+            fixture.task.execution_generation,
+            "stopped",
+        )
+        .unwrap();
+    fixture
+        .store
+        .retry_with(&fixture.task.id, RetryMode::Resume)
+        .unwrap();
+    let resumed = fixture.snapshot().work;
+    assert_eq!(
+        resumed
+            .iter()
+            .find(|work| work.id == unreported)
+            .unwrap()
+            .status,
+        WorkStatus::Pending
+    );
+    let dependency = resumed
+        .iter()
+        .find(|work| work.id == dependency_work)
+        .unwrap();
+    assert_eq!(dependency.status, WorkStatus::Waiting);
+    assert!(!dependency.waits.is_empty());
+    assert!(dependency
+        .waits
+        .iter()
+        .any(|wait| wait.request_message_id == dependency_request.id));
+}
+
+#[test]
+fn mixed_targeted_and_legacy_waiting_binds_remaining_running_work() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Resolve the targeted question", &[&coordinator]),
+    );
+    fixture.message(
+        &GroupActor::user(),
+        request("Resolve the legacy question", &[&coordinator]),
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let targeted = turn.work[0].id.clone();
+    let legacy = turn.work[1].id.clone();
+    let targeted_request = fixture
+        .store
+        .request_member_work(
+            &turn,
+            &request("Ask methods about the targeted question", &[&methods]),
+            std::slice::from_ref(&targeted),
+        )
+        .unwrap();
+    let legacy_request = fixture
+        .store
+        .group_message(
+            "paper",
+            fixture.id(),
+            &GroupActor {
+                kind: ActorKind::Member,
+                id: coordinator.clone(),
+                execution_id: Some(turn.execution.id.clone()),
+            },
+            &request("Also ask methods in the legacy way", &[&methods]),
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(
+            &turn,
+            &waiting_outcome("Waiting for both methods answers"),
+            None,
+        )
+        .unwrap();
+    let work = fixture.snapshot().work;
+    let targeted = work.iter().find(|work| work.id == targeted).unwrap();
+    let legacy = work.iter().find(|work| work.id == legacy).unwrap();
+    assert_eq!(targeted.status, WorkStatus::Waiting);
+    assert!(targeted
+        .waits
+        .iter()
+        .any(|wait| wait.request_message_id == targeted_request.id));
+    assert_eq!(legacy.status, WorkStatus::Waiting);
+    assert!(legacy
+        .waits
+        .iter()
+        .any(|wait| wait.request_message_id == legacy_request.id));
+}
+
+#[test]
+fn plain_member_reply_does_not_create_an_acknowledgement_loop() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    let cause = fixture.message(
+        &actor(&methods),
+        MessageDraft {
+            body: "Please inspect this without requesting another reply".into(),
+            recipients: vec![coordinator],
+            request_work: false,
+            ..Default::default()
+        },
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .settle_member_work(
+            &turn,
+            &WorkSettlementDraft {
+                work_ids: vec![turn.work[0].id.clone()],
+                status: WorkStatus::Completed,
+                summary: "Handled the plain member message.".into(),
+                wait_for: Vec::new(),
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(&turn, &outcome("Handled the plain member message"), None)
+        .unwrap();
+    let snapshot = fixture.snapshot();
+    assert!(snapshot
+        .work
+        .iter()
+        .find(|work| work.id == turn.work[0].id)
+        .unwrap()
+        .result_message_id
+        .is_none());
+    assert!(!snapshot
+        .messages
+        .iter()
+        .any(|message| message.content.reply_to.as_deref() == Some(&cause.id)));
+}
+
+#[test]
+fn failed_plain_member_reply_does_not_create_an_acknowledgement_loop() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    let cause = fixture.message(
+        &actor(&methods),
+        MessageDraft {
+            body: "Please inspect this without requesting another reply".into(),
+            recipients: vec![coordinator],
+            request_work: false,
+            ..Default::default()
+        },
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(
+            &turn,
+            &outcome("The plain member message could not be handled"),
+            Some("provider failed"),
+        )
+        .unwrap();
+    let snapshot = fixture.snapshot();
+    assert!(snapshot
+        .work
+        .iter()
+        .find(|work| work.id == turn.work[0].id)
+        .unwrap()
+        .result_message_id
+        .is_none());
+    assert!(!snapshot
+        .messages
+        .iter()
+        .any(|message| message.content.reply_to.as_deref() == Some(&cause.id)));
+}
+
+#[test]
+fn waiting_without_dependencies_is_private_fallback_and_can_be_rebound() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Resolve the first question", &[&coordinator]),
+    );
+    let first = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let work = first.work[0].clone();
+    fixture
+        .store
+        .finish_member_turn(
+            &first,
+            &waiting_outcome("Paused for a later decision"),
+            None,
+        )
+        .unwrap();
+    let private = fixture
+        .snapshot()
+        .work
+        .into_iter()
+        .find(|item| item.id == work.id)
+        .unwrap();
+    assert_eq!(private.status, WorkStatus::Waiting);
+    assert!(private.waits.is_empty());
+    assert!(!fixture
+        .store
+        .member_execution_has_settlements(&first.execution.id)
+        .unwrap());
+    assert!(fixture
+        .store
+        .request_member_work(
+            &first,
+            &request("A finished turn cannot issue another request", &[&methods]),
+            std::slice::from_ref(&work.id),
+        )
+        .is_err());
+    let unrelated = fixture.message(
+        &GroupActor::user(),
+        request("Handle an unrelated second question", &[&coordinator]),
+    );
+    let second = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.member.id, coordinator);
+    assert_eq!(second.work.len(), 1);
+    assert_eq!(second.work[0].cause_id, unrelated.id);
+    assert!(second.work.iter().all(|item| item.id != work.id));
+    let request = fixture
+        .store
+        .request_member_work(
+            &second,
+            &request("Ask methods for the later decision", &[&methods]),
+            &[second.work[0].id.clone()],
+        )
+        .unwrap();
+    let second_waiting = second.work[0].id.clone();
+    let colleague = fixture
+        .store
+        .group_snapshot("paper", fixture.id(), 0)
+        .unwrap()
+        .work
+        .into_iter()
+        .find(|item| item.id == second_waiting)
+        .unwrap();
+    assert_eq!(colleague.status, WorkStatus::Waiting);
+    fixture
+        .store
+        .finish_member_turn(&second, &outcome("Delegated the second question"), None)
+        .unwrap();
+    let methods_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_turn.member.id, methods);
+    fixture
+        .store
+        .finish_member_turn(
+            &methods_turn,
+            &outcome("Methods supplied the decision"),
+            None,
+        )
+        .unwrap();
+    let third = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(third.member.id, coordinator);
+    assert!(third.work.iter().all(|item| item.id != work.id));
+    assert!(third.work.iter().any(|item| item.id == second_waiting));
+    fixture
+        .store
+        .settle_member_work(
+            &third,
+            &WorkSettlementDraft {
+                work_ids: vec![work.id.clone()],
+                status: WorkStatus::Waiting,
+                summary: "Still waiting on the explicit methods request.".into(),
+                wait_for: vec![request.id.clone()],
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap_err();
+    fixture
+        .store
+        .settle_member_work(
+            &third,
+            &WorkSettlementDraft {
+                work_ids: vec![work.id.clone()],
+                status: WorkStatus::Completed,
+                summary: "Integrated the explicit methods decision.".into(),
+                wait_for: Vec::new(),
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap();
+    let rebound = fixture
+        .snapshot()
+        .work
+        .into_iter()
+        .find(|item| item.id == work.id)
+        .unwrap();
+    assert_eq!(rebound.status, WorkStatus::Completed);
+    assert!(rebound
+        .resolution
+        .as_ref()
+        .unwrap()
+        .summary
+        .contains("Integrated"));
+}
+
+#[test]
+fn exact_group_message_record_is_scoped_to_project_task_and_group() {
+    let fixture = Fixture::new();
+    let message = fixture.message(
+        &GroupActor::user(),
+        request("Read this exact request", &[fixture.member("Coordinator")]),
+    );
+    assert_eq!(
+        fixture
+            .store
+            .group_message_record("paper", &fixture.task.id, fixture.id(), &message.id)
+            .unwrap(),
+        Some(message.clone())
+    );
+    assert_eq!(
+        fixture
+            .store
+            .group_message_record("paper", &fixture.task.id, fixture.id(), "message-missing")
+            .unwrap(),
+        None
+    );
+    assert!(fixture
+        .store
+        .group_message_record("paper", "other-task", fixture.id(), &message.id)
+        .is_err());
+}
+
+#[test]
+fn settlement_stamp_is_scoped_to_the_execution_that_used_it() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Resolve this request", &[&coordinator]),
+    );
+    let first = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let work = first.work[0].id.clone();
+    fixture
+        .store
+        .settle_member_work(
+            &first,
+            &WorkSettlementDraft {
+                work_ids: vec![work.clone()],
+                status: WorkStatus::Waiting,
+                summary: "Waiting for the delegated request.".into(),
+                wait_for: vec![
+                    fixture
+                        .message(
+                            &actor(&coordinator),
+                            request("Delegate to methods", &[fixture.member("Methods")]),
+                        )
+                        .id,
+                ],
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap_err();
+    fixture
+        .store
+        .finish_member_turn(&first, &waiting_outcome("Waiting privately"), None)
+        .unwrap();
+    fixture
+        .store
+        .group_message(
+            "paper",
+            fixture.id(),
+            &GroupActor::user(),
+            &request("Unrelated work", &[&coordinator]),
+        )
+        .unwrap();
+    let second = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.member.id, coordinator);
+    assert!(second.work.iter().all(|item| item.id != work));
+    assert!(!fixture
+        .store
+        .member_execution_has_settlements(&second.execution.id)
+        .unwrap());
+}
+
+#[test]
+fn failed_execution_fails_running_work_and_notifies_each_waiting_requester() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    let first = fixture.message(
+        &actor(&coordinator),
+        request("First evidence request", &[&methods]),
+    );
+    let second = fixture.message(
+        &actor(&coordinator),
+        request("Second evidence request", &[&methods]),
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.member.id, methods);
+    assert_eq!(turn.work.len(), 2);
+    let completed = turn.work[0].id.clone();
+    fixture
+        .store
+        .settle_member_work(
+            &turn,
+            &WorkSettlementDraft {
+                work_ids: vec![completed.clone()],
+                status: WorkStatus::Completed,
+                summary: "The first request completed before the failure.".into(),
+                wait_for: Vec::new(),
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap();
+    let failure = fixture
+        .store
+        .finish_member_turn(
+            &turn,
+            &outcome("The execution failed"),
+            Some("provider failed"),
+        )
+        .unwrap();
+    let snapshot = fixture.snapshot();
+    assert_eq!(
+        snapshot
+            .executions
+            .iter()
+            .find(|execution| execution.id == turn.execution.id)
+            .unwrap()
+            .status,
+        "failed"
+    );
+    let completed = snapshot
+        .work
+        .iter()
+        .find(|work| work.id == completed)
+        .unwrap();
+    assert_eq!(completed.status, WorkStatus::Completed);
+    let failed = snapshot
+        .work
+        .iter()
+        .find(|work| work.id != completed.id)
+        .unwrap();
+    assert_eq!(failed.status, WorkStatus::Failed);
+    assert_eq!(
+        failed.resolution.as_ref().unwrap().summary,
+        "provider failed"
+    );
+    assert_eq!(
+        snapshot
+            .messages
+            .iter()
+            .filter(|message| {
+                message.content.body == "provider failed"
+                    && message.content.reply_to.as_deref() == Some(&failed.cause_id)
+                    && message.content.recipients == vec![coordinator.clone()]
+            })
+            .count(),
+        1
+    );
+    assert_eq!(failure.content.reply_to.as_deref(), None);
+    assert!(first.id == failed.cause_id || second.id == failed.cause_id);
+}
+
+#[test]
+fn failed_user_request_persists_reply_without_a_member_recipient() {
+    let fixture = Fixture::new();
+    let coordinator = fixture.member("Coordinator").to_owned();
+    let user_request = fixture.message(
+        &GroupActor::user(),
+        request("Resolve this user request", &[&coordinator]),
+    );
+    let turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.member.id, coordinator);
+
+    fixture
+        .store
+        .finish_member_turn(
+            &turn,
+            &outcome("The execution failed"),
+            Some("provider failed"),
+        )
+        .unwrap();
+
+    let reopened = TaskStore::new(fixture.store.root().to_path_buf()).unwrap();
+    let snapshot = reopened.group_snapshot("paper", fixture.id(), 0).unwrap();
+    let failed = snapshot
+        .work
+        .iter()
+        .find(|work| work.cause_id == user_request.id)
+        .unwrap();
+    assert_eq!(failed.status, WorkStatus::Failed);
+    let reply_id = failed.result_message_id.as_ref().unwrap();
+    let reply = snapshot
+        .messages
+        .iter()
+        .find(|message| &message.id == reply_id)
+        .unwrap();
+    assert_eq!(reply.content.body, "provider failed");
+    assert_eq!(
+        reply.content.reply_to.as_deref(),
+        Some(user_request.id.as_str())
+    );
+    assert!(reply.content.recipients.is_empty());
+}
+
+#[test]
+fn version_fourteen_migration_adds_empty_settlement_fields_to_existing_work() {
+    let fixture = Fixture::new();
+    let methods = fixture.member("Methods").to_owned();
+    let message = fixture.message(
+        &GroupActor::user(),
+        request("Preserve this legacy work", &[&methods]),
+    );
+    let before = fixture
+        .snapshot()
+        .work
+        .into_iter()
+        .find(|work| work.cause_id == message.id)
+        .unwrap();
+    let database = fixture.store.open().unwrap();
+    database
+        .execute_batch(
+            "ALTER TABLE collaboration_work DROP COLUMN resolution_json;
+             ALTER TABLE collaboration_work DROP COLUMN waits_json;
+             ALTER TABLE collaboration_work DROP COLUMN settled_execution_id;
+             PRAGMA user_version = 14;",
+        )
+        .unwrap();
+    drop(database);
+
+    let reopened = TaskStore::new(fixture.store.root().to_path_buf()).unwrap();
+    let database = reopened.open().unwrap();
+    let version: i64 = database
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, crate::store::SCHEMA_VERSION);
+    let columns = database
+        .prepare("PRAGMA table_info(collaboration_work)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<BTreeSet<_>, _>>()
+        .unwrap();
+    assert!(columns.contains("resolution_json"));
+    assert!(columns.contains("waits_json"));
+    assert!(columns.contains("settled_execution_id"));
+    drop(database);
+
+    let after = reopened
+        .group_snapshot("paper", fixture.id(), 0)
+        .unwrap()
+        .work
+        .into_iter()
+        .find(|work| work.id == before.id)
+        .unwrap();
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.cause_kind, before.cause_kind);
+    assert_eq!(after.cause_id, before.cause_id);
+    assert_eq!(after.reasons, before.reasons);
+    assert!(after.resolution.is_none());
+    assert!(after.waits.is_empty());
+}
