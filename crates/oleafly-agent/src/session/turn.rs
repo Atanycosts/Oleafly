@@ -6,7 +6,9 @@ use crate::error::{AgentError, Result};
 use crate::event::AgentEvent;
 use crate::message::{ContentPart, Message, ProviderWire, Role};
 use crate::provider::{Resolved, Wire};
-use crate::run::{RunConfig, RunOutcome, SteeredInput, ToolOutput, ToolPipeline, ToolRunner};
+use crate::run::{
+    RunConfig, RunOutcome, SteeredInput, ToolBatchDecision, ToolOutput, ToolPipeline, ToolRunner,
+};
 use crate::session::compact;
 use crate::session::context_window::{is_history_limit, HistoryBudget};
 use crate::stream::{
@@ -182,6 +184,22 @@ where
             result.suspended = true;
             result.history = request.messages;
             return Ok(result);
+        }
+        if let Some(after_tool_batch) = &pipeline.after_tool_batch {
+            match after_tool_batch() {
+                Ok(ToolBatchDecision::Continue) => {}
+                Ok(ToolBatchDecision::Checkpoint) => {
+                    result.checkpointed = true;
+                    result.history = request.messages;
+                    return Ok(result);
+                }
+                Err(error) => {
+                    result.usage = ledger.usage.total;
+                    let mut result = finish_with_stream_error(result, error, &mut on_event);
+                    result.history = request.messages;
+                    return Ok(result);
+                }
+            }
         }
         if !has_next_step {
             continue;
@@ -1677,6 +1695,205 @@ mod tests {
 
         pub(super) fn quiet_runner() -> ToolRunner {
             Arc::new(|_| Box::pin(async { ToolOutput::text("contents") }))
+        }
+
+        fn two_tool_call_stream() -> String {
+            format!(
+                "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{}"}}]}}]}),
+                json!({"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call-2","type":"function","function":{"name":"write_file","arguments":"{}"}}]}}]}),
+                json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+            )
+        }
+
+        #[tokio::test]
+        async fn after_tool_batch_checkpoint_keeps_the_complete_batch_and_skips_the_provider() {
+            let script = serve(vec![(
+                "200 OK",
+                "text/event-stream",
+                two_tool_call_stream(),
+            )]);
+            let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let tool_runs = ran.clone();
+            let runner: ToolRunner = Arc::new(move |call| {
+                let tool_runs = tool_runs.clone();
+                Box::pin(async move {
+                    tool_runs.lock().unwrap().push(call.id.clone());
+                    ToolOutput::text(format!("result-{}", call.id))
+                })
+            });
+            let checked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let check_count = checked.clone();
+            let outcome = run_with(
+                &script,
+                CompletionRequest::prompt("system", "read and write"),
+                ToolPipeline {
+                    after_tool_batch: Some(Arc::new(move || {
+                        check_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(ToolBatchDecision::Checkpoint)
+                    })),
+                    ..ToolPipeline::default()
+                },
+                runner,
+            )
+            .await;
+
+            assert!(outcome.checkpointed);
+            assert!(!outcome.suspended);
+            assert!(!outcome.stopped_at_cap);
+            assert_eq!(checked.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                *ran.lock().unwrap(),
+                vec!["call-1".to_owned(), "call-2".to_owned()]
+            );
+            assert_eq!(script.requests.lock().unwrap().len(), 1);
+            assert_eq!(outcome.history.len(), 3);
+            let results = &outcome.history[2].content;
+            assert_eq!(results.len(), 2);
+            assert!(matches!(
+                &results[0],
+                ContentPart::ToolResult { id, output, .. }
+                    if id == "call-1" && output == "result-call-1"
+            ));
+            assert!(matches!(
+                &results[1],
+                ContentPart::ToolResult { id, output, .. }
+                    if id == "call-2" && output == "result-call-2"
+            ));
+        }
+
+        #[tokio::test]
+        async fn after_tool_batch_checkpoint_continues_when_the_callback_accepts_it() {
+            let script = serve(vec![
+                ("200 OK", "text/event-stream", tool_call_stream("read_file")),
+                ("200 OK", "text/event-stream", text_stream("finished")),
+            ]);
+            let checked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let check_count = checked.clone();
+            let outcome = run_with(
+                &script,
+                CompletionRequest::prompt("system", "read the file"),
+                ToolPipeline {
+                    after_tool_batch: Some(Arc::new(move || {
+                        check_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(ToolBatchDecision::Continue)
+                    })),
+                    ..ToolPipeline::default()
+                },
+                quiet_runner(),
+            )
+            .await;
+
+            assert!(!outcome.checkpointed);
+            assert_eq!(checked.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(outcome.text, "finished");
+            assert_eq!(script.requests.lock().unwrap().len(), 2);
+        }
+
+        #[tokio::test]
+        async fn after_tool_batch_checkpoint_yields_to_an_explicit_suspend() {
+            let script = serve(vec![(
+                "200 OK",
+                "text/event-stream",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n".into(),
+            )]);
+            let suspend = CancellationToken::new();
+            let signal = suspend.clone();
+            let runner: ToolRunner = Arc::new(move |_| {
+                signal.cancel();
+                Box::pin(async { ToolOutput::text("contents") })
+            });
+            let checked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let check_count = checked.clone();
+            let outcome = run_with(
+                &script,
+                CompletionRequest::prompt("system", "read the file"),
+                ToolPipeline {
+                    suspend: Some(suspend),
+                    after_tool_batch: Some(Arc::new(move || {
+                        check_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(ToolBatchDecision::Checkpoint)
+                    })),
+                    ..ToolPipeline::default()
+                },
+                runner,
+            )
+            .await;
+
+            assert!(outcome.suspended);
+            assert!(!outcome.checkpointed);
+            assert_eq!(checked.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(script.requests.lock().unwrap().len(), 1);
+            assert_eq!(outcome.history.len(), 3);
+        }
+
+        #[tokio::test]
+        async fn after_tool_batch_checkpoint_error_keeps_the_complete_history() {
+            let script = serve(vec![(
+                "200 OK",
+                "text/event-stream",
+                tool_call_stream("read_file"),
+            )]);
+            let outcome = run_with(
+                &script,
+                CompletionRequest::prompt("system", "read the file"),
+                ToolPipeline {
+                    after_tool_batch: Some(Arc::new(|| {
+                        Err(AgentError::Decode("checkpoint query failed".into()))
+                    })),
+                    ..ToolPipeline::default()
+                },
+                quiet_runner(),
+            )
+            .await;
+
+            assert!(!outcome.checkpointed);
+            assert!(!outcome.suspended);
+            assert_eq!(
+                outcome.error.as_deref(),
+                Some("Unexpected response from the provider. checkpoint query failed")
+            );
+            assert_eq!(outcome.error_kind.as_deref(), Some("decode"));
+            assert_eq!(script.requests.lock().unwrap().len(), 1);
+            assert_eq!(outcome.history.len(), 3);
+            assert!(matches!(
+                &outcome.history[2].content[0],
+                ContentPart::ToolResult { id, output, .. }
+                    if id == "call-1" && output == "contents"
+            ));
+        }
+
+        #[tokio::test]
+        async fn after_tool_batch_checkpoint_works_on_the_last_allowed_step() {
+            let script = serve(vec![(
+                "200 OK",
+                "text/event-stream",
+                tool_call_stream("read_file"),
+            )]);
+            let outcome = crate::run::run_agent_with_pipeline(
+                &crate::build_client().unwrap(),
+                &resolved(script.address),
+                CompletionRequest::prompt("system", "read the file"),
+                &RunConfig {
+                    max_steps: 1,
+                    max_retries: 0,
+                    ..RunConfig::default()
+                },
+                ToolPipeline {
+                    after_tool_batch: Some(Arc::new(|| Ok(ToolBatchDecision::Checkpoint))),
+                    ..ToolPipeline::default()
+                },
+                None,
+                quiet_runner(),
+                |_| {},
+            )
+            .await
+            .unwrap();
+
+            assert!(outcome.checkpointed);
+            assert!(!outcome.stopped_at_cap);
+            assert_eq!(outcome.history.len(), 3);
+            assert_eq!(script.requests.lock().unwrap().len(), 1);
         }
 
         #[tokio::test]

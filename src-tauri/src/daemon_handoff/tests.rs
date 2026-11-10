@@ -152,6 +152,7 @@ struct ParkedRuntime {
 fn outcome() -> TaskRuntimeOutcome {
     TaskRuntimeOutcome {
         waiting_for_reply: false,
+        checkpoint: None,
         summary: String::new(),
         artifacts: Vec::new(),
         native_session_id: None,

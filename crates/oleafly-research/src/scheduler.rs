@@ -1558,6 +1558,7 @@ impl ResearchTaskState {
                 if outcome.is_err() {
                     return RunEnd::Finished(Ok(TaskRuntimeOutcome {
                         waiting_for_reply: false,
+                        checkpoint: None,
                         summary: String::new(),
                         artifacts: Vec::new(),
                         native_session_id: None,
@@ -1854,6 +1855,7 @@ impl ResearchTaskState {
                 Err(error) => {
                     let empty = TaskRuntimeOutcome {
                         waiting_for_reply: false,
+                        checkpoint: None,
                         summary: String::new(),
                         artifacts: Vec::new(),
                         native_session_id: None,
@@ -1872,7 +1874,13 @@ impl ResearchTaskState {
                     return Err(error);
                 }
             };
-            let message = store.finish_member_turn(&turn, &result, None)?;
+            let checkpointed = result.checkpoint.is_some();
+            let message = if checkpointed {
+                store.checkpoint_member_turn(&turn, &result)?;
+                None
+            } else {
+                Some(store.finish_member_turn(&turn, &result, None)?)
+            };
             summary.push_str(&format!(
                 "\n\n{}: {}",
                 turn.member.config.name, result.summary
@@ -1911,7 +1919,9 @@ impl ResearchTaskState {
                     member_id: turn.member.id.clone(),
                     execution_id: turn.execution.id.clone(),
                     trigger_ids: turn.work.iter().map(|w| w.id.clone()).collect(),
-                    status: if result.waiting_for_reply {
+                    status: if checkpointed {
+                        "checkpointed"
+                    } else if result.waiting_for_reply {
                         "waiting"
                     } else {
                         "completed"
@@ -1919,7 +1929,7 @@ impl ResearchTaskState {
                     .into(),
                 },
             });
-            if !result.waiting_for_reply {
+            if let Some(message) = message.filter(|_| !result.waiting_for_reply) {
                 store.record_group_event(
                     &task.project_id,
                     &turn.group.id,
@@ -1938,6 +1948,7 @@ impl ResearchTaskState {
         }
         Ok(TaskRuntimeOutcome {
             waiting_for_reply: false,
+            checkpoint: None,
             summary,
             artifacts,
             native_session_id: None,
@@ -2157,6 +2168,16 @@ impl ResearchTaskState {
                 return;
             }
         };
+        if task.stop_reason.is_none() {
+            match store.park_member_checkpoint(task) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = store.finish_failure(&task.id, generation, &error);
+                    return;
+                }
+            }
+        }
         let Ok(current) = store.require(&task.id) else {
             return;
         };

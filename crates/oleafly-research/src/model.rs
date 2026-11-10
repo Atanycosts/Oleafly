@@ -873,6 +873,9 @@ pub struct TaskRuntimeOutcome {
     /// This member yielded to colleague work; its claimed causes remain open.
     #[serde(default)]
     pub waiting_for_reply: bool,
+    /// A complete tool batch yielded to the group's existing scheduler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<crate::collaboration::MemberCheckpointRequest>,
     #[serde(default)]
     pub artifacts: Vec<TaskArtifact>,
     pub native_session_id: Option<String>,

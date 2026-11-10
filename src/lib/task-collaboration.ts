@@ -188,7 +188,7 @@ export interface GroupWork {
   causeKind: string;
   causeId: string;
   priority: number;
-  status: "pending" | "running" | "waiting" | "completed" | "failed";
+  status: "pending" | "running" | "waiting" | "checkpointed" | "completed" | "failed";
   executionId: string | null;
   resultMessageId: string | null;
   reasons?: WorkReason[];

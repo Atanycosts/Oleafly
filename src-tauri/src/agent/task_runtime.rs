@@ -823,6 +823,7 @@ impl AcpTaskAdapter {
         let mut stop_reason = None;
         let mut result = TaskRuntimeOutcome {
             waiting_for_reply: false,
+            checkpoint: None,
             summary: String::new(),
             artifacts: Vec::new(),
             native_session_id: before.native_session_id.clone(),
@@ -1046,6 +1047,7 @@ mod tests {
         };
         let mut outcome = TaskRuntimeOutcome {
             waiting_for_reply: false,
+            checkpoint: None,
             summary: String::new(),
             artifacts: Vec::new(),
             native_session_id: None,
@@ -1060,6 +1062,7 @@ mod tests {
     fn acp_tool_calls_keep_their_identity_status_and_payload() {
         let mut outcome = TaskRuntimeOutcome {
             waiting_for_reply: false,
+            checkpoint: None,
             summary: String::new(),
             artifacts: Vec::new(),
             native_session_id: None,
@@ -1317,6 +1320,7 @@ mod tests {
         };
         let mut outcome = TaskRuntimeOutcome {
             waiting_for_reply: false,
+            checkpoint: None,
             summary: String::new(),
             artifacts: Vec::new(),
             native_session_id: None,

@@ -147,8 +147,15 @@ pub enum WorkStatus {
     Pending,
     Running,
     Waiting,
+    Checkpointed,
     Completed,
     Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberCheckpointRequest {
+    pub event_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

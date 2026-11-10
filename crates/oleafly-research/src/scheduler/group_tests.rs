@@ -304,6 +304,7 @@ fn complete(turn: StartedTurn, summary: &str, input: u64, output: u64) {
     turn.complete
         .send(Ok(TaskRuntimeOutcome {
             summary: summary.into(),
+            checkpoint: None,
             artifacts: Vec::new(),
             native_session_id: None,
             input_tokens: Some(input),
@@ -1348,5 +1349,250 @@ async fn suspension_requeues_the_current_causes_and_does_not_start_the_next_memb
         .all(|work| work.execution_id.is_none() && work.result_message_id.is_none()));
     assert!(fixture.starts.try_recv().is_err());
     assert!(lock(&fixture.base_cancellations).is_empty());
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn checkpoint_scheduler_runs_colleague_then_restores_the_unfinished_owner_work() {
+    let mut fixture = GroupFixture::with_builtin_responsibility_assessment();
+    fixture.start().await;
+    let coordinator = fixture.next().await;
+    let owner = coordinator
+        .context
+        .collaboration
+        .as_ref()
+        .unwrap()
+        .member
+        .id
+        .clone();
+    let original_work = coordinator.context.collaboration.as_ref().unwrap().work[0]
+        .id
+        .clone();
+    std::fs::write(
+        Path::new(&coordinator.context.execution_root).join("main.tex"),
+        REVISED,
+    )
+    .unwrap();
+    let store = fixture.store();
+    store
+        .record_group_file_change(
+            "paper",
+            &fixture.group.group.id,
+            &GroupObject {
+                kind: "file".into(),
+                id: "main.tex".into(),
+                path: Some("main.tex".into()),
+                revision: Some(crate::observations::content_hash(REVISED.as_bytes())),
+            },
+        )
+        .unwrap();
+    let request = store
+        .member_checkpoint_request(coordinator.context.collaboration.as_ref().unwrap())
+        .unwrap()
+        .unwrap();
+    coordinator
+        .complete
+        .send(Ok(TaskRuntimeOutcome {
+            waiting_for_reply: false,
+            checkpoint: Some(request),
+            summary: "Batch yielded before further drafting".into(),
+            artifacts: vec![],
+            native_session_id: None,
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+        }))
+        .unwrap();
+    let assessment = fixture.assessment().await;
+    let methods = fixture.member("Methods");
+    let event_id = assessment.batch.inputs[0].event.id.clone();
+    assert!(!assessment.batch.inputs[0]
+        .eligible_member_ids
+        .contains(&owner));
+    assessment.answer(vec![ResponsibilityDecision {
+        event_id,
+        member_id: methods.clone(),
+        reason: "Methods checks the changed result.".into(),
+    }]);
+    let colleague = fixture.next().await;
+    assert_eq!(
+        colleague.context.collaboration.as_ref().unwrap().member.id,
+        methods
+    );
+    assert_eq!(
+        fixture
+            .snapshot()
+            .work
+            .iter()
+            .find(|w| w.id == original_work)
+            .unwrap()
+            .status,
+        WorkStatus::Checkpointed
+    );
+    complete(
+        colleague,
+        "Retain the negative counterexample in the result",
+        20,
+        3,
+    );
+    let resumed = fixture.next().await;
+    let turn = resumed.context.collaboration.as_ref().unwrap();
+    assert_eq!(turn.member.id, owner);
+    assert!(turn.work.iter().any(|w| w.id == original_work));
+    assert!(turn
+        .events
+        .iter()
+        .any(|event| event.kind == "member_checkpoint_resumed"
+            && event
+                .evidence
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("negative counterexample")));
+    complete(
+        resumed,
+        "Incorporated the colleague result and finished the original work",
+        5,
+        1,
+    );
+    let task = settled(&fixture.state, &fixture.task.id).await;
+    assert_eq!(task.status, ResearchTaskStatus::AwaitingReview);
+    assert_eq!(task.result.unwrap().input_tokens, Some(42));
+    let snapshot = fixture.snapshot();
+    assert_eq!(snapshot.executions.len(), 3);
+    assert_eq!(
+        snapshot
+            .executions
+            .iter()
+            .filter(|e| e.status == "checkpointed")
+            .count(),
+        1
+    );
+    assert_eq!(
+        snapshot
+            .events
+            .iter()
+            .filter(|e| e.kind == "member_finished")
+            .count(),
+        2
+    );
+    assert!(snapshot
+        .work
+        .iter()
+        .all(|w| w.status == WorkStatus::Completed));
+    stop(&fixture.state).await;
+}
+
+#[tokio::test]
+async fn checkpoint_scheduler_parks_paused_work_and_obeys_budget_before_resuming() {
+    let mut fixture = GroupFixture::with_builtin_responsibility_assessment();
+    fixture.start().await;
+    let initial = fixture.next().await;
+    let turn = initial.context.collaboration.as_ref().unwrap();
+    let original_work = turn.work[0].id.clone();
+    let store = fixture.store();
+    store
+        .record_group_file_change(
+            "paper",
+            &fixture.group.group.id,
+            &GroupObject {
+                kind: "file".into(),
+                id: "main.tex".into(),
+                path: Some("main.tex".into()),
+                revision: Some("retained-v2".into()),
+            },
+        )
+        .unwrap();
+    let methods = fixture.member("Methods");
+    store
+        .group_message(
+            "paper",
+            &fixture.group.group.id,
+            &GroupActor::user(),
+            &MessageDraft {
+                body: "Inspect the retained evidence".into(),
+                recipients: vec![methods.clone()],
+                request_work: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let request = store.member_checkpoint_request(turn).unwrap().unwrap();
+    initial
+        .complete
+        .send(Ok(TaskRuntimeOutcome {
+            waiting_for_reply: false,
+            checkpoint: Some(request),
+            summary: "Yielded".into(),
+            artifacts: vec![],
+            native_session_id: None,
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+        }))
+        .unwrap();
+    let assessment = fixture.assessment().await;
+    store
+        .set_member_paused("paper", &fixture.group.group.id, &methods, true)
+        .unwrap();
+    assessment.answer(vec![]);
+    let parked =
+        settled_with_status(&fixture.state, &fixture.task.id, ResearchTaskStatus::Queued).await;
+    assert!(!parked.start_requested);
+    assert!(parked.stop_reason.is_none());
+    assert!(matches!(
+        parked.pending_start,
+        Some(PendingStart::Resume {
+            reason: ResumeReason::Collaboration,
+            ..
+        })
+    ));
+    assert_eq!(
+        fixture
+            .snapshot()
+            .work
+            .iter()
+            .find(|work| work.id == original_work)
+            .unwrap()
+            .status,
+        WorkStatus::Checkpointed
+    );
+    assert!(fixture.starts.try_recv().is_err());
+    let database = rusqlite::Connection::open(store.root().join("tasks.sqlite3")).unwrap();
+    database
+        .execute(
+            "UPDATE research_tasks SET stop_reason='budget_cost' WHERE id=?1",
+            [&fixture.task.id],
+        )
+        .unwrap();
+    store
+        .set_member_paused("paper", &fixture.group.group.id, &methods, false)
+        .unwrap();
+    assert!(store.queue_group_followups().unwrap().is_empty());
+    assert!(!store.require(&fixture.task.id).unwrap().start_requested);
+    assert!(fixture.starts.try_recv().is_err());
+    // Restore this fixture's budget marker to the ordinary no-stop state.
+    database
+        .execute(
+            "UPDATE research_tasks SET stop_reason=NULL WHERE id=?1",
+            [&fixture.task.id],
+        )
+        .unwrap();
+    fixture.state.launch_ready().await.unwrap();
+    let colleague = fixture.next().await;
+    assert_eq!(
+        colleague.context.collaboration.as_ref().unwrap().member.id,
+        methods
+    );
+    complete(colleague, "Checked retained evidence", 20, 3);
+    let resumed = fixture.next().await;
+    assert!(resumed
+        .context
+        .collaboration
+        .as_ref()
+        .unwrap()
+        .work
+        .iter()
+        .any(|work| work.id == original_work));
+    complete(resumed, "Finished retained original work", 5, 1);
+    settled(&fixture.state, &fixture.task.id).await;
     stop(&fixture.state).await;
 }
