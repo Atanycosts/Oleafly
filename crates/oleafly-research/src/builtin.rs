@@ -301,6 +301,7 @@ struct ToolScope {
     member_turn: bool,
     member_yield: CancellationToken,
     yielded_message: Mutex<Option<String>>,
+    settled_batch: Mutex<Option<String>>,
     checkpoint: Mutex<Option<crate::collaboration::MemberCheckpointRequest>>,
     helper_sequence: AtomicU64,
     agent_turn_sequence: AtomicU64,
@@ -932,6 +933,7 @@ fn initial_task_tool(name: &str, group: bool) -> bool {
             name,
             "group_context"
                 | "group_message"
+                | "group_work_settle"
                 | "group_interest"
                 | "annotation_handle"
                 | "annotation_distill"
@@ -1353,6 +1355,7 @@ impl BuiltinTaskAdapter {
             member_turn: context.collaboration.is_some(),
             member_yield: suspend.child(),
             yielded_message: Mutex::new(None),
+            settled_batch: Mutex::new(None),
             checkpoint: Mutex::new(None),
             attention_error: Mutex::new(None),
             helper_sequence: AtomicU64::new(0),
@@ -1522,6 +1525,34 @@ impl BuiltinTaskAdapter {
                         else {
                             return Ok(ToolBatchDecision::Continue);
                         };
+                        if store
+                            .member_execution_has_settlements(&turn.execution.id)
+                            .map_err(oleafly_agent::AgentError::Decode)?
+                        {
+                            if turn.work.is_empty() {
+                                let snapshot = store
+                                    .group_snapshot(&scope.binding.project_id, &turn.group.id, 0)
+                                    .map_err(oleafly_agent::AgentError::Decode)?;
+                                let summary = snapshot
+                                    .work
+                                    .iter()
+                                    .filter(|work| {
+                                        work.execution_id.as_ref() == Some(&turn.execution.id)
+                                    })
+                                    .filter_map(|work| {
+                                        work.resolution.as_ref().map(|resolution| {
+                                            format!("{}: {}", work.id, resolution.summary)
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n\n");
+                                *lock(&scope.settled_batch) = Some(summary);
+                                return Ok(ToolBatchDecision::Checkpoint);
+                            }
+                            // An explicit wait affects only its selected work. Finish
+                            // the other claimed items before giving colleagues a turn.
+                            return Ok(ToolBatchDecision::Continue);
+                        }
                         let checkpoint = store
                             .member_checkpoint_request(&turn)
                             .map_err(oleafly_agent::AgentError::Decode)?;
@@ -1695,6 +1726,11 @@ impl BuiltinTaskAdapter {
                                 }) {
                                     if message.content.request_work
                                         && !message.content.recipients.is_empty()
+                                        && !value.is_some_and(|value| {
+                                            value["waitingWorkIds"]
+                                                .as_array()
+                                                .is_some_and(|ids| !ids.is_empty())
+                                        })
                                     {
                                         match crate::store::TaskStore::new(
                                             scope.binding.services.tasks_root.clone(),
@@ -1838,7 +1874,9 @@ impl TurnLoop<'_> {
         if let Ok(outcome) = &outcome {
             self.messages = outcome.history.clone();
             if outcome.checkpointed && !self.suspend.is_cancelled() {
-                self.summary = "Yielded after a complete tool batch so relevant colleagues can contribute. The original work remains unfinished.".into();
+                self.summary = lock(&self.scope.settled_batch)
+                    .clone()
+                    .unwrap_or_else(|| "Yielded after a complete tool batch so relevant colleagues can contribute. The original work remains unfinished.".into());
                 return ControlFlow::Break(Ok(None));
             }
             if outcome.suspended

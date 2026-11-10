@@ -1881,6 +1881,15 @@ impl ResearchTaskState {
             } else {
                 Some(store.finish_member_turn(&turn, &result, None)?)
             };
+            let member_status = store
+                .group_execution(
+                    &task.project_id,
+                    &task.id,
+                    &turn.group.id,
+                    &turn.execution.id,
+                )?
+                .ok_or("The member execution result is unavailable.")?
+                .status;
             summary.push_str(&format!(
                 "\n\n{}: {}",
                 turn.member.config.name, result.summary
@@ -1919,17 +1928,10 @@ impl ResearchTaskState {
                     member_id: turn.member.id.clone(),
                     execution_id: turn.execution.id.clone(),
                     trigger_ids: turn.work.iter().map(|w| w.id.clone()).collect(),
-                    status: if checkpointed {
-                        "checkpointed"
-                    } else if result.waiting_for_reply {
-                        "waiting"
-                    } else {
-                        "completed"
-                    }
-                    .into(),
+                    status: member_status.clone(),
                 },
             });
-            if let Some(message) = message.filter(|_| !result.waiting_for_reply) {
+            if let Some(message) = message.filter(|_| member_status == "completed") {
                 store.record_group_event(
                     &task.project_id,
                     &turn.group.id,

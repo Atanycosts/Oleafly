@@ -16,6 +16,9 @@ use crate::test_support::{FakeEnv, FakeHost, CHILD_PATIENCE};
 #[path = "dynamic_tests.rs"]
 mod dynamic_tests;
 
+#[path = "work_settlement_tests.rs"]
+mod work_settlement_tests;
+
 fn context(root: &Path) -> TaskRunContext {
     TaskRunContext {
         task_id: "task".into(),

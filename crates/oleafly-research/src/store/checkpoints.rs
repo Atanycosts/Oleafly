@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +52,8 @@ fn pending_colleagues_on(
     connection
         .prepare(
             "SELECT w.id FROM collaboration_work w JOIN collaboration_members m ON m.id=w.member_id
-             WHERE w.group_id=?1 AND w.member_id<>?2 AND m.paused=0 AND w.status='\"pending\"'
+             WHERE w.group_id=?1 AND w.member_id<>?2 AND m.paused=0
+               AND w.status='\"pending\"'
              ORDER BY w.priority DESC,w.created_at,w.id",
         )
         .and_then(|mut query| {
@@ -66,9 +68,44 @@ fn unfinished_colleagues_on(
     connection: &Connection,
     group: &str,
     owner: &str,
+    current_work_ids: &[String],
 ) -> Result<Vec<String>, String> {
-    connection.prepare("SELECT id FROM collaboration_work WHERE group_id=?1 AND member_id<>?2 AND status IN ('\"pending\"','\"waiting\"') ORDER BY created_at,id")
-        .and_then(|mut query|query.query_map(params![group,owner],|row|row.get(0))?.collect()).map_err(store_error)
+    let work = work_on(connection, group)?;
+    let paused = members_on(connection, group)?
+        .into_iter()
+        .filter(|member| member.paused)
+        .map(|member| member.id)
+        .collect::<BTreeSet<_>>();
+    let mut upstream = current_work_ids.iter().cloned().collect::<BTreeSet<_>>();
+    loop {
+        let before = upstream.len();
+        for item in work
+            .iter()
+            .filter(|work| work.status == WorkStatus::Waiting)
+        {
+            if item
+                .waits
+                .iter()
+                .flat_map(|wait| &wait.work)
+                .any(|dependency| upstream.contains(&dependency.work_id))
+            {
+                upstream.insert(item.id.clone());
+            }
+        }
+        if upstream.len() == before {
+            break;
+        }
+    }
+    Ok(work
+        .into_iter()
+        .filter(|work| {
+            work.member_id != owner
+                && !paused.contains(&work.member_id)
+                && !upstream.contains(&work.id)
+                && matches!(work.status, WorkStatus::Pending | WorkStatus::Waiting)
+        })
+        .map(|work| work.id)
+        .collect())
 }
 
 pub(super) fn pending_receipts_on(
@@ -145,15 +182,21 @@ pub(super) fn release_ready_on(tx: &Transaction<'_>, group: &TaskGroup) -> Resul
     let handoff = work
         .iter()
         .map(|work| {
-            let message = work
-                .result_message_id
-                .as_deref()
-                .map(|id| message_on(tx, &group.id, id))
-                .transpose()?;
+            let legacy_summary = if work.resolution.is_none() {
+                work.result_message_id
+                    .as_deref()
+                    .map(|id| message_on(tx, &group.id, id))
+                    .transpose()?
+                    .map(|message| message.content.body)
+            } else {
+                None
+            };
             Ok(
                 serde_json::json!({"workId":work.id,"memberId":work.member_id,"status":work.status,
             "executionId":work.execution_id,"resultMessageId":work.result_message_id,
-            "summary":message.map(|message|message.content.body)}),
+            "summary":work.resolution.as_ref().map(|resolution|&resolution.summary)
+                .or(legacy_summary.as_ref()),
+            "resultRefs":work.resolution.as_ref().map(|resolution|&resolution.result_refs)}),
             )
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -203,13 +246,29 @@ impl TaskStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
         let current = Self::require_on(&tx, &task.id)?;
-        if current.stop_reason.is_some() {
-            return Ok(false);
-        }
+        let budget_stopped = matches!(
+            current.stop_reason,
+            Some(
+                crate::model::StopReason::BudgetTime
+                    | crate::model::StopReason::BudgetCost
+                    | crate::model::StopReason::BudgetRuns
+            )
+        );
         let Some(group) = self.task_group(&task.project_id, &task.id)? else {
             return Ok(false);
         };
-        if open_on(&tx, &group.id)?.is_none() {
+        let pending: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM collaboration_work w
+                 JOIN collaboration_members m ON m.id=w.member_id
+                 WHERE w.group_id=?1
+                   AND (w.status IN ('\"waiting\"','\"checkpointed\"')
+                        OR (w.status='\"pending\"' AND m.paused=1)))",
+                [&group.id],
+                |row| row.get(0),
+            )
+            .map_err(store_error)?;
+        if !pending || budget_stopped {
             return Ok(false);
         }
         let isolation = current
@@ -220,7 +279,7 @@ impl TaskStore {
             reason: ResumeReason::Collaboration,
             previous_native_session_id: None,
         };
-        let changed=tx.execute("UPDATE research_tasks SET status='queued',start_requested=0,pending_start_json=?3,phase=NULL,updated_at=?4 WHERE id=?1 AND execution_generation=?2 AND status='running' AND cancel_requested=0",params![task.id,task.execution_generation,encode_json(&pending)?,now_ms()]).map_err(store_error)?;
+        let changed=tx.execute("UPDATE research_tasks SET status='queued',start_requested=0,pending_start_json=?3,phase=NULL,updated_at=?4 WHERE id=?1 AND execution_generation=?2 AND status IN ('running','awaiting_review','completed') AND cancel_requested=0 AND apply_state IS NULL",params![task.id,task.execution_generation,encode_json(&pending)?,now_ms()]).map_err(store_error)?;
         tx.commit().map_err(store_error)?;
         Ok(changed == 1)
     }
@@ -239,6 +298,21 @@ impl TaskStore {
             .ok_or("A member checkpoint needs a task.")?;
         let task = Self::require_on(&connection, task_id)?;
         if task.status != ResearchTaskStatus::Running || task.cancel_requested {
+            return Ok(None);
+        }
+        let running = member_turn_on(
+            &connection,
+            group.clone(),
+            turn.member.clone(),
+            turn.execution.clone(),
+        )?
+        .work;
+        if running.is_empty()
+            && super::work_settlement::execution_has_settlements_on(
+                &connection,
+                &turn.execution.id,
+            )?
+        {
             return Ok(None);
         }
         let semantic = members_on(&connection, &group.id)?.iter().any(|member| {
@@ -328,14 +402,23 @@ impl TaskStore {
         )?
         .work;
         if work.is_empty() {
+            if super::work_settlement::execution_has_settlements_on(&tx, &turn.execution.id)? {
+                return Ok(());
+            }
             return Err("The checkpoint has no running work to retain.".into());
         }
+        let work_ids = work.iter().map(|work| work.id.clone()).collect::<Vec<_>>();
         let checkpoint = Checkpoint {
             execution_id: turn.execution.id.clone(),
             member_id: turn.member.id.clone(),
-            work_ids: work.iter().map(|work| work.id.clone()).collect(),
+            work_ids: work_ids.clone(),
             receipt_event_ids: request.event_ids.clone(),
-            colleague_work_ids: unfinished_colleagues_on(&tx, &group.id, &turn.member.id)?,
+            colleague_work_ids: unfinished_colleagues_on(
+                &tx,
+                &group.id,
+                &turn.member.id,
+                &work_ids,
+            )?,
         };
         let changed = tx.execute(
             "UPDATE collaboration_executions SET status='checkpointed',input_tokens=?2,output_tokens=?3,finished_at=?4 WHERE id=?1 AND status='running'",

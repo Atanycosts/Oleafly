@@ -312,6 +312,22 @@ pub async fn research_task_group_execution(
     .await
 }
 
+#[tauri::command]
+pub async fn research_task_group_message_read(
+    state: State<'_, ResearchTaskState>,
+    project_id: String,
+    task_id: String,
+    group_id: String,
+    message_id: String,
+) -> Result<Option<GroupMessage>, String> {
+    blocking_task_command(&state, move |state| {
+        state
+            .store()?
+            .group_message_record(&project_id, &task_id, &group_id, &message_id)
+    })
+    .await
+}
+
 fn supported_members(members: &[MemberDraft]) -> Result<(), String> {
     for member in members {
         if member.runtime_id != "builtin" {

@@ -8,7 +8,8 @@ import { describeError } from "@/lib/app-error";
 import { loadResearchTaskObservationCall, type ResearchTask, type TaskTranscriptEvent } from "@/lib/research-tasks";
 import type { ResearchTaskAgentOption } from "./ResearchTasksPanel";
 import { TaskSourceRead } from "./TaskObservations";
-import { createTaskGroup, loadTaskAnnotations, loadTaskGroup, loadTaskGroupEvent, loadTaskGroupEventsAfter, loadTaskGroupEventsPage, loadTaskGroupExecution, loadTaskGroupExecutionsAfter, loadTaskGroupExecutionsPage, loadTaskGroupMessages, sendGroupMessage, setTaskGroupStatus, setGroupMemberPaused, setGroupMemberInterest, type AnnotationHandling, type GroupEvent, type GroupEventPage, type GroupExecutionPage, type GroupMessage, type GroupObject, type GroupSnapshot, type GroupWork, type MemberDraft, type MemberExecution, type MemberInterest, type TaskAnnotation, type WorkReason } from "@/lib/task-collaboration";
+import { TaskGroupWorkView } from "./TaskGroupWorkView";
+import { createTaskGroup, loadTaskAnnotations, loadTaskGroup, loadTaskGroupEvent, loadTaskGroupEventsAfter, loadTaskGroupEventsPage, loadTaskGroupExecution, loadTaskGroupExecutionsAfter, loadTaskGroupExecutionsPage, loadTaskGroupMessage, loadTaskGroupMessages, sendGroupMessage, setTaskGroupStatus, setGroupMemberPaused, setGroupMemberInterest, type AnnotationHandling, type GroupEvent, type GroupEventPage, type GroupExecutionPage, type GroupMessage, type GroupObject, type GroupSnapshot, type GroupWork, type MemberDraft, type MemberExecution, type MemberInterest, type TaskAnnotation, type WorkReason } from "@/lib/task-collaboration";
 
 const objectLabel = (object: GroupObject) => `${object.kind} ${object.path ?? object.id}${object.revision ? ` · v${object.revision}` : ""}`;
 const humanizeKind = (kind: string) => kind.replaceAll("_", " ");
@@ -38,7 +39,7 @@ const latestExecution = (executions: MemberExecution[]) =>
   executions.reduce<MemberExecution | undefined>((latest, execution) =>
     !latest || execution.startedAt > latest.startedAt || (execution.startedAt === latest.startedAt && execution.id > latest.id) ? execution : latest, undefined);
 
-export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task: ResearchTask; agents: ResearchTaskAgentOption[]; onSnapshot?: (snapshot: GroupSnapshot | null) => void; onAnnotate?: (message: GroupMessage) => void }) {
+export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate, onOpenResult }: { task: ResearchTask; agents: ResearchTaskAgentOption[]; onSnapshot?: (snapshot: GroupSnapshot | null) => void; onAnnotate?: (message: GroupMessage) => void; onOpenResult?: (target: import("@/lib/task-collaboration").AnnotationTarget) => void }) {
   const { t } = useTranslation("researchTools");
   const eligibleAgents = agents.filter(agent => agent.runtimeId === "builtin" && agent.available !== false && agent.agentId.trim() && agent.modelId.trim());
   const callbackRef = useRef(onSnapshot);
@@ -219,17 +220,52 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
     }
   };
   const inspectEvent = async (id: string) => {
-    if (!group || resolvedEvents[id] !== undefined || resolvingEvents.includes(id)) return;
+    if (!group) return null;
+    if (resolvedEvents[id] !== undefined) return resolvedEvents[id];
+    if (resolvingEvents.includes(id)) return null;
     const requestScope = scope;
     setResolvingEvents(current => [...current, id]);
     try {
       const event = await loadTaskGroupEvent(task.projectId, task.id, group.id, id);
       if (scopeRef.current === requestScope) setResolvedEvents(current => ({ ...current, [id]: event }));
+      return event;
     } catch (cause) {
       if (scopeRef.current === requestScope) setError(describeError(cause));
+      throw cause;
     } finally {
       if (scopeRef.current === requestScope) setResolvingEvents(current => current.filter(candidate => candidate !== id));
     }
+  };
+  const loadMessage = async (messageId: string) => {
+    const current = snapshotRef.current;
+    if (!current) return null;
+    const requestScope = scope;
+    const requestGroup = current.group.id;
+    const message = await loadTaskGroupMessage(task.projectId, task.id, current.group.id, messageId);
+    if (
+      !message ||
+      scopeRef.current !== requestScope ||
+      snapshotRef.current?.group.id !== requestGroup
+    ) return null;
+    setSnapshot(currentSnapshot => {
+      if (
+        !currentSnapshot ||
+        currentSnapshot.group.id !== requestGroup ||
+        currentSnapshot.messages.some(candidate => candidate.id === message.id)
+      ) return currentSnapshot;
+      const nextSnapshot = {
+        ...currentSnapshot,
+        messages: mergeById(currentSnapshot.messages, [message]),
+      };
+      snapshotRef.current = nextSnapshot;
+      callbackRef.current?.(nextSnapshot);
+      return nextSnapshot;
+    });
+    return message;
+  };
+  const loadAnnotation = async (id: string) => {
+    const context = await loadTaskAnnotations(task.projectId, task.id);
+    return context.annotations.find(candidate => candidate.id === id) ?? null;
   };
   const reasonLabel = (reason: WorkReason) => {
     switch (reason.kind) {
@@ -356,6 +392,55 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
       <Button size="xs" disabled={busy || !members.every(member => member.name.trim() && member.responsibility.trim() && member.agentId && member.modelId)} onClick={() => void act(() => createTaskGroup(task.projectId, task.id, members.map(({ draftId: _draftId, ...member }) => member)))}>{t($ => $.researchTools.tasks.group.create)}</Button>
     </div> : snapshot && <div className="space-y-3">
       <label>{t($ => $.researchTools.tasks.group.status)} <select disabled={busy} value={group.status} onChange={event => void act(() => setTaskGroupStatus(task.projectId, group.id, event.target.value as GroupSnapshot["group"]["status"]))}>{["open", "paused", "closed"].map(status => <option key={status} value={status}>{status}</option>)}</select></label>
+      <TaskGroupWorkView
+        key={`${task.projectId}\0${task.id}\0${group.id}`}
+        snapshot={snapshot}
+        busy={busy}
+        loadMessage={loadMessage}
+        loadEvent={inspectEvent}
+        loadAnnotation={loadAnnotation}
+        onReply={message => setReplyTo(message.id)}
+        onAnnotate={onAnnotate}
+        onOpenResult={onOpenResult}
+        renderDiagnostics={work => {
+        const reasons = work.reasons ?? [];
+        const causeEvent = work.causeKind === "event" ? eventById(work.causeId) : undefined;
+        const hasReasonDetails = reasons.some(reason => reason.sourceId || reason.executionId);
+        return <div className="space-y-2 text-xs">
+          {causeEvent ? <div className="rounded bg-muted/40 p-2">
+            <p><strong>{t($ => $.researchTools.tasks.group.eventChange)}</strong>: {humanizeKind(causeEvent.kind)} · {objectLabel(causeEvent.object)}</p>
+            <p className="whitespace-pre-wrap"><strong>{t($ => $.researchTools.tasks.group.eventDetail)}</strong>: {causeEvent.detail}</p>
+            {causeEvent.evidence ? <details><summary>{t($ => $.researchTools.tasks.group.sourceAndExecution)}</summary><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(causeEvent.evidence, null, 2)}</pre></details> : null}
+          </div> : work.causeKind === "event" ? <p>{t($ => $.researchTools.tasks.group.eventUnavailable, { id: work.causeId })} <Button size="xs" variant="ghost" disabled={resolvingEvents.includes(work.causeId)} onClick={() => void inspectEvent(work.causeId)}>{t($ => $.researchTools.tasks.group.sourceInspect)}</Button></p> : <p>{work.causeKind}: {work.causeId}</p>}
+          <div>
+            <p className="font-medium">{t($ => $.researchTools.tasks.group.wakeReasons)}</p>
+            {reasons.length > 0 ? <ul className="list-disc space-y-1 pl-4">{reasons.map(reason => <li key={reasonKey(reason)}>
+              {reasonLabel(reason)}{reason.object ? ` · ${objectLabel(reason.object)}` : ""}{reason.detail ? <p className="whitespace-pre-wrap">{reason.detail}</p> : null}
+            </li>)}</ul> : <p role="status">{t($ => $.researchTools.tasks.group.noWakeReasons)}</p>}
+          </div>
+          <details>
+            <summary>{t($ => $.researchTools.tasks.group.sourceAndExecution)}</summary>
+            <div className="mt-1 space-y-1">
+              {reasons.map(reason => {
+                if (!reason.sourceId && !reason.executionId) return null;
+                const state = sourceReads[sourceReadKey(work.id, reason)];
+                return <div key={`${reasonKey(reason)}:source`}>
+                  {reasonSource(reason)}
+                  {reason.executionId && <p>{t($ => $.researchTools.tasks.group.execution)}: {reason.executionId}</p>}
+                  {canReadSource(work, reason) ? <div className="space-y-1">
+                    <Button size="xs" variant="outline" disabled={state?.status === "loading"} data-testid={`source-${work.id}-${reason.kind}`} onClick={() => void inspectSource(work, reason)}>{t($ => $.researchTools.tasks.group.sourceInspect)}</Button>
+                    {renderSourceRead(state)}
+                  </div> : null}
+                </div>;
+              })}
+              {work.executionId && <p>{t($ => $.researchTools.tasks.group.execution)}: {work.executionId}</p>}
+              {causeEvent && <p>{t($ => $.researchTools.tasks.group.sourceLabel, { id: causeEvent.id })}</p>}
+              {!hasReasonDetails && !work.executionId && !causeEvent && <p>{t($ => $.researchTools.tasks.group.noCauseDetails)}</p>}
+            </div>
+          </details>
+        </div>;
+        }}
+      />
       {snapshot.members.map(member => <div key={member.id} className="rounded border p-2 text-sm"><strong>{member.name}</strong> · {member.responsibility}<p className="text-xs">{member.runtimeId} / {member.agentId} / {member.modelId}</p><label><input type="checkbox" disabled={busy} checked={member.paused} onChange={event => void act(() => setGroupMemberPaused(task.projectId, group.id, member.id, event.target.checked))} /> {t($ => $.researchTools.tasks.group.paused)}</label></div>)}
       <fieldset className="space-y-2 rounded border p-2" disabled={busy}><legend>{t($ => $.researchTools.tasks.group.explicitInterests)}</legend>
         {snapshot.interests.map(interest => <div key={`${interest.memberId}:${interest.kind}:${interest.value}`}>{memberName(interest.memberId)} · {interest.kind}: {interest.value} <Button size="xs" variant="ghost" onClick={() => void act(() => setGroupMemberInterest(task.projectId, group.id, interest, false))}>{t($ => $.researchTools.tasks.group.remove)}</Button></div>)}
@@ -388,47 +473,6 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
         <label><input type="checkbox" checked={requestWork} onChange={event => setRequestWork(event.target.checked)} /> {t($ => $.researchTools.tasks.group.requestWork)}</label>
         <Button size="xs" disabled={!body.trim()} onClick={() => void act(() => sendGroupMessage(task.projectId, group.id, { body: body.trim(), recipients, replyTo, requestWork, object: null }), () => { setBody(""); setReplyTo(null); setRequestWork(false); })}>{t($ => $.researchTools.tasks.group.send)}</Button>
       </fieldset>
-      <h4 className="text-sm font-medium">{t($ => $.researchTools.tasks.group.work)}</h4>
-      {snapshot.work.map(work => {
-        const reasons = work.reasons ?? [];
-        const causeEvent = work.causeKind === "event" ? eventById(work.causeId) : undefined;
-        const hasReasonDetails = reasons.some(reason => reason.sourceId || reason.executionId);
-        return <div className="space-y-2 rounded border p-2 text-xs" data-testid={`work-${work.id}`} key={work.id}>
-          <p><strong>{memberName(work.memberId)}</strong> · {work.status}</p>
-          {causeEvent ? <div className="rounded bg-muted/40 p-2">
-            <p><strong>{t($ => $.researchTools.tasks.group.eventChange)}</strong>: {humanizeKind(causeEvent.kind)} · {objectLabel(causeEvent.object)}</p>
-            <p className="whitespace-pre-wrap"><strong>{t($ => $.researchTools.tasks.group.eventDetail)}</strong>: {causeEvent.detail}</p>
-            {causeEvent.evidence ? <details><summary>{t($ => $.researchTools.tasks.group.sourceAndExecution)}</summary><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(causeEvent.evidence, null, 2)}</pre></details> : null}
-          </div> : work.causeKind === "event" ? <p>{t($ => $.researchTools.tasks.group.eventUnavailable, { id: work.causeId })} <Button size="xs" variant="ghost" disabled={resolvingEvents.includes(work.causeId)} onClick={() => void inspectEvent(work.causeId)}>{t($ => $.researchTools.tasks.group.sourceInspect)}</Button></p> : <p>{work.causeKind}: {work.causeId}</p>}
-          <div>
-            <p className="font-medium">{t($ => $.researchTools.tasks.group.wakeReasons)}</p>
-            {reasons.length > 0 ? <ul className="list-disc space-y-1 pl-4">{reasons.map(reason => <li key={reasonKey(reason)}>
-              {reasonLabel(reason)}{reason.object ? ` · ${objectLabel(reason.object)}` : ""}{reason.detail ? <p className="whitespace-pre-wrap">{reason.detail}</p> : null}
-            </li>)}</ul> : <p role="status">{t($ => $.researchTools.tasks.group.noWakeReasons)}</p>}
-          </div>
-          <details>
-            <summary>{t($ => $.researchTools.tasks.group.sourceAndExecution)}</summary>
-            <div className="mt-1 space-y-1">
-              {reasons.map(reason => {
-                if (!reason.sourceId && !reason.executionId) return null;
-                const state = sourceReads[sourceReadKey(work.id, reason)];
-                return <div key={`${reasonKey(reason)}:source`}>
-                  {reasonSource(reason)}
-                  {reason.executionId && <p>{t($ => $.researchTools.tasks.group.execution)}: {reason.executionId}</p>}
-                  {canReadSource(work, reason) ? <div className="space-y-1">
-                    <Button size="xs" variant="outline" disabled={state?.status === "loading"} data-testid={`source-${work.id}-${reason.kind}`} onClick={() => void inspectSource(work, reason)}>{t($ => $.researchTools.tasks.group.sourceInspect)}</Button>
-                    {renderSourceRead(state)}
-                  </div> : null}
-                </div>;
-              })}
-              {work.executionId && <p>{t($ => $.researchTools.tasks.group.execution)}: {work.executionId}</p>}
-              {causeEvent && <p>{t($ => $.researchTools.tasks.group.sourceLabel, { id: causeEvent.id })}</p>}
-              {!hasReasonDetails && !work.executionId && !causeEvent && <p>{t($ => $.researchTools.tasks.group.noCauseDetails)}</p>}
-            </div>
-          </details>
-          {work.resultMessageId && <a className="underline" href={`#group-message-${work.resultMessageId}`}>{snapshot.messages.find(message => message.id === work.resultMessageId)?.body ?? work.resultMessageId}</a>}
-        </div>;
-      })}
       {snapshot.executionsHasMore && <Button size="xs" variant="outline" disabled={historyLoading !== ""} onClick={() => void loadOlderExecutions()}>{t($ => $.researchTools.tasks.group.loadEarlierExecutions)}</Button>}
       {snapshot.executions.map(execution => <p key={execution.id} className="text-xs">{execution.id} · {memberName(execution.memberId)} · {execution.runtimeId}/{execution.agentId}/{execution.modelId} · {execution.status} · {execution.inputTokens ?? "?"}/{execution.outputTokens ?? "?"}</p>)}
     </div>}

@@ -86,7 +86,7 @@ vi.mock("@/components/editor/diff/InlineDiffPreview", () => ({
 
 vi.mock("./TaskCompiledPdfs", () => ({ TaskCompiledPdfs: ({ reference }: { reference?: { path: string; generation: number } }) => reference ? <div data-testid="mock-retained-pdf" data-path={reference.path} data-generation={reference.generation} /> : null }));
 
-const annotationMocks = vi.hoisted(() => ({ props: null as TaskAnnotationsProps | null, group: vi.fn(), annotations: vi.fn(), pdf: vi.fn() }));
+const annotationMocks = vi.hoisted(() => ({ props: null as TaskAnnotationsProps | null, group: vi.fn(), message: vi.fn(), annotations: vi.fn(), pdf: vi.fn() }));
 const journalReference = vi.hoisted(() => ({ load: vi.fn() }));
 vi.mock("@/lib/journal-workbench", () => ({ loadJournalTarget: journalReference.load }));
 vi.mock("@/lib/pdf-selection", () => ({ loadTaskPdfSelection: annotationMocks.pdf }));
@@ -94,7 +94,7 @@ vi.mock("./TaskPdfSelection", () => ({ TaskPdfSelection: ({ taskId, openOriginal
 vi.mock("./TaskAnnotations", () => ({
   TaskAnnotations: (props: TaskAnnotationsProps) => { annotationMocks.props = props; return null; },
 }));
-vi.mock("@/lib/task-collaboration", () => ({ loadTaskGroup: annotationMocks.group, loadTaskAnnotations: annotationMocks.annotations }));
+vi.mock("@/lib/task-collaboration", () => ({ loadTaskGroup: annotationMocks.group, loadTaskGroupMessage: annotationMocks.message, loadTaskAnnotations: annotationMocks.annotations }));
 
 const markdownDraws = vi.hoisted(() => ({ texts: [] as string[] }));
 
@@ -281,6 +281,7 @@ describe("TaskDetailDialog", () => {
     previewMocks.compiledPdfs.mockReset().mockResolvedValue([]);
     annotationMocks.props = null;
     annotationMocks.pdf.mockReset().mockResolvedValue(null);
+    annotationMocks.message.mockReset().mockResolvedValue(null);
     annotationMocks.annotations.mockReset().mockResolvedValue({ annotations: [] });
     annotationMocks.group.mockReset().mockResolvedValue(null);
     previewMocks.observations.mockReset().mockResolvedValue({ summary: { runtime: null, usage: null, baseline: null, evidence: null, coverageGaps: [] }, page: { events: [], nextSequence: 0, throughSequence: 0, hasMore: false } });
@@ -402,6 +403,45 @@ describe("TaskDetailDialog", () => {
     expect(within(original).getByText("guide:page-4")).toBeInTheDocument();
     expect(journalReference.load).toHaveBeenCalledExactlyOnceWith(target);
     expect(previewMocks.referencedEvents).not.toHaveBeenCalled();
+  });
+
+  it("opens a historical group message result by exact identity", async () => {
+    const current = task("group-message-reference");
+    const target: AnnotationTarget = {
+      projectId: current.projectId,
+      taskId: current.id,
+      objectKind: "group_message",
+      objectId: "message-old",
+      objectRevision: "sequence:2",
+      path: null,
+    };
+    annotationMocks.group.mockResolvedValue({
+      group: { id: "group-existing", taskId: current.id, projectId: current.projectId, status: "open", createdAt: 1, updatedAt: 5 },
+      members: [],
+      interests: [],
+      messages: [],
+      work: [],
+      executions: [],
+      nextSequence: 3,
+    });
+    annotationMocks.message.mockResolvedValue({
+      id: target.objectId,
+      sequence: 2,
+      groupId: "group-existing",
+      author: { kind: "member", id: "reviewer", executionId: null },
+      body: "Historical group result",
+      recipients: [],
+      replyTo: null,
+      object: null,
+      requestWork: false,
+      createdAt: 2,
+    });
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenTarget).toBeDefined());
+    await act(async () => { annotationMocks.props?.onOpenTarget?.(target); });
+    const source = page().getByTestId("task-annotation-source");
+    expect(within(source).getByText("Historical group result")).toBeInTheDocument();
+    expect(annotationMocks.message).toHaveBeenCalledWith(current.projectId, current.id, "group-existing", target.objectId);
   });
 
   it("does not open a historical artifact through the current generation's preview", async () => {

@@ -1,7 +1,7 @@
 import { TaskCompiledPdfs } from "./TaskCompiledPdfs";
 import { TaskPdfSelection } from "./TaskPdfSelection";
 import type { ResearchTaskAgentOption } from "./ResearchTasksPanel";
-import { loadTaskAnnotations, loadTaskGroup, loadTaskGroupMessages, type AnnotationSourceDraft, type AnnotationTarget, type GroupMessage, type GroupSnapshot } from "@/lib/task-collaboration";
+import { loadTaskAnnotations, loadTaskGroup, loadTaskGroupMessage, type AnnotationSourceDraft, type AnnotationTarget, type GroupMessage, type GroupSnapshot } from "@/lib/task-collaboration";
 import { loadTaskPdfSelection } from "@/lib/pdf-selection";
 import type { JournalAnnotationObject } from "@/lib/journal-workbench";
 import { JournalObjectView } from "@/components/research/JournalObjectView";
@@ -939,6 +939,7 @@ export function TaskDetailDialog({
   };
   const openAnnotationTarget = async (target: AnnotationTarget) => {
     const request = ++referenceRequest.current;
+    setChosenTab("annotations");
     setReferencePreview({ target }); setReferenceLoading(true); setReferenceError(null);
     try {
       if (target.projectId !== task.projectId || (target.taskId && target.taskId !== task.id)) {
@@ -969,8 +970,8 @@ export function TaskDetailDialog({
         const snapshot = await loadTaskGroup(task.projectId, task.id);
         const sequence = Number(target.objectRevision?.replace(/^sequence:/, ""));
         if (!snapshot || !Number.isSafeInteger(sequence) || sequence < 1) throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
-        const page = await loadTaskGroupMessages(task.projectId, task.id, snapshot.group.id, sequence - 1);
-        const message = page.messages.find((entry) => entry.id === target.objectId && entry.sequence === sequence);
+        const message = await loadTaskGroupMessage(task.projectId, task.id, snapshot.group.id, target.objectId);
+        if (message?.sequence !== sequence) throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
         if (!message) throw new Error(t(($) => $.researchTools.tasks.annotations.referenceUnavailable));
         if (request === referenceRequest.current) setReferencePreview({ target, message });
       } else {
@@ -1801,7 +1802,7 @@ export function TaskDetailDialog({
             </TabsContent>
             <TabsContent value="group" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
               <Suspense fallback={null}>
-              <TaskGroupPanel task={task} agents={agents} onSnapshot={receiveGroupSnapshot} onAnnotate={annotateGroupMessage} />
+              <TaskGroupPanel task={task} agents={agents} onSnapshot={receiveGroupSnapshot} onAnnotate={annotateGroupMessage} onOpenResult={openAnnotationTarget} />
               </Suspense>
             </TabsContent>
           </Tabs>

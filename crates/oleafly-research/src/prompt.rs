@@ -59,7 +59,7 @@ pub fn task_prompt(context: &TaskRunContext, skills: &str) -> String {
     prompt.push_str(&format!("\n\nTask: {}\n{}", context.title, context.prompt));
     if let Some(turn) = &context.collaboration {
         prompt.push_str(&format!(
-            "\n\nYou are the persistent member {}. Responsibility: {}. The runtime provides your current work in a refreshed context before each request. Communicate directly using group_message, register relevant interests with group_interest, and return concrete results. Read retained annotation evidence with annotation_context when needed, and record actual handling before distilling enduring value.",
+            "\n\nYou are the persistent member {}. Responsibility: {}. The runtime provides your current work in a refreshed context before each request. Communicate directly using group_message and register relevant interests with group_interest. Use group_work_settle to report each work item's actual result. To request evidence for only part of your work, send group_message with those workIds; other items can continue. A progress reply is not a completed check. Read retained annotation evidence with annotation_context when needed, and record actual handling before distilling enduring value.",
             turn.member.config.name,
             turn.member.config.responsibility,
         ));

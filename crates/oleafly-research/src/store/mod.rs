@@ -494,6 +494,23 @@ impl TaskStore {
         materialize_task(connection, stored)
     }
 
+    fn requeue_empty_waiting_work_on(
+        connection: &Connection,
+        task_id: &str,
+    ) -> Result<usize, String> {
+        connection
+            .execute(
+                "UPDATE collaboration_work
+                 SET status = '\"pending\"', execution_id = NULL, updated_at = ?2
+                 WHERE status = '\"waiting\"' AND waits_json = '[]'
+                   AND group_id = (
+                     SELECT id FROM collaboration_groups WHERE task_id = ?1
+                   )",
+                params![task_id, now_ms()],
+            )
+            .map_err(store_error)
+    }
+
     pub fn request_start(&self, id: &str) -> Result<ResearchTask, String> {
         let mut connection = self.open()?;
         let transaction = connection
@@ -525,6 +542,16 @@ impl TaskStore {
             .map_err(store_error)?;
         if updated != 1 {
             return Err("Only a queued task can be started.".into());
+        }
+        let stop_reason: Option<String> = transaction
+            .query_row(
+                "SELECT stop_reason FROM research_tasks WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(store_error)?;
+        if stop_reason.is_none() {
+            Self::requeue_empty_waiting_work_on(&transaction, id)?;
         }
         transaction.commit().map_err(store_error)?;
         self.require(id)
@@ -1021,15 +1048,18 @@ impl TaskStore {
     }
 
     pub fn retry_with(&self, id: &str, mode: RetryMode) -> Result<ResearchTask, String> {
-        let task = self.require(id)?;
+        let mut connection = self.open()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let task = Self::require_on(&transaction, id)?;
         if !matches!(
             task.status,
             ResearchTaskStatus::Failed | ResearchTaskStatus::Cancelled
         ) {
             return Err("Only a failed or cancelled task can be retried.".into());
         }
-        let connection = self.open()?;
-        if input_initialization_pending(&connection, id)? {
+        if input_initialization_pending(&transaction, id)? {
             return Err(INPUT_INITIALIZATION_INCOMPLETE.into());
         }
         let pending = match mode {
@@ -1052,7 +1082,7 @@ impl TaskStore {
             },
         };
         let fresh = mode == RetryMode::Fresh;
-        let updated = connection
+        let updated = transaction
             .execute(
                 "UPDATE research_tasks SET status = 'queued', start_requested = 0,
                    error = NULL, session_id = NULL, native_session_id = NULL,
@@ -1074,6 +1104,10 @@ impl TaskStore {
         if updated != 1 {
             return Err("Only a failed or cancelled task can be retried.".into());
         }
+        if mode == RetryMode::Resume {
+            Self::requeue_empty_waiting_work_on(&transaction, id)?;
+        }
+        transaction.commit().map_err(store_error)?;
         self.withdraw_all_approvals(id)?;
         self.require(id)
     }
@@ -3017,7 +3051,7 @@ const BRIEF_SCHEMA_VERSION: i64 = 2;
 const HANDOFF_SCHEMA_VERSION: i64 = 3;
 const EVENT_KIND_SCHEMA_VERSION: i64 = 4;
 const RUN_CONTROL_SCHEMA_VERSION: i64 = 5;
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 fn migrate(connection: &mut Connection) -> Result<(), String> {
     if schema_version(connection)? >= SCHEMA_VERSION {
@@ -3237,6 +3271,28 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
     }
     if version < 14 {
         upgrade(collaboration::RESPONSIBILITY_SCHEMA_SQL)?;
+    }
+    if version < 15 {
+        let columns: HashSet<String> = {
+            let mut statement = transaction
+                .prepare("PRAGMA table_info(collaboration_work)")
+                .map_err(store_error)?;
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .and_then(|rows| rows.collect::<Result<HashSet<_>, _>>())
+                .map_err(store_error)?
+        };
+        for (name, definition) in [
+            ("resolution_json", "TEXT"),
+            ("waits_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("settled_execution_id", "TEXT"),
+        ] {
+            if !columns.contains(name) {
+                upgrade(&format!(
+                    "ALTER TABLE collaboration_work ADD COLUMN {name} {definition};"
+                ))?;
+            }
+        }
     }
     upgrade(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     transaction.commit().map_err(store_error)
