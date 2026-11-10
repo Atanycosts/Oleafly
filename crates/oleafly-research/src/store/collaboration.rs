@@ -17,6 +17,9 @@ pub(super) use attention::SCHEMA_SQL as ATTENTION_SCHEMA_SQL;
 mod responsibility;
 pub(super) use responsibility::SCHEMA_SQL as RESPONSIBILITY_SCHEMA_SQL;
 
+#[path = "checkpoints.rs"]
+mod checkpoints;
+
 pub(super) const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS collaboration_groups (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
@@ -1266,6 +1269,7 @@ impl TaskStore {
         if active {
             return Ok(None);
         }
+        checkpoints::release_ready_on(&tx, &group)?;
         let member_id:Option<String>=tx.query_row("SELECT w.member_id FROM collaboration_work w JOIN collaboration_members m ON m.id=w.member_id WHERE w.group_id=?1 AND w.status='\"pending\"' AND m.paused=0 ORDER BY w.priority DESC,w.created_at,w.id LIMIT 1",[&group_id],|r|r.get(0)).optional().map_err(store_error)?;
         let Some(member_id) = member_id else {
             return Ok(None);
@@ -1302,6 +1306,9 @@ impl TaskStore {
         outcome: &TaskRuntimeOutcome,
         error: Option<&str>,
     ) -> Result<GroupMessage, String> {
+        if outcome.checkpoint.is_some() {
+            return Err("Settle a member checkpoint without completing its work.".into());
+        }
         let mut c = self.open()?;
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1501,19 +1508,23 @@ impl TaskStore {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
+        let checkpoint_groups = tx.prepare(
+            "SELECT DISTINCT g.project_id,g.id FROM collaboration_groups g
+             JOIN collaboration_work w ON w.group_id=g.id
+             JOIN research_tasks t ON t.id=g.task_id
+             WHERE g.status='open' AND w.status='\"checkpointed\"'
+               AND t.status IN ('running','queued','awaiting_review','completed')
+               AND t.cancel_requested=0 AND t.stop_reason IS NULL AND t.apply_state IS NULL
+               AND NOT EXISTS(SELECT 1 FROM collaboration_executions e WHERE e.group_id=g.id AND e.status='running')",
+        ).and_then(|mut query|query.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?;
+        for (project, group) in checkpoint_groups {
+            checkpoints::release_ready_on(&tx, &group_on(&tx, &project, &group)?)?;
+        }
         let ids = tx.prepare("SELECT DISTINCT g.task_id FROM collaboration_groups g JOIN research_tasks t ON t.id=g.task_id WHERE g.status='open' AND (EXISTS(SELECT 1 FROM collaboration_work w JOIN collaboration_members m ON m.id=w.member_id WHERE w.group_id=g.id AND w.status='\"pending\"' AND m.paused=0) OR (EXISTS(SELECT 1 FROM collaboration_responsibility_receipts r JOIN collaboration_events e ON e.id=r.event_id WHERE e.group_id=g.id AND r.assessment_id IS NULL) AND EXISTS(SELECT 1 FROM collaboration_members m WHERE m.group_id=g.id AND m.paused=0 AND json_extract(m.config_json,'$.coordinator')=1 AND json_extract(m.config_json,'$.runtimeId')='builtin'))) AND (t.status IN ('awaiting_review','completed') OR (t.status='queued' AND t.start_requested=0)) AND t.apply_state IS NULL")
             .and_then(|mut q|q.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()).map_err(store_error)?;
         let mut queued = Vec::new();
         for id in ids {
             let task = Self::require_on(&tx, &id)?;
-            if task.status == ResearchTaskStatus::Queued {
-                tx.execute(
-                    "UPDATE research_tasks SET start_requested=1,updated_at=?2 WHERE id=?1 AND status='queued' AND start_requested=0",
-                    params![id, now_ms()],
-                ).map_err(store_error)?;
-                queued.push(id);
-                continue;
-            }
             if matches!(
                 task.stop_reason,
                 Some(
@@ -1522,6 +1533,27 @@ impl TaskStore {
                         | crate::model::StopReason::BudgetRuns
                 )
             ) {
+                continue;
+            }
+            let group_id: String = tx
+                .query_row(
+                    "SELECT id FROM collaboration_groups WHERE task_id=?1",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .map_err(store_error)?;
+            if let Some((_, checkpoint)) = checkpoints::open_on(&tx, &group_id)? {
+                let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM collaboration_work w JOIN collaboration_members m ON m.id=w.member_id WHERE w.group_id=?1 AND w.status='\"pending\"' AND m.paused=0)",[&group_id],|row|row.get(0)).map_err(store_error)?;
+                if !pending && !checkpoints::pending_receipts_on(&tx, &checkpoint)? {
+                    continue;
+                }
+            }
+            if task.status == ResearchTaskStatus::Queued {
+                tx.execute(
+                    "UPDATE research_tasks SET start_requested=1,updated_at=?2 WHERE id=?1 AND status='queued' AND start_requested=0",
+                    params![id, now_ms()],
+                ).map_err(store_error)?;
+                queued.push(id);
                 continue;
             }
             let Some(isolation) = task.isolation else {

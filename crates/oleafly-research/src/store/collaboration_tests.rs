@@ -191,6 +191,7 @@ fn request(body: &str, recipients: &[&str]) -> MessageDraft {
 fn outcome(summary: &str) -> TaskRuntimeOutcome {
     TaskRuntimeOutcome {
         summary: summary.into(),
+        checkpoint: None,
         artifacts: Vec::new(),
         native_session_id: None,
         input_tokens: None,
@@ -202,6 +203,7 @@ fn outcome(summary: &str) -> TaskRuntimeOutcome {
 fn waiting_outcome(summary: &str) -> TaskRuntimeOutcome {
     TaskRuntimeOutcome {
         waiting_for_reply: true,
+        checkpoint: None,
         ..outcome(summary)
     }
 }

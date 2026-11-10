@@ -901,6 +901,7 @@ async fn acp_adapter_runs_confined_tools_and_replays_the_durable_transcript() {
     }
     let mut replay = TaskRuntimeOutcome {
         waiting_for_reply: false,
+        checkpoint: None,
         summary: String::new(),
         artifacts: Vec::new(),
         native_session_id: Some(id.clone()),

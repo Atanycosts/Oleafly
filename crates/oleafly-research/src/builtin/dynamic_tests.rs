@@ -98,6 +98,7 @@ async fn a_colleague_request_yields_after_the_batch_and_resumes_with_the_reply()
             &evidence,
             &TaskRuntimeOutcome {
                 waiting_for_reply: false,
+                checkpoint: None,
                 summary: "The global-token count must stay bounded".into(),
                 artifacts: vec![],
                 native_session_id: None,
@@ -1565,4 +1566,117 @@ async fn helper_write_receives_file_requirements_before_the_record_changes() {
         std::fs::read_to_string(workspace.join(path)).unwrap(),
         "Helper revision under retained requirement"
     );
+}
+
+#[tokio::test]
+async fn managed_write_checkpoints_after_the_batch_and_restores_its_tool_results() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("main.tex"), "original manuscript").unwrap();
+    let tasks = root.path().join("tasks");
+    let task = running_task(&tasks, "local");
+    let store = TaskStore::new(tasks.clone()).unwrap();
+    let group = store
+        .create_task_group(
+            "project",
+            Some(&task.id),
+            &[true, false].map(|coordinator| MemberDraft {
+                name: if coordinator {
+                    "Coordinator"
+                } else {
+                    "Evidence"
+                }
+                .into(),
+                responsibility: "Check numeric claims against results".into(),
+                runtime_id: "builtin".into(),
+                agent_id: "openai".into(),
+                model_id: "test".into(),
+                coordinator,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let owner = group.members.iter().find(|m| m.config.coordinator).unwrap();
+    store
+        .group_message(
+            "project",
+            &group.group.id,
+            &GroupActor::user(),
+            &MessageDraft {
+                body: "Revise the manuscript".into(),
+                recipients: vec![owner.id.clone()],
+                request_work: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let provider = Scripted::start(script(|request, _| match tool_outputs(request).len() {
+        0 => tool_delta(vec![("read_file", json!({"path":"main.tex"}))]),
+        1 => tool_delta(vec![
+            (
+                "write_file",
+                json!({"path":"main.tex","content":"revised manuscript"}),
+            ),
+            ("read_file", json!({"path":"main.tex"})),
+        ]),
+        _ => {
+            assert!(request.to_string().contains("member_checkpoint_resumed"));
+            assert!(request.to_string().contains("revised manuscript"));
+            text_reply("Continued from the complete retained batch.")
+        }
+    }))
+    .await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&tasks));
+    let first = store.claim_member_turn(&task).unwrap().unwrap();
+    let mut context = task_context(&task, &workspace);
+    context.allowed_paths = vec!["main.tex".into()];
+    context.collaboration = Some(first.clone());
+    context.session_id = first.execution.session_id.clone();
+    let outcome = within(adapter.run(context.clone(), CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+    assert!(outcome.checkpoint.is_some());
+    assert!(!outcome.waiting_for_reply);
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("main.tex")).unwrap(),
+        "revised manuscript"
+    );
+    store.checkpoint_member_turn(&first, &outcome).unwrap();
+    let batch = store.responsibility_batch(&task).unwrap().unwrap();
+    store
+        .commit_responsibility_assessment(
+            &task,
+            &batch,
+            &crate::responsibility::ResponsibilityAssessment {
+                provider_id: None,
+                model_id: None,
+                effort: None,
+                response: crate::responsibility::ResponsibilityResponse { decisions: vec![] },
+                input_tokens: Some(0),
+                output_tokens: Some(0),
+                error: None,
+            },
+        )
+        .unwrap();
+    let resumed = store.claim_member_turn(&task).unwrap().unwrap();
+    assert_eq!(resumed.member.id, owner.id);
+    context.session_id = resumed.execution.session_id.clone();
+    context.collaboration = Some(resumed.clone());
+    let outcome = within(adapter.run(context, CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+    assert!(outcome.checkpoint.is_none());
+    assert!(!outcome.waiting_for_reply);
+    assert!(outcome.summary.contains("Continued"));
+    assert_eq!(provider.requests().len(), 3);
+    store.finish_member_turn(&resumed, &outcome, None).unwrap();
+    assert!(store
+        .group_snapshot("project", &group.group.id, 0)
+        .unwrap()
+        .work
+        .iter()
+        .all(|work| work.status == WorkStatus::Completed));
 }

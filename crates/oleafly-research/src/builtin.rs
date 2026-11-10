@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use oleafly_agent::tools::registry::{ParallelPolicy, RegisteredTool, ToolRegistry};
 use oleafly_agent::{
-    AgentEvent, CancellationToken, CompletionRequest, Message, RunConfig, ToolOutput, ToolPipeline,
-    ToolRunner, ToolSchema,
+    AgentEvent, CancellationToken, CompletionRequest, Message, RunConfig, ToolBatchDecision,
+    ToolOutput, ToolPipeline, ToolRunner, ToolSchema,
 };
 use serde_json::{json, Value};
 
@@ -301,6 +301,7 @@ struct ToolScope {
     member_turn: bool,
     member_yield: CancellationToken,
     yielded_message: Mutex<Option<String>>,
+    checkpoint: Mutex<Option<crate::collaboration::MemberCheckpointRequest>>,
     helper_sequence: AtomicU64,
     agent_turn_sequence: AtomicU64,
     session_id: String,
@@ -1352,6 +1353,7 @@ impl BuiltinTaskAdapter {
             member_turn: context.collaboration.is_some(),
             member_yield: suspend.child(),
             yielded_message: Mutex::new(None),
+            checkpoint: Mutex::new(None),
             attention_error: Mutex::new(None),
             helper_sequence: AtomicU64::new(0),
             agent_turn_sequence: AtomicU64::new(0),
@@ -1429,6 +1431,7 @@ impl BuiltinTaskAdapter {
         let outcome = |summary: String| TaskRuntimeOutcome {
             summary,
             waiting_for_reply: lock(&scope.yielded_message).is_some(),
+            checkpoint: lock(&scope.checkpoint).clone(),
             artifacts: Vec::new(),
             native_session_id: Some(context.session_id.clone()),
             input_tokens: observed.and_then(|usage: TokenCounts| usage.0),
@@ -1503,6 +1506,33 @@ impl BuiltinTaskAdapter {
                             .prepare_request(request, &base_suffix)
                             .map_err(oleafly_agent::AgentError::Decode)
                     })
+                }),
+                after_tool_batch: scope.member_turn.then(|| {
+                    let scope = scope.clone();
+                    Arc::new(move || {
+                        if lock(&scope.yielded_message).is_some() {
+                            return Ok(ToolBatchDecision::Continue);
+                        }
+                        let store =
+                            crate::store::TaskStore::new(scope.binding.services.tasks_root.clone())
+                                .map_err(oleafly_agent::AgentError::Decode)?;
+                        let Some(turn) = store
+                            .task_member_turn(&scope.binding.task_id, scope.binding.generation)
+                            .map_err(oleafly_agent::AgentError::Decode)?
+                        else {
+                            return Ok(ToolBatchDecision::Continue);
+                        };
+                        let checkpoint = store
+                            .member_checkpoint_request(&turn)
+                            .map_err(oleafly_agent::AgentError::Decode)?;
+                        let requested = checkpoint.is_some();
+                        *lock(&scope.checkpoint) = checkpoint;
+                        Ok(if requested {
+                            ToolBatchDecision::Checkpoint
+                        } else {
+                            ToolBatchDecision::Continue
+                        })
+                    }) as oleafly_agent::run::AfterToolBatch
                 }),
                 ..ToolPipeline::from_registry(registry.clone())
             },
@@ -1626,6 +1656,33 @@ impl BuiltinTaskAdapter {
                                             if name == "read_file" { "read" } else { "wrote" },
                                             &format!("{event_namespace}:{id}"),
                                         );
+                                        if name == "write_file" && scope.member_turn {
+                                            let recorded = (|| {
+                                                let store = crate::store::TaskStore::new(
+                                                    scope.binding.services.tasks_root.clone(),
+                                                )?;
+                                                if let Some(turn) = store.task_member_turn(
+                                                    &scope.binding.task_id,
+                                                    scope.binding.generation,
+                                                )? {
+                                                    store.record_group_file_change(
+                                                        &scope.binding.project_id,
+                                                        &turn.group.id,
+                                                        &crate::collaboration::GroupObject {
+                                                            kind: "file".into(),
+                                                            id: path.into(),
+                                                            path: Some(path.into()),
+                                                            revision: Some(hash.into()),
+                                                        },
+                                                    )?;
+                                                }
+                                                Ok::<_, String>(())
+                                            })(
+                                            );
+                                            if let Err(error) = recorded {
+                                                *lock(&scope.attention_error) = Some(error);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1779,6 +1836,11 @@ impl TurnLoop<'_> {
             return ControlFlow::Break(Err("The task was cancelled.".into()));
         }
         if let Ok(outcome) = &outcome {
+            self.messages = outcome.history.clone();
+            if outcome.checkpointed && !self.suspend.is_cancelled() {
+                self.summary = "Yielded after a complete tool batch so relevant colleagues can contribute. The original work remains unfinished.".into();
+                return ControlFlow::Break(Ok(None));
+            }
             if outcome.suspended
                 || (outcome.error.is_none()
                     && self.scope.member_yield.is_cancelled()

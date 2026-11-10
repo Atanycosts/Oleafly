@@ -83,6 +83,8 @@ pub struct RunOutcome {
     pub history: Vec<Message>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub suspended: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub checkpointed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
 }
@@ -93,6 +95,17 @@ pub type ToolRunner = Arc<dyn Fn(ToolCall) -> BoxFuture<ToolOutput> + Send + Syn
 /// model request boundaries, including after compaction.
 pub type RequestPreparation = Arc<dyn Fn(&mut CompletionRequest) -> Result<()> + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolBatchDecision {
+    #[default]
+    Continue,
+    Checkpoint,
+}
+
+/// Runs after every complete tool batch has been added to the request history.
+/// The host decides whether the run should yield before the next provider call.
+pub type AfterToolBatch = Arc<dyn Fn() -> Result<ToolBatchDecision> + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct ToolPipeline {
     pub registry: ToolRegistry,
@@ -100,6 +113,7 @@ pub struct ToolPipeline {
     pub token: CancellationToken,
     pub suspend: Option<CancellationToken>,
     pub prepare_request: Option<RequestPreparation>,
+    pub after_tool_batch: Option<AfterToolBatch>,
 }
 
 impl ToolPipeline {
@@ -110,6 +124,7 @@ impl ToolPipeline {
             token: CancellationToken::new(),
             suspend: None,
             prepare_request: None,
+            after_tool_batch: None,
         }
     }
 }
@@ -431,6 +446,7 @@ mod tests {
     fn run_outcomes_report_stop_reason_and_cost_only_when_known() {
         let json = serde_json::to_value(RunOutcome::default()).unwrap();
         assert!(json.get("stop_reason").is_none() && json.get("cost_usd").is_none());
+        assert!(json.get("checkpointed").is_none());
         let back: RunOutcome = serde_json::from_str(
             r#"{"text":"","usage":{"input":0,"output":0},"steps":0,"stopped_at_cap":false,"error":null}"#,
         )

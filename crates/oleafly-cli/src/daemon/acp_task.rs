@@ -1121,6 +1121,7 @@ impl DaemonAcpAdapter {
         };
         let mut outcome = TaskRuntimeOutcome {
             waiting_for_reply: false,
+            checkpoint: None,
             summary: String::new(),
             artifacts: Vec::new(),
             native_session_id: Some(session_id.clone()),

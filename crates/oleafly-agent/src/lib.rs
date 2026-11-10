@@ -30,7 +30,7 @@ pub use models::{list_models, ModelInfo};
 pub use provider::{resolve, CustomProvider, ProviderConfig, Resolved, Wire};
 pub use run::{
     bound_tool_output, run_agent, run_agent_with_pipeline, validate_completion_request, RunConfig,
-    RunOutcome, SteerHandle, ToolOutput, ToolPipeline, ToolRunner,
+    RunOutcome, SteerHandle, ToolBatchDecision, ToolOutput, ToolPipeline, ToolRunner,
 };
 pub use session::turn::assistant_message;
 pub use stream::{

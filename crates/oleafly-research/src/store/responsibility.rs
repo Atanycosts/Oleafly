@@ -18,10 +18,15 @@ fn eligible_on(
 ) -> Result<Vec<String>, String> {
     let work = work_on(connection, group)?;
     let attentions = attention::list_on(connection, group)?;
+    let checkpoint = checkpoints::open_on(connection, group)?;
     Ok(members
         .iter()
         .filter(|member| {
-            member.id != event.author.id
+            !member.paused
+                && checkpoint
+                    .as_ref()
+                    .is_none_or(|(_, checkpoint)| checkpoint.member_id != member.id)
+                && member.id != event.author.id
                 && !work.iter().any(|w| {
                     w.member_id == member.id && w.cause_kind == "event" && w.cause_id == event.id
                 })
@@ -55,6 +60,7 @@ impl TaskStore {
             return Ok(None);
         }
         let members = members_on(&connection, &group.id)?;
+        let checkpoint = checkpoints::open_on(&connection, &group.id)?;
         if members
             .iter()
             .any(|member| member.config.coordinator && member.paused)
@@ -80,6 +86,11 @@ impl TaskStore {
             inputs: Vec::new(),
         };
         for input in inputs {
+            if checkpoint.as_ref().is_some_and(|(_, checkpoint)| {
+                !checkpoint.receipt_event_ids.contains(&input.event.id)
+            }) {
+                continue;
+            }
             batch.inputs.push(input);
             if encode_json(&batch)?.len() > MAX_BATCH_BYTES {
                 batch.inputs.pop();
