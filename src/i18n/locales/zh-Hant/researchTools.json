@@ -576,6 +576,7 @@
       "reasonHandled": "Previously handled this object",
       "reasonParentHandling": "Follow-up to handled work",
       "reasonCoordinator": "Routed by the coordinator",
+      "reasonResponsibility": "按职责介入",
       "reasonOther": "Wake reason: {{kind}}",
       "wakeReasons": "Wake reasons",
       "noWakeReasons": "No matching reason was recorded for this work. Inspect the cause and source before treating the wake-up as explained.",

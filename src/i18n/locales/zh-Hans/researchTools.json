@@ -576,6 +576,7 @@
       "reasonHandled": "此前处理过此对象",
       "reasonParentHandling": "跟进此前已处理的工作",
       "reasonCoordinator": "由协调成员路由",
+      "reasonResponsibility": "按职责介入",
       "reasonOther": "唤醒原因：{{kind}}",
       "wakeReasons": "唤醒原因",
       "noWakeReasons": "此工作没有记录匹配的唤醒原因。请先核对触发来源，再判断唤醒是否已有解释。",

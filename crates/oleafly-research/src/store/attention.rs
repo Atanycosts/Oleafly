@@ -71,6 +71,7 @@ pub(super) fn matching_reasons(
         .into_iter()
         .map(|attention| WorkReason {
             kind: attention.relation.clone(),
+            detail: None,
             object: Some(attention.object.clone()),
             source_id: Some(attention.source_id.clone()),
             execution_id: attention.execution_id.clone(),

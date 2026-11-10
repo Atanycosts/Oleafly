@@ -3017,7 +3017,7 @@ const BRIEF_SCHEMA_VERSION: i64 = 2;
 const HANDOFF_SCHEMA_VERSION: i64 = 3;
 const EVENT_KIND_SCHEMA_VERSION: i64 = 4;
 const RUN_CONTROL_SCHEMA_VERSION: i64 = 5;
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 fn migrate(connection: &mut Connection) -> Result<(), String> {
     if schema_version(connection)? >= SCHEMA_VERSION {
@@ -3234,6 +3234,9 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
     }
     if version < 13 {
         upgrade(collaboration::ATTENTION_SCHEMA_SQL)?;
+    }
+    if version < 14 {
+        upgrade(collaboration::RESPONSIBILITY_SCHEMA_SQL)?;
     }
     upgrade(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     transaction.commit().map_err(store_error)

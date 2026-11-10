@@ -186,6 +186,7 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
           <p className="whitespace-pre-wrap break-words">{distillation.rationale}</p>
           <p>{t(($) => $.researchTools.tasks.annotations.handling)}: {reference("handling", distillation.handlingId)}</p>
           {distillation.requirementId ? <p>{t(($) => $.researchTools.tasks.annotations.requirement)}: {reference("requirement", distillation.requirementId)}</p> : null}
+          {distillation.promotedFromRequirementId ? <p>{t(($) => $.researchTools.tasks.annotations.candidate)}: {reference("requirement", distillation.promotedFromRequirementId)}</p> : null}
           {distillation.replacedRequirementId ? <p>{t(($) => $.researchTools.tasks.annotations.replaces)}: {reference("requirement", distillation.replacedRequirementId)}</p> : null}
         </div>)}
         <Button type="button" variant="outline" size="xs" disabled={saving} onClick={() => replyTo(annotation)}>{t(($) => $.researchTools.tasks.annotations.reply)}</Button>

@@ -223,7 +223,8 @@ describe("TaskAnnotations", () => {
       author: { kind: "user", id: "user" }, text: "Keep uncertainty estimates visible.", kind: "enduring", status: "active",
       sourceAnnotationId: "annotation-1", replacedBy: null, createdAt: 3, updatedAt: 3, withdrawnAt: null,
     }];
-    loaded.distillations = [{ id: "distillation-1", sourceAnnotationId: "annotation-1", handlingId: "handling-1", author: { kind: "member", id: "member-reviewer" }, rationale: "This applies to later revisions.", outcome: "promoted", requirementId: "requirement-1", replacedRequirementId: "requirement-old", createdAt: 3 }];
+    loaded.requirements.push({ ...loaded.requirements[0], id: "candidate-1", kind: "candidate", status: "superseded", replacedBy: "requirement-1" });
+    loaded.distillations = [{ id: "distillation-1", sourceAnnotationId: "annotation-1", handlingId: "handling-1", author: { kind: "member", id: "member-reviewer" }, rationale: "This applies to later revisions.", outcome: "promoted", requirementId: "requirement-1", promotedFromRequirementId: "candidate-1", replacedRequirementId: "requirement-old", createdAt: 3 }];
     api.load.mockResolvedValue(loaded);
     const open = vi.fn();
     render(<TaskAnnotations task={task()} target={null} members={[member()]} onOpenTarget={open} />);
@@ -231,11 +232,12 @@ describe("TaskAnnotations", () => {
     fireEvent.click(resultButton);
     expect(open).toHaveBeenCalledWith(result);
     expect(screen.getByRole("link", { name: "handling-1" })).toHaveAttribute("href", "#task-task-1-handling-handling-1");
-    expect(screen.getByRole("link", { name: "requirement-1" })).toHaveAttribute("href", "#task-task-1-requirement-requirement-1");
+    for (const link of screen.getAllByRole("link", { name: "requirement-1" })) expect(link).toHaveAttribute("href", "#task-task-1-requirement-requirement-1");
+    expect(screen.getByRole("link", { name: "candidate-1" })).toHaveAttribute("href", "#task-task-1-requirement-candidate-1");
     expect(screen.getByText("requirement-old")).toBeInTheDocument();
     fireEvent.click(screen.getByText(text.requirements));
-    expect(screen.getByText("Keep uncertainty estimates visible.")).toBeInTheDocument();
-    expect(screen.getByText("paper · task-1 · file · methods.tex · methods.tex")).toBeInTheDocument();
+    expect(screen.getAllByText("Keep uncertainty estimates visible.")).toHaveLength(2);
+    expect(screen.getAllByText("paper · task-1 · file · methods.tex · methods.tex")).toHaveLength(2);
   });
 
   it("keeps failed submissions editable for retry and clears the request only after a successful save", async () => {

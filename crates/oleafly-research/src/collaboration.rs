@@ -136,6 +136,8 @@ pub struct GroupEvent {
     pub object: GroupObject,
     pub author: GroupActor,
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<serde_json::Value>,
     pub created_at: i64,
 }
 
@@ -171,6 +173,8 @@ pub struct GroupWork {
 #[serde(rename_all = "camelCase")]
 pub struct WorkReason {
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object: Option<GroupObject>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

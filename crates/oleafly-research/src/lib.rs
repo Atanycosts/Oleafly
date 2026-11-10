@@ -21,6 +21,7 @@ pub mod progress;
 pub mod prompt;
 pub mod record;
 mod recorder;
+pub mod responsibility;
 pub mod runs;
 pub mod scheduler;
 pub mod similarity;

@@ -4,8 +4,8 @@ use super::{decode_json, encode_json, fresh_id, store_error, TaskStore};
 use crate::annotations::{
     now, require_text, Annotation, AnnotationAuthor, AnnotationDelivery, AnnotationDraft,
     AnnotationHandling, AnnotationHandlingDraft, AnnotationQuery, AnnotationStatus,
-    AnnotationStatusChange, AnnotationTarget, Distillation, DistillationDraft, EnduringRequirement,
-    RequirementDraft, RequirementKind, RequirementStatus,
+    AnnotationStatusChange, AnnotationTarget, Distillation, DistillationDraft, DistillationOutcome,
+    EnduringRequirement, RequirementDraft, RequirementKind, RequirementStatus,
 };
 use crate::model::{PendingStart, ResearchTask, ResumeReason};
 
@@ -832,7 +832,8 @@ impl TaskStore {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(store_error)?;
-        load_annotation(&transaction, project_id, &draft.source_annotation_id)?;
+        let source_annotation =
+            load_annotation(&transaction, project_id, &draft.source_annotation_id)?;
         let handled_annotation: Option<String> = transaction
             .query_row(
                 "SELECT annotation_id FROM research_task_annotation_handlings WHERE id = ?1",
@@ -846,10 +847,82 @@ impl TaskStore {
                 "Distillation must reference actual handling of the source annotation.".into(),
             );
         }
+        let promoted_candidate = if let Some(candidate_id) = &draft.promoted_from_requirement_id {
+            let candidate = load_requirement(&transaction, project_id, candidate_id)?;
+            if candidate.kind != RequirementKind::Candidate
+                || candidate.status != RequirementStatus::Active
+            {
+                return Err("Only an active candidate can be promoted.".into());
+            }
+            if candidate.source_annotation_id.as_deref()
+                != Some(draft.source_annotation_id.as_str())
+            {
+                return Err(
+                    "A promoted candidate must retain the distillation source annotation.".into(),
+                );
+            }
+            let candidate_handling: Option<String> = transaction
+                .query_row(
+                    "SELECT json_extract(distillation_json, '$.handlingId')
+                     FROM research_task_distillations
+                     WHERE source_annotation_id = ?1
+                       AND json_extract(distillation_json, '$.outcome') = 'candidate'
+                       AND json_extract(distillation_json, '$.requirementId') = ?2
+                     ORDER BY sequence
+                     LIMIT 1",
+                    params![draft.source_annotation_id, candidate_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            let candidate_handling =
+                candidate_handling.ok_or("The candidate has no candidate distillation record.")?;
+            if candidate_handling == draft.handling_id {
+                return Err("A candidate must be promoted using a later actual handling.".into());
+            }
+            let candidate_sequence: u64 = transaction
+                .query_row(
+                    "SELECT sequence FROM research_task_annotation_handlings
+                     WHERE id = ?1 AND annotation_id = ?2",
+                    params![candidate_handling, draft.source_annotation_id],
+                    |row| row.get(0),
+                )
+                .map_err(store_error)?;
+            let promotion_sequence: u64 = transaction
+                .query_row(
+                    "SELECT sequence FROM research_task_annotation_handlings
+                     WHERE id = ?1 AND annotation_id = ?2",
+                    params![draft.handling_id, draft.source_annotation_id],
+                    |row| row.get(0),
+                )
+                .map_err(store_error)?;
+            if promotion_sequence <= candidate_sequence {
+                return Err("A candidate must be promoted after its candidate handling.".into());
+            }
+            Some(candidate)
+        } else if draft.outcome == DistillationOutcome::Promoted
+            && !source_annotation.is_user_request()
+        {
+            return Err(
+                "A promoted requirement from agent feedback needs an active source candidate."
+                    .into(),
+            );
+        } else {
+            None
+        };
         let mut requirement_draft = draft.requirement.clone();
         if let Some(requirement) = &mut requirement_draft {
             if requirement.scope.project_id != project_id {
                 return Err("The distilled requirement is outside the annotated project.".into());
+            }
+            if promoted_candidate
+                .as_ref()
+                .is_some_and(|candidate| requirement.scope != candidate.scope)
+            {
+                return Err(
+                    "A promoted candidate and its enduring requirement must have the same scope."
+                        .into(),
+                );
             }
             if requirement
                 .source_annotation_id
@@ -864,7 +937,19 @@ impl TaskStore {
             .as_ref()
             .map(|requirement| insert_requirement_on(&transaction, requirement))
             .transpose()?;
+        if let (Some(candidate), Some(promoted)) = (&promoted_candidate, &new_requirement) {
+            let mut candidate = candidate.clone();
+            candidate.status = RequirementStatus::Superseded;
+            candidate.updated_at = now();
+            candidate.replaced_by = Some(promoted.id.clone());
+            save_requirement(&transaction, &candidate)?;
+        }
         if let Some(replaced_id) = &draft.replaced_requirement_id {
+            if !source_annotation.is_user_request() {
+                return Err(
+                    "Only an explicit user request can replace an enduring requirement.".into(),
+                );
+            }
             if new_requirement
                 .as_ref()
                 .is_some_and(|requirement| requirement.kind == RequirementKind::Candidate)
@@ -874,6 +959,18 @@ impl TaskStore {
             let mut replaced = load_requirement(&transaction, project_id, replaced_id)?;
             if replaced.status != RequirementStatus::Active {
                 return Err("Only an active requirement can be superseded.".into());
+            }
+            if replaced.kind != RequirementKind::Enduring {
+                return Err("Only an enduring requirement can be superseded.".into());
+            }
+            let promoted = new_requirement
+                .as_ref()
+                .ok_or("Replacing a requirement requires a new requirement.")?;
+            if replaced.scope != promoted.scope {
+                return Err(
+                    "An enduring requirement can only be replaced within exactly the same scope."
+                        .into(),
+                );
             }
             replaced.status = RequirementStatus::Superseded;
             replaced.updated_at = now();
@@ -890,6 +987,7 @@ impl TaskStore {
             rationale: draft.rationale.clone(),
             outcome: draft.outcome,
             requirement_id: new_requirement.map(|requirement| requirement.id),
+            promoted_from_requirement_id: draft.promoted_from_requirement_id.clone(),
             replaced_requirement_id: draft.replaced_requirement_id.clone(),
             created_at: now(),
         };
@@ -1026,6 +1124,60 @@ mod tests {
             .unwrap()
     }
 
+    fn handle_as(store: &TaskStore, annotation: &Annotation, summary: &str) -> AnnotationHandling {
+        store
+            .record_annotation_handling(
+                "p",
+                &AnnotationHandlingDraft {
+                    annotation_id: annotation.id.clone(),
+                    author: AnnotationAuthor::member("results-reviewer"),
+                    summary: summary.into(),
+                    result_refs: Vec::new(),
+                },
+            )
+            .unwrap()
+    }
+
+    fn agent_annotation(store: &TaskStore) -> Annotation {
+        store
+            .add_annotation(&AnnotationDraft::new(
+                target(),
+                AnnotationAuthor::member("results-reviewer"),
+                "Consider checking all significant ablations.",
+            ))
+            .unwrap()
+    }
+
+    fn candidate_scope() -> RequirementScope {
+        RequirementScope {
+            path: Some("sections/results".into()),
+            ..RequirementScope::project("p")
+        }
+    }
+
+    fn candidate_distillation(
+        annotation: &Annotation,
+        handling: &AnnotationHandling,
+    ) -> DistillationDraft {
+        DistillationDraft {
+            source_annotation_id: annotation.id.clone(),
+            handling_id: handling.id.clone(),
+            author: AnnotationAuthor::member("results-reviewer"),
+            rationale: "The observed result may support an enduring check.".into(),
+            outcome: DistillationOutcome::Candidate,
+            requirement: Some(
+                RequirementDraft::enduring(
+                    candidate_scope(),
+                    AnnotationAuthor::member("results-reviewer"),
+                    "Check significant ablations in the results section.",
+                )
+                .candidate(),
+            ),
+            promoted_from_requirement_id: None,
+            replaced_requirement_id: None,
+        }
+    }
+
     #[test]
     fn restart_retains_raw_annotation_and_follow_up_on_old_revision() {
         let (directory, store) = store();
@@ -1139,9 +1291,10 @@ mod tests {
     fn second_pass_needs_actual_handling_and_keeps_source_and_replacement() {
         let (_directory, store) = store();
         let original = annotation(&store);
+        let old_scope = RequirementScope::from_target(&original.target);
         let old = store
             .add_requirement(&RequirementDraft::enduring(
-                RequirementScope::project("p"),
+                old_scope,
                 AnnotationAuthor::user("owner"),
                 "Keep every negative run in the main table.",
             ))
@@ -1157,6 +1310,7 @@ mod tests {
                 AnnotationAuthor::member("results-reviewer"),
                 "Retain negative findings that change the stated conclusion and link the remaining runs.",
             )),
+            promoted_from_requirement_id: None,
             replaced_requirement_id: Some(old.id.clone()),
         };
         assert!(store.add_distillation("p", &draft).is_err());
@@ -1211,6 +1365,7 @@ mod tests {
                 .into(),
             outcome: DistillationOutcome::Candidate,
             requirement: Some(candidate.clone()),
+            promoted_from_requirement_id: None,
             replaced_requirement_id: Some(old.id.clone()),
         };
         assert!(store.add_distillation("p", &draft).is_err());
@@ -1219,6 +1374,246 @@ mod tests {
         assert_eq!(
             store.list_active_requirements(&target()).unwrap(),
             vec![old]
+        );
+    }
+
+    #[test]
+    fn sourced_candidate_requires_a_later_actual_handling_to_promote() {
+        let (_directory, store) = store();
+        let original = agent_annotation(&store);
+        let first = handle_as(&store, &original, "First review found a possible check.");
+        let candidate = store
+            .add_distillation("p", &candidate_distillation(&original, &first))
+            .unwrap();
+        let candidate_id = candidate.requirement_id.clone().unwrap();
+        assert!(store
+            .list_active_requirements(&target())
+            .unwrap()
+            .iter()
+            .all(|requirement| requirement.id != candidate_id));
+
+        let direct = DistillationDraft {
+            source_annotation_id: original.id.clone(),
+            handling_id: first.id.clone(),
+            author: AnnotationAuthor::member("results-reviewer"),
+            rationale: "The agent proposes an enduring check.".into(),
+            outcome: DistillationOutcome::Promoted,
+            requirement: Some(RequirementDraft::enduring(
+                candidate_scope(),
+                AnnotationAuthor::member("results-reviewer"),
+                "Check significant ablations in the results section.",
+            )),
+            promoted_from_requirement_id: None,
+            replaced_requirement_id: None,
+        };
+        assert!(store.add_distillation("p", &direct).is_err());
+        assert_eq!(store.list_requirements("p").unwrap().len(), 1);
+
+        let second = handle_as(&store, &original, "A later review confirmed the check.");
+        let promotion = DistillationDraft {
+            handling_id: second.id.clone(),
+            rationale: "A second actual review confirmed the candidate.".into(),
+            promoted_from_requirement_id: Some(candidate_id.clone()),
+            ..direct
+        };
+        let promoted = store.add_distillation("p", &promotion).unwrap();
+        assert_eq!(
+            promoted.promoted_from_requirement_id.as_deref(),
+            Some(candidate_id.as_str())
+        );
+        assert_eq!(promoted.handling_id, second.id);
+        assert_eq!(
+            store.requirement("p", &candidate_id).unwrap().status,
+            RequirementStatus::Superseded
+        );
+        let enduring = store
+            .requirement("p", promoted.requirement_id.as_ref().unwrap())
+            .unwrap();
+        assert_eq!(enduring.source_annotation_id, Some(original.id.clone()));
+        assert_eq!(enduring.scope, candidate_scope());
+        assert_eq!(
+            store.requirement("p", &candidate_id).unwrap().replaced_by,
+            Some(enduring.id.clone())
+        );
+        let retained = store.annotation_distillations("p", &original.id).unwrap();
+        assert_eq!(retained.len(), 2);
+        assert_eq!(retained[1].rationale, promotion.rationale);
+    }
+
+    #[test]
+    fn candidate_promotion_rejects_unlinked_or_mismatched_sources() {
+        let (_directory, store) = store();
+        let original = agent_annotation(&store);
+        let first = handle_as(&store, &original, "First review found a possible check.");
+        let candidate = store
+            .add_distillation("p", &candidate_distillation(&original, &first))
+            .unwrap();
+        let candidate_id = candidate.requirement_id.unwrap();
+
+        let same_handling = DistillationDraft {
+            source_annotation_id: original.id.clone(),
+            handling_id: first.id.clone(),
+            author: AnnotationAuthor::member("results-reviewer"),
+            rationale: "The first pass should not promote itself.".into(),
+            outcome: DistillationOutcome::Promoted,
+            requirement: Some(RequirementDraft::enduring(
+                candidate_scope(),
+                AnnotationAuthor::member("results-reviewer"),
+                "Check significant ablations in the results section.",
+            )),
+            promoted_from_requirement_id: Some(candidate_id.clone()),
+            replaced_requirement_id: None,
+        };
+        assert!(store.add_distillation("p", &same_handling).is_err());
+
+        let second = handle_as(&store, &original, "A later review confirmed the check.");
+        let wrong_scope = DistillationDraft {
+            handling_id: second.id.clone(),
+            requirement: Some(RequirementDraft::enduring(
+                RequirementScope::project("p"),
+                AnnotationAuthor::member("results-reviewer"),
+                "Check significant ablations everywhere.",
+            )),
+            ..same_handling.clone()
+        };
+        assert!(store.add_distillation("p", &wrong_scope).is_err());
+
+        let unrelated = agent_annotation(&store);
+        let unrelated_handling =
+            handle_as(&store, &unrelated, "A different annotation was handled.");
+        let wrong_source = DistillationDraft {
+            source_annotation_id: unrelated.id.clone(),
+            handling_id: unrelated_handling.id,
+            author: AnnotationAuthor::member("results-reviewer"),
+            rationale: "Attempt to attach the candidate to another source.".into(),
+            outcome: DistillationOutcome::Promoted,
+            requirement: Some(RequirementDraft::enduring(
+                candidate_scope(),
+                AnnotationAuthor::member("results-reviewer"),
+                "Check significant ablations in the results section.",
+            )),
+            promoted_from_requirement_id: Some(candidate_id.clone()),
+            replaced_requirement_id: None,
+        };
+        assert!(store.add_distillation("p", &wrong_source).is_err());
+
+        let early_promotion = DistillationDraft {
+            handling_id: first.id.clone(),
+            ..same_handling.clone()
+        };
+        assert!(store.add_distillation("p", &early_promotion).is_err());
+
+        let unsourced = store
+            .add_requirement(
+                &RequirementDraft::enduring(
+                    candidate_scope(),
+                    AnnotationAuthor::member("results-reviewer"),
+                    "An unlinked candidate.",
+                )
+                .candidate(),
+            )
+            .unwrap();
+        let forged = DistillationDraft {
+            source_annotation_id: original.id.clone(),
+            handling_id: second.id,
+            promoted_from_requirement_id: Some(unsourced.id),
+            ..wrong_source
+        };
+        assert!(store.add_distillation("p", &forged).is_err());
+        assert_eq!(
+            store.requirement("p", &candidate_id).unwrap().status,
+            RequirementStatus::Active
+        );
+        assert_eq!(
+            store
+                .annotation_distillations("p", &original.id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn replacement_requires_user_source_active_enduring_and_exact_scope() {
+        let (_directory, store) = store();
+        let user = annotation(&store);
+        let handling = handle_as(&store, &user, "The user's rule was reviewed.");
+        let old = store
+            .add_requirement(&RequirementDraft::enduring(
+                candidate_scope(),
+                AnnotationAuthor::user("owner"),
+                "Retain all negative ablations.",
+            ))
+            .unwrap();
+        let replacement = DistillationDraft {
+            source_annotation_id: user.id.clone(),
+            handling_id: handling.id,
+            author: AnnotationAuthor::member("results-reviewer"),
+            rationale: "The explicit user request narrows the same scoped rule.".into(),
+            outcome: DistillationOutcome::Promoted,
+            requirement: Some(RequirementDraft::enduring(
+                candidate_scope(),
+                AnnotationAuthor::member("results-reviewer"),
+                "Retain negative ablations that affect the conclusion.",
+            )),
+            promoted_from_requirement_id: None,
+            replaced_requirement_id: Some(old.id.clone()),
+        };
+        let promoted = store.add_distillation("p", &replacement).unwrap();
+        assert_eq!(
+            store.requirement("p", &old.id).unwrap().status,
+            RequirementStatus::Superseded
+        );
+        assert_eq!(
+            store.requirement("p", &old.id).unwrap().replaced_by,
+            promoted.requirement_id
+        );
+
+        let agent = agent_annotation(&store);
+        let agent_handling = handle_as(&store, &agent, "Reviewed agent feedback.");
+        let agent_old = store
+            .add_requirement(&RequirementDraft::enduring(
+                candidate_scope(),
+                AnnotationAuthor::user("owner"),
+                "Keep the user's enduring rule.",
+            ))
+            .unwrap();
+        let agent_replacement = DistillationDraft {
+            source_annotation_id: agent.id.clone(),
+            handling_id: agent_handling.id,
+            author: AnnotationAuthor::member("results-reviewer"),
+            rationale: "Agent feedback must not replace a user rule.".into(),
+            outcome: DistillationOutcome::Promoted,
+            requirement: Some(RequirementDraft::enduring(
+                candidate_scope(),
+                AnnotationAuthor::member("results-reviewer"),
+                "Use the agent's rule.",
+            )),
+            promoted_from_requirement_id: None,
+            replaced_requirement_id: Some(agent_old.id.clone()),
+        };
+        assert!(store.add_distillation("p", &agent_replacement).is_err());
+
+        let user_2 = annotation(&store);
+        let user_2_handling = handle_as(&store, &user_2, "Reviewed another user request.");
+        let wrong_scope = DistillationDraft {
+            source_annotation_id: user_2.id.clone(),
+            handling_id: user_2_handling.id,
+            author: AnnotationAuthor::member("results-reviewer"),
+            rationale: "A project-wide rule is not the same scope.".into(),
+            outcome: DistillationOutcome::Promoted,
+            requirement: Some(RequirementDraft::enduring(
+                RequirementScope::project("p"),
+                AnnotationAuthor::member("results-reviewer"),
+                "Retain the rule across the project.",
+            )),
+            promoted_from_requirement_id: None,
+            replaced_requirement_id: Some(agent_old.id.clone()),
+        };
+        assert!(store.add_distillation("p", &wrong_scope).is_err());
+        assert_eq!(
+            store.requirement("p", &agent_old.id).unwrap().status,
+            RequirementStatus::Active
         );
     }
 

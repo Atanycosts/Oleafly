@@ -1378,3 +1378,191 @@ async fn repeated_provider_call_id_in_one_member_run_retains_both_source_version
     );
     assert_eq!(std::fs::read_to_string(workspace.join(PATH)).unwrap(), B);
 }
+
+#[tokio::test]
+async fn requirements_must_be_provided_before_a_same_batch_read_then_write() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("analysis")).unwrap();
+    std::fs::write(
+        workspace.join("analysis/result.md"),
+        "Negative result retained",
+    )
+    .unwrap();
+    let tasks = root.path().join("tasks");
+    let task = running_task(&tasks, "local");
+    let store = TaskStore::new(tasks.clone()).unwrap();
+    let requirement = store
+        .add_requirement(&RequirementDraft::enduring(
+            RequirementScope {
+                path: Some("analysis/result.md".into()),
+                ..RequirementScope::project("project")
+            },
+            AnnotationAuthor::user("human"),
+            "Retain negative evidence in this result.",
+        ))
+        .unwrap();
+    let requirement_id = requirement.id.clone();
+    let provider=Scripted::start(script(move |request,step|match step {
+        0=>tool_delta(vec![
+            ("read_file",json!({"path":"analysis/result.md"})),
+            ("write_file",json!({"path":"analysis/result.md","content":"Incorrect proposed removal"})),
+        ]),
+        1=>{
+            assert!(request_context(request).contains(&requirement_id));
+            assert!(tool_outputs(request).iter().any(|output|output.contains("Review the current requirements before this write")));
+            tool_delta(vec![("write_file",json!({"path":"analysis/result.md","content":"Negative result retained, with corrected analysis"}))])
+        },
+        _=>text_reply("Retained the counterexample while revising the result."),
+    })).await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&tasks));
+    within(adapter.run(
+        task_context(&task, &workspace),
+        CancellationToken::new(),
+        event_log().1,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("analysis/result.md")).unwrap(),
+        "Negative result retained, with corrected analysis"
+    );
+    assert!(!request_context(&provider.requests()[0]).contains(&requirement.id));
+}
+
+#[tokio::test]
+async fn responsibility_assessment_uses_no_tools_and_retains_actual_model_usage() {
+    let root = tempfile::tempdir().unwrap();
+    let tasks = root.path().join("tasks");
+    let task = running_task(&tasks, "local");
+    let provider = Scripted::start(script(|request, _| {
+        assert!(request["tools"]
+            .as_array()
+            .is_none_or(|tools| tools.is_empty()));
+        assert!(request.to_string().contains("eligibleMemberIds"));
+        assert_eq!(request["reasoning_effort"], "low");
+        text_reply(r#"{"decisions":[]}"#)
+    }))
+    .await;
+    let mut host = fixture_host(root.path(), provider.url.clone()).await;
+    Arc::get_mut(&mut host).unwrap().caps = oleafly_agent::ModelCaps::from_metadata_json(&json!({
+        "reasoningOptions": [{"type":"effort", "values":["low","high"]}]
+    }));
+    let adapter = BuiltinTaskAdapter::new(host, services(&tasks));
+    let batch = crate::responsibility::ResponsibilityBatch {
+        members: vec![],
+        inputs: vec![],
+    };
+    let mut context = task_context(&task, root.path());
+    context.agent_id = "gateway".into();
+    context.brief.reasoning_effort = Some(oleafly_agent::Effort::High);
+    let result = within(adapter.assess_responsibilities(
+        context,
+        batch,
+        CancellationToken::new(),
+        event_log().1,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(result.model_id.as_deref(), Some("test"));
+    assert_eq!(result.effort, Some(oleafly_agent::Effort::Low));
+    assert_eq!(
+        (result.input_tokens, result.output_tokens),
+        (Some(10), Some(2))
+    );
+    assert!(result.response.decisions.is_empty());
+    assert_eq!(provider.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn helper_write_receives_file_requirements_before_the_record_changes() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let tasks = root.path().join("tasks");
+    let task = running_task(&tasks, "local");
+    let path = format!("{}/notes.md", task.record_dir());
+    std::fs::create_dir_all(workspace.join(task.record_dir())).unwrap();
+    std::fs::write(workspace.join(&path), "Original notes").unwrap();
+    let store = TaskStore::new(tasks.clone()).unwrap();
+    let requirement = store
+        .add_requirement(&RequirementDraft::enduring(
+            RequirementScope {
+                task_id: Some(task.id.clone()),
+                path: Some(path.clone()),
+                ..RequirementScope::project("project")
+            },
+            AnnotationAuthor::user("human"),
+            "Retain the record requirement when revising these notes.",
+        ))
+        .unwrap();
+    let unrelated = store
+        .add_requirement(&RequirementDraft::enduring(
+            RequirementScope {
+                task_id: Some(task.id.clone()),
+                path: Some(format!("{}/unrelated.md", task.record_dir())),
+                ..RequirementScope::project("project")
+            },
+            AnnotationAuthor::user("human"),
+            "This requirement applies only to an unrelated record file.",
+        ))
+        .unwrap();
+    let requirement_id = requirement.id.clone();
+    let unrelated_id = unrelated.id.clone();
+    let script_path = path.clone();
+    let provider = Scripted::start(script(move |request, _| {
+        if is_helper(request) {
+            let outputs = tool_outputs(request);
+            return match outputs.len() {
+                0 => {
+                    assert!(!request_system(request).contains(&requirement_id));
+                    assert!(!request_system(request).contains(&unrelated_id));
+                    tool_delta(vec![
+                        ("read_file", json!({"path":script_path.clone()})),
+                        (
+                            "write_file",
+                            json!({"path":script_path.clone(),"content":"Incorrect helper revision"}),
+                        ),
+                    ])
+                }
+                2 => {
+                    let system = request_system(request);
+                    assert!(system.contains(&requirement_id));
+                    assert!(!system.contains(&unrelated_id));
+                    assert!(outputs
+                        .iter()
+                        .any(|output| output.contains("Review the current requirements before this write")));
+                    tool_delta(vec![(
+                        "write_file",
+                        json!({"path":script_path.clone(),"content":"Helper revision under retained requirement"}),
+                    )])
+                }
+                3 => text_reply("The helper revised the record notes."),
+                _ => panic!("unexpected helper request with {} tool outputs", outputs.len()),
+            };
+        }
+        if tool_outputs(request).is_empty() {
+            tool_delta(vec![(
+                SPAWN_AGENT,
+                json!({
+                    "brief":"Revise the record notes while preserving applicable requirements.",
+                    "paths":[script_path.clone()]
+                }),
+            )])
+        } else {
+            text_reply("The helper finished.")
+        }
+    }))
+    .await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host, services(&tasks));
+    let mut context = task_context(&task, &workspace);
+    context.allowed_paths = vec![task.record_dir()];
+    within(adapter.run(context, CancellationToken::new(), event_log().1))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace.join(path)).unwrap(),
+        "Helper revision under retained requirement"
+    );
+}

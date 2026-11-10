@@ -58,6 +58,20 @@ pub trait TaskRuntimeAdapter: Send + Sync {
         events: TaskEventSink,
     ) -> TaskRuntimeFuture<TaskRuntimeOutcome>;
     fn cancel(&self, session_id: String) -> TaskRuntimeFuture<()>;
+    fn supports_responsibility_assessment(&self) -> bool {
+        false
+    }
+    fn assess_responsibilities(
+        &self,
+        _context: TaskRunContext,
+        _batch: crate::responsibility::ResponsibilityBatch,
+        _cancel: CancellationToken,
+        _events: TaskEventSink,
+    ) -> TaskRuntimeFuture<crate::responsibility::ResponsibilityAssessment> {
+        Box::pin(async {
+            Err("This execution runtime does not support responsibility assessment.".into())
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -1584,6 +1598,8 @@ impl ResearchTaskState {
         let mut total: Option<(Option<u64>, Option<u64>)> = None;
         let mut summary = String::new();
         let mut artifacts = Vec::new();
+        let mut assessment_failure = None;
+        let mut assessment_calls = 0;
         loop {
             if cancel.is_cancelled() {
                 return Err("The task was cancelled.".into());
@@ -1605,7 +1621,134 @@ impl ResearchTaskState {
                 store.set_stop_reason(&task.id, task.execution_generation, reason)?;
                 break;
             }
+            if let Some(batch) = store
+                .responsibility_batch(task)?
+                .filter(|_| assessment_failure.is_none())
+            {
+                let coordinator = batch
+                    .members
+                    .iter()
+                    .find(|member| member.config.coordinator)
+                    .ok_or("The group has no coordinator.")?;
+                let adapter =
+                    self.runtime_for(&coordinator.config.runtime_id, &coordinator.config.agent_id)?;
+                if adapter.supports_responsibility_assessment() {
+                    let assessment = if batch
+                        .inputs
+                        .iter()
+                        .all(|input| input.eligible_member_ids.is_empty())
+                    {
+                        crate::responsibility::ResponsibilityAssessment {
+                            provider_id: None,
+                            model_id: None,
+                            effort: None,
+                            response: crate::responsibility::ResponsibilityResponse {
+                                decisions: Vec::new(),
+                            },
+                            input_tokens: Some(0),
+                            output_tokens: Some(0),
+                            error: None,
+                        }
+                    } else {
+                        if assessment_calls >= 16 {
+                            assessment_failure = Some("Responsibility assessment reached its 16-call limit for this execution. Remaining changes are retained for retry.".to_owned());
+                            continue;
+                        }
+                        assessment_calls += 1;
+                        let mut context = base.clone();
+                        context.runtime_id = coordinator.config.runtime_id.clone();
+                        context.agent_id = coordinator.config.agent_id.clone();
+                        context.model_id = coordinator.config.model_id.clone();
+                        context.session_id = format!(
+                            "{}:responsibility:{}",
+                            base.session_id, batch.inputs[0].event.id
+                        );
+                        events(TaskRuntimeEvent::Status {
+                            message: format!(
+                                "Checking member responsibilities for {} retained changes.",
+                                batch.inputs.len()
+                            ),
+                        });
+                        match adapter
+                            .assess_responsibilities(
+                                context,
+                                batch.clone(),
+                                cancel.child(),
+                                events.clone(),
+                            )
+                            .await
+                        {
+                            Ok(assessment) => assessment,
+                            Err(error) => {
+                                assessment_failure = Some(error);
+                                continue;
+                            }
+                        }
+                    };
+                    if cancel.is_cancelled() || self.inner.suspends.requested(&task.id) {
+                        continue;
+                    }
+                    let commit = store.commit_responsibility_assessment(task, &batch, &assessment);
+                    let committed = match commit {
+                        Ok(committed) => committed,
+                        Err(error) => {
+                            let mut failed = assessment.clone();
+                            failed.error = Some(error.clone());
+                            let committed =
+                                store.commit_responsibility_assessment(task, &batch, &failed)?;
+                            if committed {
+                                assessment_failure = Some(error);
+                            }
+                            committed
+                        }
+                    };
+                    if let Some(error) = assessment.error.as_ref().filter(|_| committed) {
+                        assessment_failure = Some(error.clone());
+                    }
+                    total = Some(match total {
+                        None => (assessment.input_tokens, assessment.output_tokens),
+                        Some((input, output)) => (
+                            input.zip(assessment.input_tokens).map(|(a, b)| a + b),
+                            output.zip(assessment.output_tokens).map(|(a, b)| a + b),
+                        ),
+                    });
+                    if let Some((input_tokens, output_tokens)) = total {
+                        events(TaskRuntimeEvent::Observation {
+                            observation: crate::observations::TaskObservation::Usage {
+                                input_tokens,
+                                output_tokens,
+                            },
+                        });
+                    }
+                    if !committed {
+                        break;
+                    }
+                } else if !summary.contains("Responsibility assessment is unavailable") {
+                    let limitation="Responsibility assessment is unavailable for the coordinator runtime. Explicit routing continues, and unassessed changes remain retained.";
+                    summary.push_str(limitation);
+                    events(TaskRuntimeEvent::Status {
+                        message: limitation.into(),
+                    });
+                }
+            }
             let Some(turn) = store.claim_member_turn(task)? else {
+                if let Some(error) = assessment_failure {
+                    return Err(error);
+                }
+                let supported = store.responsibility_batch(task)?.is_some_and(|batch| {
+                    batch
+                        .members
+                        .iter()
+                        .find(|member| member.config.coordinator)
+                        .and_then(|member| {
+                            self.runtime_for(&member.config.runtime_id, &member.config.agent_id)
+                                .ok()
+                        })
+                        .is_some_and(|adapter| adapter.supports_responsibility_assessment())
+                });
+                if supported {
+                    continue;
+                }
                 break;
             };
             let mut context = base.clone();
@@ -1742,6 +1885,14 @@ impl ResearchTaskState {
                     output.zip(result.output_tokens).map(|(a, b)| a + b),
                 ),
             });
+            if let Some((input_tokens, output_tokens)) = total {
+                events(TaskRuntimeEvent::Observation {
+                    observation: crate::observations::TaskObservation::Usage {
+                        input_tokens,
+                        output_tokens,
+                    },
+                });
+            }
             let actor = GroupActor {
                 kind: ActorKind::Member,
                 id: turn.member.id.clone(),

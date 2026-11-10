@@ -244,6 +244,7 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
       case "handled": return t($ => $.researchTools.tasks.group.reasonHandled);
       case "parent_handling": return t($ => $.researchTools.tasks.group.reasonParentHandling);
       case "coordinator": return t($ => $.researchTools.tasks.group.reasonCoordinator);
+      case "responsibility": return t($ => $.researchTools.tasks.group.reasonResponsibility);
       default: return t($ => $.researchTools.tasks.group.reasonOther, { kind: humanizeKind(reason.kind) });
     }
   };
@@ -255,7 +256,7 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
   const reasonSource = (reason: WorkReason) => {
     const event = eventById(reason.sourceId);
     const message = snapshot?.messages.find(candidate => candidate.id === reason.sourceId);
-    return <>{event ? <><p><strong>{t($ => $.researchTools.tasks.group.eventChange)}</strong>: {humanizeKind(event.kind)} · {objectLabel(event.object)}</p><p className="whitespace-pre-wrap"><strong>{t($ => $.researchTools.tasks.group.eventDetail)}</strong>: {event.detail}</p></> : message ? <p className="whitespace-pre-wrap">{t($ => $.researchTools.tasks.group.messageSource, { body: message.body })}</p> : reason.sourceId ? <p>{t($ => $.researchTools.tasks.group.sourceLabel, { id: reason.sourceId })}</p> : null}</>;
+    return <>{event ? <><p><strong>{t($ => $.researchTools.tasks.group.eventChange)}</strong>: {humanizeKind(event.kind)} · {objectLabel(event.object)}</p><p className="whitespace-pre-wrap"><strong>{t($ => $.researchTools.tasks.group.eventDetail)}</strong>: {event.detail}</p>{event.evidence ? <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(event.evidence, null, 2)}</pre> : null}</> : message ? <p className="whitespace-pre-wrap">{t($ => $.researchTools.tasks.group.messageSource, { body: message.body })}</p> : reason.sourceId ? <p>{t($ => $.researchTools.tasks.group.sourceLabel, { id: reason.sourceId })}</p> : null}</>;
   };
   const annotationSourceReason = (work: GroupWork, reason: WorkReason) =>
     reason.kind === "handled"
@@ -397,11 +398,12 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate }: { task:
           {causeEvent ? <div className="rounded bg-muted/40 p-2">
             <p><strong>{t($ => $.researchTools.tasks.group.eventChange)}</strong>: {humanizeKind(causeEvent.kind)} · {objectLabel(causeEvent.object)}</p>
             <p className="whitespace-pre-wrap"><strong>{t($ => $.researchTools.tasks.group.eventDetail)}</strong>: {causeEvent.detail}</p>
+            {causeEvent.evidence ? <details><summary>{t($ => $.researchTools.tasks.group.sourceAndExecution)}</summary><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(causeEvent.evidence, null, 2)}</pre></details> : null}
           </div> : work.causeKind === "event" ? <p>{t($ => $.researchTools.tasks.group.eventUnavailable, { id: work.causeId })} <Button size="xs" variant="ghost" disabled={resolvingEvents.includes(work.causeId)} onClick={() => void inspectEvent(work.causeId)}>{t($ => $.researchTools.tasks.group.sourceInspect)}</Button></p> : <p>{work.causeKind}: {work.causeId}</p>}
           <div>
             <p className="font-medium">{t($ => $.researchTools.tasks.group.wakeReasons)}</p>
             {reasons.length > 0 ? <ul className="list-disc space-y-1 pl-4">{reasons.map(reason => <li key={reasonKey(reason)}>
-              {reasonLabel(reason)}{reason.object ? ` · ${objectLabel(reason.object)}` : ""}
+              {reasonLabel(reason)}{reason.object ? ` · ${objectLabel(reason.object)}` : ""}{reason.detail ? <p className="whitespace-pre-wrap">{reason.detail}</p> : null}
             </li>)}</ul> : <p role="status">{t($ => $.researchTools.tasks.group.noWakeReasons)}</p>}
           </div>
           <details>
