@@ -27,7 +27,7 @@ from research_file_workbench.projects.service import (
     import_document,
     open_project,
 )
-from research_file_workbench.workbench.manuscripts import read_manuscript
+from research_file_workbench.workbench.manuscripts import manuscript_source, read_manuscript
 from research_file_workbench.workbench.project_facade import (
     diff_worlds,
     discover_state,
@@ -257,6 +257,56 @@ class WorkbenchService:
             project_lookup=self.project,
             project_root=self.project_root,
         )
+
+    def manuscript_source(self, project_id: str, baseline_id: str) -> JsonObject:
+        """Return immutable DOCX bytes for the explicitly selected managed baseline."""
+        path = self.project_root(project_id)
+        if not path.is_dir():
+            raise ValueError("论文不在当前工作台库中。")
+        return manuscript_source(path, baseline_id)
+
+    def render_baseline(
+        self,
+        project_id: str,
+        baseline_id: str,
+        *,
+        libreoffice_executable: str,
+        reason: str,
+        surface: str = "browser",
+    ) -> JsonObject:
+        """Register a headless LibreOffice PDF for one explicit retained baseline."""
+        from research_file_workbench.projects.render_service import (
+            render_libreoffice_baseline,
+        )
+
+        _surface(surface)
+        if not reason.strip():
+            raise ValueError("请填写稿件渲染原因。")
+        path = self.project_root(project_id)
+        if not path.is_dir():
+            raise ValueError("论文不在当前工作台库中。")
+        return render_libreoffice_baseline(
+            path,
+            baseline_id=baseline_id,
+            executable=Path(libreoffice_executable),
+            profile=self.root / "var" / "libreoffice-profile",
+            actor_id="local-operator",
+            confirmation_reason=f"Rendered from the {surface} surface: {reason}",
+            surface=surface,
+        )
+
+    def derived_renders(self, project_id: str, baseline_id: str) -> JsonObject:
+        """List derived PDF registrations for one explicit retained baseline."""
+        path = self.project_root(project_id)
+        if not path.is_dir():
+            raise ValueError("论文不在当前工作台库中。")
+        project = open_project(path)
+        project.get_baseline(baseline_id)
+        return {
+            "project_id": project_id,
+            "baseline_id": baseline_id,
+            "derived_renders": project.list_derived_renders(baseline_id),
+        }
 
     def history(self, project_id: str) -> JsonObject:
         """Present check and binding history in storage commit order."""

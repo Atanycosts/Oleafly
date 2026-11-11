@@ -1,4 +1,18 @@
 {
+  "paperReader": {
+    "byteRange": "Text bytes {{start}} to {{end}}",
+    "textHash": "Text SHA-256: {{hash}}",
+    "readEnd": "End of extracted text.",
+    "readNext": "Continue with offset {{offset}} and the retained PDF reference.",
+    "label": "Read paper",
+    "openPdf": "Open retained PDF",
+    "title": "Retained paper PDF",
+    "description": "The exact PDF used for this reading.",
+    "hash": "PDF SHA-256: {{hash}}",
+    "pages": "Read pages {{start}} to {{end}} of {{total}}",
+    "loading": "Loading retained PDF…",
+    "catalog": "Read actual paper text with page anchors and inspect its retained PDF."
+  },
   "runtime": {
     "ariaLabel": "Assistant runtime",
     "builtIn": "Oleafly Agent",
@@ -336,6 +350,11 @@
       "renameFile": "Rename or move a file or folder.",
       "deleteFile": "Delete a file or folder.",
       "listFiles": "List every file and folder in the project.",
+      "listDocxDocuments": "List open DOCX working copies and their live and saved versions.",
+      "readDocxDocument": "Read the current paragraphs, including unsaved DOCX edits.",
+      "captureDocxTarget": "Capture a paragraph and its current structure for a proposed edit.",
+      "suggestDocxChange": "Stream a paragraph suggestion into the DOCX working copy.",
+      "applyDocxSuggestion": "Apply a current DOCX suggestion as one undoable edit.",
       "searchProject": "Search the project's text and get file and line hits.",
       "projectMap": "Read the document's outline: sections, labels, citation keys, macros, inputs, and anything unresolved.",
       "showLocation": "Open a file at a line in the editor and move the PDF preview to that spot.",

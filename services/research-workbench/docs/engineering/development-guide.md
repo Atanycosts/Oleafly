@@ -136,7 +136,8 @@ candidates and conditions, select values in mm/pt/count, and explicitly confirm 
 applicability. Adoption retains captured pages, original sources and decisions in one
 new version. The selected option then binds that version and runs the existing check.
 Manual **导入候选 JSON / Import candidate JSON** remains available. Handling notes keep
-the original verdict. These operations require `journal-http-1.5.0`.
+the original verdict. These operations use the HTTP surface declared by the
+[journal world contract](../../contracts/journals/world-contract.json).
 
 The application defaults to Simplified Chinese on first launch and after a settings
 reset. An explicit language choice remains saved. Built-in skill names and descriptions,
@@ -275,13 +276,16 @@ their applicability to the new baseline. Historical access remains explicit.
 
 ## Journal integration boundaries
 
-`contracts/journals/world-contract.json` is the current machine-readable contract for the world
-data and its local HTTP surface. Its world schema and checker identities are 1.1.0 and the analyzer identity is 1.4.0;
-the HTTP identity is `journal-http-1.5.0`. Update this existing contract when changing a boundary
-instead of creating a second authoritative endpoint or client schema document.
+The [journal world contract](../../contracts/journals/world-contract.json) is the current
+machine-readable owner of the world data, method identities and local HTTP surface. Update this
+existing contract when changing a boundary instead of creating a second authoritative endpoint or
+client schema document.
 
 World discovery uses `journal_name`. Manuscript import separates a display `name` from the original
 DOCX `filename` and `content_base64`; filenames are labels, not an API for reading arbitrary paths.
+`GET /api/manuscript-source` requires `project_id` and an explicit `baseline_id`; it returns that
+retained artifact and its recorded hash, never reads the original author path and does not create a
+read receipt.
 The server enforces the exact JSON request fields. Keep browser payloads, server parsing, service
 arguments, CLI callers and regression cases aligned in the same change; no alias or extension-based
 fallback should silently reinterpret the display name.

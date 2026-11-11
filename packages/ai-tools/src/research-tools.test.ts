@@ -12,6 +12,7 @@ describe("literature search and citation verification tools", () => {
     host = {
       searchLiterature,
       verifyCitation,
+      readPaper: vi.fn(),
       retrieveProjectChunks: vi.fn(),
     };
   });
@@ -43,6 +44,7 @@ describe("literature search and citation verification tools", () => {
     expect(Object.keys(tools).sort()).toEqual([
       "literature_search",
       "project_library_search",
+      "read_paper",
       "verify_citation",
     ]);
   });
@@ -108,6 +110,7 @@ describe("project library search", () => {
     host = {
       searchLiterature: vi.fn(),
       verifyCitation: vi.fn(),
+      readPaper: vi.fn(),
       retrieveProjectChunks,
     };
   });
@@ -135,6 +138,7 @@ describe("research tool input and failure handling", () => {
     return {
       searchLiterature: vi.fn(),
       verifyCitation: vi.fn(),
+      readPaper: vi.fn(),
       retrieveProjectChunks: vi.fn(),
       ...overrides,
     };
@@ -360,4 +364,67 @@ describe("research task tools", () => {
     expect(statusHost.researchTaskStatus).toHaveBeenNthCalledWith(1, undefined);
     expect(statusHost.researchTaskStatus).toHaveBeenNthCalledWith(2, "t1");
   });
+});
+
+describe("read_paper", () => {
+  const readPaper = vi.fn();
+  const host = { searchLiterature: vi.fn(), verifyCitation: vi.fn(), retrieveProjectChunks: vi.fn(), readPaper };
+
+  beforeEach(() => { readPaper.mockReset(); });
+
+  it("reads a local or linked PDF without internet confirmation and returns exact window metadata", async () => {
+    const result = { text: "[p. 2]\nMeasured result", nextOffset: 8032, source: { offset: 4096, endOffset: 8032, pdf: { sha256: "original-pdf", pageStart: 2 } } };
+    readPaper.mockResolvedValue(result);
+    const confirm = vi.fn().mockResolvedValue(false);
+    const tools = createResearchTools(host, { confirm });
+    expect(await tools.read_paper.execute({ path: " paper.pdf ", root_id: " refs ", offset: 4096, max_chars: 4000 })).toBe(result);
+    expect(readPaper).toHaveBeenCalledWith({ path: "paper.pdf", root_id: "refs", offset: 4096, max_chars: 4000 });
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it.each([{ doi: "10.1000/paper" }, { arxiv: "1706.03762" }, { url: "https://example.org/paper.pdf" }])("asks before remote paper reading: %j", async (identifier) => {
+    const confirm = vi.fn().mockResolvedValue(false);
+    const tools = createResearchTools(host, { confirm });
+    expect(await tools.read_paper.execute({ ...identifier, path: "also-local.pdf" })).toMatchObject({ declined: true, tool: "read_paper" });
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ tool: "read_paper" }));
+    expect(readPaper).not.toHaveBeenCalled();
+  });
+
+  it("forwards all source identifiers for backend precedence after approval", async () => {
+    const confirm = vi.fn().mockResolvedValue(true);
+    const input = { doi: "10.1000/paper", arxiv: "1706.03762", url: "https://example.org/paper.pdf", path: "paper.pdf" };
+    await createResearchTools(host, { confirm }).read_paper.execute(input);
+    expect(readPaper).toHaveBeenCalledWith(input);
+  });
+
+  it.each([{}, { path: " " }, { path: "a.pdf", offset: -1 }, { path: "a.pdf", offset: 1.5 }, { path: "a.pdf", max_chars: 999 }, { path: "a.pdf", max_chars: 48001 }])("rejects invalid window inputs before reading: %j", async (input) => {
+    const confirm = vi.fn();
+    expect(await createResearchTools(host, { confirm }).read_paper.execute(input)).toHaveProperty("error");
+    expect(readPaper).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it.each([new Error("PDF hash mismatch"), "No open-access copy was found for this DOI."])("reports the service failure", async (error) => {
+    readPaper.mockRejectedValue(error);
+    expect(await createResearchTools(host).read_paper.execute({ path: "missing.pdf" })).toEqual({ error: error instanceof Error ? error.message : error });
+  });
+});
+
+it("passes a retained reference and next offset without a network request", async () => {
+  const reference = { projectId: "original", path: "sources/hash/papers/a.pdf", pdfSha256: "original-hash" };
+  const readPaper = vi.fn().mockResolvedValue({ text: "[p. 3]\nRetained passage", nextOffset: null });
+  const confirm = vi.fn();
+  const tools = createResearchTools({ searchLiterature: vi.fn(), verifyCitation: vi.fn(), retrieveProjectChunks: vi.fn(), readPaper }, { confirm });
+  expect(await tools.read_paper.execute({ reference, offset: 4096 })).toMatchObject({ nextOffset: null });
+  expect(readPaper).toHaveBeenCalledWith({ reference, offset: 4096 });
+  expect(confirm).not.toHaveBeenCalled();
+});
+
+it("retained reference takes precedence over remote identifiers without network confirmation", async () => {
+  const reference = { projectId: "original", path: "sources/hash/papers/a.pdf", pdfSha256: "original-hash" };
+  const readPaper = vi.fn();
+  const confirm = vi.fn().mockResolvedValue(false);
+  await createResearchTools({ searchLiterature: vi.fn(), verifyCitation: vi.fn(), retrieveProjectChunks: vi.fn(), readPaper }, { confirm }).read_paper.execute({ reference, doi: "10.1000/ignored", offset: 4096 });
+  expect(readPaper).toHaveBeenCalledWith({ reference, doi: "10.1000/ignored", offset: 4096 });
+  expect(confirm).not.toHaveBeenCalled();
 });

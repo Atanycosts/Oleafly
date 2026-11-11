@@ -1,5 +1,8 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+import { build } from "vite";
 import { describe, expect, it, vi } from "vitest";
 import { LAZY_NAMESPACES, NAMESPACES } from "@/i18n/resources";
 import {
@@ -12,6 +15,7 @@ import {
   pdfjsWasmUrl,
 } from "@oleafly/preview/pdfDocumentOptions";
 import desktopConfig, {
+  docxAsyncInitialization,
   entriesLoadingBeforePolyfills,
   LEGAL_COMMENT_PATTERN,
   localeChunk,
@@ -22,6 +26,37 @@ import desktopConfig, {
   polyfillsChunk,
 } from "../../vite.config";
 import webConfig from "../../vite.web.config";
+
+it("loads async DOCX dependencies and preserves UTF-8, escaped LaTeX JSON and license comments", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "oleafly-async-module-"));
+  try {
+    writeFileSync(path.join(root, "entry.js"), 'export const load = () => import("./engine.js");');
+    const catalog = { detail: "Use \\usepackage[english]{babel} and \\ref{source}." };
+    writeFileSync(path.join(root, "engine.js"), `/*! @license DOCX fixture */\nexport const text = await Promise.resolve("中文正文");\nexport const catalog = JSON.parse(${JSON.stringify(JSON.stringify(catalog))});`);
+    await build({
+      configFile: false,
+      root,
+      logLevel: "silent",
+      plugins: [docxAsyncInitialization()],
+      build: {
+        target: "es2020",
+        modulePreload: false,
+        minify: "terser",
+        outDir: "dist",
+        rollupOptions: { input: path.join(root, "entry.js"), preserveEntrySignatures: "strict", output: { entryFileNames: "entry.mjs", chunkFileNames: "[name]-[hash].mjs" } },
+      },
+    });
+    const built = path.join(root, "dist");
+    const source = readdirSync(built).map((file) => readFileSync(path.join(built, file), "utf8")).join("\n");
+    expect(source).toContain("中文正文");
+    expect(source).toContain("@license DOCX fixture");
+    const entry = await import(/* @vite-ignore */ pathToFileURL(path.join(built, "entry.mjs")).href);
+    await entry.__tla;
+    const engine = await entry.load();
+    expect(engine.text).toBe("中文正文");
+    expect(engine.catalog).toEqual(catalog);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 describe("translated catalog chunks", () => {
   it.each(["ru", "pt-BR", "zh-Hans"])("give %s one startup chunk and one chunk per lazy namespace", (locale) => {
@@ -49,6 +84,7 @@ describe("runtime polyfill chunk", () => {
 
   it("gives the runtime polyfills a chunk of their own", () => {
     expect(polyfillsChunk("/repo/packages/preview/src/polyfills.ts")).toBe(POLYFILLS_CHUNK);
+    expect(polyfillsChunk("/repo/packages/preview/src/worker-decompression.ts")).toBe(POLYFILLS_CHUNK);
     expect(polyfillsChunk("/repo/packages/preview/src/polyfills.test.ts")).toBeUndefined();
     expect(polyfillsChunk("/repo/packages/preview/src/pdf.worker.ts")).toBeUndefined();
   });

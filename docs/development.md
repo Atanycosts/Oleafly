@@ -108,6 +108,30 @@ Cargo or pnpm workspaces. Application data remains outside source control; the s
 does not relocate existing journal libraries. See the service README for portable tests and
 separate environment-bound acceptance checks.
 
+The retained DOCX working-copy editor pins `@docx-editor.dev/core`, `react` and
+`fonts` to the same version. It loads on demand from the Journal checks panel.
+After upgrading those packages, run `pnpm docx:notices` and check the generated
+upstream notices with `node scripts/sync-docx-notices.mjs --check`. Vite lowers
+HarfBuzz's async initialization through `vite-plugin-top-level-await`; its scoped
+SWC pin follows the upstream compatibility issue linked in `pnpm-workspace.yaml`.
+The adapter preserves distribution comments and UTF-8 catalogs, keeps the engine
+out of the startup graph, and retains the PDF polyfill import order. Verify with
+`src/lib/vite-config.test.ts`, a production build and `pnpm check:performance`.
+Large frontend builds on this Mac need `NODE_OPTIONS=--max-old-space-size=8192`.
+DOCX work maintains new UI keys in the Chinese and English catalogs. Complete
+other-language coverage and validation are outside this round's scope. The current
+verified DOCX browser flow is macOS-only; Windows native validation is out of scope
+for this round rather than a pending check. See the current
+[Agent status](agent/status.md#docx-工作副本首个闭环2026-11-11).
+
+Saved DOCX PDF previews use a locally installed LibreOffice executable. The native bridge checks
+`OLEAFLY_LIBREOFFICE`, the configured `soffice` locator, and standard macOS/Windows install
+locations; the sidebar also accepts an explicit executable path. Workbench reads only the retained
+baseline, creates a private temporary LibreOffice profile below its own library, checks the PDF
+signature and page count, and records renderer identity with the derived bundle. A missing or
+non-LibreOffice executable fails the render rather than silently changing engines. WPS remains an
+optional external editor/render source and is not required for the embedded flow.
+
 ## Documentation and artifacts
 
 The root [`AGENTS.md`](../AGENTS.md) is the short entry for people and agents

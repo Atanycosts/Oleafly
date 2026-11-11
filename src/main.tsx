@@ -30,6 +30,7 @@ import { useCitationStore } from "@/store/citation";
 import { useZoteroDialogStore } from "@/store/zotero-dialogs";
 import { useTableImportStore } from "@/store/table-import";
 import { useFigureDialogStore } from "@/store/figure-dialog";
+import { useDocxWorkspaceStore } from "@/store/docx-workspace";
 import { useTypstDocumentPanelStore } from "@/store/typst-document-panels";
 import { mountOnFirstOpen } from "@/lib/mount-on-first-open";
 import { registerContributions } from "@/contributions";
@@ -177,6 +178,11 @@ const FigureDialog = mountOnFirstOpen(
   () => useFigureDialogStore((state) => state.open),
   () => useFigureDialogStore.getState().setOpen(false),
 );
+const DocxWorkspaceHost = mountOnFirstOpen(
+  lazy(() => import("@/components/research/DocxWorkspaceDialog").then((module) => ({ default: module.DocxWorkspaceHost }))),
+  () => useDocxWorkspaceStore((state) => state.request !== null),
+  () => useDocxWorkspaceStore.getState().close(),
+);
 const PresentationWindow = lazy(() =>
   import("@/components/presentation/PresentationWindow").then((module) => ({ default: module.PresentationWindow })),
 );
@@ -289,6 +295,7 @@ function WindowContent({ view }: Readonly<{ view: WindowView }>) {
       <ZoteroDialogs />
       <TableImportDialog />
       <FigureDialog />
+      <DocxWorkspaceHost />
       <TypstMigrationHost />
       <TypstDocumentPanels />
       {ReactQueryDevtools && (

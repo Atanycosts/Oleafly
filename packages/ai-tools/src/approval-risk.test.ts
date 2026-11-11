@@ -26,6 +26,9 @@ describe("toolRisk", () => {
       "interrupt_agent",
       "list_agents",
       "close_agent",
+      "list_docx_documents",
+      "read_docx_document",
+      "capture_docx_target",
     ]) {
       expect(toolRisk(tool)).toBe("read");
     }
@@ -45,6 +48,8 @@ describe("toolRisk", () => {
       "delete_file",
       "set_main_doc",
       "insert_figure",
+      "suggest_docx_change",
+      "apply_docx_suggestion",
     ]) {
       expect(toolRisk(tool)).toBe("write");
     }
@@ -53,6 +58,7 @@ describe("toolRisk", () => {
   it("classifies remote lookups as network", () => {
     for (const tool of [
       "literature_search",
+      "read_paper",
       "verify_citation",
     ]) {
       expect(toolRisk(tool)).toBe("network");
@@ -193,6 +199,7 @@ describe("plan mode tool classification", () => {
       "show_location",
       "list_agents",
       "literature_search",
+      "read_paper",
       "verify_citation",
     ]) {
       expect(isReadOnlyTool(tool), tool).toBe(true);

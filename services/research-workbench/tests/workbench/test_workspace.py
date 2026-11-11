@@ -2,13 +2,17 @@
 
 import base64
 import json
+import shutil
 from http.client import HTTPConnection
 from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
 
+from research_file_workbench.common.hashing import sha256_bytes
+from research_file_workbench.common.json_io import write_json_object
 from research_file_workbench.projects.service import open_project
+from research_file_workbench.workbench.manuscripts import _source_filename
 from tests.journals.test_analysis import template_bytes
 from tests.workbench.test_server import _request, _world_payload
 
@@ -133,6 +137,80 @@ def test_baseline_update_is_idempotent_and_preserves_history(running_server):
     assert len(store.list_baselines()) == 2
 
 
+def test_manuscript_source_returns_exact_current_and_historical_retained_bytes(running_server):
+    original = template_bytes()
+    revised = template_bytes(((11906, 16838, 1440, 2),))
+    project = import_project(running_server, original)
+    old_baseline_id = project["baseline_id"]
+    update = {
+        "project_id": project["project_id"],
+        "expected_baseline_id": old_baseline_id,
+        "filename": "修订稿.docx",
+        "reason": "保留第二版原始 DOCX",
+        "request_id": "source-endpoint-revision",
+        **upload(revised),
+    }
+    status, applied = _request(
+        running_server, "POST", "/api/baseline", update, running_server.session_token
+    )
+    assert status == 200 and applied["status"] == "APPLIED"
+    new_baseline_id = applied["result_baseline_id"]
+    shutil.rmtree(running_server.service.root / "inputs")
+
+    for baseline_id, content, filename in (
+        (old_baseline_id, original, "manuscript.docx"),
+        (new_baseline_id, revised, "修订稿.docx"),
+    ):
+        query = urlencode({"project_id": project["project_id"], "baseline_id": baseline_id})
+        status, source = _request(running_server, "GET", "/api/manuscript-source?" + query)
+        assert status == 200, source
+        assert source == {
+            "project_id": project["project_id"],
+            "baseline_id": baseline_id,
+            "source_sha256": sha256_bytes(content),
+            "filename": filename,
+            "content_base64": base64.b64encode(content).decode("ascii"),
+        }
+        assert source == running_server.service.manuscript_source(
+            project["project_id"], baseline_id
+        )
+
+    store = open_project(running_server.service.project_root(project["project_id"]))
+    assert store.list_reads() == []
+
+
+def test_manuscript_source_rejects_missing_projects_and_foreign_baselines(running_server):
+    project = import_project(running_server)
+    other = import_project(running_server)
+    for project_id, baseline_id, expected_status in (
+        (project["project_id"], other["baseline_id"], 500),
+        (project["project_id"], "baseline-missing", 500),
+        (project["project_id"], "current", 500),
+        ("project-missing", project["baseline_id"], 400),
+    ):
+        query = urlencode({"project_id": project_id, "baseline_id": baseline_id})
+        status, result = _request(running_server, "GET", "/api/manuscript-source?" + query)
+        assert status == expected_status
+        assert set(result) == {"error"}
+        assert running_server.service.root.as_posix() not in result["error"]
+
+
+def test_manuscript_source_filename_uses_cross_platform_basename_and_project_fallback(
+    tmp_path: Path,
+):
+    write_json_object(
+        tmp_path / "display.json", {"name": "论文 / 修订版", "filename": "display.docx"}
+    )
+    assert (
+        _source_filename(tmp_path, {"source_path": r"C:\author\private\source.DOCX"})
+        == "source.DOCX"
+    )
+    assert (
+        _source_filename(tmp_path, {"source_path": "/author/private/source.docx"}) == "source.docx"
+    )
+    assert _source_filename(tmp_path, {"source_path": "artifact-only"}) == "论文 - 修订版.docx"
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -157,7 +235,17 @@ def test_invalid_read_is_rejected_without_persisted_response(running_server, cha
     assert store.list_reads() == []
 
 
-@pytest.mark.parametrize("route", ["/api/manuscript", "/api/history", "/api/read", "/api/render"])
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/api/manuscript",
+        "/api/manuscript-source",
+        "/api/derived-renders",
+        "/api/history",
+        "/api/read",
+        "/api/render",
+    ],
+)
 def test_workspace_get_parameters_are_exact(running_server, route):
     assert _request(running_server, "GET", route + "?path=C:/author/file.docx")[0] == 400
 

@@ -52,6 +52,8 @@ export interface McpToolEntry {
 }
 
 const MUTATING_TOOLS = new Set([
+  "suggest_docx_change",
+  "apply_docx_suggestion",
   "write_file",
   "replace_in_file",
   "create_file",

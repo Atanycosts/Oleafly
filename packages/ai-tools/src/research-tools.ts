@@ -27,6 +27,16 @@ export const LITERATURE_SOURCES = [
 export interface ResearchToolsHost {
   searchLiterature(query: string, opts: { limit: number; sources?: string[] }): Promise<unknown>;
   verifyCitation(input: { doi?: string; title?: string }): Promise<unknown>;
+  readPaper(input: {
+    doi?: string;
+    arxiv?: string;
+    url?: string;
+    path?: string;
+    root_id?: string;
+    reference?: { projectId: string; path: string; pdfSha256: string };
+    offset?: number;
+    max_chars?: number;
+  }): Promise<unknown>;
   retrieveProjectChunks(
     query: string,
     opts?: { topK?: number },
@@ -61,6 +71,64 @@ export function createResearchTools(
   });
   const confirm = opts?.confirm;
   const tools: Record<string, RawToolDef> = {
+    read_paper: {
+      description:
+        "Read a paper's actual text in bounded windows with [p. N] page anchors. Give a DOI (its open-access copy), an arXiv id, an https PDF URL, or a project PDF path with optional linked root_id. Source selection is doi, then arxiv, url, path. To continue the same retained version, pass the returned pdfReference as reference and nextOffset as offset until null. Reference alone is sufficient and takes precedence over source identifiers without network access. Returns the exact PDF and text hashes, byte range, pages read and a retained PDF reference for the user to inspect. Citation identity does not prove claim support. Cached readings leave the author's project unchanged.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          doi: { type: "string", maxLength: 300 },
+          arxiv: { type: "string", maxLength: 40 },
+          url: { type: "string", maxLength: 2000 },
+          path: { type: "string", maxLength: 1000 },
+          root_id: { type: "string", maxLength: 256 },
+          reference: {
+            type: "object",
+            properties: { projectId: { type: "string" }, path: { type: "string" }, pdfSha256: { type: "string" } },
+            required: ["projectId", "path", "pdfSha256"],
+            additionalProperties: false,
+            description: "The complete pdfReference returned by a previous read. Keeps later windows on that exact PDF version.",
+          },
+          offset: { type: "integer", minimum: 0 },
+          max_chars: { type: "integer", minimum: 1000, maximum: 48000 },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async (input) => {
+        const fields = Object.fromEntries(
+          ["doi", "arxiv", "url", "path", "root_id"].flatMap((field) => {
+            const value = typeof input[field] === "string" ? input[field].trim() : "";
+            return value ? [[field, value]] : [];
+          }),
+        );
+        const reference = input.reference as { projectId: string; path: string; pdfSha256: string } | undefined;
+        if (!fields.doi && !fields.arxiv && !fields.url && !fields.path && !reference) {
+          return { error: "Give a doi, arxiv id, url, path or reference." };
+        }
+        for (const [field, minimum, maximum] of [["offset", 0, Number.MAX_SAFE_INTEGER], ["max_chars", 1000, 48000]] as const) {
+          const value = input[field];
+          if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum || value > maximum)) {
+            return { error: `${field} must be an integer from ${minimum} to ${maximum}.` };
+          }
+        }
+        if (!reference && (fields.doi || fields.arxiv || fields.url) && confirm && !(await confirm({
+          tool: "read_paper",
+          summary: `Read paper ${fields.doi || fields.arxiv || fields.url}`,
+        }))) return declined("read_paper");
+        try {
+          return await host.readPaper({
+            ...fields,
+            ...(reference ? { reference } : {}),
+            ...(input.offset === undefined ? {} : { offset: input.offset as number }),
+            ...(input.max_chars === undefined ? {} : { max_chars: input.max_chars as number }),
+          });
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
+
     literature_search: {
       description:
         "Search the scholarly indexes at once by natural-language query: OpenAlex, Semantic Scholar, Crossref, arXiv and PubMed, plus alphaXiv when it is connected. The same paper found in several indexes is merged by DOI, arXiv id and title. Returns records (title, authors, year, venue, DOI, arXiv id, abstract, citation count, open access, the indexes that found it) and failures for indexes that did not answer. Keys saved in Settings raise rate limits. Use for literature discovery.",

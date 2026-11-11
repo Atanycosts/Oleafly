@@ -101,6 +101,8 @@ are compiled into it:
 | @xterm/xterm, @xterm/addon-fit / -search / -unicode11 / -webgl | MIT |
 | @lezer/highlight | MIT |
 | @citation-js/core, @citation-js/plugin-bibtex, @citation-js/plugin-csl | MIT |
+| @docx-editor.dev/core, @docx-editor.dev/react 2.36.0 | Apache-2.0, with their bundled third-party notices |
+| @docx-editor.dev/fonts 2.36.0 | Apache-2.0 AND OFL-1.1 AND LicenseRef-GUST-Font-License |
 | @replit/codemirror-vim | MIT |
 | @radix-ui/react-context-menu / -select / -slot | MIT |
 | react, react-dom | MIT |
@@ -118,6 +120,12 @@ are compiled into it:
 | clsx, tailwind-merge, cmdk | MIT |
 | canvas-confetti | ISC |
 | lucide-react | ISC |
+
+The DOCX editor packages come from [EigenPal DOCX Editor](https://github.com/eigenpal/docx-editor).
+Their exact upstream licences, bundled-code notices and font licences ship under
+`resources/licenses/docx-editor-2.36.0/`. Run `pnpm docx:notices` after changing
+these pinned dependencies, and `node scripts/sync-docx-notices.mjs --check` to
+compare the packaged notices against the installed packages. Pro modules are not included.
 
 ## Fonts
 

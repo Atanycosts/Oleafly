@@ -4,7 +4,7 @@
     "world_schema": "journal-world-1.1.0",
     "analyzer": "journal-world-analyzer-1.4.0",
     "checker": "journal-geometry-checker-1.1.0",
-    "http": "journal-http-1.5.0"
+    "http": "journal-http-1.7.0"
   },
   "scope": "local_page_geometry_slice",
   "workflow": [
@@ -122,7 +122,7 @@
     "Rule evidence and manuscript section observations are shown side by side. A manual resolution displays its reason, actor and previous-to-selected value alongside unchanged original evidence quotes.",
     "Version comparisons expose changes in expectation, basis, scope, unit, evidence and resolution; same-value rules with different applicability or provenance are not presented as identical requirements.",
     "No full-journal compliance claim is made from page-geometry checks alone.",
-    "No source document edits, Office rendering or publication actions occur in this slice.",
+    "Source document edits and publication actions do not occur in this slice. LibreOffice headless PDF rendering is available only through an explicit capability-gated operation and does not create page mappings.",
     "Source review fragments retain stable source-bound identity, parent hierarchy and exact text spans. Suggestions never become rule evidence solely through similarity.",
     "Text vector similarity is an explainable retrieval score, not a neural embedding, calibrated probability, or compliance verdict. It never merges components or alters retained worlds.",
     "World, component, rule, source and manuscript observations are separately addressable review levels with return navigation.",
@@ -134,7 +134,7 @@
     "Disposition actions are note or defer and retain the original check verdict."
   ],
   "http": {
-    "contract_version": "journal-http-1.5.0",
+    "contract_version": "journal-http-1.7.0",
     "transport": "same_origin_json_on_ipv4_loopback_only",
     "session": {
       "route": "GET /api/session",
@@ -173,6 +173,19 @@
         "query_fields": [
           "from_version",
           "to_version"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/derived-renders",
+        "query_fields": [
+          "project_id",
+          "baseline_id"
+        ],
+        "response_fields": [
+          "project_id",
+          "baseline_id",
+          "derived_renders"
         ]
       },
       {
@@ -276,6 +289,22 @@
       },
       {
         "method": "GET",
+        "path": "/api/manuscript-source",
+        "query_fields": [
+          "project_id",
+          "baseline_id"
+        ],
+        "response_fields": [
+          "project_id",
+          "baseline_id",
+          "source_sha256",
+          "filename",
+          "content_base64"
+        ],
+        "semantics": "Return the exact retained DOCX bytes for one explicit baseline without reading an author path or recording a structured read receipt."
+      },
+      {
+        "method": "GET",
         "path": "/api/history",
         "query_fields": [
           "project_id"
@@ -351,6 +380,16 @@
           "page_number",
           "content_base64"
         ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/render-baseline",
+        "body_fields": [
+          "project_id",
+          "baseline_id",
+          "reason",
+          "libreoffice_executable"
+        ]
       }
     ],
     "field_semantics": {
@@ -364,6 +403,8 @@
       "render_bundle_id": "Explicit retained render evidence selection for a physical-page query; null for source object queries.",
       "query": "All six fields are present. Selectors/cursor are nullable; page_size is a positive bounded integer enforced by ReadQuery.",
       "request_id": "A stable per-submission kebab-case identity for recoverable baseline updates. Replay returns the same saved outcome.",
+      "libreoffice_executable": "Absolute path to the explicitly selected LibreOffice executable. Missing or non-LibreOffice capabilities return code renderer_unavailable with no fallback.",
+      "libreoffice_profile": "Not accepted over HTTP. The service creates a private temporary profile below its selected library var/libreoffice-profile directory for every render.",
       "render_record/page_index/pdf/document_annotation/page_evidence": "Each supplied upload contains only content_base64. Annotation and page evidence are both null or both supplied. Uploaded historical paths are never opened.",
       "pages": "Captured page PNG bytes with explicit unique positive page_number, validated against the original index and physical PDF."
     },
@@ -400,11 +441,21 @@
       "journal_changed",
       "changes"
     ],
+    "derived_render_record_fields": [
+      "bundle_id",
+      "baseline_id",
+      "manifest",
+      "registered_at",
+      "actor_id",
+      "confirmation_reason"
+    ],
     "error_field": "error",
+    "error_code_field": "code",
     "failure_rules": [
       "POST bodies require their exact declared keys, application/json and a unique bounded Content-Length; malformed input is not converted to empty success.",
       "GET query parameters must exactly match the declared query_fields; unknown or repeated parameters return HTTP 400.",
       "Binding compare-and-swap conflicts return HTTP 409; invalid local origin or session returns 403.",
+      "Baseline rendering returns HTTP 503 with code renderer_unavailable when the selected LibreOffice executable is absent or does not identify as LibreOffice, and HTTP 502 with code render_failed after a failed conversion or unreadable PDF. No fallback renderer is attempted.",
       "Storage corruption and internal persistence failures return a generic HTTP 500 without local paths or database details; unsupported methods return JSON HTTP 405 with an Allow header.",
       "The frontend rejects malformed response records and commits a refreshed view only after all required reads succeed.",
       "If a write succeeded but the following refresh failed, report the saved operation explicitly and require refresh instead of encouraging a duplicate submission."

@@ -1,11 +1,116 @@
 {
-  "contract_version": "s1-render-bundle-1.1.0",
-  "scope": "persisted_page_evidence_for_one_immutable_source_baseline",
+  "contract_version": "s1-render-bundle-1.2.0",
+  "scope": "persisted_page_evidence_and_derived_pdf_for_one_immutable_source_baseline",
+  "manifest_versions": {
+    "derived_pdf": "s1-render-bundle-1.2.0",
+    "historical_page_evidence": "s1-render-bundle-1.1.0"
+  },
   "entry_points": [
+    "POST /api/render-baseline",
+    "GET /api/derived-renders",
     "rfw-project register-render",
     "rfw-project renders",
     "rfw-project read --page-number --render-bundle-id"
   ],
+  "derived_render": {
+    "evidence_kind": "derived_pdf",
+    "scope": "derived_render",
+    "renderer": "explicit LibreOffice executable in headless mode",
+    "inputs": [
+      "baseline_id",
+      "libreoffice_executable",
+      "reason"
+    ],
+    "profile_policy": "The service selects its own var/libreoffice-profile parent below the Workbench library and creates a private temporary profile for every render. HTTP callers cannot select a profile path.",
+    "listing": {
+      "route": "GET /api/derived-renders",
+      "query_fields": [
+        "project_id",
+        "baseline_id"
+      ],
+      "response_fields": [
+        "project_id",
+        "baseline_id",
+        "derived_renders"
+      ],
+      "record_fields": [
+        "bundle_id",
+        "baseline_id",
+        "manifest",
+        "registered_at",
+        "actor_id",
+        "confirmation_reason"
+      ]
+    },
+    "capability_gate": "An absent, non-executable or non-LibreOffice executable returns renderer_unavailable; no WPS or other renderer fallback is attempted.",
+    "captured": [
+      "source bytes from the retained baseline are copied to a temporary project-local directory",
+      "PDF output is read and its physical page count is inspected before the transaction",
+      "explicit executable path, executable hash, LibreOffice version, private temporary profile path and render times are retained"
+    ],
+    "evidence": "The PDF and render record are committed through the existing render-bundle transaction with evidence kind derived_render, mapping null and mapping_status pending_independent_review.",
+    "response_record_fields": [
+      "bundle_id",
+      "baseline_id",
+      "manifest",
+      "registered_at",
+      "actor_id",
+      "confirmation_reason"
+    ],
+    "manifest_fields": [
+      "version",
+      "evidence_kind",
+      "baseline_id",
+      "source_sha256",
+      "pdf_sha256",
+      "render_profile_id",
+      "page_count",
+      "reader_version",
+      "mapping_version",
+      "mapping",
+      "mapping_status",
+      "render_record",
+      "pages",
+      "artifacts",
+      "limitations"
+    ],
+    "render_record_fields": [
+      "report_version",
+      "evidence_kind",
+      "source_sha256",
+      "render_copy_sha256",
+      "source_unchanged",
+      "output_path",
+      "output_sha256",
+      "output_size",
+      "render_profile_id",
+      "renderer_identity_status",
+      "renderer_engine",
+      "renderer_mode",
+      "renderer_path",
+      "renderer_sha256",
+      "renderer_version",
+      "libreoffice_profile_parent",
+      "libreoffice_profile",
+      "export_method",
+      "source_path",
+      "render_copy_path",
+      "surface",
+      "started_at",
+      "completed_at",
+      "duration_ms",
+      "process_return_code"
+    ],
+    "artifact_fields": [
+      "role",
+      "kind",
+      "source_kind",
+      "page_number",
+      "version_id",
+      "sha256"
+    ],
+    "page_policy": "A derived PDF is not added to the interactive page bundle list, does not create PNG page evidence and cannot satisfy physical-page source queries."
+  },
   "registration_inputs": [
     "baseline_id",
     "input_root",
@@ -30,6 +135,9 @@
   "transaction": "artifact blobs, evidence manifest and baseline association share one SQLite commit",
   "baseline_policy": "registration does not update the current baseline pointer; callers select an exact baseline and bundle",
   "required_checks": [
+    "derived rendering uses an absolute executable that identifies as LibreOffice and an explicit writable profile directory",
+    "derived rendering reads source bytes from the selected retained baseline and leaves that artifact unchanged",
+    "derived PDF output is non-empty, begins with a PDF signature and has a positive physical page count before persistence",
     "captured source/PDF/PNG bytes match their recorded hashes",
     "physical PDF page count matches the contiguous page index",
     "Supported static 8-bit non-interlaced PNG structure, checksums, bounded compressed stream and scanlines are valid",
@@ -40,6 +148,7 @@
     "query validates retained artifacts even if original paths no longer exist"
   ],
   "states": {
+    "derived_pdf": "retained_pdf_pending_independent_review_without_page_mapping",
     "no_annotation_pair": "pending_independent_review",
     "complete_reviewed_unique_mappings": "reviewed",
     "ambiguous_or_unmapped_observations": "partial",
@@ -55,7 +164,10 @@
     "A different current baseline makes an old bundle inapplicable even when source bytes are identical; historical bundle access remains available."
   ],
   "limits": [
-    "Registration does not run Word/WPS or re-attest a historical renderer process.",
+    "Historical page registration does not run Word/WPS or re-attest a historical renderer process.",
+    "The derived renderer accepts only the explicitly selected LibreOffice capability; it does not silently fall back to WPS, Word or another engine.",
+    "LibreOffice availability and executable identity do not establish Word, WPS, publisher or visual fidelity.",
+    "Derived PDF rendering does not create or infer page mappings.",
     "Hashes identify captured bytes; they do not prove PNG raster provenance or visual correctness.",
     "Reviewer labels preserve operator-supplied provenance without authenticating a person.",
     "The internal binary accessor provides retained bytes, not a user-authorized export operation.",

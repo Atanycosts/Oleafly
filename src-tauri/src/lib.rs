@@ -45,6 +45,7 @@ mod deep_link;
 mod dictionaries;
 mod document_engine;
 mod document_stats;
+mod docx_recovery;
 mod folder_listing;
 mod folder_status;
 mod folder_watch;
@@ -78,6 +79,7 @@ mod open_request;
 mod os_trash;
 mod overleaf;
 mod pandoc_citations;
+mod paper_reader;
 mod path_grants;
 mod paths;
 mod proc;
@@ -526,12 +528,18 @@ pub fn run() {
         .invoke_handler(traced_commands(tauri::generate_handler![
             journal_workbench::journal_workbench_connect,
             journal_workbench::journal_workbench_request,
+            journal_workbench::render::journal_docx_renderer,
+            journal_workbench::render::journal_docx_render,
+            journal_workbench::render::journal_docx_pdf,
             journal_workbench::journal_workbench_link,
             journal_workbench::journal_research_create,
             journal_workbench::journal_research_result,
             journal_workbench::annotations::journal_annotation_object,
             journal_workbench::annotations::journal_annotation_save,
             journal_workbench::annotations::journal_annotation_request,
+            docx_recovery::docx_recovery_save,
+            docx_recovery::docx_recovery_read,
+            docx_recovery::docx_recovery_clear,
             ad_hoc_conversion::convert_ad_hoc,
             typst_render::render_typst_snippet,
             typst_query::typst_document_insights,
@@ -1188,6 +1196,8 @@ pub fn run() {
             citation::verify_citation,
             skills::skills_replace_with_builtin,
             literature::literature_search_all,
+            paper_reader::read_project_paper,
+            paper_reader::read_retained_paper_pdf,
             research_tasks::research_task_plan,
             research_tasks::research_task_approve_plan,
             research_tasks::research_task_run_cancel,

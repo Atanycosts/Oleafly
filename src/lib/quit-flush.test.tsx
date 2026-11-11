@@ -43,15 +43,17 @@ vi.mock("@/lib/update-install-guard", () => ({
 vi.mock("@/lib/crash-report", () => ({ reportCrashToGithub: vi.fn(async () => {}) }));
 vi.mock("@/components/SpecimenIllustration", () => ({ SpecimenIllustration: () => null }));
 vi.mock("@/store/files", () => ({
-  useFilesStore: { getState: () => ({ flushForQuit: mocks.flushForQuit }) },
+  useFilesStore: { getState: () => ({ projectId: "main-project", flushForQuit: mocks.flushForQuit }) },
 }));
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { QuitGuard } from "@/components/layout/QuitGuard";
 import { TinytexGuards } from "@/components/layout/TinytexGuards";
 import { useEngineStore } from "@/store/engine";
+import { isEditorMutationLocked, registerEditorMutationOwner } from "@/lib/editor-mutation-lease";
 import {
   claimQuitRequests,
+  flushForQuitWithDeadline,
   INSTALL_QUIT_BLOCKED,
   installQuitFallback,
   QUIT_FLUSH_REQUESTED,
@@ -120,6 +122,39 @@ afterEach(() => {
   uninstall?.();
   uninstall = undefined;
   vi.restoreAllMocks();
+});
+
+it("holds quit when an active editor cannot flush its unsaved document", async () => {
+  const setLocked = vi.fn();
+  const stop = registerEditorMutationOwner({
+    projectId: () => "main-project",
+    setLocked,
+    flush: () => { throw new Error("Save the DOCX working copy first."); },
+  });
+  try {
+    await expect(flushForQuitWithDeadline()).rejects.toThrow("Save the DOCX working copy first.");
+    expect(mocks.flushForQuit).not.toHaveBeenCalled();
+    expect(setLocked.mock.calls).toEqual([[true], [false]]);
+  } finally { stop(); }
+});
+
+it("unlocks editors after the quit deadline even when an owner never finishes flushing", async () => {
+  vi.useFakeTimers();
+  const pending = deferred<void>();
+  const stop = registerEditorMutationOwner({ projectId: () => "main-project", flush: () => pending.promise });
+  try {
+    const flush = flushForQuitWithDeadline();
+    const failure = expect(flush).rejects.toThrow(/saving did not finish/i);
+    expect(isEditorMutationLocked("main-project")).toBe(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    await failure;
+    expect(isEditorMutationLocked("main-project")).toBe(false);
+  } finally {
+    pending.resolve();
+    await Promise.resolve();
+    stop();
+    vi.useRealTimers();
+  }
 });
 
 describe("quit requests after a UI crash", () => {

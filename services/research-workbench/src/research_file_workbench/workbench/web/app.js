@@ -6,7 +6,7 @@ import { renderSourceReview, openSourceLibrary } from "./views/source-review.js"
 import { createManuscriptWorkspace } from "./views/manuscript.js";
 import { userMessage, evidenceQuote } from "./ui/presentation.js";
 
-const HTTP_CONTRACT_VERSION = "journal-http-1.5.0";
+const HTTP_CONTRACT_VERSION = "journal-http-1.7.0";
 const state = {
   token: null, worlds: [], projects: [], capabilities: {}, world: null,
   projectId: null, check: null, ruleId: null, filter: "all", sources: [], busy: false,

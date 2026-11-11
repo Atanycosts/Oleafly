@@ -12,6 +12,9 @@ catalog:
 # GHSA-2v37-7h3g-55p8: custom generators loop forever on size zero, < 3.3.18.
 # Force transitive build and test dependencies to patched versions.
 overrides:
+  # vite-plugin-top-level-await 1.6 uses the pre-1.16 SWC function-body AST.
+  # https://github.com/Menci/vite-plugin-top-level-await/issues/79
+  "vite-plugin-top-level-await>@swc/core": "1.15.47"
   # GHSA-qr28-fpjm-wq7f: quadratic replacement of percent-encoded runs in
   # decode-uri-component <= 0.5.0, reached through @lobehub/ui > query-string.
   decode-uri-component@<0.5.1: "0.5.1"

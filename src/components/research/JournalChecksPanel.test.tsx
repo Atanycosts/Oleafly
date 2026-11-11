@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { JournalCheck, JournalFragment, JournalObjectReference, JournalRule, JournalWorld } from "@/lib/journal-workbench";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { useFilesStore } from "@/store/files";
+import { useDocxWorkspaceStore } from "@/store/docx-workspace";
 
 const api = vi.hoisted(() => ({ request: vi.fn(), workspace: vi.fn(), connect: vi.fn(), target: vi.fn(), references: [] as JournalObjectReference[] }));
 vi.mock("@/lib/journal-workbench", async (original) => ({
@@ -26,6 +27,7 @@ const checked = (version: string, id: string): JournalCheck => ({ check_id: id, 
 beforeEach(() => {
   vi.clearAllMocks(); api.references.length = 0;
   useFilesStore.setState({ projectId: "paper" });
+  useDocxWorkspaceStore.getState().close();
   api.workspace.mockResolvedValue({ journalProjectId: "manuscript" });
   api.connect.mockResolvedValue({ python: "/python", libraryRoot: "/retained/library" });
   api.request.mockImplementation(async (path: string) => {
@@ -36,6 +38,18 @@ beforeEach(() => {
     if (url.pathname === "/api/review") return { world_version_id: url.searchParams.get("version_id"), fragments: [fragment], rule_links: [{ rule_id: rule.rule_id, evidence_index: 0, fragment_ids: [fragment.fragment_id], link_status: "linked" }] };
     throw new Error(`Unexpected request ${path}`);
   });
+});
+
+it("opens a retained working copy in the app host so leaving the rail keeps the request", async () => {
+  const view = render(<JournalChecksPanel />);
+  fireEvent.click(await screen.findByRole("button", { name: en.docx.open }));
+  expect(useDocxWorkspaceStore.getState().request).toMatchObject({
+    appProjectId: "paper", project: { project_id: "manuscript", baseline_id: "baseline" },
+    world: { version_id: "world-current" },
+  });
+  view.unmount();
+  expect(useDocxWorkspaceStore.getState().request?.project.baseline_id).toBe("baseline");
+  useDocxWorkspaceStore.getState().close();
 });
 
 it("anchors a historical check entry to its original library, manuscript and world", async () => {

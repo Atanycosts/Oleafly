@@ -1,4 +1,5 @@
 pub(crate) mod annotations;
+pub(crate) mod render;
 pub(crate) mod sync;
 pub(crate) mod tools;
 
@@ -100,7 +101,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         .json()
         .await
         .map_err(|error| error.to_string())?;
-    if session["contract_version"] != "journal-http-1.5.0" {
+    if session["contract_version"] != "journal-http-1.7.0" {
         return Err("This Workbench HTTP version is not supported.".into());
     }
     let token = session["token"]
@@ -127,7 +128,10 @@ async fn request(session: &Session, path: &str, payload: Option<Value>) -> Resul
             .post(url)
             .header("X-RFW-Token", &session.token)
             .json(&payload),
-        None => session.client.get(url),
+        None => session
+            .client
+            .get(url)
+            .header("X-RFW-Token", &session.token),
     };
     let response = request
         .send()

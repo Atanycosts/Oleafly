@@ -1260,6 +1260,18 @@ describe("MessageItem step grouping", () => {
     expect(container).toHaveTextContent("Compiled successfully");
   });
 
+  it("keeps a completed paper reading visible for source inspection", () => {
+    const { container } = render(<MessageItem msg={{
+      id: "paper-read-turn", role: "assistant", content: "The source is ready.",
+      toolCalls: [{ id: "paper-read", name: "read_paper", status: "done", output: JSON.stringify({
+        key: "paper-version", text: "[p. 1]\nMeasured evidence.", nextOffset: null,
+        source: { path: "sources/paper.txt", fileSha256: "text-hash", offset: 0, endOffset: 30 },
+      }) }],
+    }} />);
+    expect(container.querySelector('[data-tool-name="read_paper"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="worked-steps-toggle"]')).toBeNull();
+  });
+
   it("does not render reasoning when none was recorded", () => {
     const { container } = render(
       <MessageItem msg={{ role: "assistant", content: "A direct answer." }} />,

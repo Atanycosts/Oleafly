@@ -122,6 +122,101 @@ export interface AiToolsHost {
   listNotes(): { id: string; content: string }[];
 }
 
+export interface DocxDocumentState {
+  sessionId: string;
+  baselineId: string;
+  sessionRevision: number;
+  savedRevision: number;
+  dirty: boolean;
+}
+
+export interface DocxActivityDocument extends DocxDocumentState {
+  appProjectId: string;
+  workbenchProjectId: string;
+  title: string;
+  filename: string;
+}
+
+export interface DocxParagraphView {
+  paragraphRef: string;
+  text: string;
+  paraId?: string;
+}
+
+export interface DocxDocumentRead {
+  document: DocxActivityDocument;
+  paragraphs: DocxParagraphView[];
+}
+
+export interface DocxTargetView extends DocxDocumentState {
+  filename: string;
+  targetId: string;
+  paragraphRef: string;
+  text: string;
+  revision: number;
+  paraId?: string;
+  structure?: string;
+}
+
+export interface DocxSuggestion {
+  target: DocxTargetView;
+  proposed: string;
+}
+
+export interface DocxSuggestionResult extends DocxSuggestion {
+  document: DocxDocumentState;
+}
+
+export interface DocxSuggestionApplyResult {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  changed: boolean;
+  document: DocxDocumentState;
+}
+
+/** Runtime-owned task facts. UI state must not be used to invent these values. */
+export interface DocxAgentAttribution {
+  taskId?: string;
+  workId?: string;
+  memberId?: string;
+  executionId?: string;
+}
+
+export interface DocxOperationContext {
+  attribution?: DocxAgentAttribution;
+  signal?: AbortSignal;
+  onToken?: (full: string) => void;
+}
+
+export interface DocxSuggestionRequest {
+  sessionId?: string;
+  paragraphRef: string;
+  instruction: string;
+  expectedRevision?: number;
+}
+
+export interface DocxSuggestionApplyRequest {
+  targetId: string;
+  expectedRevision: number;
+  text: string;
+}
+
+export interface DocxToolsHost {
+  listDocuments(): Promise<DocxActivityDocument[]>;
+  readDocument(sessionId?: string): Promise<DocxDocumentRead>;
+  captureTarget(sessionId: string | undefined, paragraphRef: string): Promise<DocxTargetView>;
+  inspectTarget(targetId: string): Promise<DocxTargetView>;
+  suggestChange(
+    input: DocxSuggestionRequest,
+    context?: DocxOperationContext,
+  ): Promise<DocxSuggestionResult>;
+  applySuggestion(
+    input: DocxSuggestionApplyRequest,
+    context?: DocxOperationContext,
+  ): Promise<DocxSuggestionApplyResult>;
+}
+
 type RawSchema = {
   type: "object";
   properties: Record<string, unknown>;
@@ -147,6 +242,14 @@ export interface ToolApprovalRequest {
 }
 
 export type ConfirmFn = (req: ToolApprovalRequest) => Promise<boolean>;
+
+export interface DocxToolsOptions {
+  attribution?: DocxAgentAttribution;
+  confirm?: ConfirmFn;
+  mutationAllowed?: () => boolean;
+  signal?: AbortSignal;
+  onToken?: (full: string) => void;
+}
 
 export interface ExecAuthorization {
   approvalToken: string;
@@ -1178,6 +1281,213 @@ export function createOleaflyTools(
   }
 
   return tools;
+}
+
+export function createDocxTools(
+  host: DocxToolsHost,
+  opts?: DocxToolsOptions,
+) {
+  const context: DocxOperationContext | undefined =
+    opts?.attribution || opts?.signal || opts?.onToken
+      ? {
+          ...(opts.attribution
+            ? { attribution: Object.freeze({ ...opts.attribution }) }
+            : {}),
+          ...(opts.signal ? { signal: opts.signal } : {}),
+          ...(opts.onToken ? { onToken: opts.onToken } : {}),
+        }
+      : undefined;
+  const mutationAllowed = () => opts?.mutationAllowed?.() ?? true;
+  const cancelled = () => ({
+    error: "The external request was cancelled before mutation.",
+  });
+  const stringField = (input: Record<string, unknown>, name: string): string =>
+    typeof input[name] === "string" ? input[name] : "";
+  const optionalString = (input: Record<string, unknown>, name: string): string | undefined => {
+    const value = stringField(input, name);
+    return value || undefined;
+  };
+
+  return {
+    list_docx_documents: {
+      description:
+        "List active Oleafly DOCX working copies. Session revision, saved revision, dirty state and the Workbench baseline are distinct.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async () => {
+        try {
+          return { documents: await host.listDocuments() };
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    read_docx_document: {
+      description:
+        "Read the current paragraphs from an active DOCX working copy. This reads the live session, which may be newer than its saved Workbench baseline.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: {
+            type: "string",
+            description: "Session ID from list_docx_documents. Omit for the active session.",
+          },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        try {
+          return await host.readDocument(optionalString(input, "session_id"));
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    capture_docx_target: {
+      description:
+        "Capture one paragraph from an active DOCX session as a stable suggestion target. The returned target ID is scoped to this app session.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: {
+            type: "string",
+            description: "Session ID from list_docx_documents. Omit for the active session.",
+          },
+          paragraph_ref: {
+            type: "string",
+            description: "Paragraph reference returned by read_docx_document.",
+          },
+        },
+        required: ["paragraph_ref"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        try {
+          return await host.captureTarget(
+            optionalString(input, "session_id"),
+            stringField(input, "paragraph_ref"),
+          );
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    suggest_docx_change: {
+      description:
+        "Generate a whole-paragraph replacement for an active DOCX target without changing the document. The returned target must be applied with apply_docx_suggestion.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: {
+            type: "string",
+            description: "Session ID from list_docx_documents. Omit for the active session.",
+          },
+          paragraph_ref: {
+            type: "string",
+            description: "Paragraph reference returned by read_docx_document.",
+          },
+          instruction: {
+            type: "string",
+            description: "The requested prose change.",
+          },
+          expected_revision: {
+            type: "number",
+            description: "Optional paragraph revision returned by capture_docx_target.",
+          },
+        },
+        required: ["paragraph_ref", "instruction"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!mutationAllowed()) return cancelled();
+        try {
+          return await host.suggestChange(
+            {
+              ...(optionalString(input, "session_id")
+                ? { sessionId: optionalString(input, "session_id") }
+                : {}),
+              paragraphRef: stringField(input, "paragraph_ref"),
+              instruction: stringField(input, "instruction"),
+              ...(typeof input.expected_revision === "number"
+                ? { expectedRevision: input.expected_revision }
+                : {}),
+            },
+            context,
+          );
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    apply_docx_suggestion: {
+      description:
+        "Apply one whole-paragraph suggestion to the live DOCX session. This does not save a Workbench baseline. It refuses stale targets and paragraphs with complex inline structure.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          target_id: {
+            type: "string",
+            description: "Target ID returned by capture_docx_target or suggest_docx_change.",
+          },
+          expected_revision: {
+            type: "number",
+            description: "Target paragraph revision that the suggestion was based on.",
+          },
+          text: {
+            type: "string",
+            description: "The complete replacement text for the paragraph.",
+          },
+        },
+        required: ["target_id", "expected_revision", "text"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!mutationAllowed()) return cancelled();
+        try {
+          const targetId = stringField(input, "target_id");
+          const text = stringField(input, "text");
+          const before = await host.inspectTarget(targetId);
+          if (
+            opts?.confirm &&
+            !(await opts.confirm({
+              tool: "apply_docx_suggestion",
+              summary: `Apply a DOCX suggestion to ${before.filename} at ${before.paragraphRef}`,
+              path: `${before.filename}#${before.paragraphRef}`,
+              diff: {
+                path: `${before.filename}#${before.paragraphRef}`,
+                oldText: before.text,
+                newText: text,
+              },
+            }))
+          ) {
+            return {
+              message: "The user declined this change.",
+              declined: true as const,
+              status: "declined" as const,
+              tool: "apply_docx_suggestion",
+            };
+          }
+          if (!mutationAllowed()) return cancelled();
+          await host.inspectTarget(targetId);
+          return await host.applySuggestion(
+            {
+              targetId,
+              expectedRevision: Number(input.expected_revision),
+              text,
+            },
+            context,
+          );
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+  };
 }
 
 function pngDataUrlToBase64(dataUrl: string): string {

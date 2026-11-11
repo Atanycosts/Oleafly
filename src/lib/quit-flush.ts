@@ -4,6 +4,7 @@ import { confirmQuitDuringInstall, confirmQuitFlush } from "@/lib/tauri";
 import { logError } from "@/lib/log";
 import { useFilesStore } from "@/store/files";
 import { i18n } from "@/i18n";
+import { acquireEditorMutationLease } from "@/lib/editor-mutation-lease";
 
 export const QUIT_FLUSH_REQUESTED = "quit-flush-requested";
 export const INSTALL_QUIT_BLOCKED = "tinytex-quit-blocked";
@@ -18,15 +19,23 @@ export function requestRestart(): Promise<void> {
   return emit(QUIT_FLUSH_REQUESTED, true);
 }
 
-export function flushForQuitWithDeadline(): Promise<void> {
+export async function flushForQuitWithDeadline(): Promise<void> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  const projectId = useFilesStore.getState().projectId;
+  const lease = projectId ? acquireEditorMutationLease(projectId) : null;
   const deadline = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {
       reject(new Error(i18n.t(($) => $.shell.quitGuard.flushTimeout)));
     }, QUIT_FLUSH_TIMEOUT_MS);
   });
-  return Promise.race([useFilesStore.getState().flushForQuit(), deadline]).finally(() => {
+  const flush = async () => {
+    await lease?.flush();
+    lease?.assertActive();
+    await useFilesStore.getState().flushForQuit();
+  };
+  return Promise.race([flush(), deadline]).finally(() => {
     if (timeout !== undefined) clearTimeout(timeout);
+    lease?.release();
   });
 }
 

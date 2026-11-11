@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ensureAiProviderOrOpenSettings, handoffToAssistant } from "@/features/assistant-handoff";
 import { useFilesStore } from "@/store/files";
+import { useDocxWorkspaceStore } from "@/store/docx-workspace";
 import { getResearchWorkspace } from "@/lib/research-workspace";
 import { pickOpenPaths } from "@/lib/tauri";
 import type { AnnotationTarget } from "@/lib/task-collaboration";
@@ -369,6 +370,13 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   <FileUp className="mr-1 size-3.5" />
                   {text.importManuscript}
                 </Button>
+                {project && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => useDocxWorkspaceStore.getState().open({
+                    appProjectId: projectId, project, world, onSaved: () => load(linkedId, world?.version_id),
+                  })}>
+                    {t(($) => $.researchTools.docx.open)}
+                  </Button>
+                )}
                 {project && (
                   <Button
                     size="sm"

@@ -111,6 +111,23 @@ describe("a pending inline AI suggestion in a shared file", () => {
     expect(shared.text()).toBe("hello woRld\nsecond line");
   });
 
+  it("is withdrawn when the user edits the text it would replace", () => {
+    act(() => editorView().dispatch({ changes: { from: 8, to: 9, insert: "R" } }));
+    expect(shared.text()).toBe("hello woRld\nsecond line");
+    expect(session()?.phase).toBe("withdrawn");
+    act(() => acceptInlineEdit(editorView()));
+    expect(shared.text()).toBe("hello woRld\nsecond line");
+  });
+
+  it("accepts its own replacement without withdrawing the session first", () => {
+    const withdraw = vi.spyOn(useInlineEditStore.getState(), "withdraw");
+    act(() => acceptInlineEdit(editorView()));
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(session()).toBeNull();
+    expect(shared.text()).toBe("hello there\nsecond line");
+    withdraw.mockRestore();
+  });
+
   it("closes instead of landing in another file", async () => {
     await activePath("chapter.tex");
     expect(session()).toBeNull();

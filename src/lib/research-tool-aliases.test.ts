@@ -20,10 +20,10 @@ describe("research tool aliases", () => {
 
   it("falls back to literature_search without the connector", () => {
     const resolved = resolveResearchToolAliases([{ name: "Zotero", tools: [] }]);
-    expect(resolved).toEqual({ alphaxiv_search: "literature_search", alphaxiv_paper_content: null });
+    expect(resolved).toEqual({ alphaxiv_search: "literature_search", alphaxiv_paper_content: "read_paper" });
     const note = toolAliasNote("Use alphaxiv_search, then alphaxiv_paper_content.", resolved);
     expect(note).toContain('`alphaxiv_search` means `literature_search` with `sources: ["arxiv"]`.');
-    expect(note).toContain("`alphaxiv_paper_content` means nothing here");
+    expect(note).toContain("`alphaxiv_paper_content` means `read_paper` with `arxiv`");
   });
 
   it("the note is empty when the skill names no alias", () => {
@@ -56,12 +56,12 @@ describe("research tool aliases", () => {
 
     expect(resolveResearchToolAliases([searchOnly])).toEqual({
       alphaxiv_search: "mcp_ext_alphaXiv_discover_papers_ab12",
-      alphaxiv_paper_content: null,
+      alphaxiv_paper_content: "read_paper",
     });
   });
 
   it("points the search alias at literature_search when nothing resolves it", () => {
-    expect(toolAliasNote("Call alphaxiv_search.", { alphaxiv_search: null, alphaxiv_paper_content: null })).toBe(
+    expect(toolAliasNote("Call alphaxiv_search.", { alphaxiv_search: null, alphaxiv_paper_content: "read_paper" })).toBe(
       "\n\nTool names in this skill: `alphaxiv_search` means `literature_search`.",
     );
   });

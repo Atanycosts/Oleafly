@@ -13,7 +13,10 @@ from research_file_workbench.docx.page_mapping import PAGE_MAPPING_VERSION, join
 from research_file_workbench.docx.report import READER_VERSION
 from research_file_workbench.projects.models import ProjectStoreError
 
-BUNDLE_VERSION = "s1-render-bundle-1.1.0"
+BUNDLE_VERSION = "s1-render-bundle-1.2.0"
+HISTORICAL_PAGE_BUNDLE_VERSION = "s1-render-bundle-1.1.0"
+SUPPORTED_BUNDLE_VERSIONS = frozenset({BUNDLE_VERSION, HISTORICAL_PAGE_BUNDLE_VERSION})
+DERIVED_RENDER_REPORT_VERSION = "libreoffice-headless-1.0.0"
 
 
 def validate_render_bundle(
@@ -63,7 +66,7 @@ def validate_render_bundle(
         mapping["reader_version"] = READER_VERSION
         mapping_status = cast(str, mapping["status"])
     return {
-        "version": BUNDLE_VERSION,
+        "version": HISTORICAL_PAGE_BUNDLE_VERSION,
         "source_sha256": result.source_sha256,
         "pdf_sha256": pdf_hash,
         "render_profile_id": profile,

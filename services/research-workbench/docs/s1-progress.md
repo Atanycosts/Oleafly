@@ -1,6 +1,6 @@
 # S1 implementation and acceptance status
 
-Status date: 2026-11-09
+Status date: 2026-11-11
 
 This document records the Workbench-domain slice only. Current cross-system entry points are
 the [Oleafly integration guide](../../../docs/research-workbench-integration.md),
@@ -32,6 +32,87 @@ Scope decision (2026-11-07): the operator excludes a complete journal submission
 workflow and comprehensive submission acceptance from the product scope. They are
 not pending deliverables. Journal-requirement research, source review, versioned
 rules and supported manuscript checks remain in scope.
+
+The 2026-11-11 DOCX working-copy increment exposes exact retained source bytes for an explicit
+baseline through `GET /api/manuscript-source`. It verifies the source hash, returns a display
+filename and bytes, and neither reads an author path nor records a structured read receipt.
+The Oleafly frontend now edits and paginates that managed copy, streams one paragraph proposal,
+exports actual DOCX bytes and reuses the existing baseline/check services. The frontend invokes the
+renderer after a saved baseline is available through the native bridge, and the service records the
+resulting PDF as a derived render. The service does not own the live editing session. Current contracts remain in
+[`world-contract.json`](../contracts/journals/world-contract.json).
+
+The same date adds the backend foundation for post-save rendering. `POST /api/render-baseline`
+requires an exact retained baseline, an absolute LibreOffice executable and an explicit reason.
+The service selects its own profile parent below the Workbench library's `var/libreoffice-profile`
+and creates a private temporary profile for each conversion; HTTP callers cannot select a profile
+path. It identifies the executable as LibreOffice, reads only the baseline artifact into a
+disposable project-local directory, runs headless PDF conversion, and checks the output page count
+before committing the PDF and render record through the existing project transaction. The manifest
+records the LibreOffice version, executable hash/path, private profile path, source/PDF identities
+and render times as `derived_render` evidence. `GET /api/derived-renders` lists those records for
+an explicit project baseline without mixing them into historical page bundles. The renderer
+deliberately
+keeps page images and page mapping absent and does not add the PDF to the interactive historical
+page-bundle list. A missing or non-LibreOffice capability returns `renderer_unavailable`; no WPS
+or other renderer is tried. The saved-version panel supplies the explicit renderer path and invokes
+this route automatically after a saved baseline. Focused fake-runner coverage verifies retained-source
+conversion, PDF registration, listing, capability failure,
+unreadable output and HTTP routing. The derived bundle contract is
+`s1-render-bundle-1.2.0`; only the pre-existing page-bundle `1.1.0` remains readable as
+historical evidence. The HTTP contract is `journal-http-1.7.0`.
+
+Current observation IDs still bind the exact source hash, reader method and locator. A synthetic
+ZIP-comment-only update retained all package parts and text while changing all 32 catalog IDs;
+the existing baseline transaction retained both versions, rejected a stale expected baseline,
+and recovered the old read exactly. These are snapshot evidence identities, not live editor
+anchors. Four focused baseline/conflict/staleness/replay regressions passed. The cross-system
+[current verified slice](../../../docs/agent/status.md#docx-工作副本首个闭环2026-11-11),
+[session contract](../../../docs/agent/architecture.md#docx-实时工作表面)
+and [component choices](../../../docs/agent/reuse.md#docx-编辑与实时工作机制) own the cross-system integration;
+baseline semantics remain unchanged, while the reader method version below records the added VML observation.
+
+The migrated real English and Chinese manuscripts were then run through the production React
+editor and the real Workbench browser harness after the large-document session readiness fix.
+Both first reads returned an active session without a user-edit workaround; no-change exports
+preserved all package parts, media, relationship semantics and protected nodes, while each
+edited export changed only its intended paragraph. Mixed-format, field, OMML and image
+paragraph replacements were refused with `unsupported-target` and no revision change.
+This verifies the controlled structure round trip, not Word/WPS visual fidelity: the two
+documents still report substitute-font/fixed-measurer warnings, and the independent LibreOffice
+render of the English manuscript has a first-page two-column title difference.
+
+The reader now reports selected VML `w:pict/v:imagedata` as an explicit `vml_picture` unsupported
+record under `s1-readonly-reader-1.5.0`, retaining its relationship and resource locator;
+VML geometry and page placement remain outside the reader's interpretation.
+
+The migrated real English and Chinese manuscripts were then run through the production React
+editor and the real Workbench browser harness after the large-document session readiness fix.
+Both first reads returned an active session without a user-edit workaround; no-change exports
+preserved all package parts, media, relationship semantics and protected nodes, while each
+edited export changed only its intended paragraph. Mixed-format, field, OMML and image
+paragraph replacements were refused with `unsupported-target` and no revision change.
+This verifies the controlled structure round trip, not Word/WPS visual fidelity: the two
+documents still report substitute-font/fixed-measurer warnings, and the independent LibreOffice
+render of the English manuscript has a first-page two-column title difference.
+
+The reader now reports selected VML `w:pict/v:imagedata` as an explicit `vml_picture` unsupported
+record under `s1-readonly-reader-1.5.0`, retaining its relationship and resource locator;
+VML geometry and page placement remain outside the reader's interpretation.
+
+The source-byte increment passed the 58 focused workspace/server/architecture tests with one
+existing macOS loopback-alias skip and five PyMuPDF/SWIG warnings. Scoped Python format/lint and
+mypy across 118 source files passed. The actual browser workflow also used the real Python
+baseline/bind/check endpoints and reopened the saved version. Its Tauri transport and token
+provider were scripted; native-app and real-model DOCX editing remain unverified. Current
+cross-system results and local-only evidence are recorded in the linked Agent status.
+
+Scope decision (2026-11-11): new DOCX UI keys are maintained in Chinese and English only.
+Complete coverage and validation for other application languages are outside this round's
+product scope and are not pending Workbench deliverables. Chinese and English catalog checks
+passed for the affected frontend. The verified DOCX browser flow ran on macOS. This round does
+not perform native Windows validation, so that validation is outside its scope rather than a
+pending check; the native app and real-model DOCX editing remain unverified.
 
 S1 is unreleased and partial: manuscript analysis is read-only, while project and journal
 management expose local writes. Before consolidation, the complete Workbench gate run on 2026-11-07
@@ -211,7 +292,8 @@ its normal interface. Compiler output (about 43 GB), the
 old preview bundle, temporary logs and seven disposable Oleafly projects were
 removed; that initial slice retained the complete workflow demonstration. The
 following increment adds a second project using the retained real manuscript.
-Captured DOCX editing and computed layout remain future product work. A complete
+At that historical stage captured DOCX editing and computed layout remained future product work;
+the current increment is described at the top of this document. A complete
 journal submission workflow and comprehensive submission acceptance are excluded
 by the scope decision above.
 
@@ -346,7 +428,7 @@ implementation below `workbench/web/`.
   selection, source-bound pagination, and exact response receipts. Catalog access does not count
   as content read. Inputs and outputs stay within the recorded application and author boundaries.
 - Repeated fields within one paragraph have distinct source occurrence numbers. Current reader method
-  `s1-readonly-reader-1.4.0` locates each paragraph in its part's source bytes and invalidates
+  `s1-readonly-reader-1.5.0` locates each paragraph in its part's source bytes and invalidates
   earlier object IDs and query cursors; page queries refuse
   mappings whose originating structure report uses another reader version.
 - The single-DOCX project slice retains immutable source bytes, baselines, source-observation
@@ -481,7 +563,7 @@ portability and a supported macOS delivery/verification path remain separate pla
   dispositions, read with receipts, and preview retained PDF pages. Retained refusals (baseline
   compare-and-swap, idempotency reuse, unreadable input) surface as typed reasons on every
   surface, and bindings, checks and dispositions record which local surface drove them, per
-  `s1-project-storage-1.3.0`. Two capabilities stay operator-only on purpose: author decisions
+  `s1-project-storage-1.4.0`. Two capabilities stay operator-only on purpose: author decisions
   refuse agent proposals by design, and render-bundle registration records independent human
   evidence through the CLI or browser. The MCP layer holds no business rule; its declared
   boundary, versions and limits are in `contracts/s1/mcp-surface.json`. The local MCP write

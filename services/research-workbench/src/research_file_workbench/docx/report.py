@@ -32,9 +32,9 @@ from research_file_workbench.docx.report_serializers import (
 from research_file_workbench.docx.report_style_serializers import style_to_json
 
 REPORT_VERSION = "1.0.0"
-# 1.4.0 adds the byte range of each paragraph to the text-block observation and to the read-range
-# receipt, so an earlier observation or cursor does not describe the same read.
-READER_VERSION = "s1-readonly-reader-1.4.0"
+# 1.5.0 registers selected VML imagedata as an explicit unsupported observation, so an earlier
+# observation cannot claim complete support for the document's image resources.
+READER_VERSION = "s1-readonly-reader-1.5.0"
 
 # The reader declares unconditional limits (unsupported constructs, part-level regions, no
 # page inference), so a DOCX observation is never complete coverage.  This constant is the

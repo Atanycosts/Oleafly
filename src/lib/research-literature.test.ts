@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 
-import { verifyCitation, type CitationCheck } from "./research-literature";
+import { readProjectPaper, readRetainedPaperPdf, verifyCitation, type CitationCheck } from "./research-literature";
 
 const VERIFIED: CitationCheck = {
   verified: true,
@@ -50,5 +50,43 @@ describe("citation checks", () => {
     await expect(verifyCitation({ title: "A paper nobody wrote" })).rejects.toThrow(
       "No matching Crossref record found.",
     );
+  });
+});
+
+describe("paper reading IPC", () => {
+  it.each([
+    [{ doi: "10.1000/paper", arxiv: "1706.03762", url: "https://example.org/a.pdf", path: "a.pdf" }, { kind: "doi", doi: "10.1000/paper" }],
+    [{ arxiv: "1706.03762", url: "https://example.org/a.pdf", path: "a.pdf" }, { kind: "arxiv", id: "1706.03762" }],
+    [{ url: "https://example.org/a.pdf", path: "a.pdf" }, { kind: "url", url: "https://example.org/a.pdf" }],
+    [{ path: "a.pdf" }, { kind: "path", path: "a.pdf", root_id: null }],
+    [{ path: "a.pdf", root_id: "refs" }, { kind: "path", path: "a.pdf", root_id: "refs" }],
+  ])("preserves backend source precedence: %j", async (input, request) => {
+    await readProjectPaper("original", input);
+    expect(native.invoke).toHaveBeenCalledWith("read_project_paper", { projectId: "original", request, offset: null, maxChars: null, reference: null });
+  });
+
+  it("passes window limits and exact source metadata unchanged", async () => {
+    const result = { text: "[p. 2]\nEvidence", nextOffset: 8192, source: { offset: 4096, endOffset: 8192 }, pdfReference: { projectId: "original", path: "sources/papers/a.pdf", pdfSha256: "hash" } };
+    native.invoke.mockResolvedValue(result);
+    expect(await readProjectPaper("original", { path: "a.pdf", offset: 4096, max_chars: 4000 })).toBe(result);
+    expect(native.invoke).toHaveBeenCalledWith("read_project_paper", { projectId: "original", request: { kind: "path", path: "a.pdf", root_id: null }, offset: 4096, maxChars: 4000, reference: null });
+  });
+
+  it("reads retained PDF bytes with the original project and expected hash", async () => {
+    const reference = { projectId: "original", path: "sources/papers/a.pdf", pdfSha256: "original-hash" };
+    const bytes = new ArrayBuffer(32);
+    native.invoke.mockResolvedValue(bytes);
+    expect(await readRetainedPaperPdf(reference)).toBe(bytes);
+    expect(native.invoke).toHaveBeenCalledWith("read_retained_paper_pdf", { reference });
+    native.invoke.mockRejectedValue(new Error("PDF hash mismatch"));
+    await expect(readRetainedPaperPdf(reference)).rejects.toThrow("PDF hash mismatch");
+  });
+});
+
+it("continues a retained version with its complete reference instead of re-reading a changed local path", async () => {
+  const reference = { projectId: "original", path: "sources/hash/papers/a.pdf", pdfSha256: "original-hash" };
+  await readProjectPaper("original", { reference, offset: 4096 });
+  expect(native.invoke).toHaveBeenCalledWith("read_project_paper", {
+    projectId: "original", request: { kind: "path", path: "", root_id: null }, offset: 4096, maxChars: null, reference,
   });
 });

@@ -150,6 +150,11 @@ class ProjectStore:
         with connect_project(self.database_path) as connection:
             return evidence_records.list_render_bundles(connection, baseline_id)
 
+    def list_derived_renders(self, baseline_id: str) -> list[JsonObject]:
+        """List derived PDF registrations for one explicit baseline."""
+        with connect_project(self.database_path) as connection:
+            return evidence_records.list_derived_renders(connection, baseline_id)
+
     def list_baselines(self) -> list[JsonObject]:
         """Return immutable baseline history in insertion order."""
         with connect_project(self.database_path) as connection:
