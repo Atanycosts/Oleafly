@@ -368,8 +368,10 @@ DOCX 平台范围（2026-11-11）：本轮在 macOS 上完成上述浏览器与�
 `.private/upstream-reuse/docx-live-implementation-20261111/`，不随干净 checkout 发布。
 本轮 recovery contract、Tauri 原子存储和工作区生命周期接入的定向测试通过：前端 recovery/工作区 **17 项**，Rust recovery **4 项**，TypeScript、Biome、`git diff --check` 通过。checkpoint 已验证保存前写入、正式 baseline 成功后的按内容 hash 清除、失败保留、确认丢弃清除以及保存后新 baseline 使用新 key；尚未运行跨进程重启或真实原生恢复 UI。源码已提交到上述 Draft PR，尚未发布。
 
-2026-11-12 本机环境修复：Node、pnpm、Python、uv 和 GitHub CLI 的登录及非登录 shell
-入口已统一到 Homebrew；Workbench `.venv` 已用 Homebrew Python 重建。pnpm 使用 Homebrew
+2026-11-12 本机环境修复：Node、pnpm、Python、uv、GitHub CLI、rustup/Cargo/Rust 的登录及非登录 shell
+入口已统一到 Homebrew；Rust 编译器仍按仓库固定为 1.98.1，Workbench `.venv` 已用 Homebrew Python 重建。
+原先独立安装的 Maven/Java 入口也已迁至 Homebrew，并验证 Maven 实际使用 Homebrew JDK；二者不是 Oleafly 构建依赖。
+pnpm 使用 Homebrew
 安装的 11 系列并明确提示与仓库精确 pin 的版本差异，不再自动下载另一套 pnpm。
 SheetJS 缓存内容与锁文件完整性一致，依赖链接已恢复，SWC 原生绑定的构建许可已显式补齐；
 `pnpm install --offline --frozen-lockfile`、常规 lint、语言类型、中英文目录及 DOCX notice 核对通过。
@@ -377,6 +379,9 @@ SheetJS 缓存内容与锁文件完整性一致，依赖链接已恢复，SWC �
 reader/render/server/workspace 测试 167 项通过、1 项既有跳过，保留既有 PyMuPDF/SWIG 警告。
 生产构建与性能预算通过：入口 JavaScript 4,795,811 bytes，总 JavaScript 27,818,828 bytes；
 仍有既有大 chunk 提示。Rust 格式检查及 4 项 recovery 测试通过，保留 debug 链接的 unwind 表警告。
+生产浏览器 harness 的 HarfBuzz 初始化改用动态导入后，也通过相同的启动图检查；
+真实 Chrome、生产资源及应用 CSP 下的合成 DOCX smoke 通过，覆盖人工干预、撤销、精确保存版本、
+重新打开和 LibreOffice PDF。该 smoke 仍使用脚本 Tauri IPC/provider，不是原生应用或真实模型验收。
 环境规则见[开发说明](../development.md#prerequisites)。这些结果不扩大前述原生应用、真实模型或排版保真的验收范围。
 
 ### DOCX 实时工作形态研究（2026-11-10，历史）

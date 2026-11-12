@@ -59,7 +59,15 @@ The local macOS development setup uses Homebrew for global tools:
 brew install node@22 pnpm@11 python@3.12 uv rustup gh
 ```
 
-Put those Homebrew executables first in both login and non-login shells. Set
+Some formulae are keg-only. Put their executable directories first in both login
+and non-login shell configuration:
+
+```bash
+export PATH="$(brew --prefix node@22)/bin:$(brew --prefix pnpm@11)/bin:$(brew --prefix python@3.12)/libexec/bin:$(brew --prefix rustup)/bin:$(brew --prefix)/bin:$PATH"
+```
+
+This also puts Homebrew's `cargo` and `rustc` proxies ahead of older rustup proxies
+in `~/.cargo/bin`; the existing compiler installations remain available. Set
 `pnpm_config_pm_on_fail=warn` to keep using the installed Homebrew pnpm within
 the required major version instead of downloading another package-manager runtime;
 pnpm reports the difference from the exact `packageManager` pin. Keep that repository

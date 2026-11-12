@@ -2,8 +2,6 @@ import "/src/lib/polyfills";
 import { lazy, Suspense, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { setHarfBuzzWasmUrl } from "@docx-editor.dev/core/layout";
-import harfBuzzWasmUrl from "@docx-editor.dev/core/harfbuzz.wasm?url";
 import { journalRequest, type JournalState } from "/src/lib/journal-workbench";
 import { prepareHarnessI18n } from "./harness-i18n";
 import { useFilesStore } from "/src/store/files";
@@ -13,6 +11,10 @@ import "/src/styles/globals.css";
 const DocxWorkspaceDialog = lazy(() => import("/src/components/research/DocxWorkspaceDialog"));
 
 // Vite dev prebundling moves the shaper JS away from its relative WASM binary.
+const [{ setHarfBuzzWasmUrl }, { default: harfBuzzWasmUrl }] = await Promise.all([
+  import("@docx-editor.dev/core/layout"),
+  import("@docx-editor.dev/core/harfbuzz.wasm?url"),
+]);
 setHarfBuzzWasmUrl(harfBuzzWasmUrl);
 await prepareHarnessI18n();
 const initial = await journalRequest<JournalState>("/api/state");
