@@ -119,6 +119,33 @@ bundle identifier, so WebKit files its storage under the process name,
 sessions keep theirs. The runner leaves that folder alone. Use a packaged
 build when a run must not see state from your dev sessions.
 
+### Native DOCX crash recovery
+
+After building the packaged E2E app above, run the opt-in recovery acceptance
+against one authorized DOCX at a time:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+OLEAFLY_WORKBENCH_PYTHON="$PWD/services/research-workbench/.venv/bin/python" \
+OLEAFLY_REAL_DOCX="/absolute/path/manuscript.docx" \
+OLEAFLY_REAL_DOCX_SHA256="the-exact-lowercase-sha256" \
+node e2e/run-docx-recovery.mjs
+```
+
+The macOS runner creates an isolated app library, backs up existing E2E WebKit
+storage, and reuses the new storage across three launches. It edits a captured
+copy, verifies a native checkpoint, sends SIGKILL to its own app process, restores
+after restart, continues editing and saves a Workbench baseline and LibreOffice
+PDF, then restarts again to check confirmed discard. The author input is read-only
+and its hash is checked before and after. `OLEAFLY_LIBREOFFICE` may select an explicit
+`soffice` executable. Run English and Chinese manuscripts separately.
+
+Results and recovery material stay in ignored `.private/docx-recovery-native/run-*`.
+Normal exit and catchable failures restore the previous E2E WebKit storage. If the
+runner itself is killed or the machine stops, use that run's `runner.json` and
+`webkit-before/` to restore its recorded storage paths. This acceptance does not
+exercise a model provider, Word/WPS fidelity or Windows.
+
 ## Writing tests
 
 - Prefer `data-testid` selectors; add ids to the app rather than matching

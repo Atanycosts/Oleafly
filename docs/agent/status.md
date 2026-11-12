@@ -45,7 +45,7 @@
 | PDF 历史选段 | 原件、当时选段、当前源码和新产物分开；输入初始化阻塞执行；处理结果可回到原页。 | 正常打包流程及恢复已有验收，取消/删除交错由 store/命令回归覆盖，未做完整原生 UI 时序验收。 |
 | 期刊原生接续 | context/read/check 复用领域服务；任务绑定领域输入；明确记录类型的重扫、回执、订阅和重启补接。 | 不等于全领域事件日志，不把 DOCX 检查推广为 LaTeX 检查；CLI daemon 无原生期刊工具。 |
 | Finding 与处置 | 数字检查保留规则与输入版本，人工处置和当前有效性分开。 | 尚未成为涵盖代码、引用与所有领域的一套通用检查器。 |
-| DOCX 持续工作 | 已接入受管工作副本、即时编辑与分页、一项流式段落建议、人工干预撤下旧建议、接受/撤销/重做、实际 DOCX 导出及保存版本的基线/期刊检查。保存后的明确 baseline 可由本机 LibreOffice 自动生成并打开对应 PDF；普通 Agent 与 MCP 复用同一组活动 DOCX 读取、目标捕获、建议和应用工具；工作副本可收起后恢复。未保存编辑会按稳定工作副本身份写入应用私有的原子 latest recovery checkpoint，明确保存成功或确认丢弃后按内容 hash 清理。 | 首版建议仅支持格式一致的纯文本整段替换。未接 TaskStore task/work/member/execution 归属、外部 Word/WPS 自动同步、启动时恢复候选展示与用户确认，见[首个闭环](#docx-工作副本首个闭环2026-11-11)。 |
+| DOCX 持续工作 | 已接入受管工作副本、即时编辑与分页、一项流式段落建议、人工干预撤下旧建议、接受/撤销/重做、实际 DOCX 导出及保存版本的基线/期刊检查。保存后的明确 baseline 可由本机 LibreOffice 自动生成并打开对应 PDF；普通 Agent 与 MCP 复用同一组活动 DOCX 读取、目标捕获、建议和应用工具；工作副本可收起后恢复。未保存编辑会按稳定工作副本身份写入应用私有的原子 latest recovery checkpoint，启动时可列出并明确恢复、下载或丢弃，恢复会重建 UI/Agent 未保存状态；明确保存成功或确认丢弃后按内容 hash 清理。 | 首版建议仅支持格式一致的纯文本整段替换。未接 TaskStore task/work/member/execution 归属、外部 Word/WPS 自动同步，见[首个闭环](#docx-工作副本首个闭环2026-11-11)。 |
 
 相关所有者：
 [TaskStore](../../crates/oleafly-research/src/store/mod.rs)、
@@ -353,7 +353,7 @@ SWC 压缩破坏 JSON 内 LaTeX 转义及语言包体积膨胀；前述失败已
 真实论文验收仍不证明 Word/WPS 往返排版保真：英文和中文界面分别出现替代字体/固定度量告警，独立 LibreOffice 渲染还发现英文首页双栏标题布局差异。
 Workbench reader 已将英文 VML 图片从静默漏报改为 `vml_picture` unsupported 观察（reader 版本 `s1-readonly-reader-1.5.0`）；VML 绘制语义和页面位置仍未解释。
 当前只接入一项内联建议；工具已经在普通 Agent/MCP 的应用业务层可用，但没有 TaskStore task/work/member/execution 归属或任务群活动文档记录。
-latest recovery checkpoint 已接入应用私有目录：保存 DOCX 字节、稳定工作副本 key、原始 baseline/source hash、会话 revision、更新时间和内容 hash，使用现有原子写入；保存失败、hash 不匹配或清除失败都会保留快照。当前仍没有启动时恢复候选展示、用户确认和恢复后的 dirty 状态重建，因此不能称为完整崩溃/重启恢复。外部 Word/WPS 同步、跨版本页映射、真实论文的 Word/WPS
+latest recovery checkpoint 已接入应用私有目录：保存 DOCX 字节、稳定工作副本 key、原始 baseline/source hash、会话 revision、更新时间和内容 hash，使用现有原子写入；保存失败、hash 不匹配或清除失败都会保留快照。启动候选选择、明确恢复/下载/丢弃、界面与 Agent 的未保存状态重建及恢复后保存已在 2026-11-12 补齐，原生验收范围见下文。外部 Word/WPS 同步、跨版本页映射、真实论文的 Word/WPS
 往返保真和中文字体布局尚未验证或实现。内核可直接进行富文本编辑，但 Agent 整段替换只接受格式一致的纯文本，
 不扁平化域、公式、绘图、修订或混合格式。当前上游工具栏为英文，应用工作栏已有中英文。
 
@@ -366,7 +366,7 @@ DOCX 平台范围（2026-11-11）：本轮在 macOS 上完成上述浏览器与�
 
 必要合成输入、浏览器截图与最终检查日志选留于本机忽略目录
 `.private/upstream-reuse/docx-live-implementation-20261111/`，不随干净 checkout 发布。
-本轮 recovery contract、Tauri 原子存储和工作区生命周期接入的定向测试通过：前端 recovery/工作区 **17 项**，Rust recovery **4 项**，TypeScript、Biome、`git diff --check` 通过。checkpoint 已验证保存前写入、正式 baseline 成功后的按内容 hash 清除、失败保留、确认丢弃清除以及保存后新 baseline 使用新 key；尚未运行跨进程重启或真实原生恢复 UI。源码已提交到上述 Draft PR，尚未发布。
+2026-11-11 checkpoint 存储接入时，前端 recovery/工作区 17 项和 Rust recovery 4 项定向测试通过，当时尚未运行跨进程重启或恢复 UI。该历史缺口现已由下述原生验收覆盖。源码沿用上述 Draft PR，尚未发布。
 
 2026-11-12 本机环境修复：Node、pnpm、Python、uv、GitHub CLI、rustup/Cargo/Rust 的登录及非登录 shell
 入口已统一到 Homebrew；Rust 编译器仍按仓库固定为 1.98.1，Workbench `.venv` 已用 Homebrew Python 重建。
@@ -383,6 +383,20 @@ reader/render/server/workspace 测试 167 项通过、1 项既有跳过，保留
 真实 Chrome、生产资源及应用 CSP 下的合成 DOCX smoke 通过，覆盖人工干预、撤销、精确保存版本、
 重新打开和 LibreOffice PDF。该 smoke 仍使用脚本 Tauri IPC/provider，不是原生应用或真实模型验收。
 环境规则见[开发说明](../development.md#prerequisites)。这些结果不扩大前述原生应用、真实模型或排版保真的验收范围。
+
+2026-11-12 重启恢复：启动轻量入口枚举健康 checkpoint 并单独显示坏记录；恢复时核对原项目关联、baseline/source hash，
+新会话在 UI 和 Agent 中均从未保存状态开始。若稿件已有较新版本，保留旧基线和恢复字节、禁用覆盖保存，提供副本下载。
+普通打开遇到未处理快照会先进入恢复选择；后台导出串行化，保存/丢弃会使迟到导出失效，保存后的新 checkpoint 使用新 baseline 与源 hash。
+切换应用语言不重载文档或清除编辑历史。
+
+使用隔离的 macOS 原生 Tauri E2E 包和真实 Python Workbench，对迁移目录中的英文、中文论文各执行
+“实际编辑 → 原生 checkpoint → SIGKILL → 重启发现并明确恢复 → UI/Agent 未保存正文一致 → 继续编辑 → 保存 →
+精确新 baseline 和 LibreOffice PDF → 关闭重开 → 再编辑/SIGKILL/重启 → 二次确认丢弃”。两份均通过，
+英文 PDF 10 页、中文 PDF 26 页，源和 PDF hash 均与留存记录匹配，首屏 PDF 文本包含继续编辑标记；原稿 hash 前后相同。
+恢复后导出的两份 DOCX 未丢失部件、媒体、关系语义或受保护节点，段落数仍为 515/533，各只有预期一段文本变化。
+该验收通过原生 IPC 和真实编辑内核执行，没有模型 provider；它证明上述恢复/保存/预览路径，不证明 Word/WPS 排版保真。
+用例及执行方式见 [E2E 说明](../../e2e/README.md#native-docx-crash-recovery)。原始输入、截图及确定字节保存在本机忽略目录
+`.private/docx-recovery-native/`，不随干净 checkout 发布。恢复范围是最近一次成功导出的 checkpoint，未到快照的最后输入、旧撤销历史、选择和未接受建议不恢复。
 
 ### DOCX 实时工作形态研究（2026-11-10，历史）
 

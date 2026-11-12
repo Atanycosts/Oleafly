@@ -43,10 +43,10 @@ beforeEach(() => {
 it("opens a retained working copy in the app host so leaving the rail keeps the request", async () => {
   const view = render(<JournalChecksPanel />);
   fireEvent.click(await screen.findByRole("button", { name: en.docx.open }));
-  expect(useDocxWorkspaceStore.getState().request).toMatchObject({
+  await waitFor(() => expect(useDocxWorkspaceStore.getState().request).toMatchObject({
     appProjectId: "paper", project: { project_id: "manuscript", baseline_id: "baseline" },
     world: { version_id: "world-current" },
-  });
+  }));
   view.unmount();
   expect(useDocxWorkspaceStore.getState().request?.project.baseline_id).toBe("baseline");
   useDocxWorkspaceStore.getState().close();

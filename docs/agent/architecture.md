@@ -233,11 +233,24 @@ token 更新候选展示，接受时再以一次 `replaceSpan` 事务替换格�
 导出期间的新编辑保留为未保存。成功保存后不重载编辑器；面板刷新失败与字节保存失败分别呈现。
 期刊检查只对明确保存且仍为当前的 baseline 运行，并核对返回的 baseline/world 身份。
 关闭、项目离开、刷新和原生退出沿用既有 leave guard、editor mutation owner 与 quit guard，
-未完成会话要求先保存、下载或明确丢弃；尚无崩溃/重启后的未保存会话恢复。
+未完成会话要求先保存、下载或明确丢弃。
+
+启动时的轻量恢复入口枚举应用私有 checkpoint，不提前加载 DOCX 编辑内核或启动 Workbench。
+用户明确恢复后才连接 Workbench、核对原项目关联和原 baseline/source hash，再将快照字节打开为新的编辑会话。
+新会话保留内核自己的 revision，尚未保存以 `savedRevision = -1` 同步表达给界面和 Agent；
+原会话修订和快照时间作为历史信息展示，旧 undo、selection 和未接受建议不重建。
+当前稿件已有较新 baseline 时，恢复副本仍绑定原 baseline，禁止覆盖较新版本；可使用既有原生另存为保存副本再对比或导入。
+普通打开入口遇到未处理的恢复副本时也转入恢复选择，避免下一次编辑静默替换旧快照。
+
+后台 checkpoint 将实际导出与写入一同串行化；显式保存和丢弃使迟到导出失效，防止旧基线快照重新出现。
+保存成功更新 baseline 与 source hash，但保持传给编辑内核的 document 引用，继续保留实时会话。
+清除按选定内容 hash 比较，发生变化或清除失败时保留快照。坏记录单独列出，不阻塞其他健康副本。
+恢复列表支持明确恢复、下载及二次确认丢弃；下载复用既有原生路径授权和字节写入。
 
 当前仅接入单项内联建议。普通 Agent 和 MCP 已通过应用业务 host 共享活动文档的列举、读取、目标捕获、建议和应用工具；
-保存后的明确 baseline 可由显式选择的 LibreOffice 生成可追溯 PDF 并在面板打开。TaskStore task/work/member/execution 归属、
-应用私有 latest recovery checkpoint 已接入保存和确认丢弃生命周期，但启动时恢复候选展示、用户确认、恢复后的 dirty 状态重建、TaskStore 任务归属、任务群活动文档记录、外部 Word/WPS 同步及可靠跨版本页映射尚待接入。
+保存后的明确 baseline 可由显式选择的 LibreOffice 生成可追溯 PDF 并在面板打开。
+应用私有 latest recovery checkpoint 已完成启动选择、未保存状态重建、后续保存和确认丢弃生命周期。
+TaskStore task/work/member/execution 归属、任务群活动文档记录、外部 Word/WPS 同步及可靠跨版本页映射尚待接入。
 已运行与未运行的范围由[状态页](status.md#docx-工作副本首个闭环2026-11-11)维护。
 
 ### 持续工作目标与扩展合同

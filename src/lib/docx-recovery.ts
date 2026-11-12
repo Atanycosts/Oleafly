@@ -19,6 +19,11 @@ export interface DocxRecoverySnapshot extends DocxRecoveryMetadata {
   bytes: Uint8Array;
 }
 
+export interface DocxRecoveryListing {
+  snapshots: DocxRecoveryMetadata[];
+  failures: { recoveryKey: string; error: string }[];
+}
+
 interface StoredDocxRecoverySnapshot extends DocxRecoveryMetadata {
   bytesBase64: string;
 }
@@ -35,6 +40,10 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   new Uint8Array(source).set(bytes);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", source));
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function docxContentSha256(bytes: ArrayBuffer | Uint8Array): Promise<string> {
+  return sha256Hex(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
 }
 
 export async function docxRecoveryKey(identity: DocxRecoveryIdentity): Promise<string> {
@@ -76,13 +85,22 @@ export async function readDocxRecovery(identity: DocxRecoveryIdentity): Promise<
   return { ...metadata, bytes: base64ToBytes(bytesBase64) };
 }
 
+export function listDocxRecovery(): Promise<DocxRecoveryListing> {
+  return invoke<DocxRecoveryListing>("docx_recovery_list");
+}
+
+export function discardDocxRecovery(snapshot: DocxRecoveryMetadata): Promise<boolean> {
+  return invoke<boolean>("docx_recovery_clear", {
+    request: { recoveryKey: snapshot.recoveryKey, contentSha256: snapshot.contentSha256 },
+  });
+}
+
 export async function clearDocxRecovery(
   identity: DocxRecoveryIdentity,
   committedBytes: ArrayBuffer | Uint8Array,
 ): Promise<boolean> {
   const recoveryKey = await docxRecoveryKey(identity);
-  const content = committedBytes instanceof Uint8Array ? committedBytes : new Uint8Array(committedBytes);
-  const contentSha256 = await sha256Hex(content);
+  const contentSha256 = await docxContentSha256(committedBytes);
   return invoke<boolean>("docx_recovery_clear", {
     request: { recoveryKey, contentSha256 },
   });

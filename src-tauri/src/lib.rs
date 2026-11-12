@@ -539,6 +539,7 @@ pub fn run() {
             journal_workbench::annotations::journal_annotation_request,
             docx_recovery::docx_recovery_save,
             docx_recovery::docx_recovery_read,
+            docx_recovery::docx_recovery_list,
             docx_recovery::docx_recovery_clear,
             ad_hoc_conversion::convert_ad_hoc,
             typst_render::render_typst_snippet,

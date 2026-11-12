@@ -6,7 +6,10 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: transport.invoke }));
 
 import {
   clearDocxRecovery,
+  discardDocxRecovery,
+  docxContentSha256,
   docxRecoveryKey,
+  listDocxRecovery,
   readDocxRecovery,
   saveDocxRecovery,
   type DocxRecoveryIdentity,
@@ -72,6 +75,38 @@ describe("DOCX recovery transport", () => {
     expect(transport.invoke).toHaveBeenCalledWith("docx_recovery_read", {
       request: { recoveryKey: await docxRecoveryKey(IDENTITY) },
     });
+  });
+
+  it("lists recovery metadata and isolated failures without requesting package bytes", async () => {
+    const listing = {
+      snapshots: [METADATA],
+      failures: [{ recoveryKey: "d".repeat(64), error: "content hash does not match" }],
+    };
+    transport.invoke.mockResolvedValue(listing);
+
+    await expect(listDocxRecovery()).resolves.toEqual(listing);
+
+    expect(transport.invoke).toHaveBeenCalledExactlyOnceWith("docx_recovery_list");
+  });
+
+  it("discards the selected key and hash without reading or hashing package bytes", async () => {
+    transport.invoke.mockResolvedValue(false);
+
+    await expect(discardDocxRecovery(METADATA)).resolves.toBe(false);
+
+    expect(transport.invoke).toHaveBeenCalledExactlyOnceWith("docx_recovery_clear", {
+      request: { recoveryKey: METADATA.recoveryKey, contentSha256: METADATA.contentSha256 },
+    });
+  });
+
+  it("hashes ArrayBuffer contents and only the selected Uint8Array view", async () => {
+    const bytes = new TextEncoder().encode("abc");
+    const surrounded = new TextEncoder().encode("xabcx");
+    const expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    await expect(docxContentSha256(bytes.buffer)).resolves.toBe(expected);
+    await expect(docxContentSha256(surrounded.subarray(1, 4))).resolves.toBe(expected);
+    expect(transport.invoke).not.toHaveBeenCalled();
   });
 
   it("clears only the snapshot matching the explicitly committed baseline bytes", async () => {

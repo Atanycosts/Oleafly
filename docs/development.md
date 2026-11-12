@@ -159,6 +159,15 @@ signature and page count, and records renderer identity with the derived bundle.
 non-LibreOffice executable fails the render rather than silently changing engines. WPS remains an
 optional external editor/render source and is not required for the embedded flow.
 
+DOCX recovery checkpoints live in the selected application's private data directory.
+Startup lists available copies without starting Workbench or loading the editor. Explicit
+restore validates the original baseline/source identity and opens unsaved bytes in a fresh
+session. A newer retained version blocks an overwrite; the recovery list can save an exact
+copy through the native save dialog. Discard requires confirmation and the selected content
+hash. Recovery covers the latest completed checkpoint, with a fresh revision/undo history.
+The macOS [native recovery acceptance](../e2e/README.md#native-docx-crash-recovery)
+uses isolated app and WebKit data, actual process death, retained DOCX bytes and LibreOffice.
+
 ## Documentation and artifacts
 
 The root [`AGENTS.md`](../AGENTS.md) is the short entry for people and agents

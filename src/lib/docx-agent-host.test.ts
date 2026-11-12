@@ -116,6 +116,15 @@ beforeEach(() => {
 });
 
 describe("active DOCX Agent host", () => {
+  it("keeps a fresh recovered session dirty until it has a saved session revision", async () => {
+    const local = harness([paragraph("p1", "Recovered unsaved text.")]);
+    register(local.session, { savedRevision: -1 });
+    const read = await DOCX_AGENT_HOST.readDocument();
+    expect(read.document).toMatchObject({ sessionRevision: 0, savedRevision: -1, dirty: true });
+    expect(read.paragraphs[0].text).toBe("Recovered unsaved text.");
+    updateDocxAgentSession("session-1", { baselineId: "recovered-saved", savedRevision: 0 });
+    expect((await DOCX_AGENT_HOST.readDocument()).document).toMatchObject({ baselineId: "recovered-saved", dirty: false });
+  });
   it("lists and reads the live session while separating it from the saved baseline", async () => {
     const local = harness();
     register(local.session);

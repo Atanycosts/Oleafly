@@ -64,6 +64,20 @@ pub struct DocxRecoverySnapshot {
     bytes_base64: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocxRecoveryFailure {
+    recovery_key: String,
+    error: String,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocxRecoveryListing {
+    snapshots: Vec<DocxRecoveryMetadata>,
+    failures: Vec<DocxRecoveryFailure>,
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -268,6 +282,48 @@ fn read_at(
     }))
 }
 
+fn list_at(root: &Path) -> Result<DocxRecoveryListing, String> {
+    let entries = match std::fs::read_dir(root.join(RECOVERY_DIRECTORY)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(DocxRecoveryListing::default());
+        }
+        Err(error) => return Err(format!("failed to list DOCX recovery directory: {error}")),
+    };
+    let mut listing = DocxRecoveryListing::default();
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("failed to list DOCX recovery directory: {error}"))?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let recovery_key = path
+            .file_stem()
+            .expect("JSON recovery path has a file stem")
+            .to_string_lossy()
+            .into_owned();
+        match load_stored_at(root, &recovery_key) {
+            Ok(Some(stored)) => listing.snapshots.push(stored.metadata),
+            Ok(None) => {}
+            Err(error) => listing.failures.push(DocxRecoveryFailure {
+                recovery_key,
+                error,
+            }),
+        }
+    }
+    listing.snapshots.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.recovery_key.cmp(&right.recovery_key))
+    });
+    listing
+        .failures
+        .sort_by(|left, right| left.recovery_key.cmp(&right.recovery_key));
+    Ok(listing)
+}
+
 fn clear_at(root: &Path, request: DocxRecoveryClearRequest) -> Result<bool, String> {
     validate_sha256(&request.content_sha256, "contentSha256")?;
     let Some(stored) = load_stored_at(root, &request.recovery_key)? else {
@@ -312,6 +368,18 @@ pub async fn docx_recovery_read(
     })
     .await
     .map_err(|error| format!("DOCX recovery read task failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn docx_recovery_list() -> Result<DocxRecoveryListing, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = RECOVERY_LOCK
+            .lock()
+            .map_err(|_| "DOCX recovery store lock is unavailable".to_string())?;
+        list_at(&recovery_root()?)
+    })
+    .await
+    .map_err(|error| format!("DOCX recovery list task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -391,6 +459,122 @@ mod tests {
         assert_eq!(snapshot.metadata, metadata);
         assert_eq!(STANDARD.decode(snapshot.bytes_base64).unwrap(), b"latest");
         assert_eq!(metadata.content_sha256, sha256_hex(b"latest"));
+    }
+
+    #[test]
+    fn lists_verified_metadata_by_latest_update_then_key() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut expected = Vec::new();
+        for (baseline, updated_at) in [
+            ("baseline-old", "2026-11-10T08:30:15.123Z"),
+            ("baseline-new-a", "2026-11-11T08:30:15.123Z"),
+            ("baseline-new-b", "2026-11-11T08:30:15.123Z"),
+        ] {
+            let mut save_request = request("", baseline.as_bytes());
+            save_request.base_baseline_id = baseline.into();
+            save_request.updated_at = updated_at.into();
+            save_request.recovery_key = recovery_key_for(
+                &save_request.app_project_id,
+                &save_request.workbench_project_id,
+                baseline,
+                &save_request.source_sha256,
+            );
+            expected.push(save_at(temporary.path(), save_request).unwrap());
+        }
+        expected[1..].sort_by(|left, right| left.recovery_key.cmp(&right.recovery_key));
+        expected.rotate_left(1);
+        std::fs::write(
+            temporary
+                .path()
+                .join(RECOVERY_DIRECTORY)
+                .join("pending.tmp"),
+            b"unfinished atomic write",
+        )
+        .unwrap();
+
+        let listing = list_at(temporary.path()).unwrap();
+
+        assert_eq!(listing.snapshots, expected);
+        assert!(listing.failures.is_empty());
+        let encoded = serde_json::to_value(listing).unwrap();
+        assert!(encoded["snapshots"][0].get("contentBase64").is_none());
+        assert!(encoded["snapshots"][0].get("bytesBase64").is_none());
+    }
+
+    #[test]
+    fn listing_isolates_invalid_records_and_keeps_them_for_diagnosis() {
+        let temporary = tempfile::tempdir().unwrap();
+        let saved = save_at(temporary.path(), request("", b"healthy")).unwrap();
+        let directory = temporary.path().join(RECOVERY_DIRECTORY);
+        let malformed_key = "b".repeat(64);
+        let changed_key = "c".repeat(64);
+        std::fs::write(directory.join(format!("{malformed_key}.json")), b"not JSON").unwrap();
+        let mut changed: StoredDocxRecovery = serde_json::from_slice(
+            &std::fs::read(recovery_path(temporary.path(), &saved.recovery_key).unwrap()).unwrap(),
+        )
+        .unwrap();
+        changed.content_base64 = STANDARD.encode(b"tampered");
+        let changed_path = recovery_path(temporary.path(), &saved.recovery_key).unwrap();
+        std::fs::write(&changed_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        std::fs::write(directory.join(format!("{changed_key}.json")), b"{}").unwrap();
+        std::fs::write(directory.join("invalid-key.json"), b"{}").unwrap();
+        let mut healthy_request = request("", b"healthy second record");
+        healthy_request.source_sha256 = "d".repeat(64);
+        healthy_request.recovery_key = recovery_key_for(
+            &healthy_request.app_project_id,
+            &healthy_request.workbench_project_id,
+            &healthy_request.base_baseline_id,
+            &healthy_request.source_sha256,
+        );
+        let healthy = save_at(temporary.path(), healthy_request).unwrap();
+
+        let listing = list_at(temporary.path()).unwrap();
+
+        assert_eq!(listing.snapshots, vec![healthy]);
+        assert_eq!(listing.failures.len(), 4);
+        assert!(listing.failures.iter().any(|failure| {
+            failure.recovery_key == saved.recovery_key
+                && failure.error.contains("content hash does not match")
+        }));
+        for failure in listing.failures {
+            assert!(directory
+                .join(format!("{}.json", failure.recovery_key))
+                .exists());
+        }
+    }
+
+    #[test]
+    fn listing_returns_empty_for_missing_directory_but_fails_directory_io_errors() {
+        let temporary = tempfile::tempdir().unwrap();
+        let listing = list_at(temporary.path()).unwrap();
+        assert!(listing.snapshots.is_empty());
+        assert!(listing.failures.is_empty());
+
+        std::fs::write(
+            temporary.path().join(RECOVERY_DIRECTORY),
+            b"not a directory",
+        )
+        .unwrap();
+        assert!(list_at(temporary.path())
+            .unwrap_err()
+            .contains("failed to list DOCX recovery directory"));
+    }
+
+    #[test]
+    fn discard_from_a_listing_does_not_clear_a_newer_snapshot() {
+        let temporary = tempfile::tempdir().unwrap();
+        let selected = save_at(temporary.path(), request("", b"selected")).unwrap();
+        let latest = save_at(temporary.path(), request("", b"newer edit")).unwrap();
+
+        assert!(!clear_at(
+            temporary.path(),
+            DocxRecoveryClearRequest {
+                recovery_key: selected.recovery_key.clone(),
+                content_sha256: selected.content_sha256,
+            },
+        )
+        .unwrap());
+        assert_eq!(list_at(temporary.path()).unwrap().snapshots, vec![latest]);
     }
 
     #[test]

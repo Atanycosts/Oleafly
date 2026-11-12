@@ -371,8 +371,14 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   {text.importManuscript}
                 </Button>
                 {project && (
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => useDocxWorkspaceStore.getState().open({
-                    appProjectId: projectId, project, world, onSaved: () => load(linkedId, world?.version_id),
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void perform(async () => {
+                    const current = await journalRequest<JournalState>("/api/state");
+                    const manuscript = current.projects.find((item) => item.project_id === project.project_id);
+                    if (!manuscript) throw new Error(t(($) => $.researchTools.docx.recovery.projectMissing));
+                    setSnapshot(current);
+                    useDocxWorkspaceStore.getState().open({
+                      appProjectId: projectId, project: manuscript, world, onSaved: () => load(linkedId, world?.version_id),
+                    });
                   })}>
                     {t(($) => $.researchTools.docx.open)}
                   </Button>

@@ -4,10 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { JournalCheck, JournalProject, JournalState, JournalWorld } from "@/lib/journal-workbench";
 import type { DocxParagraph, DocxSession, DocxTarget } from "@/lib/docx-session";
 import type { DocxSave, DocxSource } from "@/lib/docx-workbench";
+import type { DocxRecoverySnapshot } from "@/lib/docx-recovery";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { projectLeaveAllowed } from "@/lib/project-leave-guards";
 import { acquireEditorMutationLease } from "@/lib/editor-mutation-lease";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useDocxWorkspaceStore } from "@/store/docx-workspace";
+import { i18n } from "@/i18n";
 
 const mocks = vi.hoisted(() => ({
   loadSource: vi.fn(),
@@ -16,6 +19,9 @@ const mocks = vi.hoisted(() => ({
   saveRecovery: vi.fn(),
   readRecovery: vi.fn(),
   clearRecovery: vi.fn(),
+  listRecovery: vi.fn(),
+  contentHash: vi.fn(),
+  editorDocument: null as Uint8Array | null,
   runInlineCompletion: vi.fn(),
   createSession: vi.fn(),
   journalRequest: vi.fn(),
@@ -43,9 +49,11 @@ vi.mock("@docx-editor.dev/react", async () => {
     DocxEditor: React.forwardRef(function MockDocxEditor(
       props: {
         children?: React.ReactNode;
+        document: Uint8Array;
       },
       ref,
     ) {
+      mocks.editorDocument = props.document;
       React.useImperativeHandle(ref, () => ({
         save: mocks.editorSave,
         getEditor: () => mocks.editor,
@@ -72,11 +80,13 @@ vi.mock("@/lib/docx-recovery", () => ({
   saveDocxRecovery: mocks.saveRecovery,
   readDocxRecovery: mocks.readRecovery,
   clearDocxRecovery: mocks.clearRecovery,
+  docxContentSha256: mocks.contentHash,
+  listDocxRecovery: mocks.listRecovery,
 }));
 vi.mock("@/lib/journal-workbench", () => ({ journalRequest: mocks.journalRequest }));
 vi.mock("@/lib/docx-render", () => ({ findDocxRenderer: async () => null }));
 
-import DocxWorkspaceDialog from "./DocxWorkspaceDialog";
+import DocxWorkspaceDialog, { DocxWorkspaceHost } from "./DocxWorkspaceDialog";
 
 const text = en.docx;
 const INITIAL_BASELINE = "baseline-initial";
@@ -168,7 +178,7 @@ function saveRequest(revision: number, expectedBaselineId = SOURCE.baseline_id):
   };
 }
 
-async function renderReady(harness: ReturnType<typeof sessionHarness>, onSaved = vi.fn(async () => {}), waitForSession = true) {
+async function renderReady(harness: ReturnType<typeof sessionHarness>, onSaved = vi.fn(async () => {}), waitForSession = true, options: { recovery?: DocxRecoverySnapshot; project?: JournalProject } = {}) {
   mocks.createSession.mockReturnValue(harness.session);
   const onClose = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -176,7 +186,8 @@ async function renderReady(harness: ReturnType<typeof sessionHarness>, onSaved =
     <QueryClientProvider client={client}>
     <DocxWorkspaceDialog
       appProjectId="app-project"
-      project={PROJECT}
+      project={options.project ?? PROJECT}
+      recovery={options.recovery}
       world={WORLD}
       onClose={onClose}
       onSaved={onSaved}
@@ -205,6 +216,8 @@ async function startGeneration(instruction = "Improve this") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useDocxWorkspaceStore.setState({ request: null, minimized: false, recoveryOpen: false });
+  mocks.listRecovery.mockResolvedValue({ snapshots: [], failures: [] });
   mocks.editor.editorSnapshot = { isLoading: false, isOpening: false, parseError: null, page: { current: 1, total: 1 } };
   mocks.loadSource.mockResolvedValue(SOURCE);
   mocks.editorSave.mockResolvedValue(Uint8Array.from([80, 75, 5, 6]).buffer);
@@ -224,10 +237,93 @@ beforeEach(() => {
   });
   mocks.readRecovery.mockResolvedValue(null);
   mocks.clearRecovery.mockResolvedValue(true);
+  mocks.contentHash.mockResolvedValue("d".repeat(64));
   mocks.applySuggestion.mockReturnValue({ ok: true, revision: 1, changed: true });
 });
 
 describe("DocxWorkspaceDialog editing lifecycle", () => {
+  const recovery: DocxRecoverySnapshot = {
+    appProjectId: "app-project", workbenchProjectId: PROJECT.project_id,
+    baseBaselineId: INITIAL_BASELINE, sourceSha256: SOURCE.source_sha256,
+    recoveryKey: "b".repeat(64), contentSha256: "c".repeat(64),
+    revision: 9, updatedAt: "2026-11-12T02:00:00.000Z", bytes: Uint8Array.from([80, 75, 9, 9]),
+  };
+
+  it("routes a normal open with existing unsaved work to recovery before loading the editor", async () => {
+    mocks.listRecovery.mockResolvedValue({ snapshots: [recovery], failures: [] });
+    useDocxWorkspaceStore.getState().open({ appProjectId: "app-project", project: PROJECT, world: WORLD, onSaved: vi.fn() });
+    render(<DocxWorkspaceHost />);
+    await waitFor(() => expect(useDocxWorkspaceStore.getState().recoveryOpen).toBe(true));
+    expect(useDocxWorkspaceStore.getState().request).toBeNull();
+    expect(mocks.loadSource).not.toHaveBeenCalled();
+  });
+
+  it("keeps the live package and session when the application language changes", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    await renderReady(harness);
+    act(() => harness.edit("first", "Unsaved text"));
+    const document = mocks.editorDocument;
+    const locale = i18n.language;
+    await act(async () => { await i18n.changeLanguage("zh-Hans"); });
+    expect(mocks.loadSource).toHaveBeenCalledTimes(1);
+    expect(mocks.editorDocument).toBe(document);
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+    expect(harness.text("first")).toBe("Unsaved text");
+    await act(async () => { await i18n.changeLanguage(locale); });
+  });
+
+  it("waits for an old background export and prevents its late write after an explicit save starts", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    let finishExport!: (bytes: ArrayBuffer) => void;
+    mocks.editorSave.mockReturnValueOnce(new Promise((resolve) => { finishExport = resolve; }))
+      .mockResolvedValue(Uint8Array.from([80, 75, 7, 8]).buffer);
+    mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 2 });
+    await renderReady(harness);
+    act(() => harness.edit("first", "Background export"));
+    await waitFor(() => expect(mocks.editorSave).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    act(() => harness.edit("first", "Explicit save text"));
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    expect(mocks.saveBaseline).not.toHaveBeenCalled();
+    await act(async () => finishExport(Uint8Array.from([80, 75, 1, 2]).buffer));
+    await waitFor(() => expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved));
+    expect(mocks.saveRecovery).toHaveBeenCalledTimes(1);
+    expect(mocks.saveRecovery.mock.calls[0][1]).toBe(2);
+  });
+
+  it("restores checkpoint bytes as unsaved in both the fresh session and Agent, then saves on the original baseline", async () => {
+    const harness = sessionHarness([paragraph("first", "Recovered text")]);
+    await renderReady(harness, undefined, true, { recovery });
+    expect(mocks.editorDocument).toBe(recovery.bytes);
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+    expect(screen.getByTestId("docx-save-state")).not.toHaveTextContent("r-1");
+    expect(mocks.registerAgentSession).toHaveBeenCalledWith(expect.objectContaining({ baselineId: INITIAL_BASELINE, savedRevision: -1, session: harness.session }));
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved));
+    expect(mocks.prepareSave.mock.calls[0][0].baseline_id).toBe(INITIAL_BASELINE);
+    expect(mocks.clearRecovery).toHaveBeenCalledOnce();
+  });
+
+  it("keeps recovery on its original baseline and disables save when a newer version exists", async () => {
+    const harness = sessionHarness([paragraph("first", "Recovered text")]);
+    await renderReady(harness, undefined, true, { recovery, project: { ...PROJECT, baseline_id: SAVED_BASELINE } });
+    expect(mocks.loadSource).toHaveBeenCalledWith(PROJECT.project_id, INITIAL_BASELINE);
+    expect(screen.getByRole("alert")).toHaveTextContent(text.recovery.conflict);
+    expect(screen.getByRole("button", { name: text.save })).toBeDisabled();
+    expect(screen.getByRole("button", { name: text.download })).toBeEnabled();
+    expect(mocks.saveBaseline).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unmatched recovery checkpoint and allows closing a failed open", async () => {
+    mocks.loadSource.mockResolvedValue({ ...SOURCE, source_sha256: "f".repeat(64) });
+    const harness = sessionHarness([paragraph("first", "Recovered text")]);
+    const view = await renderReady(harness, undefined, false, { recovery });
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(text.recovery.sourceChanged));
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(view.onClose).toHaveBeenCalledOnce();
+    expect(mocks.clearRecovery).not.toHaveBeenCalled();
+  });
+
   it("waits for the editor read model to finish opening before registering the session", async () => {
     const harness = sessionHarness([paragraph("first", "Original paragraph")]);
     mocks.editor.editorSnapshot = { isLoading: true, isOpening: true, parseError: null, page: { current: 0, total: 0 } };
@@ -295,9 +391,11 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
 
     expect(mocks.saveRecovery.mock.calls[1]?.[0]).toMatchObject({
       baseBaselineId: SAVED_BASELINE,
+      sourceSha256: "d".repeat(64),
     });
     expect(mocks.clearRecovery.mock.calls[1]?.[0]).toMatchObject({
       baseBaselineId: SAVED_BASELINE,
+      sourceSha256: "d".repeat(64),
     });
   });
 
@@ -372,6 +470,20 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
       },
       recoveryBytes,
     );
+  });
+
+  it("resumes checkpointing after discard fails even without another edit", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    mocks.readRecovery.mockRejectedValueOnce(new Error("recovery disk unavailable"));
+    const view = await renderReady(harness);
+    act(() => harness.edit("first", "Unsaved text retained after failure"));
+    await act(async () => { await projectLeaveAllowed({ projectId: "app-project", reason: "close", targetProjectId: null }); });
+    fireEvent.click(screen.getByRole("button", { name: text.discard }));
+    await waitFor(() => expect(mocks.readRecovery).toHaveBeenCalled());
+    expect(view.onClose).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.saveRecovery).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    expect(mocks.saveRecovery.mock.calls[0][1]).toBe(1);
+    expect(harness.text("first")).toBe("Unsaved text retained after failure");
   });
 
   it("keeps a committed baseline saved when refreshing the parent panel fails", async () => {

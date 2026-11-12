@@ -31,6 +31,7 @@ import { useZoteroDialogStore } from "@/store/zotero-dialogs";
 import { useTableImportStore } from "@/store/table-import";
 import { useFigureDialogStore } from "@/store/figure-dialog";
 import { useDocxWorkspaceStore } from "@/store/docx-workspace";
+import { DocxRecoveryHost } from "@/components/research/DocxRecoveryHost";
 import { useTypstDocumentPanelStore } from "@/store/typst-document-panels";
 import { mountOnFirstOpen } from "@/lib/mount-on-first-open";
 import { registerContributions } from "@/contributions";
@@ -296,6 +297,7 @@ function WindowContent({ view }: Readonly<{ view: WindowView }>) {
       <TableImportDialog />
       <FigureDialog />
       <DocxWorkspaceHost />
+      <DocxRecoveryHost />
       <TypstMigrationHost />
       <TypstDocumentPanels />
       {ReactQueryDevtools && (
