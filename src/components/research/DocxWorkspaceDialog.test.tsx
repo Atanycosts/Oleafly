@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   clearRecovery: vi.fn(),
   listRecovery: vi.fn(),
   contentHash: vi.fn(),
+  settleActivity: vi.fn(),
   editorDocument: null as Uint8Array | null,
   runInlineCompletion: vi.fn(),
   createSession: vi.fn(),
@@ -63,6 +64,8 @@ vi.mock("@docx-editor.dev/react", async () => {
   };
 });
 
+vi.mock("./DocxTaskActivity", () => ({ DocxTaskActivity: () => <div data-testid="task-panel" />, DocxActivitySource: ({ activity }: { activity: { origin: { taskId: string } } }) => <span>{activity.origin.taskId}</span> }));
+vi.mock("@/lib/docx-task-activity", () => ({ settleDocxTaskActivity: mocks.settleActivity }));
 vi.mock("@docx-editor.dev/fonts", () => ({ packagedFonts: () => [] }));
 vi.mock("@/lib/ai-inline", () => ({ runInlineCompletion: mocks.runInlineCompletion }));
 vi.mock("@/lib/docx-session", () => ({ createDocxSession: mocks.createSession }));
@@ -217,6 +220,7 @@ async function startGeneration(instruction = "Improve this") {
 beforeEach(() => {
   vi.clearAllMocks();
   useDocxWorkspaceStore.setState({ request: null, minimized: false, recoveryOpen: false });
+  mocks.settleActivity.mockResolvedValue({});
   mocks.listRecovery.mockResolvedValue({ snapshots: [], failures: [] });
   mocks.editor.editorSnapshot = { isLoading: false, isOpening: false, parseError: null, page: { current: 1, total: 1 } };
   mocks.loadSource.mockResolvedValue(SOURCE);
@@ -357,7 +361,7 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     await waitFor(() =>
       expect(mocks.updateAgentSession).toHaveBeenCalledWith(
         sessionId,
-        { baselineId: SAVED_BASELINE, savedRevision: 1 },
+        { baselineId: SAVED_BASELINE, savedRevision: 1, sourceSha256: "d".repeat(64) },
       ),
     );
     expect(mocks.saveRecovery).toHaveBeenCalledWith(
@@ -694,4 +698,101 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     ]);
     expect(screen.queryByText(`${text.checked}: CURRENT`)).not.toBeInTheDocument();
   });
+});
+
+function presentTask(harness: ReturnType<typeof sessionHarness>) {
+  const [registration] = mocks.registerAgentSession.mock.calls[mocks.registerAgentSession.mock.calls.length - 1];
+  const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
+  const activity = { id: "proposal-1", origin: { taskId: "task-origin", generation: 4, groupId: null, memberId: null, executionId: null, workIds: [] },
+    document: { sessionId: registration.sessionId, appProjectId: "app-project", workbenchProjectId: PROJECT.project_id, baselineId: INITIAL_BASELINE, sourceSha256: SOURCE.source_sha256, sessionRevision: 0, savedRevision: 0 },
+    proposalId: null, createdAt: 1,
+    event: { type: "runtime", event: { kind: "proposed", target: { targetId: "target-1", paragraphRef: target.paragraph.ref, original: target.original, revision: 0 }, proposed: "Task candidate" } } };
+  act(() => registration.onTaskSuggestion(activity, target));
+  return activity;
+}
+
+function applyTask(harness: ReturnType<typeof sessionHarness>) {
+  mocks.applySuggestion.mockImplementation((_target: DocxTarget, proposed: string) => {
+    harness.edit("first", proposed);
+    return { ok: true, revision: harness.revision(), changed: true };
+  });
+  const activity = presentTask(harness);
+  fireEvent.click(screen.getAllByRole("button", { name: text.accept })[0]);
+  return activity;
+}
+
+describe("DOCX task receipts", () => {
+  it("retries a failed applied receipt without applying again", async () => {
+    const harness = sessionHarness([paragraph("first", "Original")]);
+    mocks.settleActivity.mockRejectedValueOnce(new Error("Receipt unavailable")).mockResolvedValue({});
+    await renderReady(harness);
+    applyTask(harness);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Receipt unavailable"));
+    expect(mocks.runInlineCompletion).not.toHaveBeenCalled();
+    expect(mocks.applySuggestion).toHaveBeenCalledOnce();
+    expect(harness.text("first")).toBe("Task candidate");
+    fireEvent.click(screen.getByRole("button", { name: text.taskActivity.retry }));
+    await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledTimes(2));
+    expect(mocks.settleActivity.mock.calls[1]).toEqual(mocks.settleActivity.mock.calls[0]);
+    expect(mocks.settleActivity.mock.calls[0]).toEqual(["app-project", PROJECT.project_id, "proposal-1", expect.objectContaining({ sessionRevision: 1 }), { kind: "applied" }]);
+    expect(mocks.applySuggestion).toHaveBeenCalledOnce();
+  });
+  it("records rejected and stale proposals without mutation", async () => {
+    const harness = sessionHarness([paragraph("first", "Original")]);
+    await renderReady(harness);
+    presentTask(harness);
+    fireEvent.click(screen.getByRole("button", { name: text.reject }));
+    await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledWith("app-project", PROJECT.project_id, "proposal-1", expect.anything(), { kind: "rejected" }));
+    mocks.settleActivity.mockClear();
+    presentTask(harness);
+    act(() => harness.edit("first", "User edit"));
+    await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledWith("app-project", PROJECT.project_id, "proposal-1", expect.anything(), { kind: "withdrawn" }));
+    expect(mocks.applySuggestion).not.toHaveBeenCalled();
+  });
+  it("links the exported revision and source hash, then retries only the failed save receipt", async () => {
+    const harness = sessionHarness([paragraph("first", "Original")]);
+    await renderReady(harness);
+    applyTask(harness);
+    await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledOnce());
+    mocks.settleActivity.mockRejectedValueOnce(new Error("Save receipt unavailable")).mockResolvedValue({});
+    let finishExport!: (bytes: ArrayBuffer) => void;
+    mocks.editorSave.mockReturnValueOnce(new Promise((resolve) => { finishExport = resolve; }));
+    mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 1 });
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(mocks.editorSave).toHaveBeenCalledOnce());
+    act(() => harness.edit("first", "Edited during export"));
+    await act(async () => finishExport(Uint8Array.from([80, 75, 1, 2]).buffer));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Save receipt unavailable"));
+    const saved = mocks.settleActivity.mock.calls[1];
+    expect(saved).toEqual(["app-project", PROJECT.project_id, "proposal-1", expect.objectContaining({ baselineId: SAVED_BASELINE, sessionRevision: 1, savedRevision: 1, sourceSha256: "d".repeat(64) }), { kind: "saved", requestId: "docx-request-fixed", contentSha256: "d".repeat(64) }]);
+    fireEvent.click(screen.getByRole("button", { name: text.taskActivity.retry }));
+    await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledWith("app-project", PROJECT.project_id, "proposal-1", expect.objectContaining({ sessionRevision: 2 }), { kind: "withdrawn" }));
+    expect(mocks.settleActivity.mock.calls[2]).toEqual(saved);
+    expect(mocks.saveBaseline).toHaveBeenCalledOnce();
+    expect(mocks.applySuggestion).toHaveBeenCalledOnce();
+  });
+  it("does not claim an undone candidate belongs to a later save", async () => {
+    const harness = sessionHarness([paragraph("first", "Original")]);
+    await renderReady(harness);
+    applyTask(harness);
+    await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledOnce());
+    act(() => harness.edit("first", "Original"));
+    await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledTimes(2));
+    mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 2 });
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(mocks.saveBaseline).toHaveBeenCalledOnce());
+    expect(mocks.settleActivity.mock.calls.map((call) => call[4].kind)).toEqual(["applied", "withdrawn"]);
+  });
+});
+
+it("withdraws an unaccepted task proposal before explicitly closing its working copy", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  const { onClose } = await renderReady(harness);
+  presentTask(harness);
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  expect(onClose).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: text.discard }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  expect(mocks.settleActivity).toHaveBeenCalledWith("app-project", PROJECT.project_id, "proposal-1", expect.anything(), { kind: "withdrawn" });
+  expect(mocks.applySuggestion).not.toHaveBeenCalled();
 });

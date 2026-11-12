@@ -148,6 +148,30 @@ async fn request(session: &Session, path: &str, payload: Option<Value>) -> Resul
     Ok(body)
 }
 
+pub(crate) async fn retained_docx_source_hash(
+    state: &JournalWorkbenchState,
+    project_id: &str,
+    baseline_id: &str,
+) -> Result<String, String> {
+    let current = state.0.lock().await;
+    let session = current
+        .as_ref()
+        .ok_or("Connect Workbench before linking a saved DOCX version.")?;
+    let query = reqwest::Url::parse_with_params(
+        "http://127.0.0.1/",
+        &[("project_id", project_id), ("baseline_id", baseline_id)],
+    )
+    .map_err(|error| error.to_string())?;
+    let path = format!(
+        "/api/manuscript-source?{}",
+        query.query().expect("source query")
+    );
+    request(session, &path, None).await?["source_sha256"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or("Workbench did not return the retained DOCX source identity.".into())
+}
+
 #[tauri::command]
 pub async fn journal_workbench_connect(
     app: tauri::AppHandle,

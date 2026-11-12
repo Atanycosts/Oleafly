@@ -21,6 +21,7 @@ use oleafly_sandbox::process::identity::{ProcessIdentity, ProcessProbe};
 mod annotations;
 pub mod approvals;
 pub(crate) mod collaboration;
+mod docx;
 mod findings;
 mod observations;
 pub mod runs;
@@ -3051,7 +3052,7 @@ const BRIEF_SCHEMA_VERSION: i64 = 2;
 const HANDOFF_SCHEMA_VERSION: i64 = 3;
 const EVENT_KIND_SCHEMA_VERSION: i64 = 4;
 const RUN_CONTROL_SCHEMA_VERSION: i64 = 5;
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 fn migrate(connection: &mut Connection) -> Result<(), String> {
     if schema_version(connection)? >= SCHEMA_VERSION {
@@ -3293,6 +3294,9 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
                 ))?;
             }
         }
+    }
+    if version < 16 {
+        upgrade(docx::SCHEMA_SQL)?;
     }
     upgrade(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     transaction.commit().map_err(store_error)

@@ -9,6 +9,7 @@ vi.mock("@/lib/research-tasks", () => ({
   loadResearchTaskObservations: native.observations,
   previewResearchTaskSource: native.source,
 }));
+vi.mock("@/lib/docx-task-activity", () => ({ subscribeDocxTaskActivity: () => () => {} }));
 
 beforeEach(() => vi.resetAllMocks());
 
@@ -120,4 +121,84 @@ it("keeps parent and helper reads separate across member sessions and previews e
     await waitFor(() => expect(within(record).getByText(`Retained source from event ${sequence}`)).toBeInTheDocument());
     expect(native.source).toHaveBeenNthCalledWith(index + 1, "task-a", 2, sequence);
   }
+});
+
+it("shows DOCX proposals and saves alongside ordinary task activity", async () => {
+  const row = (sequence: number, observation: TaskObservation): TaskTranscriptEvent => ({
+    taskId: "task-a", executionGeneration: 2, sequence, createdAt: sequence,
+    event: { kind: "observation", observation },
+  });
+  const document = {
+    sessionId: "docx-session", appProjectId: "app", workbenchProjectId: "paper",
+    baselineId: "baseline-7", sourceSha256: "source-hash", sessionRevision: 4, savedRevision: 3,
+  };
+  native.observations.mockResolvedValue({
+    summary: {
+      taskId: "task-a", projectId: "paper", executionGeneration: 2, status: "running",
+      goal: "Revise the manuscript", successCriteria: [], runtime: null, usage: null, baseline: null,
+      changedFiles: [], changedFileCount: 0, evidence: null, coverageGaps: [],
+    },
+    page: {
+      events: [
+        row(1, {
+          type: "docx",
+          activity: {
+            id: "proposal-activity", origin: {
+              taskId: "task-a", generation: 2, groupId: "manuscript", memberId: "docx-member",
+              executionId: "docx-execution", workIds: ["work-1", "work-2"],
+            },
+            document, proposalId: "proposal-7", createdAt: 1,
+            event: {
+              type: "runtime",
+              event: {
+                kind: "proposed",
+                target: { targetId: "target-7", paragraphRef: "p7", revision: 4, original: "Original paragraph" },
+                proposed: "Revised paragraph",
+              },
+            },
+          },
+        }),
+        row(2, {
+          type: "docx",
+          activity: {
+            id: "saved-activity", origin: {
+              taskId: "task-a", generation: 2, groupId: "manuscript", memberId: "docx-member",
+              executionId: "docx-execution", workIds: ["work-1", "work-2"],
+            },
+            document, proposalId: "proposal-7", createdAt: 2,
+            event: { type: "outcome", outcome: { kind: "saved", requestId: "save-request-7", contentSha256: "saved-content-hash" } },
+          },
+        }),
+        row(3, { type: "member", memberId: "normal-reviewer", executionId: "exec-normal", triggerIds: [], status: "completed" }),
+        row(4, { type: "toolRequested", callId: "normal-read", name: "read_file", inputSha256: "input-hash" }),
+        row(5, {
+          type: "toolExecution", callId: "normal-read", name: "read_file", status: "done",
+          inputSha256: "input-hash", outputSha256: "output-hash", skillId: null, skillInstructionsSha256: null, source: null,
+        }),
+      ],
+      nextSequence: 5, throughSequence: 5, hasMore: false,
+    },
+  } satisfies TaskObservationView);
+
+  render(<TaskObservations taskId="task-a" generation={2} revision={1} availableCalls={new Set(["normal-read"])} onOpenCall={vi.fn()} onReview={vi.fn()} onChecks={vi.fn()} />);
+  const docx = await screen.findByTestId("task-docx-observations");
+  fireEvent.click(within(docx).getByText("Task activity"));
+  const proposal = within(docx).getByText("Proposed change · r4").closest("li");
+  const saved = within(docx).getByText("Saved manuscript version · r4").closest("li");
+  expect(proposal).not.toBeNull();
+  expect(saved).not.toBeNull();
+  if (!proposal || !saved) throw new Error("DOCX activity rows were not rendered.");
+  expect(within(docx).getByText("proposal-activity · baseline-7")).toBeInTheDocument();
+  expect(within(proposal).getByText("Member / execution: docx-member · docx-execution")).toBeInTheDocument();
+  expect(within(proposal).getByText("Work context: work-1, work-2")).toBeInTheDocument();
+  expect(within(proposal).getByText("Original paragraph")).toBeInTheDocument();
+  expect(within(proposal).getByText("Revised paragraph")).toBeInTheDocument();
+  expect(within(saved).getByText("save-request-7 · saved-content-hash")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByText("Member executions"));
+  expect(screen.getByText("#3 · normal-reviewer · completed")).toBeInTheDocument();
+  expect(screen.getByText("Execution: exec-normal")).toBeInTheDocument();
+  fireEvent.click(screen.getByText("Observation records and source locators"));
+  expect(screen.getByText("#4 → #5 · normal-read")).toBeInTheDocument();
+  expect(native.observations).toHaveBeenCalledWith("task-a", 2, 0);
 });

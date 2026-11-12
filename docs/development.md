@@ -149,7 +149,7 @@ DOCX work maintains new UI keys in the Chinese and English catalogs. Complete
 other-language coverage and validation are outside this round's scope. The current
 verified DOCX browser flow is macOS-only; Windows native validation is out of scope
 for this round rather than a pending check. See the current
-[Agent status](agent/status.md#docx-工作副本首个闭环2026-11-11).
+[Agent status](agent/status.md#docx-任务活动与保存归属2026-11-12).
 
 Saved DOCX PDF previews use a locally installed LibreOffice executable. The native bridge checks
 `OLEAFLY_LIBREOFFICE`, the configured `soffice` locator, and standard macOS/Windows install
@@ -514,6 +514,17 @@ The test process holds every person's copy of the project, so its own memory
 grows with the documents. `CROWD_SOAK_MAX_CHARS` keeps that bounded.
 
 ## Coding style
+
+Local delegated development follows one controller and at most two responsibility
+chats, with four active agents globally including the controller and delegation
+depth at most two. Give each assignment its goal, necessary inputs, owned files,
+acceptance criteria and prohibited actions. Keep concurrent writes disjoint.
+Complex implementation and review use the Xiaobai `gpt/gpt-6.1-sol` endpoint at
+`high`, with `xhigh` or `max` for difficult architecture decisions. Mechanical
+changes and routine verification use `workbuddy/deepseek-v4.1-flash` at `none` or
+`low`. `dwai/gpt-6.1-sol` remains an allowed Sol endpoint. Do not use Trae or
+`auto/*` for this project. These are development delegation settings, not the
+application's model catalog or the user's task runtime defaults.
 
 - TypeScript: follow what's already there. No comments unless asked. Respect `noUnusedLocals`/`noUnusedParameters`.
 - Rust: idiomatic, small commands, friendly error strings.

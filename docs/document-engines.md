@@ -11,15 +11,17 @@ Saving creates a retained Workbench baseline, and journal checks run against tha
 This surface is separate from the five project engines. See the
 [session contract](agent/architecture.md#docx-实时工作表面),
 [component choice](agent/reuse.md#docx-编辑与实时工作机制) and
-[verified scope](agent/status.md#docx-工作副本首个闭环2026-11-11).
+[verified scope](agent/status.md#docx-任务活动与保存归属2026-11-12).
 Saved-version PDF rendering is now connected through the Journal checks sidebar: after a baseline
 is saved, Oleafly can discover or explicitly select a local LibreOffice `soffice`, convert the
 retained bytes headlessly, register a derived PDF bundle and open that exact bundle in the PDF
 viewer. The panel marks the preview against its baseline and keeps the previous record visible
-while a newer conversion is running or fails. Automatic external-file synchronization, unsaved-
-session restart recovery and task-group live-document tools remain unimplemented. WPS remains an optional external editor/render
-source. Neither the embedded editor nor retained WPS process evidence establishes general Word
-source. Neither the embedded editor nor retained WPS process evidence establishes general Word
+while a newer conversion is running or fails. Unsaved bytes have an application-private recovery
+checkpoint with explicit restore, download and discard. Single tasks and task groups can be bound
+before execution to read the live session, capture a target and retain a proposed replacement;
+user decisions and exact saved versions link back to the original task execution. Task tools do
+not apply or save the document. External Word/WPS automatic synchronization is not implemented.
+WPS remains an optional external editor/render source. Neither the embedded editor nor retained WPS process evidence establishes general Word
 layout fidelity. Real English and Chinese manuscript runs preserved package structure through
 the controlled edit/save/reopen path, but substitute fonts, fixed measurement warnings and an
 independent LibreOffice first-page two-column difference leave visual fidelity unproven.
@@ -29,8 +31,9 @@ DOCX UI localization currently maintains new product keys in Chinese and English
 coverage and validation for other application languages are outside this round's product scope;
 those locales fall back to English and are not pending DOCX deliverables. The upstream editor
 toolbar is English, while the application workbar has Chinese and English copy. The verified
-DOCX browser flow ran on macOS; it did not establish native application validation. Windows
-native validation is also outside this round's scope.
+DOCX browser flow and packaged native recovery acceptance ran on macOS. Their exact inputs and
+boundaries are recorded in the verified scope above. Windows native validation is outside this
+round's scope.
 
 | Capability | LaTeX / Tectonic | Typst | Markdown / Pandoc |
 |---|---|---|---|

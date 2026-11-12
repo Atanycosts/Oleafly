@@ -131,6 +131,7 @@ export interface DocxDocumentState {
 }
 
 export interface DocxActivityDocument extends DocxDocumentState {
+  sourceSha256: string;
   appProjectId: string;
   workbenchProjectId: string;
   title: string;

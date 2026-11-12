@@ -1,6 +1,6 @@
 # Agent 组件复用依据
 
-范围：截至 2026-11-11 已完成的固定源码调查、隔离探针及首版接入。以下版本是固定输入，
+范围：截至 2026-11-12 已完成的固定源码调查、隔离探针和工作副本/任务接入。以下版本是固定输入，
 不代表今天的上游最新状态。当前产品能力见[状态页](status.md)，工作合同见[架构](architecture.md)。
 
 ## 已采用的底座
@@ -8,6 +8,11 @@
 产品继续使用 Oleafly 自己的 ResearchTask、SQLite/TaskStore、Rust ACP client、
 文件隔离、SharedDocument、应用服务和既有工具 host。Workbench 继续拥有领域数据。
 没有引入 Orca、T3、Flock 或 Lody 的运行时、数据库或产品依赖。
+
+DOCX 任务活动接入继续复用 EigenPal 活动会话、现有 TaskBridge/ApplicationTools、TaskStore 不可变 observation、
+真实成员执行和 Workbench captured-bytes 保存。用户接受/保存与模型提出候选分别记录，不复制执行器或领域库，
+也不把流式 token 当成已保存编辑。本轮没有新增外部依赖；新增的稀疏自增游标索引只引用现有事件，
+解决任务删除后的行号复用，不存另一份正文或执行状态。
 
 引用旧回答与当前评论分离、精确历史文件字节回读等合同受到上游研究启发，
 实现落在已有 Rust 服务和存储中。机制借鉴、隔离探针和直接产品代码复用应分别描述。

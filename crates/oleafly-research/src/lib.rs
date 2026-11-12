@@ -7,6 +7,7 @@ pub mod citation;
 pub mod collaboration;
 pub mod compiled_artifacts;
 pub mod conversation;
+pub mod docx;
 pub mod evidence;
 pub mod findings;
 pub mod handoff;

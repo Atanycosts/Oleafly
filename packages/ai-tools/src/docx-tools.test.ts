@@ -7,6 +7,7 @@ function host(overrides: Partial<DocxToolsHost> = {}): DocxToolsHost {
     readDocument: vi.fn(async () => ({
       document: {
         sessionId: "s1",
+        sourceSha256: "a".repeat(64),
         appProjectId: "p1",
         workbenchProjectId: "paper",
         title: "Paper",

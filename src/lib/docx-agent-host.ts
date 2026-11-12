@@ -13,6 +13,7 @@ import {
 } from "@oleafly/ai-tools";
 import { runInlineCompletion } from "@/lib/ai-inline";
 import type { DocxSession, DocxTarget } from "@/lib/docx-session";
+import type { DocxActivity, DocxDocumentIdentity } from "@/lib/docx-task-activity";
 import { useFilesStore } from "@/store/files";
 
 export interface DocxAgentRegistration {
@@ -23,6 +24,9 @@ export interface DocxAgentRegistration {
   filename: string;
   baselineId: string;
   savedRevision: number;
+  sourceSha256: string;
+  canPresentSuggestion?(): boolean;
+  onTaskSuggestion?(activity: DocxActivity, target: DocxTarget): void;
   session: DocxSession;
   onSuggestion?(event: {
     target: DocxTarget;
@@ -84,6 +88,7 @@ function document(registration: RegisteredDocxSession): DocxActivityDocument {
     workbenchProjectId: registration.workbenchProjectId,
     title: registration.title,
     filename: registration.filename,
+    sourceSha256: registration.sourceSha256,
   };
 }
 
@@ -223,7 +228,7 @@ export const DOCX_AGENT_HOST: DocxToolsHost = {
   suggestChange: async (input, context) => {
     assertAttribution(context);
     const registration = registrationFor(input.sessionId);
-    if (generations.has(registration.sessionId)) {
+    if (generations.has(registration.sessionId) || registration.canPresentSuggestion?.() === false) {
       throw new Error("A DOCX suggestion is already streaming.");
     }
     const index = paragraphIndex(registration, input.paragraphRef);
@@ -331,6 +336,100 @@ export const DOCX_AGENT_HOST: DocxToolsHost = {
   },
 };
 
+export interface DocxTaskScope {
+  projectId: string;
+  workbenchProjectId: string | null;
+}
+
+function taskRegistration(scope: DocxTaskScope, sessionId?: string): RegisteredDocxSession {
+  const matching = [...sessions.values()].filter((item) =>
+    item.appProjectId === scope.projectId && (scope.workbenchProjectId === null || item.workbenchProjectId === scope.workbenchProjectId) &&
+    (sessionId === undefined || item.sessionId === sessionId));
+  if (matching.length !== 1) throw new Error("The task's DOCX working copy is unavailable or ambiguous.");
+  return matching[0];
+}
+
+export function docxTaskDocument(scope: DocxTaskScope, sessionId?: string): DocxDocumentIdentity {
+  const registration = taskRegistration(scope, sessionId);
+  const { sessionId: id, baselineId, sessionRevision, savedRevision } = state(registration);
+  return { sessionId: id, appProjectId: registration.appProjectId,
+    workbenchProjectId: registration.workbenchProjectId, baselineId,
+    sourceSha256: registration.sourceSha256, sessionRevision, savedRevision };
+}
+
+export function listTaskDocxDocuments(scope: DocxTaskScope, sessionId?: string) {
+  return [...sessions.values()].filter((item) => item.appProjectId === scope.projectId &&
+    item.workbenchProjectId === scope.workbenchProjectId && (sessionId === undefined || item.sessionId === sessionId)).map((item) => docxTaskDocument(scope, item.sessionId));
+}
+
+export function readTaskDocxDocument(scope: DocxTaskScope, sessionId?: string, offset = 0, limit = 20) {
+  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 50)
+    throw new Error("Read one to fifty DOCX paragraphs from a non-negative offset.");
+  const registration = taskRegistration(scope, sessionId);
+  const all = registration.session.listParagraphs();
+  const paragraphs = [];
+  let bytes = 0;
+  for (const paragraph of all.slice(offset, offset + limit)) {
+    const value = { paragraphRef: paragraph.handle.ref, text: paragraph.text, paraId: paragraph.paraId };
+    const size = new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    if (bytes + size > 32 * 1024) {
+      if (!paragraphs.length) throw new Error("This DOCX paragraph exceeds the 32 KiB read window.");
+      break;
+    }
+    bytes += size;
+    paragraphs.push(value);
+  }
+  const end = offset + paragraphs.length;
+  return { document: docxTaskDocument(scope, registration.sessionId), paragraphs, offset,
+    nextOffset: end < all.length ? end : null, totalParagraphs: all.length };
+}
+
+export function captureTaskDocxTarget(scope: DocxTaskScope, sessionId: string | undefined, paragraphRef: string) {
+  const registration = taskRegistration(scope, sessionId);
+  const view = capture(registration, paragraphRef).view;
+  return { document: docxTaskDocument(scope, registration.sessionId), target: {
+    targetId: view.targetId, paragraphRef: view.paragraphRef, revision: view.revision,
+    original: view.text, paraId: view.paraId, structure: view.structure,
+  } };
+}
+
+export function validateTaskDocxProposal(scope: DocxTaskScope, targetId: string, expectedRevision: number, text: string, sessionId?: string) {
+  const record = targets.get(targetId);
+  if (!record) throw new Error("The DOCX target is no longer available. Capture a fresh target.");
+  if (sessionId !== undefined && sessionId !== record.sessionId) throw new Error("The DOCX target belongs to another session.");
+  const registration = taskRegistration(scope, record.sessionId);
+  if (record.revision !== expectedRevision) throw new Error("The DOCX target revision changed.");
+  const target = registration.session.captureTarget(record.paragraph);
+  if (target.original !== record.original || target.structure !== record.structure)
+    throw new Error("The DOCX target changed. Capture a fresh target.");
+  if (generations.has(registration.sessionId) || registration.canPresentSuggestion?.() === false)
+    throw new Error("A DOCX suggestion is already awaiting review.");
+  if (new TextEncoder().encode(text).byteLength > 32 * 1024) throw new Error("The DOCX proposal exceeds 32 KiB.");
+  return { document: docxTaskDocument(scope, registration.sessionId), target: {
+    targetId, paragraphRef: record.paragraph.ref, revision: record.revision, original: record.original,
+    paraId: record.paraId, structure: record.structure,
+  } };
+}
+
+export function presentTaskDocxProposal(scope: DocxTaskScope, activity: DocxActivity): void {
+  if (activity.event.type !== "runtime" || activity.event.event.kind !== "proposed")
+    throw new Error("Only a retained DOCX proposal can be presented.");
+  const { target, proposed } = activity.event.event;
+  const current = validateTaskDocxProposal(scope, target.targetId, target.revision, proposed);
+  const identity = activity.document;
+  if (identity.sessionId !== current.document.sessionId || identity.appProjectId !== scope.projectId ||
+    identity.workbenchProjectId !== scope.workbenchProjectId || identity.baselineId !== current.document.baselineId ||
+    identity.sourceSha256 !== current.document.sourceSha256 || target.original !== current.target.original ||
+    target.structure !== current.target.structure || target.paragraphRef !== current.target.paragraphRef)
+    throw new Error("The retained DOCX proposal belongs to a different working copy.");
+  const registration = taskRegistration(scope, identity.sessionId);
+  if (!registration.onTaskSuggestion) throw new Error("The DOCX review surface is unavailable.");
+  const targetRecord = targets.get(target.targetId);
+  if (!targetRecord) throw new Error("The DOCX target is no longer available.");
+  registration.onTaskSuggestion(activity, { paragraph: targetRecord.paragraph, original: targetRecord.original,
+    revision: targetRecord.revision, paraId: targetRecord.paraId, structure: targetRecord.structure });
+}
+
 export function registerDocxAgentSession(
   registration: DocxAgentRegistration,
 ): RegisteredDocxSession {
@@ -353,7 +452,7 @@ export function registerDocxAgentSession(
 
 export function updateDocxAgentSession(
   sessionId: string,
-  update: { baselineId?: string; savedRevision?: number },
+  update: { baselineId?: string; savedRevision?: number; sourceSha256?: string },
 ): void {
   const registration = registrationFor(sessionId);
   const next: RegisteredDocxSession = { ...registration, ...update };

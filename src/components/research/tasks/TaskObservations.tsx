@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { CopyableBlock } from "@/components/ui/copyable-block";
 import { describeError } from "@/lib/app-error";
+import { subscribeDocxTaskActivity } from "@/lib/docx-task-activity";
 import { loadResearchTaskObservations, previewResearchTaskSource, type TaskObservation, type TaskObservationView, type TaskTranscriptEvent } from "@/lib/research-tasks";
 
 type Execution = Extract<TaskObservation, { type: "toolExecution" }>;
@@ -51,6 +52,7 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
   const [reload, setReload] = useState(0);
   const requestVersion = useRef(0);
   const currentView = useRef<TaskObservationView | null>(null);
+  useEffect(() => subscribeDocxTaskActivity(() => setReload((value) => value + 1)), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: task revisions and explicit retries refresh the persisted snapshot.
   useEffect(() => {
     const version = ++requestVersion.current;
@@ -88,6 +90,9 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
   const usage = usageEvent?.event.kind === "observation" && usageEvent.event.observation.type === "usage"
     ? usageEvent.event.observation : null;
   const unknown = t(($) => $.researchTools.tasks.observations.unknown);
+  const docxText = t(($) => $.researchTools.docx.taskActivity, { returnObjects: true });
+  const docx = events.flatMap((row) => row.event.kind === "observation" && row.event.observation.type === "docx"
+    ? [{ row, activity: row.event.observation.activity }] : []);
   const members: { row: TaskTranscriptEvent; observation: Extract<TaskObservation, { type: "member" }> }[] = [];
   const requests: { row: TaskTranscriptEvent; observation: Extract<TaskObservation, { type: "requestContext" }> }[] = [];
   const calls = new Map<string, { request: TaskTranscriptEvent; name: string; inputSha256: string; actor?: string | null; result?: TaskTranscriptEvent }>();
@@ -133,6 +138,21 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
           <p>{`#${row.sequence} · ${observation.memberId} · ${observation.status}`}</p>
           <p>{t(($) => $.researchTools.tasks.observations.execution)}: {observation.executionId}</p>
           <p>{t(($) => $.researchTools.tasks.observations.triggers)}: {observation.triggerIds.join(", ") || "—"}</p>
+        </li>)}</ol>
+      </details> : null}
+      {docx.length > 0 ? <details data-testid="task-docx-observations"><summary>{docxText.title}</summary>
+        <ol className="max-h-96 space-y-3 overflow-auto break-words text-xs">{docx.map(({ row, activity }) => <li key={row.sequence} className="space-y-1 border-t pt-2">
+          <p>{docxText.events[activity.event.type === "runtime" ? activity.event.event.kind : activity.event.outcome.kind]}{` · r${activity.document.sessionRevision}`}</p>
+          <p className="break-all">{activity.id} · {activity.document.baselineId}</p>
+          {activity.origin.memberId ? <p>{docxText.member}: {activity.origin.memberId} · {activity.origin.executionId}</p> : null}
+          {activity.origin.workIds.length ? <p>{docxText.work}: {activity.origin.workIds.join(", ")}</p> : null}
+          {activity.event.type === "runtime" && activity.event.event.kind === "read" ? <pre className="whitespace-pre-wrap">{activity.event.event.paragraphs.map((paragraph) => paragraph.text).join("\n")}</pre> : null}
+          {activity.event.type === "runtime" && activity.event.event.kind === "captured" ? <blockquote className="whitespace-pre-wrap border-l-2 pl-2">{activity.event.event.target.original}</blockquote> : null}
+          {activity.event.type === "runtime" && activity.event.event.kind === "proposed" ? <>
+            <blockquote className="whitespace-pre-wrap border-l-2 pl-2 text-muted-foreground">{activity.event.event.target.original}</blockquote>
+            <p className="whitespace-pre-wrap">{activity.event.event.proposed}</p>
+          </> : null}
+          {activity.event.type === "outcome" && activity.event.outcome.kind === "saved" ? <p className="break-all font-mono">{activity.event.outcome.requestId} · {activity.event.outcome.contentSha256}</p> : null}
         </li>)}</ol>
       </details> : null}
       {requests.length > 0 ? <details><summary>{t(($) => $.researchTools.tasks.observations.requestContexts)}</summary>

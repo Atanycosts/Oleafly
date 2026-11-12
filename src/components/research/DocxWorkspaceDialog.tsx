@@ -32,6 +32,8 @@ import { registerProjectLeaveGuard } from "@/lib/project-leave-guards";
 import { registerEditorMutationOwner } from "@/lib/editor-mutation-lease";
 import { useDocxWorkspaceStore, type DocxWorkspaceRequest } from "@/store/docx-workspace";
 import { handoffToAssistant } from "@/features/assistant-handoff";
+import { settleDocxTaskActivity, type DocxActivity, type DocxDocumentIdentity, type DocxProposalOutcome } from "@/lib/docx-task-activity";
+import { DocxActivitySource, DocxTaskActivity } from "./DocxTaskActivity";
 import { DocxRenderPanel } from "./DocxRenderPanel";
 
 const fonts = packagedFonts();
@@ -49,6 +51,7 @@ interface Props {
 }
 
 interface Suggestion {
+  activity?: DocxActivity;
   target: DocxTarget;
   proposed: string;
   phase: "streaming" | "reviewing" | "withdrawn" | "applied";
@@ -138,6 +141,16 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const [instruction, setInstruction] = useState("");
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const suggestionRef = useRef<Suggestion | null>(null);
+  const [taskReady, setTaskReady] = useState(false);
+  const appliedTasks = useRef(new Map<string, Suggestion>());
+  const saveProposals = useRef<string[]>([]);
+  const fixedSavePending = useRef(false);
+  const deferredWithdrawals = useRef<{ proposalId: string; document: DocxDocumentIdentity; outcome: DocxProposalOutcome }[]>([]);
+  const receipts = useRef<{ proposalId: string; document: DocxDocumentIdentity; outcome: DocxProposalOutcome }[]>([]);
+  const [pendingReceipts, setPendingReceipts] = useState(0);
+  const receiptWriting = useRef(false);
+  const receiptFailure = useRef<string | null>(null);
+  const identityRef = useRef<() => DocxDocumentIdentity>(() => { throw new Error("DOCX is not ready."); });
   const [revision, setRevision] = useState(0);
   // A recovered package has never been saved by the fresh editor session.
   // Keep automation revisions native; -1 marks the missing saved revision.
@@ -159,12 +172,17 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const busySave = useRef(false);
   const discardingRef = useRef(false);
   const interactionRoot = useRef<HTMLDivElement>(null);
+  identityRef.current = () => {
+    if (!source) throw new Error("The DOCX source is not loaded.");
+    return { sessionId, appProjectId, workbenchProjectId: project.project_id,
+      baselineId, sourceSha256: source.source_sha256, sessionRevision: sessionRef.current?.revision() ?? revision, savedRevision };
+  };
   const dirty = revision !== savedRevision;
   const recoveryConflict = !!recovery && project.baseline_id !== recovery.baseBaselineId;
   const streaming = suggestion?.phase === "streaming";
 
   useEffect(() => {
-    const unfinished = dirty || streaming || !!pendingSave || saving || checking;
+    const unfinished = dirty || streaming || suggestion?.phase === "reviewing" || !!pendingSave || saving || checking || pendingReceipts > 0;
     const stopLeave = registerProjectLeaveGuard(async (leave) => {
       if (leave.projectId !== appProjectId) return true;
       if (!unfinished) { onClose(); return true; }
@@ -187,7 +205,39 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       stopOwner();
       window.removeEventListener("beforeunload", beforeUnload);
     };
-  }, [appProjectId, dirty, streaming, pendingSave, saving, checking, text.closeHelp, onClose]);
+  }, [appProjectId, dirty, streaming, pendingSave, saving, checking, text.closeHelp, onClose, pendingReceipts, suggestion?.phase]);
+
+  const flushReceipts = useCallback(async () => {
+    if (receiptWriting.current) return;
+    receiptWriting.current = true;
+    try {
+      while (receipts.current.length) {
+        const receipt = receipts.current[0];
+        await settleDocxTaskActivity(appProjectId, initialProject.current.project_id,
+          receipt.proposalId, receipt.document, receipt.outcome);
+        receipts.current.shift();
+        if (alive.current) setPendingReceipts(receipts.current.length);
+      }
+      if (alive.current && receiptFailure.current) {
+        const previousError = receiptFailure.current;
+        setError((current) => current === previousError ? null : current);
+        receiptFailure.current = null;
+      }
+    } catch (cause) {
+      receiptFailure.current = String(cause);
+      if (alive.current) setError(receiptFailure.current);
+    }
+    finally { receiptWriting.current = false; }
+  }, [appProjectId]);
+  const recordOutcome = useCallback((proposalId: string, outcome: DocxProposalOutcome, document = identityRef.current()) => {
+    if ((busySave.current || fixedSavePending.current) && outcome.kind === "withdrawn") {
+      deferredWithdrawals.current.push({ proposalId, document, outcome });
+      return;
+    }
+    receipts.current.push({ proposalId, document, outcome });
+    setPendingReceipts(receipts.current.length);
+    if (!busySave.current) void flushReceipts();
+  }, [flushReceipts]);
 
   const updateSuggestion = useCallback((next: Suggestion | null) => {
     suggestionRef.current = next;
@@ -269,7 +319,14 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       filename: source?.filename ?? initialProject.current.name,
       baselineId: initialRecovery.current?.baseBaselineId ?? initialProject.current.baseline_id,
       savedRevision: initialRecovery.current ? -1 : 0,
+      sourceSha256: identityRef.current().sourceSha256,
       session,
+      canPresentSuggestion: () => !["streaming", "reviewing"].includes(suggestionRef.current?.phase ?? ""),
+      onTaskSuggestion: (activity, target) => {
+        if (!alive.current) throw new Error("The DOCX review surface closed.");
+        if (target.paraId) editor.highlightAnchor({ paraId: target.paraId }, { className: "oleafly-docx-target", timeoutMs: null });
+        updateSuggestion({ target, proposed: activity.event.type === "runtime" && activity.event.event.kind === "proposed" ? activity.event.event.proposed : "", phase: "reviewing", activity });
+      },
       onSuggestion: (event) => {
         if (!alive.current) return;
         if (event.phase === "streaming" && stopRef.current !== event.controller) {
@@ -284,6 +341,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         if (alive.current) updateSuggestion({ target, proposed, phase: "applied" });
       },
     });
+    setTaskReady(true);
     const refresh = () => {
       const current = session.listParagraphs();
       setParagraphs(current);
@@ -300,9 +358,16 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         if (!unchanged) {
           stopRef.current?.abort();
           updateSuggestion({ ...pending, phase: "withdrawn" });
+          if (pending.activity) recordOutcome(pending.activity.id, { kind: "withdrawn" });
         }
       } else if (pending?.phase === "applied" && !session.isSuggestionApplied(pending.target, pending.proposed)) {
         updateSuggestion({ ...pending, phase: "withdrawn" });
+      }
+      for (const [id, applied] of appliedTasks.current) {
+        if (!session.isSuggestionApplied(applied.target, applied.proposed)) {
+          appliedTasks.current.delete(id);
+          recordOutcome(id, { kind: "withdrawn" });
+        }
       }
     };
     refresh();
@@ -315,7 +380,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       }
     });
     unsubscribeRef.current = () => { documentChanged(); selectionChanged(); };
-  }, [appProjectId, sessionId, source?.filename, updateSuggestion]);
+  }, [appProjectId, sessionId, source?.filename, updateSuggestion, recordOutcome]);
 
   useEffect(() => {
     if (suggestion?.phase !== "streaming" && suggestion?.phase !== "reviewing") editorRef.current?.getEditor()?.clearAnchorHighlight();
@@ -380,13 +445,20 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     if (!result.ok) {
       updateSuggestion({ ...pending, phase: "withdrawn" });
       setError(result.message);
+      if (pending.activity) recordOutcome(pending.activity.id, { kind: "withdrawn" });
+    } else if (pending.activity) {
+      appliedTasks.current.set(pending.activity.id, pending);
+      recordOutcome(pending.activity.id, { kind: "applied" });
     }
   }
 
   function stop() {
     stopRef.current?.abort();
     const pending = suggestionRef.current;
-    if (pending) updateSuggestion({ ...pending, phase: "withdrawn" });
+    if (pending) {
+      updateSuggestion({ ...pending, phase: "withdrawn" });
+      if (pending.activity) recordOutcome(pending.activity.id, { kind: "withdrawn" });
+    }
   }
 
   async function save() {
@@ -403,10 +475,13 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       if (!request) {
         const exporting = editor.save();
         const exportRevision = session.revision();
+        saveProposals.current = [...appliedTasks.current].filter(([, value]) =>
+          session.isSuggestionApplied(value.target, value.proposed)).map(([id]) => id);
         const bytes = await exporting;
         if (!bytes) throw new Error(text.notReady);
         await queueRecoveryWrite(source, baselineId, exportRevision, bytes);
         request = prepareDocxSave({ ...source, baseline_id: baselineId }, exportRevision, bytes);
+        fixedSavePending.current = true;
         setPendingSave(request);
       }
       const result = await saveDocxBaseline(request);
@@ -419,7 +494,15 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       updateDocxAgentSession(sessionId, {
         baselineId: result.baselineId,
         savedRevision: result.revision,
+        sourceSha256,
       });
+      const savedDocument: DocxDocumentIdentity = { sessionId, appProjectId, workbenchProjectId: source.project_id,
+        baselineId: result.baselineId, sourceSha256, sessionRevision: request.revision, savedRevision: result.revision };
+      for (const proposalId of saveProposals.current) {
+        recordOutcome(proposalId, { kind: "saved", requestId: request.request_id, contentSha256: sourceSha256 }, savedDocument);
+      }
+      saveProposals.current = [];
+      fixedSavePending.current = false;
       setPendingSave(null);
       setCheck(null);
       try {
@@ -439,7 +522,12 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       if (alive.current) setError(String(cause));
     } finally {
       busySave.current = false;
-      if (alive.current) setSaving(false);
+      if (!fixedSavePending.current) {
+        receipts.current.push(...deferredWithdrawals.current);
+        deferredWithdrawals.current = [];
+      }
+      if (alive.current) { setSaving(false); setPendingReceipts(receipts.current.length); }
+      void flushReceipts();
     }
   }
 
@@ -476,9 +564,9 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   }
 
   function close() {
-    if (saving || checking) return;
+    if (saving || checking || pendingReceipts > 0) return;
     if (!source && !sessionRef.current) { onClose(); return; }
-    if (dirty || streaming || pendingSave) setClosePrompt(true);
+    if (dirty || streaming || suggestionRef.current?.phase === "reviewing" || pendingSave) setClosePrompt(true);
     else onClose();
   }
 
@@ -490,6 +578,23 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     setError(null);
     try {
       await recoveryQueueRef.current;
+      const pending = suggestionRef.current;
+      if (pending?.activity && pending.phase === "reviewing") {
+        await settleDocxTaskActivity(appProjectId, source.project_id, pending.activity.id,
+          identityRef.current(), { kind: "withdrawn" });
+        updateSuggestion({ ...pending, phase: "withdrawn" });
+      }
+      for (const proposalId of appliedTasks.current.keys()) {
+        await settleDocxTaskActivity(appProjectId, source.project_id, proposalId,
+          identityRef.current(), { kind: "withdrawn" });
+        appliedTasks.current.delete(proposalId);
+      }
+      while (deferredWithdrawals.current.length) {
+        const receipt = deferredWithdrawals.current[0];
+        await settleDocxTaskActivity(appProjectId, source.project_id, receipt.proposalId,
+          receipt.document, receipt.outcome);
+        deferredWithdrawals.current.shift();
+      }
       const identity = {
         appProjectId,
         workbenchProjectId: source.project_id,
@@ -560,6 +665,11 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
             ><SessionBridge onReady={ready} /><SuggestionOverlay suggestion={suggestion} accept={accept} stop={stop} /></DocxEditor> : <p className="p-6 text-sm">{text.loading}</p>}
           </div>
           <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto" aria-label={text.work}>
+            <DocxTaskActivity projectId={appProjectId} workbenchProjectId={project.project_id} sessionId={taskReady ? sessionId : null} />
+            {pendingReceipts > 0 && <div className="space-y-1 text-xs" role="status">
+              <p>{text.taskActivity.pending}</p>
+              <Button size="sm" variant="outline" onClick={() => void flushReceipts()}>{text.taskActivity.retry}</Button>
+            </div>}
             <label className="space-y-1 text-xs">
               <span className="font-medium">{text.target}</span>
               <select className="h-9 w-full rounded border bg-background px-2" value={selected} onChange={(event) => {
@@ -573,17 +683,18 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
             <p className="text-[11px] text-muted-foreground">{text.targetHelp}</p>
             <Textarea aria-label={text.instruction} placeholder={text.instruction} rows={3} value={instruction} onChange={(event) => setInstruction(event.target.value)} />
             <div className="flex gap-2">
-              <Button size="sm" disabled={!selected || !instruction.trim() || streaming || !sessionRef.current} onClick={() => void generate()}><Sparkles className="mr-1 size-3.5" />{text.generate}</Button>
+              <Button size="sm" disabled={!selected || !instruction.trim() || streaming || suggestion?.phase === "reviewing" || !sessionRef.current} onClick={() => void generate()}><Sparkles className="mr-1 size-3.5" />{text.generate}</Button>
               {streaming && <Button size="sm" variant="outline" onClick={stop}><Square className="mr-1 size-3" />{text.stop}</Button>}
             </div>
             {suggestion && <section className="space-y-2 rounded border p-3 text-xs" data-testid="docx-suggestion">
+              {suggestion.activity && <DocxActivitySource activity={suggestion.activity} />}
               <p className="font-medium">{`${text.phases[suggestion.phase]} · r${suggestion.target.revision}`}</p>
               <blockquote className="whitespace-pre-wrap border-l-2 pl-2 text-muted-foreground">{suggestion.target.original}</blockquote>
               <div aria-live="polite" className="min-h-8 whitespace-pre-wrap" data-testid="docx-proposed">{suggestion.proposed}</div>
               {suggestion.phase === "withdrawn" && <p>{text.withdrawnHelp}</p>}
               {suggestion.phase === "reviewing" && <div className="flex gap-2">
                 <Button size="sm" onClick={accept}><Check className="mr-1 size-3" />{text.accept}</Button>
-                <Button size="sm" variant="ghost" onClick={() => updateSuggestion(null)}><X className="mr-1 size-3" />{text.reject}</Button>
+                <Button size="sm" variant="ghost" onClick={() => { if (suggestion.activity) recordOutcome(suggestion.activity.id, { kind: "rejected" }); updateSuggestion(null); }}><X className="mr-1 size-3" />{text.reject}</Button>
               </div>}
               {suggestion.phase === "applied" && <p className="flex items-center gap-1"><Undo2 className="size-3" />{text.undoHelp}</p>}
             </section>}
@@ -595,7 +706,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     </Dialog>
     <Dialog open={closePrompt} onOpenChange={setClosePrompt}>
       <DialogContent><DialogHeader><DialogTitle>{text.closeTitle}</DialogTitle><DialogDescription>{text.closeHelp}</DialogDescription></DialogHeader>
-        <div className="flex justify-end gap-2"><Button variant="outline" disabled={discarding} onClick={() => setClosePrompt(false)}>{text.keepEditing}</Button><Button variant="destructive" disabled={discarding} onClick={() => void discard()}>{text.discard}</Button></div>
+        <div className="flex justify-end gap-2"><Button variant="outline" disabled={discarding} onClick={() => setClosePrompt(false)}>{text.keepEditing}</Button><Button variant="destructive" disabled={discarding || pendingReceipts > 0} onClick={() => void discard()}>{text.discard}</Button></div>
       </DialogContent>
     </Dialog>
   </>;

@@ -2500,6 +2500,32 @@
     }
   },
   "docx": {
+    "taskActivity": {
+      "title": "Task activity",
+      "source": "Task",
+      "generation": "generation",
+      "group": "Task group",
+      "member": "Member / execution",
+      "work": "Work context",
+      "chooseTask": "Choose an existing task",
+      "bind": "Bind current DOCX",
+      "bound": "Open bound task",
+      "empty": "No recorded task activity for this manuscript.",
+      "more": "Load more",
+      "refresh": "Refresh activity",
+      "retry": "Retry recording results",
+      "pending": "The document action completed. Its task receipt is pending.",
+      "events": {
+        "bound": "DOCX bound",
+        "read": "Read paragraphs",
+        "captured": "Captured target",
+        "proposed": "Proposed change",
+        "applied": "Applied",
+        "rejected": "Rejected",
+        "withdrawn": "Withdrawn",
+        "saved": "Saved manuscript version"
+      }
+    },
     "open": "Edit DOCX working copy",
     "title": "DOCX working copy",
     "description": "Edit the retained manuscript in Oleafly. Save creates a new retained version. Your original file stays in its folder.",

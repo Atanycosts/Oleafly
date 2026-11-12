@@ -472,6 +472,10 @@ function loadResearchPdfBridge(): Promise<() => void> {
   return import("@/lib/research-pdf-bridge").then((m) => m.mountResearchPdfBridge());
 }
 
+function loadResearchDocxBridge(): Promise<() => void> {
+  return import("@/lib/docx-task-activity").then((m) => m.mountDocxTaskBridge());
+}
+
 const SIDEBAR_DEFAULT_PX = 340;
 
 function shownViewMode(detached: boolean, selected: ViewMode): ViewMode {
@@ -689,6 +693,7 @@ function AppContent() {
   }, [native]);
   useTauriSubscription(native ? loadMcpBridge : null, "start the MCP bridge");
   useTauriSubscription(native ? loadResearchPdfBridge : null, "start the research PDF bridge");
+  useTauriSubscription(native ? loadResearchDocxBridge : null, "start the research DOCX bridge");
   useTauriSubscription(
     native ? loadStuckWindowRestore : null,
     "reopen the work after a stuck window reload",

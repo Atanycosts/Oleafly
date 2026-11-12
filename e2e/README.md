@@ -119,6 +119,27 @@ bundle identifier, so WebKit files its storage under the process name,
 sessions keep theirs. The runner leaves that folder alone. Use a packaged
 build when a run must not see state from your dev sessions.
 
+### Native DOCX task activity
+
+After building the packaged E2E app above, run the scripted task integration:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+OLEAFLY_WORKBENCH_PYTHON="$PWD/services/research-workbench/.venv/bin/python" \
+./scripts/e2e.sh e2e/tests/128-docx-task-activity.spec.ts
+```
+
+This uses a synthetic DOCX, the real native task runtime, editor, TaskStore and
+Python Workbench. A scripted provider drives both a single task and a group
+member through discovery, bounded reading, capture, proposal and task history.
+The test checks that proposals leave the document unchanged, user acceptance
+after the task ends retains the original execution attribution, and saving links
+the actual DOCX bytes and LibreOffice PDF to the exact baseline. It also checks
+source navigation into task history, minimizing and resuming the same DOCX
+session, closed-session history and reopening without restoring an old target. This is
+application integration evidence, not a real-model editing-quality assessment.
+The runner resets only the E2E identifier's storage as described above.
+
 ### Native DOCX crash recovery
 
 After building the packaged E2E app above, run the opt-in recovery acceptance

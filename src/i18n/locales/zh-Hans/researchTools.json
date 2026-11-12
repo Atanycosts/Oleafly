@@ -2466,6 +2466,32 @@
     }
   },
   "docx": {
+    "taskActivity": {
+      "title": "任务活动",
+      "source": "任务",
+      "generation": "执行代次",
+      "group": "任务组",
+      "member": "成员 / 执行",
+      "work": "工作上下文",
+      "chooseTask": "选择已有任务",
+      "bind": "绑定当前 DOCX",
+      "bound": "打开已绑定任务",
+      "empty": "当前稿件尚无任务活动记录。",
+      "more": "加载更多",
+      "refresh": "刷新活动",
+      "retry": "重试记录结果",
+      "pending": "文档操作已完成，任务回执等待补记。",
+      "events": {
+        "bound": "已绑定 DOCX",
+        "read": "读取段落",
+        "captured": "捕获目标",
+        "proposed": "提出修改",
+        "applied": "已应用",
+        "rejected": "已拒绝",
+        "withdrawn": "已撤回",
+        "saved": "已保存稿件版本"
+      }
+    },
     "open": "编辑 DOCX 工作副本",
     "title": "DOCX 工作副本",
     "description": "在 Oleafly 中编辑已留存稿件。保存会创建新的留存版本。原文件保留在原文件夹。",

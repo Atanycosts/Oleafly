@@ -100,6 +100,7 @@ function register(session: DocxSession, overrides: Record<string, unknown> = {})
     filename: "paper.docx",
     baselineId: "baseline-1",
     savedRevision: 0,
+    sourceSha256: "a".repeat(64),
     session,
     ...overrides,
   });
@@ -416,5 +417,61 @@ describe("active DOCX Agent host", () => {
       "The DOCX suggestion target changed since it was captured.",
     );
     expect(local.session.applySuggestion).not.toHaveBeenCalled();
+  });
+});
+
+describe("task-provided DOCX proposals", () => {
+  const scope = { projectId: "app-project", workbenchProjectId: "paper-project" };
+  it("validates without generation and presents only retained proposals to the original session", async () => {
+    const local = harness();
+    const onTaskSuggestion = vi.fn();
+    register(local.session, { sourceSha256: "a".repeat(64), onTaskSuggestion });
+    const { captureTaskDocxTarget, validateTaskDocxProposal, presentTaskDocxProposal } = await import("./docx-agent-host");
+    const captured = captureTaskDocxTarget(scope, "session-1", "p1");
+    const verified = validateTaskDocxProposal(scope, captured.target.targetId, 0, "Task text.", "session-1");
+    expect(verified.document).toEqual({ sessionId: "session-1", appProjectId: "app-project", workbenchProjectId: "paper-project", baselineId: "baseline-1", sourceSha256: "a".repeat(64), sessionRevision: 0, savedRevision: 0 });
+    expect(onTaskSuggestion).not.toHaveBeenCalled();
+    const activity = { id: "proposal-1", document: verified.document, origin: { taskId: "task-1", generation: 3, groupId: null, memberId: null, executionId: null, workIds: [] }, proposalId: null, createdAt: 1, event: { type: "runtime", event: { kind: "proposed", target: verified.target, proposed: "Task text." } } } as const;
+    presentTaskDocxProposal(scope, { ...activity, origin: { ...activity.origin, workIds: [] } });
+    expect(onTaskSuggestion).toHaveBeenCalledWith(activity, expect.objectContaining({ original: "Original paragraph.", revision: 0 }));
+    expect(mocks.runInlineCompletion).not.toHaveBeenCalled();
+    expect(local.session.applySuggestion).not.toHaveBeenCalled();
+  });
+  it("refuses busy, stale, foreign and closed target references", async () => {
+    const local = harness();
+    const canPresentSuggestion = vi.fn(() => false);
+    register(local.session, { canPresentSuggestion });
+    const { captureTaskDocxTarget, validateTaskDocxProposal } = await import("./docx-agent-host");
+    const { target } = captureTaskDocxTarget(scope, "session-1", "p1");
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 0, "Candidate")).toThrow("awaiting review");
+    canPresentSuggestion.mockReturnValue(true);
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 0, "Candidate", "another-session")).toThrow("another session");
+    expect(() => validateTaskDocxProposal({ ...scope, workbenchProjectId: "other" }, target.targetId, 0, "Candidate")).toThrow("unavailable");
+    local.edit("p1", "User text");
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 0, "Candidate")).toThrow("changed");
+    unregisterDocxAgentSession("session-1");
+    register(local.session);
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 0, "Candidate")).toThrow("no longer available");
+  });
+  it("reads bounded windows using explicit task scope even when a different project is selected", async () => {
+    const local = harness(Array.from({ length: 55 }, (_, index) => paragraph(`p${index}`, `Text ${index}`)));
+    register(local.session);
+    useFilesStore.setState({ projectId: "another-ui-project" });
+    const { readTaskDocxDocument, listTaskDocxDocuments } = await import("./docx-agent-host");
+    expect(readTaskDocxDocument(scope, "session-1", 20)).toMatchObject({ offset: 20, nextOffset: 40, totalParagraphs: 55, paragraphs: expect.arrayContaining([{ paragraphRef: "p20", text: "Text 20", paraId: "p20" }]) });
+    expect(readTaskDocxDocument(scope, "session-1", 50).nextOffset).toBeNull();
+    expect(() => readTaskDocxDocument(scope, "session-1", 0, 51)).toThrow("fifty");
+    expect(listTaskDocxDocuments(scope, "other")).toEqual([]);
+    expect(readTaskDocxDocument({ ...scope, workbenchProjectId: null }, "session-1", 0, 1).document.workbenchProjectId).toBe("paper-project");
+  });
+  it("enforces the UTF-8 read budget without truncating a paragraph", async () => {
+    const local = harness([paragraph("p1", "字".repeat(8000)), paragraph("p2", "字".repeat(8000))]);
+    register(local.session);
+    const { readTaskDocxDocument } = await import("./docx-agent-host");
+    const first = readTaskDocxDocument(scope, "session-1");
+    expect(first.paragraphs).toHaveLength(1);
+    expect(first.nextOffset).toBe(1);
+    local.edit("p1", "字".repeat(12000));
+    expect(() => readTaskDocxDocument(scope, "session-1")).toThrow("32 KiB");
   });
 });

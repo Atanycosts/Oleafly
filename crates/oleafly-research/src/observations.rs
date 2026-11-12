@@ -40,6 +40,9 @@ pub struct ProvidedTool {
     rename_all_fields = "camelCase"
 )]
 pub enum TaskObservation {
+    Docx {
+        activity: Box<crate::docx::DocxActivity>,
+    },
     Member {
         member_id: String,
         execution_id: String,
