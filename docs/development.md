@@ -521,10 +521,12 @@ depth at most two. Give each assignment its goal, necessary inputs, owned files,
 acceptance criteria and prohibited actions. Keep concurrent writes disjoint.
 Complex implementation and review use the Xiaobai `gpt/gpt-6.1-sol` endpoint at
 `high`, with `xhigh` or `max` for difficult architecture decisions. Mechanical
-changes and routine verification use `workbuddy/deepseek-v4.1-flash` at `none` or
-`low`. `dwai/gpt-6.1-sol` remains an allowed Sol endpoint. Do not use Trae or
-`auto/*` for this project. These are development delegation settings, not the
-application's model catalog or the user's task runtime defaults.
+changes and routine verification use `auto/deepseek-v4.1-flash` at `low`; this
+endpoint does not advertise `none`. Additional Doubao and GLM endpoints may be
+used for bounded trials, with reasoning overrides only when the endpoint
+advertises them. `dwai/gpt-6.1-sol` and WorkBuddy remain available when assigned.
+Do not use Trae for this project. These are development delegation settings,
+not the application's model catalog or the user's task runtime defaults.
 
 - TypeScript: follow what's already there. No comments unless asked. Respect `noUnusedLocals`/`noUnusedParameters`.
 - Rust: idiomatic, small commands, friendly error strings.
