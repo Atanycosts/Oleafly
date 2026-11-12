@@ -1,6 +1,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
+import { createServer, request as httpRequest } from "node:http";
 import { access, cp, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -15,6 +16,12 @@ const author = process.env.OLEAFLY_REAL_DOCX;
 const expectedHash = process.env.OLEAFLY_REAL_DOCX_SHA256;
 const renderer = process.env.OLEAFLY_LIBREOFFICE ?? "/Applications/LibreOffice.app/Contents/MacOS/soffice";
 const python = process.env.OLEAFLY_WORKBENCH_PYTHON ?? resolve("services/research-workbench/.venv/bin/python");
+const liveTask = Boolean(process.env.OLEAFLY_DOCX_LIVE_URL);
+const liveUpstream = liveTask ? new URL(process.env.OLEAFLY_DOCX_LIVE_URL) : undefined;
+if (liveUpstream && (liveUpstream.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(liveUpstream.hostname)
+    || liveUpstream.username || liveUpstream.password || liveUpstream.search || liveUpstream.hash)) {
+  throw new Error("The live DOCX acceptance requires a credential-free local HTTP provider URL.");
+}
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const exists = async (path) => lstat(path).then(() => true, (error) => { if (error.code === "ENOENT") return false; throw error; });
 
@@ -36,7 +43,7 @@ const bundledIdentifier = execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print 
 if (bundledIdentifier !== identifier) throw new Error(`Refusing app identifier ${bundledIdentifier}. Build with src-tauri/tauri.e2e.conf.json.`);
 if (sha256(await readFile(author)) !== expectedHash) throw new Error("Author input SHA-256 does not match the supplied exact hash.");
 
-const parent = resolve(".private/docx-recovery-native");
+const parent = resolve(liveTask ? ".private/docx-task-live" : ".private/docx-recovery-native");
 await mkdir(parent, { recursive: true });
 const run = await mkdtemp(join(parent, "run-"));
 const data = join(run, "data");
@@ -59,6 +66,65 @@ let locked = false;
 let outcome = "FAILED";
 let failure;
 let cleaning;
+let relay;
+const wire = [];
+const forwarded = new Set();
+
+async function startLiveRelay() {
+  relay = createServer((request, response) => {
+    const chunks = [];
+    request.on("data", chunk => chunks.push(chunk));
+    request.on("end", () => {
+      const body = Buffer.concat(chunks);
+      const entry = { path: request.url, startedAt: new Date().toISOString() };
+      if (body.length) {
+        try {
+          const value = JSON.parse(body.toString());
+          entry.model = value.model;
+          entry.reasoningEffort = value.reasoning_effort ?? value.reasoning?.effort;
+          entry.tools = (value.tools ?? []).map(tool => tool.function?.name ?? tool.name);
+          entry.messages = value.messages?.length;
+        } catch {
+          entry.metadataError = "Request metadata was not valid JSON.";
+        }
+      }
+      wire.push(entry);
+      const upstream = httpRequest(new URL(request.url, liveUpstream), {
+        method: request.method, headers: { ...request.headers, host: liveUpstream.host },
+      }, incoming => {
+        entry.status = incoming.statusCode;
+        response.writeHead(incoming.statusCode, incoming.headers);
+        let partial = "";
+        incoming.on("data", chunk => {
+          partial += chunk.toString();
+          const lines = partial.split("\n");
+          partial = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") continue;
+            try {
+              const value = JSON.parse(line.slice(6));
+              if (value.model) entry.returnedModel = value.model;
+              if (value.usage) entry.usage = value.usage;
+            } catch { /* Other SSE records are passed through unchanged. */ }
+          }
+        });
+        incoming.on("end", () => { entry.finishedAt = new Date().toISOString(); });
+        incoming.pipe(response);
+      });
+      forwarded.add(upstream);
+      upstream.on("close", () => forwarded.delete(upstream));
+      upstream.on("error", error => {
+        entry.error = error.message;
+        if (!response.headersSent) response.writeHead(502);
+        response.end();
+      });
+      response.on("close", () => { if (!response.writableFinished) upstream.destroy(); });
+      upstream.end(body);
+    });
+  });
+  await new Promise((accept, reject) => { relay.once("error", reject); relay.listen(0, "127.0.0.1", accept); });
+  return `http://127.0.0.1:${relay.address().port}${liveUpstream.pathname.replace(/\/$/, "")}`;
+}
 
 async function move(source, target) {
   await mkdir(dirname(target), { recursive: true });
@@ -101,6 +167,11 @@ async function cleanup() {
   cleaning = (async () => {
     if (playwright && playwright.exitCode === null && playwright.signalCode === null) playwright.kill("SIGTERM");
     await stopApp("SIGKILL");
+    if (relay) {
+      for (const request of forwarded) request.destroy();
+      relay.closeAllConnections();
+      await new Promise(accept => relay.close(accept));
+    }
     for (const entry of [...moves].reverse()) {
       if (entry.restored) continue;
       const backupExists = await exists(entry.backup);
@@ -116,6 +187,7 @@ async function cleanup() {
       if (owner.trim() === String(process.pid)) await rm(lock, { recursive: true });
       locked = false;
     }
+    if (liveTask) await writeFile(join(run, "live-wire.json"), JSON.stringify({ upstream: liveUpstream.href, requests: wire }, null, 2));
   })();
   return cleaning;
 }
@@ -133,6 +205,7 @@ const environment = {
   OLEAFLY_LIBREOFFICE: renderer,
   OLEAFLY_E2E_PRODUCTION: "1",
   OLEAFLY_DOCX_RECOVERY_RUN: run,
+  ...(liveTask ? { OLEAFLY_DOCX_LIVE_RUN: run } : {}),
   OLEAFLY_REAL_DOCX: resolve(author),
   OLEAFLY_E2E_BOOT_LOCALSTORAGE: JSON.stringify(bootSeed),
   OLEAFLY_E2E_LAUNCH_LOCALSTORAGE: JSON.stringify({ "oleafly.liveCollaboration": "0", "oleafly.preview.detached.*": null }),
@@ -164,7 +237,9 @@ async function runStage(stage) {
   await startApp(stage);
   console.log(`docx-recovery: ${stage}, owned app PID ${app.pid}`);
   const log = createWriteStream(join(run, `${stage}-playwright.log`));
-  playwright = spawn("pnpm", ["exec", "playwright", "test", "-c", "e2e/playwright.config.ts", "e2e/tests/127-docx-recovery.spec.ts", "--grep", `${stage} native`, "--retries=0", "--output", join(run, stage)], {
+  const specification = liveTask ? "e2e/tests/129-docx-task-live.spec.ts" : "e2e/tests/127-docx-recovery.spec.ts";
+  const filter = liveTask ? [] : ["--grep", `${stage} native`];
+  playwright = spawn("pnpm", ["exec", "playwright", "test", "-c", "e2e/playwright.config.ts", specification, ...filter, "--retries=0", "--output", join(run, stage)], {
     cwd: repository, env: { ...environment, OLEAFLY_DOCX_RECOVERY_STAGE: stage }, stdio: ["ignore", "pipe", "pipe"],
   });
   playwright.stdout.pipe(process.stdout, { end: false });
@@ -193,6 +268,7 @@ try {
   await writeFile(join(lock, "owner"), `${process.pid}\n`);
   await mkdir(data);
   await writeFile(join(data, "config.json"), JSON.stringify({ ui_locale: "en", checkpoints_enabled: false }));
+  if (liveTask) environment.OLEAFLY_DOCX_LIVE_URL = await startLiveRelay();
   for (const [index, original] of webStores.entries()) {
     const entry = { original, backup: join(run, "webkit-before", String(index)), after: join(run, "webkit-after", String(index)), existed: await exists(original), backedUp: false, restored: false };
     moves.push(entry);
@@ -200,7 +276,10 @@ try {
     if (entry.existed) { await move(original, entry.backup); entry.backedUp = true; await record(); }
   }
   console.log(`docx-recovery: retained acceptance data ${run}`);
-  for (const stage of ["prepare", "restore", "discard"]) await runStage(stage);
+  for (const stage of liveTask ? ["live-task"] : ["prepare", "restore", "discard"]) await runStage(stage);
+  if (liveTask && !wire.some(request => request.model === "gpt/gpt-6.1-sol" && request.reasoningEffort === "high" && request.status === 200 && request.finishedAt && /(^|\/)gpt-6\.1-sol$/.test(request.returnedModel ?? ""))) {
+    throw new Error("The transparent relay did not verify a completed Sol/high request and a matching returned model label.");
+  }
   if (sha256(await readFile(author)) !== expectedHash) throw new Error("Author input changed during acceptance.");
   outcome = "PASSED";
 } catch (error) {

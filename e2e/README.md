@@ -140,6 +140,31 @@ session, closed-session history and reopening without restoring an old target. T
 application integration evidence, not a real-model editing-quality assessment.
 The runner resets only the E2E identifier's storage as described above.
 
+For a bounded real-model run against an authorized English or Chinese manuscript,
+reuse the isolated runner with a local provider URL:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+OLEAFLY_WORKBENCH_PYTHON="$PWD/services/research-workbench/.venv/bin/python" \
+OLEAFLY_REAL_DOCX="/absolute/path/manuscript.docx" \
+OLEAFLY_REAL_DOCX_SHA256="the-exact-lowercase-sha256" \
+OLEAFLY_DOCX_LIVE_URL="http://127.0.0.1:3425/v1" \
+OLEAFLY_DOCX_LIVE_MODE=single OLEAFLY_DOCX_LIVE_LANGUAGE=en \
+node e2e/run-docx-recovery.mjs
+```
+
+The live mode runs `129-docx-task-live.spec.ts` in one isolated launch. Use
+`group` and `zh` for the Chinese group-member path. The model is fixed to
+`gpt/gpt-6.1-sol` with `high` effort and a seven-minute task budget. It reads an
+actual paragraph window and proposes one language edit; automation then uses the
+existing accept/save UI, compares the actual DOCX package, opens the saved PDF and
+reopens the document. Content quality remains a separate review of the retained
+original and candidate. The transparent relay records model, effort, tool names,
+response status and usage, without retaining request bodies or credentials and
+without changing model responses. Credentials and upstream routing stay in the
+local provider. Evidence is kept under ignored `.private/docx-task-live/run-*`.
+With no `OLEAFLY_DOCX_LIVE_URL`, the runner retains its three-launch recovery flow.
+
 ### Native DOCX crash recovery
 
 After building the packaged E2E app above, run the opt-in recovery acceptance
