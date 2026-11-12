@@ -53,6 +53,23 @@ covers the port pattern, the contribution registry, and the alias wiring.
 - [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your OS
 - No system document engines are required. The setup scripts stage the same pinned Tectonic, Biber, Pandoc, and Typst binaries shipped with Oleafly.
 
+The local macOS development setup uses Homebrew for global tools:
+
+```bash
+brew install node@22 pnpm@11 python@3.12 uv rustup gh
+```
+
+Put those Homebrew executables first in both login and non-login shells. Set
+`pnpm_config_pm_on_fail=warn` to keep using the installed Homebrew pnpm within
+the required major version instead of downloading another package-manager runtime;
+pnpm reports the difference from the exact `packageManager` pin. Keep that repository
+pin and the frozen lockfile unchanged. Configure uv with
+`python-preference = "only-system"` and `python-downloads = "never"` in its user
+`uv.toml`, so project environments use the Homebrew Python rather than an automatic
+interpreter download. Homebrew manages rustup; rustup still selects the exact Rust
+compiler required by `rust-toolchain.toml`. Maven and a JDK are not Oleafly build
+dependencies.
+
 ## First run
 
 ```bash
@@ -114,6 +131,8 @@ After upgrading those packages, run `pnpm docx:notices` and check the generated
 upstream notices with `node scripts/sync-docx-notices.mjs --check`. Vite lowers
 HarfBuzz's async initialization through `vite-plugin-top-level-await`; its scoped
 SWC pin follows the upstream compatibility issue linked in `pnpm-workspace.yaml`.
+The same workspace file explicitly permits SWC's native-binding installation check
+alongside esbuild, so a fresh pnpm install completes without an ignored-build error.
 The adapter preserves distribution comments and UTF-8 catalogs, keeps the engine
 out of the startup graph, and retains the PDF polyfill import order. Verify with
 `src/lib/vite-config.test.ts`, a production build and `pnpm check:performance`.

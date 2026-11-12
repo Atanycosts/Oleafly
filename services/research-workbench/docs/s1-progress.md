@@ -1,6 +1,6 @@
 # S1 implementation and acceptance status
 
-Status date: 2026-11-11
+Status date: 2026-11-12
 
 This document records the Workbench-domain slice only. Current cross-system entry points are
 the [Oleafly integration guide](../../../docs/research-workbench-integration.md),
@@ -14,6 +14,11 @@ history and private evidence are retained locally. Oleafly is the active applica
 shell. The old root retains only existing `var/` data and a migration pointer; data
 paths and manuscript records were not rewritten. Use `pnpm workbench:setup` from
 the Oleafly root and this service's `.venv` for development.
+
+On 2026-11-12 the local `.venv` was rebuilt from Homebrew Python 3.12. The normal
+`pnpm workbench:setup` entry and `uv pip check` passed; 167 focused reader, render,
+validation, server and workspace tests passed with one existing skip and the existing
+PyMuPDF/SWIG warnings. This environment check did not rerun Office or alter author inputs.
 
 Consolidation verification passed Ruff format (213 Python files), Ruff lint, mypy
 (118 source files), and the complete Python suite (1034 passed, 33 existing platform
@@ -71,20 +76,6 @@ anchors. Four focused baseline/conflict/staleness/replay regressions passed. The
 [session contract](../../../docs/agent/architecture.md#docx-实时工作表面)
 and [component choices](../../../docs/agent/reuse.md#docx-编辑与实时工作机制) own the cross-system integration;
 baseline semantics remain unchanged, while the reader method version below records the added VML observation.
-
-The migrated real English and Chinese manuscripts were then run through the production React
-editor and the real Workbench browser harness after the large-document session readiness fix.
-Both first reads returned an active session without a user-edit workaround; no-change exports
-preserved all package parts, media, relationship semantics and protected nodes, while each
-edited export changed only its intended paragraph. Mixed-format, field, OMML and image
-paragraph replacements were refused with `unsupported-target` and no revision change.
-This verifies the controlled structure round trip, not Word/WPS visual fidelity: the two
-documents still report substitute-font/fixed-measurer warnings, and the independent LibreOffice
-render of the English manuscript has a first-page two-column title difference.
-
-The reader now reports selected VML `w:pict/v:imagedata` as an explicit `vml_picture` unsupported
-record under `s1-readonly-reader-1.5.0`, retaining its relationship and resource locator;
-VML geometry and page placement remain outside the reader's interpretation.
 
 The migrated real English and Chinese manuscripts were then run through the production React
 editor and the real Workbench browser harness after the large-document session readiness fix.

@@ -2,6 +2,8 @@ packages:
   - "packages/*"
 
 allowBuilds:
+  # Validate the native SWC package used by the DOCX build adapter.
+  "@swc/core": true
   esbuild: true
 
 catalog:

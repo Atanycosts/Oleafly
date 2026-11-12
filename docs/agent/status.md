@@ -1,6 +1,6 @@
 # Oleafly Agent：当前状态与实施计划
 
-核对日期：2026-11-11。范围：Oleafly 的普通 Agent、ResearchTask、任务群及应用接入。
+核对日期：2026-11-12。范围：Oleafly 的普通 Agent、ResearchTask、任务群及应用接入。
 本文维护当前能力、交付状态和剩余工作；[架构](architecture.md)维护工作合同，
 [复用依据](reuse.md)维护固定版本的组件选择。Workbench 领域实现与验收由
 [S1 状态页](../../services/research-workbench/docs/s1-progress.md)维护。
@@ -317,7 +317,8 @@ system、tools、其他消息与采样设置完全一致；两次重复、随机
 
 ### DOCX 工作副本首个闭环（2026-11-11）
 
-在 `codex/shared-paper-reader` 的现有未提交工作上，已把固定版本 EigenPal core/react/fonts 接入
+当前实现在 [Draft PR #9](https://github.com/Atanycosts/Oleafly/pull/9) 中，分支为
+`codex/shared-paper-reader`。固定版本 EigenPal core/react/fonts 已接入
 “期刊检查 → 编辑 DOCX 工作副本”。工作副本从显式 baseline 的留存字节打开，在应用级弹窗编辑和分页，
 源文件仍是只读输入。选段请求复用既有内联 provider 流，建议在目标旁及工作栏出现；
 接受一项形成一次编辑事务，修改目标文本或结构会取消旧建议，其他段落可继续输入。
@@ -365,7 +366,18 @@ DOCX 平台范围（2026-11-11）：本轮在 macOS 上完成上述浏览器与�
 
 必要合成输入、浏览器截图与最终检查日志选留于本机忽略目录
 `.private/upstream-reuse/docx-live-implementation-20261111/`，不随干净 checkout 发布。
-本轮 recovery contract、Tauri 原子存储和工作区生命周期接入的定向测试通过：前端 recovery/工作区 **17 项**，Rust recovery **4 项**，TypeScript、Biome、`git diff --check` 通过。checkpoint 已验证保存前写入、正式 baseline 成功后的按内容 hash 清除、失败保留、确认丢弃清除以及保存后新 baseline 使用新 key；尚未运行跨进程重启或真实原生恢复 UI。源码尚未提交或发布。
+本轮 recovery contract、Tauri 原子存储和工作区生命周期接入的定向测试通过：前端 recovery/工作区 **17 项**，Rust recovery **4 项**，TypeScript、Biome、`git diff --check` 通过。checkpoint 已验证保存前写入、正式 baseline 成功后的按内容 hash 清除、失败保留、确认丢弃清除以及保存后新 baseline 使用新 key；尚未运行跨进程重启或真实原生恢复 UI。源码已提交到上述 Draft PR，尚未发布。
+
+2026-11-12 本机环境修复：Node、pnpm、Python、uv 和 GitHub CLI 的登录及非登录 shell
+入口已统一到 Homebrew；Workbench `.venv` 已用 Homebrew Python 重建。pnpm 使用 Homebrew
+安装的 11 系列并明确提示与仓库精确 pin 的版本差异，不再自动下载另一套 pnpm。
+SheetJS 缓存内容与锁文件完整性一致，依赖链接已恢复，SWC 原生绑定的构建许可已显式补齐；
+`pnpm install --offline --frozen-lockfile`、常规 lint、语言类型、中英文目录及 DOCX notice 核对通过。
+前端 DOCX/Agent/recovery/论文预览/构建配置定向测试 167 项通过；重建环境中的 Workbench
+reader/render/server/workspace 测试 167 项通过、1 项既有跳过，保留既有 PyMuPDF/SWIG 警告。
+生产构建与性能预算通过：入口 JavaScript 4,795,811 bytes，总 JavaScript 27,818,828 bytes；
+仍有既有大 chunk 提示。Rust 格式检查及 4 项 recovery 测试通过，保留 debug 链接的 unwind 表警告。
+环境规则见[开发说明](../development.md#prerequisites)。这些结果不扩大前述原生应用、真实模型或排版保真的验收范围。
 
 ### DOCX 实时工作形态研究（2026-11-10，历史）
 
