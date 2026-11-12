@@ -134,11 +134,13 @@ node e2e/run-docx-recovery.mjs
 
 The macOS runner creates an isolated app library, backs up existing E2E WebKit
 storage, and reuses the new storage across three launches. It edits a captured
-copy, verifies a native checkpoint, sends SIGKILL to its own app process, restores
-after restart, continues editing and saves a Workbench baseline and LibreOffice
+copy, verifies a native checkpoint, sends SIGKILL to its own app process, downloads
+the selected checkpoint through the native granted-path writer and checks its hash,
+then restores after restart, continues editing and saves a Workbench baseline and LibreOffice
 PDF, then restarts again to check confirmed discard. The author input is read-only
 and its hash is checked before and after. `OLEAFLY_LIBREOFFICE` may select an explicit
-`soffice` executable. Run English and Chinese manuscripts separately.
+`soffice` executable. Run English and Chinese manuscripts separately. The test hook
+selects the save path; this does not exercise manual interaction with the OS save dialog.
 
 Results and recovery material stay in ignored `.private/docx-recovery-native/run-*`.
 Normal exit and catchable failures restore the previous E2E WebKit storage. If the

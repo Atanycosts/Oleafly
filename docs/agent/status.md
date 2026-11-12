@@ -390,13 +390,19 @@ reader/render/server/workspace 测试 167 项通过、1 项既有跳过，保留
 切换应用语言不重载文档或清除编辑历史。
 
 使用隔离的 macOS 原生 Tauri E2E 包和真实 Python Workbench，对迁移目录中的英文、中文论文各执行
-“实际编辑 → 原生 checkpoint → SIGKILL → 重启发现并明确恢复 → UI/Agent 未保存正文一致 → 继续编辑 → 保存 →
+“实际编辑 → 原生 checkpoint → SIGKILL → 重启发现 → 下载所选 checkpoint 副本并核对 hash → 明确恢复 → UI/Agent 未保存正文一致 → 继续编辑 → 保存 →
 精确新 baseline 和 LibreOffice PDF → 关闭重开 → 再编辑/SIGKILL/重启 → 二次确认丢弃”。两份均通过，
 英文 PDF 10 页、中文 PDF 26 页，源和 PDF hash 均与留存记录匹配，首屏 PDF 文本包含继续编辑标记；原稿 hash 前后相同。
 恢复后导出的两份 DOCX 未丢失部件、媒体、关系语义或受保护节点，段落数仍为 515/533，各只有预期一段文本变化。
 该验收通过原生 IPC 和真实编辑内核执行，没有模型 provider；它证明上述恢复/保存/预览路径，不证明 Word/WPS 排版保真。
 用例及执行方式见 [E2E 说明](../../e2e/README.md#native-docx-crash-recovery)。原始输入、截图及确定字节保存在本机忽略目录
-`.private/docx-recovery-native/`，不随干净 checkout 发布。恢复范围是最近一次成功导出的 checkpoint，未到快照的最后输入、旧撤销历史、选择和未接受建议不恢复。
+`.private/docx-recovery-native/run-idjThk/`（英文）与 `run-KbA1MA/`（中文），不随干净 checkout 发布。
+下载使用应用现有的原生选定路径授权和字节写入命令；验收脚本代选保存路径，未人工操作系统保存对话框。
+两次运行均恢复了原 E2E WebKit 存储，测试拥有的应用和 Workbench 进程已退出。恢复范围是最近一次成功导出的 checkpoint，未到快照的最后输入、旧撤销历史、选择和未接受建议不恢复。
+
+恢复功能定向验证包括 Rust recovery 8 项；最终工作区生命周期回归 20 项通过，覆盖丢弃失败后无需再次编辑也会重建 checkpoint。
+原生包构建、Rust 格式检查与库 clippy、前端 lint、中英文目录和语言类型核对通过。最终普通生产构建及性能预算通过：入口 JavaScript 4,817,363 bytes，总 JavaScript 27,826,451 bytes，生产包开发钩子计数为 0，DOCX 内核仍按需加载；保留既有大 chunk 提示。
+全语言 hook 在本次新增键后仍因其他 22 个语言目录缺少 1,760 个键失败，沿用已明确排除这些语言的范围；不宣称全 hook 通过。
 
 ### DOCX 实时工作形态研究（2026-11-10，历史）
 
