@@ -1,6 +1,6 @@
 # S1 implementation and acceptance status
 
-Status date: 2026-11-13
+Status date: 2026-11-14
 
 This document records the Workbench-domain slice only. Current cross-system entry points are
 the [Oleafly integration guide](../../../docs/research-workbench-integration.md),
@@ -73,11 +73,11 @@ observations are dominant explicit declarations, not a resolved body-role model.
 The [journal property vocabulary](../src/research_file_workbench/journals/models.py)
 and [checker](../src/research_file_workbench/journals/checker.py) own the supported
 comparisons; retaining XML and editing with the full document engine does not expand
-those checks. Template observations remain candidates rather than mandatory rules.
-The next format-analysis increment should reuse the installed engine's public style
-cascade for a retained source version, preserve the applicable paragraph/run and
-property provenance, and distinguish role-specific requirements from template examples.
-That derived-format/checker connection is not implemented by the font/frame correction.
+those historical checks. Template observations are not publisher-authenticated rules.
+The 2026-11-14 [selected-template route](#selected-word-template-comparison-2026-11-14)
+now connects the installed engine's public style cascade to retained paragraph/run
+facts and role-specific comparison. This supersedes the format-analysis limitation
+of the 2026-11-13 font/frame increment; the Python reader does not recompute that cascade.
 
 The current private-font render gates passed Ruff format (213 Python files), Ruff lint,
 mypy (118 source files), and the full suite (1084 passed, 33 existing platform skips, five
@@ -535,8 +535,9 @@ implementation below `workbench/web/`.
 - The journal-world slice now provides a local versioned source analyzer, SQLite library, explicit
   DOCX project binding, page-geometry checking, rule correction history, dispositions and a static
   browser workbench. It is an implemented local slice, not full S2A rule processing: PDF guide
-  semantics, complete paragraph/run formatting, remote authentication and full journal acceptance
-  remain outside its declared scope.
+  semantics, remote authentication and full journal acceptance remain outside its declared scope.
+  Effective paragraph/run format comparison for explicitly selected Word templates is implemented
+  by the separate core-snapshot route [below](#selected-word-template-comparison-2026-11-14).
 - The journal HTTP, browser and service now share one upload contract: display name, original DOCX
   filename and captured bytes. Static browser files are included in the wheel and captured at server
   startup; a served asset identity does not silently change when local source files are edited.
@@ -667,8 +668,9 @@ portability and a supported macOS delivery/verification path remain separate pla
   it needs its own versioned change.
 - Automatic inference of verified page coordinates, complete computed style semantics, and
   semantic interpretation of complex embedded objects are not current reader capabilities.
-- Manuscript editing, S2A journal template and rule-pack processing, and S2B proposal preflight
-  with approved DOCX text replacement remain later-stage work.
+- Selected Word templates now use the core-snapshot comparison route described below. General
+  rule-pack processing and S2B proposal preflight retain their later-stage scope. Oleafly owns
+  live manuscript editing; its current implementation and evidence belong to the linked Agent status.
 - Microsoft Word compatibility and general renderer portability are not established by the
   retained Windows and Mac WPS chains. The frozen Windows environment uses a pinned executable;
   its missing Baskerville font and English-baseline substitution limitation remain historical
@@ -707,3 +709,48 @@ See [page evidence](s1-page-evidence.md). The render persistence and verificatio
 retained as local historical evidence under
 `.private/workspace-consolidation-20261109/workbench-original-source/reports/s1/`, outside the
 public clean checkout.
+
+## Selected Word template comparison (2026-11-14)
+
+The selected-template route now retains original upload bytes (including legacy `.doc`), normalized
+DOCX and conversion provenance in the existing source/world library. Explicit selection makes the
+template immediately usable as the comparison basis. It does not require confirming each font or
+size and does not turn a template difference into a publisher-authenticated violation.
+
+The application captures source-bound effective facts with its pinned DOCX core. Workbench verifies
+package part hashes and retains the baseline snapshot through existing artifact/evidence storage.
+Object comparison uses semantic kind/role, heading level and caption context, excluding identity,
+example text, raw formatting declarations and unused script font slots. Variable template formats
+remain uncertain. Results retain exact source/method versions and object evidence; request replay
+is idempotent and a changed binding is a conflict. Full package parts, XML nodes and relationships
+are available through bounded read-only queries. Snapshot objects and saved findings support
+pagination; finding filters apply before pagination. Findings are stored once as a content-addressed
+artifact, with summary/selectors and an initial page in the check. Core observations carry their
+own method versions so subsequent manuscript saves preserve historical evidence and mark its
+source applicability accurately. Wire fields and current methods are maintained in
+[the journal contract](../contracts/journals/world-contract.json), under `template_comparison`.
+
+This extends the journal business model; the historical geometry analyzer remains readable and
+continues to serve its existing guide checks. Python does not recompute the core's style cascade.
+Backend contract/component checks exercise retained bytes and HTTP, while actual application,
+legacy conversion, native Agent editing and Office rendering are separate integration evidence.
+
+The final module gate passed on 2026-11-14: Ruff formatting (223 files), lint, mypy (124 source
+files), and pytest (1140 passed, 33 skipped; five existing PyMuPDF/SWIG deprecation warnings).
+It covers exact package queries, active-script font requirements, object comparison, filtered
+finding and snapshot pagination, explicit binding conflicts, save-after-check and historical replay,
+and method-specific evidence applicability. The application-owned real-document browser acceptance
+also passed for the retained IJAM template plus English and Chinese manuscripts, with complete
+finding-page traversal and unchanged author hashes. Its raw report is local-only at
+`.private/journal-template-acceptance/real-bqD6BA/report.json` under the repository root. Native
+application acceptance is tracked in the linked Agent status.
+
+Explicit semantic regions refine section, paragraph, run and table profiles using core section
+membership and content roles. Front matter, body, references and appendix regions can be compared
+without pairing by section order, XML path, object ID or the formatting value under test. Mixed or
+unknown regions retain common-property comparison and variable values remain `cannot_determine`.
+Missing semantic/region profiles also produce an explicit uncertain object with its reason.
+Table, row and cell profiles compare stable common formatting within a region, without arbitrary
+table-to-table alignment or treating example dimensions as requirements. Core unsupported constructs
+and unknown/mixed role-region counts remain aggregated coverage gaps. Complete package retention
+does not imply that every OOXML construct already has an effective-format comparison interpretation.

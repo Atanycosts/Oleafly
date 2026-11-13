@@ -512,14 +512,25 @@ class WorkbenchService:
             reasons.append("source_baseline_changed")
         if binding is None or binding["binding_id"] != record["binding_id"]:
             reasons.append("world_binding_changed")
-        if record.get("checker_version") != CHECKER_VERSION:
+        template_check = "template_comparison" in record
+        if template_check:
+            from research_file_workbench.journals.template_models import (
+                SNAPSHOT_METHOD,
+                TEMPLATE_ANALYZER_VERSION,
+                TEMPLATE_CHECKER_VERSION,
+            )
+        if record.get("checker_version") != (
+            TEMPLATE_CHECKER_VERSION if template_check else CHECKER_VERSION
+        ):
             reasons.append("checker_version_changed")
-        if record.get("reader_version") != READER_VERSION:
+        if record.get("reader_version") != (SNAPSHOT_METHOD if template_check else READER_VERSION):
             reasons.append("reader_version_changed")
         artifact = f"artifact-version-{_text(record, 'source_sha256')}"
         open_project(self.project_root(project_id)).read_artifact(artifact)
         world = self.store.get_world(_text(record, "world_version_id"))
-        if world["analyzer_version"] != models.ANALYZER_VERSION:
+        if world["analyzer_version"] != (
+            TEMPLATE_ANALYZER_VERSION if template_check else models.ANALYZER_VERSION
+        ):
             reasons.append("analyzer_version_changed")
         update = any(
             other["journal_id"] == world["journal_id"]

@@ -75,7 +75,11 @@ def discover_state(*, root: Path, store: WorldStore, project_lookup: ProjectLook
         "worlds": store.list_worlds(),
         "projects": records,
         "capabilities": {
-            "scope": "page_geometry",
+            "scope": "journal_sources_and_selected_docx_template_comparison",
+            "selected_docx_templates": True,
+            "core_format_snapshots": True,
+            "object_template_checks": True,
+            "package_queries": True,
             "manuscript_editing": False,
             "guide_pdf_analysis": True,
             "guide_pdf_fragments": True,
@@ -122,8 +126,9 @@ def diff_worlds(store: WorldStore, from_version: str, to_version: str) -> JsonOb
     """Compare effective rule content while retaining context differences explicitly."""
     before = store.get_world(from_version)
     after = store.get_world(to_version)
-    left = {_text(rule, "property"): rule for rule in _records(before, "rules")}
-    right = {_text(rule, "property"): rule for rule in _records(after, "rules")}
+    key = "rule_id" if "template" in before or "template" in after else "property"
+    left = {_text(rule, key): rule for rule in _records(before, "rules")}
+    right = {_text(rule, key): rule for rule in _records(after, "rules")}
     changes = []
     for property_name in sorted(left.keys() | right.keys()):
         prior, current = left.get(property_name), right.get(property_name)
@@ -135,7 +140,7 @@ def diff_worlds(store: WorldStore, from_version: str, to_version: str) -> JsonOb
         )
         changes.append(
             {
-                "property": property_name,
+                "property": (current or prior or {}).get("property", property_name),
                 "before": prior,
                 "after": current,
                 "status": "added"

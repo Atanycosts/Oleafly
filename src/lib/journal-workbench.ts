@@ -115,8 +115,9 @@ export interface JournalGap {
 export interface JournalRule {
   rule_id: string;
   property: string;
-  expected: number | string | null;
-  unit: "twips" | "count" | "half_points" | "spacing_twips" | "font_family";
+  expected: number | string | null | { kind: string; role: string };
+  label?: string;
+  unit: "twips" | "count" | "half_points" | "spacing_twips" | "font_family" | "effective_format";
   basis_status: JournalBasis;
   scope: JournalScope & { section_scope: string };
   evidence: { source_id: string; locator: string; quote: string }[];
@@ -145,6 +146,16 @@ export interface JournalWorld extends JournalWorldSummary {
   rules: JournalRule[];
   coverage_gaps: JournalGap[];
   limitations: string[];
+  template?: {
+    source_id: string;
+    normalized_source_id: string;
+    snapshot_source_id: string;
+    source_sha256: string;
+    original_sha256: string;
+    provenance: { engine: string; version: string; method: string; converted_sha256: string } | null;
+    font_requirements?: { family: string; roles: string[]; scripts: string[] }[];
+    [key: string]: unknown;
+  } | null;
 }
 
 export interface JournalFinding {
@@ -186,6 +197,7 @@ export interface JournalCheck {
   }[];
   coverage_gaps: JournalGap[];
   limitations: string[];
+  template_comparison?: Record<string, unknown> | null;
 }
 
 export interface JournalProject {
@@ -264,16 +276,18 @@ export function journalUnitScale(unit: string): number {
   return unit === "count" ? 1 : unit === "half_points" ? 2 : unit === "spacing_twips" ? 20 : 1440 / 25.4;
 }
 
-export function formatJournalValue(value: number | string | null, unit: string): string {
+export function formatJournalValue(value: JournalRule["expected"], unit: string): string {
   if (value === null) return "—";
+  if (typeof value === "object") return `${value.role} · ${value.kind}`;
   if (typeof value === "string") return value;
   if (unit === "half_points") return `${value / 2} pt`;
   if (unit === "spacing_twips") return `${value / 20} pt`;
   return unit === "count" ? String(value) : `${Number(((value * 25.4) / 1440).toFixed(2))} mm`;
 }
 
-export function journalInputValue(value: number | string | null, unit: JournalRule["unit"]): string {
+export function journalInputValue(value: JournalRule["expected"], unit: JournalRule["unit"]): string {
   if (value === null) return "";
+  if (typeof value === "object") return JSON.stringify(value);
   if (typeof value === "string") return value;
   return String(Number((value / journalUnitScale(unit)).toFixed(4)));
 }

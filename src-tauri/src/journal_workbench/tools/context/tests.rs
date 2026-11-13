@@ -4,7 +4,7 @@ use oleafly_research::{
     model::ResearchTaskDraft,
     observations::content_hash,
     store::TaskStore,
-    workbench::{CommittedWorkbenchRecord, WorkbenchRecordEvent},
+    workbench::{CommittedWorkbenchRecord, WorkbenchRecordEvent, WorkbenchRecordReceipt},
 };
 
 fn current() -> Value {
@@ -181,6 +181,62 @@ fn receipt_cursor_full_read_recovers_exact_historical_bytes_after_current_change
     .unwrap();
     assert_eq!(empty["records"], json!([]));
     assert_eq!(empty["nextSequence"], end);
+}
+
+#[test]
+fn compact_receipt_explains_domain_pointer_without_presenting_omitted_content_as_a_verdict() {
+    let pointer = json!({
+        "projection":"retained_pointer",
+        "kind":"world",
+        "contentStatus":"not_embedded",
+        "snapshotOmitted":true,
+        "domainReadable":true,
+        "contentNote":"The complete world is retained by Workbench.",
+        "snapshotSha256":"full-world-hash",
+        "snapshotBytes":337_822,
+        "journal_id":"journal",
+        "journal_name":"Journal",
+        "version_id":"w2",
+        "ruleCount":12,
+        "manualDecisionCount":2,
+        "coverageGapCount":1,
+        "limitations":[],
+        "template":{"original_sha256":"original-hash","source_sha256":"source-hash"},
+        "templateSources":[{"source_id":"source-original","name":"template.doc"}],
+        "domainRead":{"method":"GET","path":"/api/world","query":{"version_id":"w2"}},
+        "nativeRead":{"tool":"journal_read","arguments":{
+            "operation":"object","kind":"world","object_id":"journal","world_version_id":"w2"
+        }},
+        "verifyDomainRead":{"snapshotSha256":"full-world-hash"}
+    });
+    let receipt = WorkbenchRecordReceipt {
+        sequence: 9,
+        record: record("world", "w2", pointer.clone()),
+        snapshot_sha256: "pointer-record-hash".into(),
+    };
+
+    let compact = compact_receipt(&receipt, &current());
+    assert_eq!(compact["snapshotState"], "retained_pointer");
+    assert_eq!(compact["contentIncluded"], false);
+    assert_eq!(compact["contentAvailableInReceipt"], false);
+    assert_eq!(compact["assessment"], "not_evaluated_from_pointer");
+    assert_eq!(compact["snapshotSha256"], "pointer-record-hash");
+    assert_eq!(compact["contentSnapshotSha256"], "full-world-hash");
+    assert_eq!(compact["domainRead"], pointer["domainRead"]);
+    assert_eq!(compact["summary"]["ruleCount"], 12);
+    assert_eq!(
+        compact["summary"]["templateSources"],
+        pointer["templateSources"]
+    );
+    assert_eq!(
+        compact["verifyDomainRead"],
+        json!({"snapshotSha256":"full-world-hash","snapshotBytes":337_822})
+    );
+    assert!(compact["summary"].get("rules").is_none());
+    assert!(compact["summary"].get("verdict").is_none());
+    assert!(compact["domainReadNote"]
+        .as_str()
+        .is_some_and(|note| note.contains("not summarized as a passing verdict")));
 }
 
 #[test]

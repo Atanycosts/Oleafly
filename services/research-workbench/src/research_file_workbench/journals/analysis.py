@@ -299,6 +299,11 @@ def validate_world_sources(world: JsonObject, sources: dict[str, bytes]) -> None
     descriptors = require_objects(world["sources"], "world sources", nonempty=True)
     if set(sources) != {item["source_id"] for item in descriptors}:
         raise WorldAnalysisError("World source bytes and descriptors must match exactly")
+    if "template" in world:
+        from research_file_workbench.journals.template_models import validate_template_sources
+
+        validate_template_sources(world, sources)
+        return
     captured: list[SourceInput] = []
     for item in descriptors:
         source_id = cast(str, item["source_id"])

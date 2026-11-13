@@ -190,6 +190,18 @@ def validate_check_dependencies(check: JsonObject) -> None:
     if not isinstance(dependencies, dict):
         raise WorldStoreError("Check must retain explicit source and method dependencies")
     source_digest = require_text(check.get("source_sha256"), "source_sha256")
+    if "template_comparison" in check:
+        expected = {
+            "artifact_version_id": f"artifact-version-{source_digest}",
+            "source_sha256": source_digest,
+            "world_version_id": check["world_version_id"],
+            "reader_version": check["reader_version"],
+            "checker_version": check["checker_version"],
+            "completeness": "core_object_format_comparison",
+        }
+        if dependencies != expected:
+            raise WorldStoreError("Template check dependencies differ from retained versions")
+        return
     expected = {
         "artifact_version_id": f"artifact-version-{source_digest}",
         "source_sha256": source_digest,

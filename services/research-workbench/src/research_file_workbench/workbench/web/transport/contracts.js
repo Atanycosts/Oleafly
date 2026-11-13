@@ -11,7 +11,7 @@ const labels = {
 const propertyLabels = {
   page_width_twips: "纸张宽度", page_height_twips: "纸张高度", top_margin_twips: "上边距",
   right_margin_twips: "右边距", bottom_margin_twips: "下边距", left_margin_twips: "左边距",
-  columns: "分栏", body_font_size_halfpoints: "正文字号", body_line_spacing_twips: "正文行距", body_font_family: "正文字体",
+  columns: "分栏", body_font_size_halfpoints: "正文字号", body_line_spacing_twips: "正文行距", body_font_family: "正文字体", object_format: "模板对象格式",
 };
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const isText = (value) => typeof value === "string" && value.trim().length > 0;
@@ -37,12 +37,18 @@ const isProperty = (value) => Object.hasOwn(propertyLabels, value);
 const propertyUnit = (property) => property === "columns" ? "count" : property === "body_font_family" ? "font_family" : property === "body_font_size_halfpoints" ? "half_points" : property === "body_line_spacing_twips" ? "spacing_twips" : "twips";
 const isRuleValue = (property, value) => property === "body_font_family" ? isText(value) : isInteger(value);
 const isGap = recordOf({ code: isText, message: isText, source_id: nullable(isText), property: nullable(isText), locator: nullable(isText) });
-const isRule = (value) => recordOf({
+const isObjectSelector = recordOf({ kind: isText, role: isText });
+const isRule = (value) => isObject(value) && (value.property === "object_format" ? recordOf({
+  rule_id: isText, property: oneOf("object_format"), expected: isObjectSelector, unit: oneOf("effective_format"),
+  basis_status: oneOf("confirmed"), confirmation_method: oneOf("explicit_template_selection"), scope: isObjectSelector,
+  template_object_ids: listOf(isText), limitations: listOf(isText),
+  evidence: listOf(recordOf({ source_id: isText, locator: isText, quote: isString })),
+})(value) : recordOf({
   rule_id: isText, property: isProperty, expected: (item) => item === null || isRuleValue(value.property, item), unit: oneOf("twips", "count", "half_points", "spacing_twips", "font_family"),
   basis_status: isBasis, scope: isRuleScope, limitations: listOf(isText),
   evidence: listOf(recordOf({ source_id: isText, locator: isText, quote: isString })),
   resolution: optional(recordOf({ reason: isText, actor_id: isText, previous_expected: (item) => item === null || isRuleValue(value.property, item), expected: (item) => isRuleValue(value.property, item) })),
-})(value) && value.unit === propertyUnit(value.property);
+})(value) && value.unit === propertyUnit(value.property));
 const worldSummaryShape = {
   version_id: isText, journal_id: isText, journal_name: isText,
   version_ordinal: (value) => isInteger(value) && value > 0, created_at: isText, scope: isScope,
@@ -59,19 +65,23 @@ const isProject = recordOf({
   binding: nullable(isBinding), latest_check: nullable(isCheckSummary),
 });
 const isDisposition = recordOf({ check_id: isText, rule_id: isText, action: oneOf("note", "defer"), note: isText, created_at: isText });
-const isRuleResult = recordOf({
+const isRuleResult = (value) => isObject(value) && (value.property === "object_format" ? recordOf({
+  rule_id: isText, property: oneOf("object_format"), basis_status: oneOf("confirmed"), verdict: isVerdict,
+  applicability: oneOf("APPLICABLE"), limitations: listOf(isText), findings: listOf(isObject),
+  coverage: recordOf({ total_objects: isCount }), finding_selector: isObjectSelector, finding_summary: isObject,
+})(value) : recordOf({
   rule_id: isText, property: isProperty, basis_status: isBasis, verdict: isVerdict,
   applicability: oneOf("APPLICABLE", "NOT_APPLICABLE", "UNKNOWN"), limitations: listOf(isText),
   coverage: recordOf({ total_sections: isCount, observed_sections: isCount, missing_sections: isCount }),
   findings: listOf(recordOf({ section_index: (value) => isInteger(value) && value > 0, locator: isText, observed: nullable(isInteger), expected: isInteger, message: isText, verdict: optional(isVerdict) })),
-});
+})(value));
 const isCheck = recordOf({
   check_id: isText, project_id: isText, world_version_id: isText, world: isWorld,
   created_at: isText, validity: isValidity, update_available: isBoolean, stale_reasons: listOf(isText),
   rule_results: listOf(isRuleResult), dispositions: listOf(isDisposition), coverage_gaps: listOf(isGap),
   limitations: listOf(isText),
 });
-const isFragment = recordOf({ fragment_id: isText, source_id: isText, kind: oneOf("paragraph", "sentence", "table_cell", "docx_node", "component", "component_rule", "source_quote", "pdf_block", "pdf_heading"), locator: isText, parent_fragment_id: nullable(isText), part_path: nullable(isText), text: isString, char_start: nullable(isCount), char_end: nullable(isCount), content: isObject });
+const isFragment = recordOf({ fragment_id: isText, source_id: isText, kind: oneOf("paragraph", "sentence", "table_cell", "docx_node", "component", "component_rule", "source_quote", "pdf_block", "pdf_heading", "template_object"), locator: isText, parent_fragment_id: nullable(isText), part_path: nullable(isText), text: isString, char_start: nullable(isCount), char_end: nullable(isCount), content: isObject });
 const isReview = recordOf({
   world_version_id: isText, method_version: isText, relation_method_version: isText, reader_version: isText, pdf_source_version: isText, offset_unit: oneOf("unicode_code_points"),
   fragments: listOf(isFragment), sources: listOf(recordOf({ source_id: isText, name: isText, kind: isText, fragment_count: isCount, extraction_status: oneOf("extracted_with_gaps", "extracted"), reader_issues: listOf(isText) })), limitations: listOf(isText),
@@ -131,7 +141,11 @@ function checkReferencesAgree(response) {
     && response.rule_results.every((result) => {
       const rule = rules.get(result.rule_id);
       return rule && rule.property === result.property && rule.basis_status === result.basis_status
-        && result.coverage.observed_sections + result.coverage.missing_sections === result.coverage.total_sections;
+        && (result.property === "object_format"
+          ? result.finding_selector.kind === rule.scope.kind && result.finding_selector.role === rule.scope.role
+            && Object.values(result.finding_summary).every(isCount)
+            && Object.values(result.finding_summary).reduce((sum, count) => sum + count, 0) === result.coverage.total_objects
+          : result.coverage.observed_sections + result.coverage.missing_sections === result.coverage.total_sections);
     }) && response.dispositions.every((item) => item.check_id === response.check_id && rules.has(item.rule_id));
 }
 

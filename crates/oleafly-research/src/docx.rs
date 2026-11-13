@@ -65,6 +65,20 @@ pub enum DocxRuntimeEvent {
         target: DocxTarget,
         proposed: String,
     },
+    /// Durable intent written before the renderer receives an application operation.
+    OperationStarted {
+        operation: String,
+        request: serde_json::Value,
+    },
+    /// An actual application operation, distinct from a proposed text edit.
+    Operation {
+        /// Legacy operation receipts did not carry an external operation ID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation_id: Option<String>,
+        operation: String,
+        request: serde_json::Value,
+        result: serde_json::Value,
+    },
 }
 
 /// Only known application results belong here. Errors and unknown outcomes
@@ -105,10 +119,43 @@ pub struct DocxActivityOrigin {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum DocxActivityEvent {
-    Runtime { event: DocxRuntimeEvent },
-    Outcome { outcome: DocxProposalOutcome },
+    Runtime {
+        event: DocxRuntimeEvent,
+    },
+    Outcome {
+        outcome: DocxProposalOutcome,
+    },
+    OperationCheckpoint {
+        operation_id: String,
+        phase: DocxOperationCheckpointPhase,
+        recovery_key: String,
+        content_sha256: String,
+        from_document: Box<DocxDocumentIdentity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DocxOperationCheckpointPhase {
+    Saved,
+    Recovered,
+}
+
+pub struct DocxOperationCheckpoint<'a> {
+    pub operation_id: &'a str,
+    pub phase: DocxOperationCheckpointPhase,
+    pub recovery_key: &'a str,
+    pub content_sha256: &'a str,
+    pub from_document: DocxDocumentIdentity,
+    pub request_id: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -21,10 +21,12 @@ import {
   DOCX_AGENT_HOST,
   registerDocxAgentSession,
   resetDocxAgentHostForTest,
+  runTaskDocxOperation,
   unregisterDocxAgentSession,
   updateDocxAgentSession,
 } from "./docx-agent-host";
 
+type DocxFormatReadQuery = Parameters<NonNullable<typeof DOCX_AGENT_HOST.readFormat>>[1];
 type Exec = (input?: unknown) => Promise<unknown>;
 
 function paragraph(ref: string, text: string, paraId = ref): DocxParagraph {
@@ -420,8 +422,196 @@ describe("active DOCX Agent host", () => {
   });
 });
 
+function readableFormat(revision = 0, dirty = false) {
+  return {
+    document: { sessionId: "session-1", baselineId: "baseline-1",
+      sessionRevision: revision, savedRevision: 0, dirty, filename: "paper.docx" },
+    sourceSha256: "b".repeat(64), revision,
+    paragraph: { paragraphRef: "p1", text: "Original paragraph.", revision,
+      font: { bold: null, italic: null, underline: null, strikeThrough: null,
+        highlightColor: null, subscript: null, superscript: null, name: null, size: null, color: null },
+      paragraph: { alignment: "Left" as const, style: null, firstLineIndent: null,
+        leftIndent: null, rightIndent: null, lineSpacing: null, spaceBefore: null,
+        spaceAfter: null, widowControl: null, readingOrder: "LeftToRight" as const } },
+    objects: [{ object_id: "word/document.xml#0.0", kind: "paragraph" }],
+    total: 1, nextOffset: null,
+  };
+}
+
+describe("live DOCX format, save and template tools", () => {
+  it("reads scoped format, applies one revisioned format transaction and preserves the actual session state", async () => {
+    const local = harness();
+    const readFormat = vi.fn(async (_query: DocxFormatReadQuery) =>
+      readableFormat(local.session.revision(), local.session.revision() !== 0));
+    const formatParagraph = vi.fn((handle, expectedRevision, format): DocxApplyResult => {
+      if (expectedRevision !== local.session.revision()) {
+        return { ok: false, code: "stale-target", message: "stale",
+          revision: local.session.revision(), changed: false };
+      }
+      expect(handle).toEqual(paragraph("p1", "Original paragraph.").handle);
+      expect(format).toEqual({
+        font: { name: "Arial", size: 12 },
+        paragraph: { alignment: "Centered", spaceAfter: 6 },
+      });
+      local.edit("p1", "Original paragraph.");
+      return { ok: true, revision: 1, changed: true };
+    });
+    local.session.formatParagraph = formatParagraph;
+    register(local.session, { readFormat });
+    const confirm = vi.fn(async () => true);
+    const mutationAllowed = vi.fn(() => true);
+    const tools = createDocxAgentTools({ confirm, mutationAllowed });
+
+    expect(await (tools.read_docx_format.execute as Exec)({
+      query: { paragraph_ref: "p1", kind: "objects", limit: 10 },
+    })).toMatchObject({ paragraph: { paragraphRef: "p1" }, nextOffset: null });
+    expect(await (tools.apply_docx_format.execute as Exec)({
+      paragraph_ref: "p1",
+      expected_revision: 0,
+      font: { name: "Arial", size: 12 },
+      paragraph: { alignment: "Centered", spaceAfter: 6 },
+    })).toMatchObject({
+      ok: true,
+      changed: true,
+      revision: 1,
+      document: { sessionRevision: 1, savedRevision: 0, dirty: true },
+    });
+    expect(formatParagraph).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
+      tool: "apply_docx_format",
+      path: "paper.docx#p1",
+    }));
+    expect(mutationAllowed).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors decline and cancellation before changing the live session", async () => {
+    const local = harness();
+    const readFormat = vi.fn(async () => readableFormat());
+    const formatParagraph = vi.fn(() => ({ ok: true as const, revision: 1, changed: true }));
+    local.session.formatParagraph = formatParagraph;
+    register(local.session, { readFormat });
+
+    expect(await (createDocxAgentTools({ confirm: async () => false })
+      .apply_docx_format.execute as Exec)({
+      paragraph_ref: "p1", expected_revision: 0, font: { bold: true },
+    })).toMatchObject({ declined: true });
+    expect(formatParagraph).not.toHaveBeenCalled();
+
+    const controller = new AbortController();
+    controller.abort();
+    expect(await (createDocxAgentTools({ signal: controller.signal })
+      .apply_docx_format.execute as Exec)({
+      paragraph_ref: "p1", expected_revision: 0, font: { bold: true },
+    })).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(formatParagraph).not.toHaveBeenCalled();
+  });
+
+  it("passes the explicit world version and expected save revision to session callbacks", async () => {
+    const local = harness();
+    const save = vi.fn(async ({ expectedRevision }) => ({
+      baselineId: "baseline-2", revision: expectedRevision, sourceSha256: "c".repeat(64),
+      document: { sessionId: "session-1", baselineId: "baseline-2",
+        sessionRevision: expectedRevision, savedRevision: expectedRevision, dirty: false },
+    }));
+    const check = vi.fn(async ({ template }) => ({ template, check: { check_id: "check-7" } }));
+    register(local.session, { save, check });
+    const controller = new AbortController();
+    const tools = createDocxAgentTools({ signal: controller.signal });
+
+    expect(await (tools.save_docx_document.execute as Exec)({ expected_revision: 0 }))
+      .toMatchObject({ baselineId: "baseline-2", revision: 0 });
+    expect(await (tools.check_docx_template.execute as Exec)({
+      template: "world-v7",
+    })).toEqual({
+      template: "world-v7",
+      check: { check_id: "check-7" },
+    });
+    expect(save).toHaveBeenCalledWith({ expectedRevision: 0, signal: controller.signal });
+    expect(check).toHaveBeenCalledWith({ template: "world-v7", signal: controller.signal });
+
+    expect(await (tools.check_docx_template.execute as Exec)({ template: " " })).toEqual({
+      error: "template must be an explicit world version ID.",
+    });
+    expect(check).toHaveBeenCalledOnce();
+  });
+
+  it("reports unavailable callbacks instead of rebinding or adding a default", async () => {
+    const local = harness();
+    register(local.session);
+    const tools = createDocxAgentTools();
+    for (const [run, error] of [
+      [() => (tools.read_docx_format.execute as Exec)({}),
+        "Live DOCX formatting reads are unavailable for this working copy."],
+      [() => (tools.save_docx_document.execute as Exec)({ expected_revision: 0 }),
+        "Live DOCX saving is unavailable for this working copy."],
+      [() => (tools.check_docx_template.execute as Exec)({ template: "world-v7" }),
+        "Explicit DOCX template checking is unavailable for this working copy."],
+    ] as const) expect(await run()).toEqual({ unavailable: true, error });
+  });
+});
+
 describe("task-provided DOCX proposals", () => {
   const scope = { projectId: "app-project", workbenchProjectId: "paper-project" };
+  it("carries the actual completed operation status in every task envelope", async () => {
+    const local = harness();
+    const readFormat = vi.fn(async () => readableFormat());
+    const save = vi.fn(async ({ expectedRevision }) => ({
+      baselineId: "baseline-2", revision: expectedRevision, sourceSha256: "c".repeat(64),
+      document: { sessionId: "session-1", baselineId: "baseline-2",
+        sessionRevision: expectedRevision, savedRevision: expectedRevision, dirty: false },
+    }));
+    const check = vi.fn(async ({ template }) => ({ template, check: { check_id: "check-7" } }));
+    register(local.session, {
+      readFormat,
+      save,
+      check,
+      ...{
+        session: {
+          ...local.session,
+          formatParagraph: () => ({
+            ok: false as const, code: "invalid-format" as const, message: "invalid",
+            revision: 0, changed: false as const,
+          }),
+          applySuggestion: () => ({
+            ok: false as const, code: "unsupported-target" as const, message: "unsupported",
+            revision: 0, changed: false as const,
+          }),
+        },
+      },
+    });
+
+    expect(await runTaskDocxOperation(scope, "session-1", "read_format", {
+      query: { paragraphRef: "p1", kind: "objects", limit: 10 },
+    })).toMatchObject({ operation: "read_format", ok: true });
+    expect(await runTaskDocxOperation(scope, "session-1", "format", {
+      paragraphRef: "p1", expectedRevision: 0, format: { font: { bold: true } },
+    })).toMatchObject({ operation: "format", ok: false, result: { ok: false } });
+
+    const { captureTaskDocxTarget } = await import("./docx-agent-host");
+    const { target } = captureTaskDocxTarget(scope, "session-1", "p1");
+    expect(await runTaskDocxOperation(scope, "session-1", "apply", {
+      targetId: target.targetId, expectedRevision: 0, text: "Replacement.",
+    })).toMatchObject({ operation: "apply", ok: false, result: { ok: false } });
+    expect(await runTaskDocxOperation(scope, "session-1", "save", {
+      expectedRevision: 0,
+    })).toMatchObject({ operation: "save", ok: true });
+    expect(await runTaskDocxOperation(scope, "session-1", "check", {
+      template: "world-v7",
+    })).toMatchObject({ operation: "check", ok: true });
+  });
+
+  it("keeps thrown task operation failures as errors", async () => {
+    const local = harness();
+    register(local.session, {
+      readFormat: async () => { throw new Error("format read failed"); },
+    });
+    await expect(runTaskDocxOperation(scope, "session-1", "read_format", {
+      query: { paragraphRef: "p1", kind: "objects", limit: 10 },
+    })).rejects.toThrow("format read failed");
+  });
+
   it("validates without generation and presents only retained proposals to the original session", async () => {
     const local = harness();
     const onTaskSuggestion = vi.fn();
@@ -474,4 +664,68 @@ describe("task-provided DOCX proposals", () => {
     local.edit("p1", "字".repeat(12000));
     expect(() => readTaskDocxDocument(scope, "session-1")).toThrow("32 KiB");
   });
+});
+
+it("retains a native operation receipt before returning a committed task edit", async () => {
+  const local = harness();
+  local.session.formatParagraph = vi.fn((): DocxApplyResult => {
+    local.edit("p1", "Original paragraph.");
+    return { ok: true, changed: true, revision: 1 };
+  });
+  let finish!: () => void;
+  const onTaskOperation = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+  register(local.session, { onTaskOperation });
+  let returned = false;
+  const work = runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "durable-intent" },
+    "session-1", "format", { paragraphRef: "p1", expectedRevision: 0, format: { font: { bold: true } } })
+    .then((result) => { returned = true; return result; });
+  expect(onTaskOperation).toHaveBeenCalledWith(expect.objectContaining({
+    operationId: "durable-intent", document: expect.objectContaining({ sessionRevision: 1 }),
+    result: expect.objectContaining({ operation: "format", ok: true }),
+  }));
+  expect(returned).toBe(false);
+  finish();
+  expect(await work).toMatchObject({ operation: "format", ok: true, checkpoint: { status: "recorded" } });
+});
+
+it("reports a checkpoint failure while preserving the actual committed operation result", async () => {
+  const local = harness();
+  local.session.formatParagraph = vi.fn((): DocxApplyResult => {
+    local.edit("p1", "Original paragraph.");
+    return { ok: true, changed: true, revision: 1 };
+  });
+  register(local.session, { onTaskOperation: async () => { throw new Error("disk full"); } });
+  expect(await runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "durable-intent" },
+    "session-1", "format", { paragraphRef: "p1", expectedRevision: 0, format: { font: { nameEastAsia: "宋体" } } }))
+    .toMatchObject({ operation: "format", ok: true, result: { changed: true }, checkpoint: { status: "failed", error: "Error: disk full" } });
+  expect(local.session.revision()).toBe(1);
+});
+
+it("checkpoints a retained check identity without copying the full findings into task recovery", async () => {
+  const local = harness();
+  const onTaskOperation = vi.fn(async () => {});
+  register(local.session, { onTaskOperation, check: async () => ({ template: "world-7", check: {
+    check_id: "checked", project_id: "paper-project", baseline_id: "baseline-1", world_version_id: "world-7",
+    summary: { observed_difference: 2 }, template_comparison: { findings: Array.from({ length: 100 }, () => ({ observed: "long" })) },
+  } }) });
+  const result = await runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "check-intent" },
+    "session-1", "check", { template: "world-7" });
+  expect(result.result).toHaveProperty("check.template_comparison.findings");
+  expect(onTaskOperation.mock.calls[0]).toEqual([expect.objectContaining({ result: expect.objectContaining({
+    result: { template: "world-7", check: { check_id: "checked", project_id: "paper-project", baseline_id: "baseline-1",
+      world_version_id: "world-7", summary: { observed_difference: 2 } } },
+  }) })]);
+});
+
+it("refuses to attribute a completed baseline check to a newer live edit", async () => {
+  const local = harness();
+  const onTaskOperation = vi.fn(async () => {});
+  let finish!: (result: { template: string; check: Record<string, unknown> }) => void;
+  register(local.session, { onTaskOperation, check: () => new Promise((resolve) => { finish = resolve; }) });
+  const checking = runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "check-intent" },
+    "session-1", "check", { template: "world-7" });
+  local.edit("p1", "User edited during the check");
+  finish({ template: "world-7", check: { check_id: "checked", baseline_id: "baseline-1" } });
+  await expect(checking).rejects.toThrow("changed while its saved baseline was being checked");
+  expect(onTaskOperation).not.toHaveBeenCalled();
 });

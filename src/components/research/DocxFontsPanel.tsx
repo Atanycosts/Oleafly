@@ -23,11 +23,16 @@ export function DocxFontsPanel({ world, status, ready, onRefresh }: {
   const refreshRef = useRef(onRefresh);
   refreshRef.current = onRefresh;
   const rules = world?.rules?.filter((rule) => rule.property === "body_font_family" && typeof rule.expected === "string") ?? [];
+  const templateFonts = world?.template?.font_requirements ?? [];
   const inScope = (rule: NonNullable<JournalWorld["rules"]>[number]) => !!world && rule.scope.article_type === world.scope.article_type && rule.scope.stage === world.scope.stage && rule.scope.language === world.scope.language;
 
   useEffect(() => {
     let active = true;
-    const required = new Set(world?.rules?.filter((rule) => rule.property === "body_font_family" && rule.unit === "font_family" && rule.basis_status === "confirmed" && typeof rule.expected === "string" && rule.scope.article_type === world.scope.article_type && rule.scope.stage === world.scope.stage && rule.scope.language === world.scope.language).map((rule) => String(rule.expected).trim()));
+    const families = [
+      ...(world?.rules?.filter((rule) => rule.property === "body_font_family" && rule.unit === "font_family" && rule.basis_status === "confirmed" && typeof rule.expected === "string" && rule.scope.article_type === world.scope.article_type && rule.scope.stage === world.scope.stage && rule.scope.language === world.scope.language).map((rule) => String(rule.expected).trim()) ?? []),
+      ...(world?.template?.font_requirements?.map((font) => font.family) ?? []),
+    ];
+    const required = new Map(families.map((family) => [familyKey(family), family]));
     const check = async () => {
       setAcquisition({});
       setError(null);
@@ -36,9 +41,9 @@ export function DocxFontsPanel({ world, status, ready, onRefresh }: {
       setBusy(true);
       try {
       await useFontPacksStore.getState().load();
-      for (const family of required) {
+      for (const [key, family] of required) {
         if (!active) return;
-        const update = (value: Acquisition) => { if (active) setAcquisition((current) => ({ ...current, [family]: value })); };
+        const update = (value: Acquisition) => { if (active) setAcquisition((current) => ({ ...current, [key]: value })); };
         update("checking");
         const available = await hasExactDocxFont(family);
         if (!active) return;
@@ -69,16 +74,28 @@ export function DocxFontsPanel({ world, status, ready, onRefresh }: {
     finally { setBusy(false); }
   }
 
+  const catalogDetails = (family: string) => useFontPacksStore.getState().packs
+    .filter((pack) => pack.families?.some((name) => familyKey(name) === familyKey(family)))
+    .map((pack) => <p key={pack.id} className="text-muted-foreground">{pack.description}{pack.license?.url && <> · <a href={pack.license.url} target="_blank" rel="noreferrer" className="underline">{pack.license.spdx}</a></>}</p>);
+  const acquisitionState = (family: string) => acquisition[familyKey(family)] ?? "checking";
+
   return <section className="space-y-2 rounded border p-2 text-xs" data-testid="docx-fonts-panel">
     <p className="font-medium">{text.title}</p>
     <p>{text.journalRequirements}</p>
     {world && <p className="break-all text-muted-foreground" data-testid="docx-font-world">{world.journal_name} · {world.version_id}</p>}
-    {rules.length === 0 && <p className="text-muted-foreground">{text.noRequirements}</p>}
+    {rules.length === 0 && templateFonts.length === 0 && <p className="text-muted-foreground">{text.noRequirements}</p>}
     {rules.map((rule) => <div key={rule.rule_id} className="space-y-1" data-testid="docx-journal-font" data-basis={rule.basis_status}>
       <p>{String(rule.expected)} · {rule.basis_status === "confirmed" ? text.confirmed : text.unconfirmed}</p>
-      {useFontPacksStore.getState().packs.filter((pack) => pack.families?.some((family) => familyKey(family) === familyKey(String(rule.expected)))).map((pack) => <p key={pack.id} className="text-muted-foreground">{pack.description}{pack.license?.url && <> · <a href={pack.license.url} target="_blank" rel="noreferrer" className="underline">{pack.license.spdx}</a></>}</p>)}
-      {rule.basis_status === "confirmed" && (inScope(rule) ? <p data-testid="docx-font-acquisition" data-state={acquisition[String(rule.expected)] ?? "checking"}>{text[acquisition[String(rule.expected)] ?? "checking"]}</p> : <p>{text.outsideScope}</p>)}
+      {catalogDetails(String(rule.expected))}
+      {rule.basis_status === "confirmed" && (inScope(rule) ? <p data-testid="docx-font-acquisition" data-state={acquisitionState(String(rule.expected))}>{text[acquisitionState(String(rule.expected))]}</p> : <p>{text.outsideScope}</p>)}
       {rule.evidence.map((evidence) => <p key={`${evidence.source_id}:${evidence.locator}`} className="text-muted-foreground">{evidence.source_id} · {evidence.locator} · {evidence.quote}</p>)}
+    </div>)}
+    {templateFonts.length > 0 && <p className="text-muted-foreground">{text.templateFonts}</p>}
+    {templateFonts.map((font) => <div key={font.family} className="space-y-1" data-testid="docx-template-font">
+      <p>{font.family}</p>
+      <p className="text-muted-foreground">{text.roles}: {font.roles.join(", ")} · {text.scripts}: {font.scripts.join(", ")}</p>
+      {catalogDetails(font.family)}
+      <p data-testid="docx-font-acquisition" data-state={acquisitionState(font.family)}>{text[acquisitionState(font.family)]}</p>
     </div>)}
     <p className="text-muted-foreground">{text.acquisitionOnly}</p>
     <p>{text.documentMissing}</p>

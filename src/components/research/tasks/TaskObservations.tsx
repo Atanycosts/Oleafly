@@ -142,7 +142,10 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
       </details> : null}
       {docx.length > 0 ? <details data-testid="task-docx-observations"><summary>{docxText.title}</summary>
         <ol className="max-h-96 space-y-3 overflow-auto break-words text-xs">{docx.map(({ row, activity }) => <li key={row.sequence} className="space-y-1 border-t pt-2">
-          <p>{docxText.events[activity.event.type === "runtime" ? activity.event.event.kind : activity.event.outcome.kind]}{` · r${activity.document.sessionRevision}`}</p>
+          <p>{activity.event.type === "operationCheckpoint" ? docxText.events[activity.event.phase] : activity.event.type === "runtime" && activity.event.event.kind === "operation"
+            ? `${docxText.events.operation} · ${activity.event.event.operation} · ${activity.event.event.result.ok ? docxText.operationSucceeded : docxText.operationFailed}`
+            : docxText.events[activity.event.type === "runtime" ? activity.event.event.kind : activity.event.outcome.kind]}
+          {` · r${activity.document.sessionRevision}`}</p>
           <p className="break-all">{activity.id} · {activity.document.baselineId}</p>
           {activity.origin.memberId ? <p>{docxText.member}: {activity.origin.memberId} · {activity.origin.executionId}</p> : null}
           {activity.origin.workIds.length ? <p>{docxText.work}: {activity.origin.workIds.join(", ")}</p> : null}

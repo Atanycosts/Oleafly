@@ -11,7 +11,13 @@ ANALYZER_VERSION = "journal-world-analyzer-1.5.0"
 CHECKER_VERSION = "journal-geometry-checker-1.2.0"
 WORLD_SCHEMA_VERSION = "journal-world-1.1.0"
 COMPONENT_SCHEMA_VERSION = "journal-rule-component-1.0.0"
-SOURCE_KINDS = {"template_docx", "guide_text", "guide_docx", "guide_pdf", "rule_component_json"}
+SOURCE_KINDS = {
+    "template_docx",
+    "guide_text",
+    "guide_docx",
+    "guide_pdf",
+    "rule_component_json",
+}
 PROPERTY_LABELS = {
     "page_width_twips": "Page width",
     "page_height_twips": "Page height",
@@ -92,7 +98,7 @@ def validate_world_identity(world: JsonObject) -> None:
         "limitations",
         "version_id",
     }
-    require_keys(world, required, {"manual_decisions", "version_ordinal", "created_at"})
+    require_keys(world, required, {"manual_decisions", "version_ordinal", "created_at", "template"})
     if world["schema_version"] != WORLD_SCHEMA_VERSION:
         raise WorldAnalysisError("Unsupported journal world schema")
     for key in ("journal_name", "analyzer_version", "reader_version"):
@@ -114,8 +120,12 @@ def validate_world_identity(world: JsonObject) -> None:
         name = require_text(source["name"], "source name")
         kind = require_text(source["kind"], "source kind")
         status = require_text(source["status"], "source analysis status")
-        if kind not in SOURCE_KINDS or status not in {
+        allowed_kinds = SOURCE_KINDS | (
+            {"template_original", "docx_format_snapshot"} if "template" in world else set()
+        )
+        if kind not in allowed_kinds or status not in {
             "analyzed",
+            "captured",
             "analyzed_with_gaps",
             "unsupported",
         }:
@@ -126,6 +136,11 @@ def validate_world_identity(world: JsonObject) -> None:
         identities.add(identity)
         source_ids.add(source["source_id"])
         require_strings(source["limitations"], "source limitations")
+    if "template" in world:
+        from research_file_workbench.journals.template_models import validate_template_world
+
+        validate_template_world(world)
+        return
     rules = require_objects(world["rules"], "world rules")
     rule_ids: set[str] = set()
     for rule in rules:
@@ -160,6 +175,12 @@ def validate_world_identity(world: JsonObject) -> None:
 def validate_world_for_execution(world: JsonObject) -> None:
     """Require current analysis semantics and consistent local confirmation evidence."""
     validate_world_identity(world)
+    if "template" in world:
+        from research_file_workbench.journals.template_models import TEMPLATE_ANALYZER_VERSION
+
+        if world["analyzer_version"] != TEMPLATE_ANALYZER_VERSION:
+            raise WorldAnalysisError("Template analyzer changed; recapture the template")
+        return
     if world["analyzer_version"] != ANALYZER_VERSION:
         raise WorldAnalysisError("Journal analyzer changed; reanalyze sources before a new check")
     from research_file_workbench.docx.report import READER_VERSION

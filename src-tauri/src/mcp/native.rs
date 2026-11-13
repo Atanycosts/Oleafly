@@ -18,6 +18,9 @@ const READ_ONLY: &[&str] = &[
 const MUTATING: &[&str] = &[
     "suggest_docx_change",
     "apply_docx_suggestion",
+    "apply_docx_format",
+    "save_docx_document",
+    "check_docx_template",
     "write_file",
     "replace_in_file",
     "create_file",

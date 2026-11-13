@@ -55,6 +55,10 @@ static APPROVALS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 const KNOWN_TOOLS: &[&str] = &[
     "list_docx_documents",
     "read_docx_document",
+    "read_docx_format",
+    "apply_docx_format",
+    "save_docx_document",
+    "check_docx_template",
     "capture_docx_target",
     "suggest_docx_change",
     "apply_docx_suggestion",

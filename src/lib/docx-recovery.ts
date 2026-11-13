@@ -12,10 +12,17 @@ export interface DocxRecoveryReceipt extends DocxRecoveryApplied {
   outcome: DocxProposalOutcome;
 }
 
+export interface DocxRecoveryOperation {
+  operationId: string;
+  document: DocxDocumentIdentity;
+  result: Record<string, unknown>;
+}
+
 export interface DocxRecoveryTaskState {
   document: DocxDocumentIdentity;
   applied: DocxRecoveryApplied[];
   receipts: DocxRecoveryReceipt[];
+  operations?: DocxRecoveryOperation[];
   pendingSave?: {
     projectId: string; expectedBaselineId: string; filename: string;
     reason: string; requestId: string; revision: number;

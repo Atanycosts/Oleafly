@@ -8,7 +8,7 @@ use tauri::State;
 
 use super::JournalWorkbenchState;
 
-fn find_renderer() -> Option<PathBuf> {
+pub(super) fn find_renderer() -> Option<PathBuf> {
     if let Some(selected) = std::env::var_os("OLEAFLY_LIBREOFFICE") {
         return Some(PathBuf::from(selected));
     }

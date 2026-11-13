@@ -166,6 +166,11 @@ def validate_check_result(check: JsonObject, world: JsonObject) -> None:
     verdict; new checks use the current method and explicit finding verdicts.
     """
     validate_world_identity(world)
+    if "template" in world:
+        from research_file_workbench.journals.template_checks import validate_template_check
+
+        validate_template_check(check, world)
+        return
     method = require_text(check.get("checker_version"), "checker version")
     if method not in {CHECKER_VERSION, *_HISTORICAL_CHECKER_VERSIONS}:
         raise WorldAnalysisError("Unsupported stored checker method")

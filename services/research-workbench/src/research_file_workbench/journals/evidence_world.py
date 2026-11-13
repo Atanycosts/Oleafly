@@ -16,6 +16,7 @@ from research_file_workbench.journals.evidence_relations import (
 )
 from research_file_workbench.journals.models import (
     WorldAnalysisError,
+    require_object,
     require_objects,
     validate_world_identity,
 )
@@ -47,7 +48,18 @@ def build_world_evidence(world: JsonObject, sources: Mapping[str, bytes]) -> Jso
         source_id, kind = cast(str, source["source_id"]), cast(str, source["kind"])
         key = (source_id, kind)
         if key not in extracted:
-            extracted[key] = source_fragments(source_id, kind, sources[source_id])
+            if kind == "template_docx" and "template" in world:
+                template = require_object(world["template"], "selected template")
+                extracted[key] = source_fragments(
+                    source_id,
+                    "docx_format_snapshot",
+                    sources[str(template["snapshot_source_id"])],
+                )
+            elif kind == "docx_format_snapshot":
+                # The snapshot supplies core facts for the normalized source above.
+                extracted[key] = ([], [])
+            else:
+                extracted[key] = source_fragments(source_id, kind, sources[source_id])
         source_items, issues = extracted[key]
         for fragment in source_items:
             fragments[cast(str, fragment["fragment_id"])] = fragment
@@ -61,6 +73,12 @@ def build_world_evidence(world: JsonObject, sources: Mapping[str, bytes]) -> Jso
         )
 
     ordered = list(fragments.values())
+    # A captured file can serve several source roles while sharing one content ID.
+    # Keep each descriptor, and count the unique fragments visible for its source.
+    for record in source_records:
+        record["fragment_count"] = sum(
+            fragment["source_id"] == record["source_id"] for fragment in ordered
+        )
     links = _rule_links(world, ordered)
     rules = require_objects(world["rules"], "world rules")
     return {

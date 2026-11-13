@@ -109,12 +109,27 @@ fn group_object(
 
 fn snapshot_hash(snapshot: &Value) -> Result<String, String> {
     let bytes = serde_json::to_vec(snapshot).map_err(|error| error.to_string())?;
-    if bytes.len() > MAX_SNAPSHOT_BYTES {
+    Ok(content_hash(&bytes))
+}
+
+fn snapshot_size(snapshot: &Value) -> Result<usize, String> {
+    Ok(serde_json::to_vec(snapshot)
+        .map_err(|error| error.to_string())?
+        .len())
+}
+
+fn ensure_embedded_size(snapshot: &Value) -> Result<(), String> {
+    if snapshot_size(snapshot)? > MAX_SNAPSHOT_BYTES {
         return Err(
-            "A Workbench sync snapshot exceeds 256 KiB. It was not truncated or recorded.".into(),
+            "A Workbench sync snapshot exceeds 256 KiB and has no retained domain pointer.".into(),
         );
     }
-    Ok(content_hash(&bytes))
+    Ok(())
+}
+
+fn embedded_snapshot(snapshot: Value) -> Result<Value, String> {
+    ensure_embedded_size(&snapshot)?;
+    Ok(snapshot)
 }
 
 fn committed(
@@ -134,6 +149,119 @@ fn committed(
         event_kind,
         snapshot,
     })
+}
+
+fn domain_world_read(version_id: &str) -> Value {
+    json!({"method":"GET","path":"/api/world","query":{"version_id":version_id}})
+}
+
+fn native_world_read(journal_id: &str, version_id: &str) -> Value {
+    json!({"tool":"journal_read","arguments":{
+        "operation":"object","kind":"world",
+        "object_id":journal_id,"world_version_id":version_id
+    }})
+}
+
+fn native_rule_read(rule_id: &str, version_id: &str) -> Value {
+    json!({"tool":"journal_read","arguments":{
+        "operation":"object","kind":"rule",
+        "object_id":rule_id,"world_version_id":version_id
+    }})
+}
+
+fn template_source_metadata(world: &Value) -> Vec<Value> {
+    let source_ids = ["source_id", "normalized_source_id", "snapshot_source_id"]
+        .into_iter()
+        .filter_map(|field| world["template"][field].as_str())
+        .collect::<BTreeSet<_>>();
+    world["sources"]
+        .as_array()
+        .map(|sources| {
+            sources
+                .iter()
+                .filter(|source| {
+                    source["source_id"]
+                        .as_str()
+                        .is_some_and(|id| source_ids.contains(id))
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn world_record_snapshot(world: Value, journal_id: &str) -> Result<Value, String> {
+    let bytes = snapshot_size(&world)?;
+    if bytes <= MAX_SNAPSHOT_BYTES {
+        return embedded_snapshot(world);
+    }
+    let version_id = text(&world, "version_id")?;
+    let snapshot_sha256 = snapshot_hash(&world)?;
+    let rule_count = world["rules"].as_array().map(Vec::len);
+    let manual_decision_count = world["manual_decisions"].as_array().map(Vec::len);
+    let coverage_gap_count = world["coverage_gaps"].as_array().map(Vec::len);
+    Ok(json!({
+        "projection":"retained_pointer",
+        "kind":"world",
+        "contentStatus":"not_embedded",
+        "snapshotOmitted":true,
+        "domainReadable":true,
+        "contentNote":"The complete world is retained by Workbench. This native record is a pointer, not the full world; read it and verify snapshotSha256 before judging rules or coverage.",
+        "snapshotSha256":snapshot_sha256,
+        "snapshotBytes":bytes,
+        "journal_id":text(&world, "journal_id")?,
+        "journal_name":world.get("journal_name").cloned().unwrap_or(Value::Null),
+        "version_id":version_id,
+        "version_ordinal":world.get("version_ordinal").cloned().unwrap_or(Value::Null),
+        "scope":world.get("scope").cloned().unwrap_or(Value::Null),
+        "analyzer_version":world.get("analyzer_version").cloned().unwrap_or(Value::Null),
+        "reader_version":world.get("reader_version").cloned().unwrap_or(Value::Null),
+        "ruleCount":rule_count,
+        "manualDecisionCount":manual_decision_count,
+        "coverageGapCount":coverage_gap_count,
+        "limitations":world.get("limitations").cloned().unwrap_or_else(|| json!([])),
+        "template":world["template"].clone(),
+        "templateSources":template_source_metadata(&world),
+        "domainRead":domain_world_read(version_id),
+        "nativeRead":native_world_read(journal_id, version_id),
+        "verifyDomainRead":{"snapshotSha256":snapshot_sha256.clone()}
+    }))
+}
+
+fn rule_record_snapshot(rule: Value, journal_id: &str, version_id: &str) -> Result<Value, String> {
+    let bytes = snapshot_size(&rule)?;
+    if bytes <= MAX_SNAPSHOT_BYTES {
+        return Ok(rule);
+    }
+    let rule_id = text(&rule, "rule_id")?;
+    let snapshot_sha256 = snapshot_hash(&rule)?;
+    Ok(json!({
+        "projection":"retained_pointer",
+        "kind":"rule_version",
+        "contentStatus":"not_embedded",
+        "snapshotOmitted":true,
+        "domainReadable":true,
+        "contentNote":"The complete rule is retained in the Workbench world. This native record is a pointer, not the rule body; read it and verify snapshotSha256 before judging evidence, conflicts or limitations.",
+        "snapshotSha256":snapshot_sha256,
+        "snapshotBytes":bytes,
+        "journal_id":journal_id,
+        "world_version_id":version_id,
+        "rule_id":rule_id,
+        "property":rule.get("property").cloned().unwrap_or(Value::Null),
+        "label":rule.get("label").cloned().unwrap_or(Value::Null),
+        "expected":rule.get("expected").cloned().unwrap_or(Value::Null),
+        "unit":rule.get("unit").cloned().unwrap_or(Value::Null),
+        "scope":rule.get("scope").cloned().unwrap_or(Value::Null),
+        "basis_status":rule.get("basis_status").cloned().unwrap_or(Value::Null),
+        "confirmation_method":rule.get("confirmation_method").cloned().unwrap_or(Value::Null),
+        "resolution":rule.get("resolution").cloned().unwrap_or(Value::Null),
+        "evidenceCount":rule["evidence"].as_array().map(Vec::len),
+        "templateObjectCount":rule["template_object_ids"].as_array().map(Vec::len),
+        "limitations":rule.get("limitations").cloned().unwrap_or_else(|| json!([])),
+        "domainRead":domain_world_read(version_id),
+        "nativeRead":native_rule_read(rule_id, version_id),
+        "verifyDomainRead":{"snapshotSha256":snapshot_sha256.clone()}
+    }))
 }
 
 fn immutable_check(check: &Value) -> Result<Value, String> {
@@ -221,7 +349,7 @@ fn projection(
                 None,
             )?,
             WorkbenchRecordEvent::UpdateAvailable,
-            world.clone(),
+            world_record_snapshot(world.clone(), journal_id)?,
         )?);
         for rule in rows(world, "rules")? {
             let rule_id = text(rule, "rule_id")?;
@@ -238,7 +366,7 @@ fn projection(
                     None,
                 )?,
                 WorkbenchRecordEvent::UpdateAvailable,
-                rule.clone(),
+                rule_record_snapshot(rule.clone(), journal_id, version)?,
             )?);
         }
     }
@@ -263,7 +391,7 @@ fn projection(
                 None,
             )?,
             WorkbenchRecordEvent::RecordCommitted,
-            binding.clone(),
+            embedded_snapshot(binding.clone())?,
         )?);
     }
     let mut checks = BTreeMap::new();
@@ -290,7 +418,7 @@ fn projection(
             None,
             object.clone(),
             WorkbenchRecordEvent::RecordCommitted,
-            immutable_check(check)?,
+            embedded_snapshot(immutable_check(check)?)?,
         )?);
         for disposition in rows(check, "dispositions")? {
             if text(disposition, "check_id")? != id {
@@ -302,7 +430,7 @@ fn projection(
                 None,
                 object.clone(),
                 WorkbenchRecordEvent::RecordCommitted,
-                disposition.clone(),
+                embedded_snapshot(disposition.clone())?,
             )?);
         }
         checks.insert(id, derived_check(check)?);
@@ -355,7 +483,7 @@ fn projection(
             "reason": "Workbench checks apply to their retained DOCX baseline. No correspondence to this task's LaTeX or compiled PDF has been verified."
         }
     });
-    snapshot_hash(&current)?;
+    ensure_embedded_size(&current)?;
     Ok(Projection { records, current })
 }
 
@@ -536,6 +664,14 @@ mod tests {
     fn selected_journal_worlds_and_rules_keep_shared_annotation_object_identity() {
         let (state, history, worlds) = fixture();
         let observed = project(&state, &history, &worlds).unwrap();
+        let world_records = observed
+            .records
+            .iter()
+            .filter(|record| record.kind == "world")
+            .collect::<Vec<_>>();
+        assert_eq!(world_records.len(), 2);
+        assert_eq!(world_records[0].snapshot, worlds[0]);
+        assert_eq!(world_records[1].snapshot, worlds[1]);
         let rules = observed
             .records
             .iter()
@@ -545,6 +681,8 @@ mod tests {
         assert_eq!(rules[0].object.kind, "journal_rule");
         assert_eq!(rules[0].object.id, rules[1].object.id);
         assert_ne!(rules[0].revision, rules[1].revision);
+        assert_eq!(rules[0].snapshot, worlds[0]["rules"][0]);
+        assert_eq!(rules[1].snapshot, worlds[1]["rules"][0]);
         assert_eq!(rules[1].snapshot["expected"], 12);
         for rule in rules {
             let target = object_target(
@@ -641,6 +779,28 @@ mod tests {
     }
 
     #[test]
+    fn bounded_check_findings_page_stays_embedded_below_the_native_pointer_limit() {
+        let (mut state, mut history, worlds) = fixture();
+        history["checks"][0]["template_comparison"] = json!({
+            "total":250,
+            "findings":[{"observed":"x".repeat(154_239)}]
+        });
+        state["projects"][0]["latest_check"] = history["checks"][0].clone();
+
+        let observed = project(&state, &history, &worlds).unwrap();
+        let check = observed
+            .records
+            .iter()
+            .find(|record| record.kind == "check")
+            .unwrap();
+        let bytes = snapshot_size(&check.snapshot).unwrap();
+        assert!(bytes > 150_000);
+        assert!(bytes < MAX_SNAPSHOT_BYTES);
+        assert!(check.snapshot.get("projection").is_none());
+        assert_eq!(check.snapshot["template_comparison"]["total"], json!(250));
+    }
+
+    #[test]
     fn manuscript_history_can_include_another_journal_without_enumerating_its_worlds() {
         let (mut state, mut history, worlds) = fixture();
         let other_binding = binding("binding-other", "other-world");
@@ -698,11 +858,140 @@ mod tests {
         assert!(project(&state, &history, &foreign)
             .unwrap_err()
             .contains("another journal"));
-        let mut large = worlds;
-        large[0]["unbounded_source"] = json!("x".repeat(MAX_SNAPSHOT_BYTES));
-        assert!(project(&state, &history, &large)
-            .unwrap_err()
-            .contains("not truncated"));
+    }
+
+    #[test]
+    fn oversized_template_world_is_a_domain_readable_pointer_without_losing_its_source_record() {
+        let (state, history, mut worlds) = fixture();
+        let original = &mut worlds[0];
+        original["journal_name"] = json!("Journal A");
+        original["version_ordinal"] = json!(7);
+        original["scope"] = json!({
+            "article_type":"research_article","stage":"initial_submission","language":"en"
+        });
+        original["analyzer_version"] = json!("docx-template-analyzer-1.0.0");
+        original["reader_version"] = json!("docx-core-format-snapshot-1.0.0");
+        original["coverage_gaps"] = json!([{"code":"unsupported_object"}]);
+        original["limitations"] = json!(["DOCX core facts only"]);
+        original["template"] = json!({
+            "source_id":"source-original",
+            "normalized_source_id":"source-normalized",
+            "snapshot_source_id":"source-snapshot",
+            "source_sha256":"normalized-hash",
+            "original_sha256":"original-hash",
+            "provenance":null,
+            "authority":"user_designated_template"
+        });
+        original["sources"] = json!([
+            {"source_id":"source-original","name":"template.doc","sha256":"original-hash","kind":"template_original"},
+            {"source_id":"source-normalized","name":"template.docx","sha256":"normalized-hash","kind":"template_docx"},
+            {"source_id":"source-snapshot","name":"core-format-snapshot.json","sha256":"snapshot-hash","kind":"docx_format_snapshot"}
+        ]);
+        original["snapshot_payload"] = json!("x".repeat(337_822));
+        let full_world = original.clone();
+        let full_hash = snapshot_hash(&full_world).unwrap();
+        let full_bytes = snapshot_size(&full_world).unwrap();
+
+        let observed = project(&state, &history, &worlds).unwrap();
+        let pointer = observed
+            .records
+            .iter()
+            .find(|record| record.kind == "world" && record.record_id == "world-1")
+            .unwrap();
+        assert_eq!(pointer.snapshot["projection"], "retained_pointer");
+        assert_eq!(pointer.snapshot["kind"], "world");
+        assert_eq!(pointer.snapshot["contentStatus"], "not_embedded");
+        assert_eq!(pointer.snapshot["snapshotOmitted"], true);
+        assert_eq!(pointer.snapshot["snapshotSha256"], full_hash);
+        assert_eq!(pointer.snapshot["snapshotBytes"], full_bytes);
+        assert_eq!(pointer.snapshot["journal_id"], "journal-a");
+        assert_eq!(pointer.snapshot["version_id"], "world-1");
+        assert_eq!(
+            pointer.snapshot["template"]["original_sha256"],
+            "original-hash"
+        );
+        assert_eq!(pointer.snapshot["templateSources"], full_world["sources"]);
+        assert_eq!(
+            pointer.snapshot["domainRead"],
+            json!({"method":"GET","path":"/api/world","query":{"version_id":"world-1"}})
+        );
+        assert_eq!(
+            pointer.snapshot["nativeRead"],
+            json!({"tool":"journal_read","arguments":{
+                "operation":"object","kind":"world",
+                "object_id":"journal-a","world_version_id":"world-1"
+            }})
+        );
+        assert_eq!(
+            pointer.snapshot["verifyDomainRead"]["snapshotSha256"],
+            full_hash
+        );
+        assert!(pointer.snapshot.get("snapshot_payload").is_none());
+        assert!(pointer.snapshot.get("rules").is_none());
+        let directory = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(directory.path().join("tasks")).unwrap();
+        let task = store
+            .create(oleafly_research::model::ResearchTaskDraft {
+                project_id: "oleafly-paper".into(),
+                title: "Pointer projection".into(),
+                prompt: "Retain a large template world".into(),
+                runtime_id: "fixture".into(),
+                agent_id: "fixture".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        persist_projection(&store, &task.id, &scope(), observed).unwrap();
+        let retained = store
+            .task_workbench_context(&task.id, 0, 100)
+            .unwrap()
+            .records
+            .into_iter()
+            .find(|record| record.record.kind == "world" && record.record.record_id == "world-1")
+            .unwrap();
+        assert_eq!(retained.record.snapshot["projection"], "retained_pointer");
+        assert!(retained.record.snapshot.get("snapshot_payload").is_none());
+        assert_eq!(worlds[0], full_world);
+        assert_eq!(snapshot_hash(&worlds[0]).unwrap(), full_hash);
+    }
+
+    #[test]
+    fn oversized_reused_rule_is_a_hash_verified_pointer_into_its_world() {
+        let (state, history, mut worlds) = fixture();
+        worlds[0]["rules"][0]["evidence"] = Value::Array(
+            (0..10_000)
+                .map(|index| json!({"locator":format!("word/document.xml#{index}"),"quote":"same retained source"}))
+                .collect(),
+        );
+        let full_rule = worlds[0]["rules"][0].clone();
+        let full_hash = snapshot_hash(&full_rule).unwrap();
+        let full_bytes = snapshot_size(&full_rule).unwrap();
+        assert!(full_bytes > MAX_SNAPSHOT_BYTES);
+
+        let observed = project(&state, &history, &worlds).unwrap();
+        let pointer = observed
+            .records
+            .iter()
+            .find(|record| record.kind == "rule_version" && record.revision == "world-1")
+            .unwrap();
+        assert_eq!(pointer.snapshot["projection"], "retained_pointer");
+        assert_eq!(pointer.snapshot["kind"], "rule_version");
+        assert_eq!(pointer.snapshot["rule_id"], "page-limit");
+        assert_eq!(pointer.snapshot["evidenceCount"], 10_000);
+        assert_eq!(pointer.snapshot["snapshotSha256"], full_hash);
+        assert_eq!(pointer.snapshot["snapshotBytes"], full_bytes);
+        assert_eq!(
+            pointer.snapshot["domainRead"],
+            json!({"method":"GET","path":"/api/world","query":{"version_id":"world-1"}})
+        );
+        assert_eq!(
+            pointer.snapshot["nativeRead"],
+            json!({"tool":"journal_read","arguments":{
+                "operation":"object","kind":"rule",
+                "object_id":"page-limit","world_version_id":"world-1"
+            }})
+        );
+        assert!(pointer.snapshot.get("evidence").is_none());
+        assert_eq!(snapshot_hash(&worlds[0]["rules"][0]).unwrap(), full_hash);
     }
 
     #[test]

@@ -12,6 +12,7 @@ export const DEFAULT_APPROVAL_MODE: ApprovalMode = "approve-for-me";
 const READ_TOOLS = new Set([
   "list_docx_documents",
   "read_docx_document",
+  "read_docx_format",
   "capture_docx_target",
   "list_research_roots",
   "list_research_root_files",
@@ -48,6 +49,9 @@ const READ_TOOLS = new Set([
 const WRITE_TOOLS = new Set([
   "suggest_docx_change",
   "apply_docx_suggestion",
+  "apply_docx_format",
+  "save_docx_document",
+  "check_docx_template",
   "write_file",
   "replace_in_file",
   "create_file",
@@ -70,6 +74,7 @@ const NETWORK_TOOLS = new Set([
 const READ_ONLY_TOOLS = new Set([
   "list_docx_documents",
   "read_docx_document",
+  "read_docx_format",
   "capture_docx_target",
   "list_research_roots",
   "list_research_root_files",

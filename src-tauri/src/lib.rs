@@ -528,6 +528,9 @@ pub fn run() {
         .invoke_handler(traced_commands(tauri::generate_handler![
             journal_workbench::journal_workbench_connect,
             journal_workbench::journal_workbench_request,
+            journal_workbench::journal_template_normalize,
+            journal_workbench::format::journal_format_claim,
+            journal_workbench::format::journal_format_result,
             journal_workbench::render::journal_docx_renderer,
             journal_workbench::render::journal_docx_render,
             journal_workbench::render::journal_docx_pdf,

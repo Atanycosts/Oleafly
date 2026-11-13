@@ -342,3 +342,92 @@ set while the main process evaluates the config).
 | `E2E_SKIP_NETWORK=1` | Skips the font-download and template-font-pack tests |
 | `E2E_AI_TOKEN` | Runs the real AI tests: provider connect, GLM-4.6 model pick, conversation, tool call, figure generation |
 | `E2E_AI_PROVIDER` | Provider card name for the AI tests (default `Z.AI`) |
+
+## Journal template acceptance
+
+These acceptance paths use Transitional OOXML DOCX. A document in Strict OOXML
+is not supported: save it as Transitional in Word first, then use the saved
+copy. The browser tests leave the author inputs in place, retain hashes in their
+reports, and retain imported bytes in each run's isolated Workbench library.
+The native runner additionally records the original template, normalized
+template, English and Chinese input hashes in `runner.json` and checks them
+before and after cleanup.
+
+The 138 browser tests need a Vite dev server on `http://127.0.0.1:1420`. Run
+the deterministic scenario with:
+
+```bash
+OLEAFLY_BROWSER_TEST_URL="http://127.0.0.1:1420" \
+node node_modules/@playwright/test/cli.js test \
+  -c e2e/playwright.config.ts \
+  e2e/tests/138-journal-template-browser.spec.ts \
+  --grep "template DOCX drives the live editor" \
+  --retries=0
+```
+
+Its report is retained under ignored
+`.private/journal-template-acceptance/run-*/report.json`.
+
+Run the opt-in real template and English/Chinese manuscripts separately with:
+
+```bash
+OLEAFLY_BROWSER_TEST_URL="http://127.0.0.1:1420" \
+OLEAFLY_TEMPLATE_ACCEPTANCE=1 \
+OLEAFLY_TEMPLATE_FILE="/absolute/path/template.docx" \
+OLEAFLY_REAL_DOCX_EN="/absolute/path/english.docx" \
+OLEAFLY_REAL_DOCX_ZH="/absolute/path/chinese.docx" \
+node node_modules/@playwright/test/cli.js test \
+  -c e2e/playwright.config.ts \
+  e2e/tests/138-journal-template-browser.spec.ts \
+  --grep "opt-in real template and English/Chinese" \
+  --retries=0
+```
+
+The real report is retained under ignored
+`.private/journal-template-acceptance/real-*/report.json`. It records the three
+input paths and before-hashes, retained snapshot hashes, complete finding
+pagination, repeated-check identity, and finding artifact IDs. The test reads
+the inputs again at the end and fails if their hashes changed.
+
+Template comparison uses `observed_match`, `observed_difference` and
+`cannot_determine` for candidate objects measured against the explicitly
+selected template. These are observations of that template, not publisher
+authentication or normative compliance. A `violation` is only produced by the
+separate explicit guide-rule checker; an observed difference must not be
+reported as a journal violation.
+
+The 139 and 140 native acceptances run through the existing isolated DOCX
+runner. It needs the packaged e2e app and three read-only inputs; the fourth
+retained hash is the normalized template produced during the run:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+OLEAFLY_DOCX_TEMPLATE=1 \
+OLEAFLY_JOURNAL_TEMPLATE="/absolute/path/template.doc" \
+OLEAFLY_JOURNAL_TEMPLATE_SHA256="the-exact-lowercase-sha256" \
+OLEAFLY_NATIVE_DOCX_EN="/absolute/path/english.docx" \
+OLEAFLY_NATIVE_DOCX_EN_SHA256="the-exact-lowercase-sha256" \
+OLEAFLY_NATIVE_DOCX_ZH="/absolute/path/chinese.docx" \
+OLEAFLY_NATIVE_DOCX_ZH_SHA256="the-exact-lowercase-sha256" \
+node e2e/run-docx-recovery.mjs
+```
+
+This mode requires a legacy `.doc` template with a Compound File Binary
+signature. The runner normalizes it through LibreOffice, runs
+`139-journal-template-native.spec.ts` and `140-docx-format-task.spec.ts`, and retains the normalized template and
+report under ignored `.private/journal-template-native/run-*/`. It backs up and
+restores the E2E WebKit storage and owns app cleanup. The detailed report is in
+the runner's `template/run-*/report.json`; `runner.json` is the hash and
+lifecycle receipt. The task test retains `docx-format-task-report.json`, the saved
+DOCX, a screenshot and scripted provider requests in that same isolated run directory.
+
+The first test exercises real template import, both manuscripts, ordinary Agent
+format/save/check tools and a duplicate-text paragraph with separate Latin/East
+Asian font slots. The second uses a small synthetic document and scripted provider
+through the native task-group runtime for two format/save/check rounds, then closes
+and normally reopens the saved document without a recovery prompt. It checks revisions,
+both baselines and source hashes, historical check validity, findings and
+operation-intent/result/checkpoint attribution. These are application integration
+tests, without a new real-model quality claim. Set `OLEAFLY_FONT_SOURCE_EVIDENCE`
+to a local directory containing the exact catalog archives to verify package-cache
+reuse and extraction without downloading the shared Microsoft archive again.

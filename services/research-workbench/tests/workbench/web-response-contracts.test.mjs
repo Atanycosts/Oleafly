@@ -60,6 +60,8 @@ rejects("rejects cyclic source fragments", "review", (response) => { response.fr
 rejects("rejects invalid fragment offsets", "review", (response) => { response.fragments.find((item) => item.kind === "sentence").char_end += 1; });
 rejects("rejects source fragments attributed to another source", "review", (response) => { response.fragments[0].source_id = "different-source"; });
 rejects("rejects inaccurate source fragment counts", "review", (response) => { response.sources[0].fragment_count += 1; });
+rejects("rejects a template result for a different role", "template_check", (response) => { response.rule_results[0].finding_selector.role = "different-role"; });
+rejects("rejects inaccurate template coverage", "template_history", (response) => { response.checks[0].rule_results[0].coverage.total_objects += 1; });
 rejects("rejects a false exact-source link", "review", (response) => { response.rule_links[0].locator = "different-location"; });
 rejects("rejects unavailable links with matched fragments", "review", (response) => { response.rule_links[0].link_status = "unavailable"; });
 rejects("rejects relations to nonexistent objects", "review", (response) => { response.relations[0].to_id = "missing-rule"; });

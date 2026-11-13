@@ -2,9 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DocxEditor, type DocxEditorRef, useDocxEditor, useEditorState, useFonts, useScopedChromeAnchor } from "@docx-editor.dev/react";
 import type { DocxEditorInstance, FontMeasurementState } from "@docx-editor.dev/core/editor";
-import { Check, Download, LoaderCircle, Minimize2, Save, Sparkles, Square, Undo2, X } from "lucide-react";
+import type { DocxFormatReadQuery, DocxFormatReadResult, DocxSaveResult, DocxTemplateCheckResult } from "@oleafly/ai-tools";
+import { Check, Download, Minimize2, Save, Sparkles, Square, Undo2, X } from "lucide-react";
 import "@docx-editor.dev/core/styles/editor.css";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { Tooltip } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { runInlineCompletion } from "@/lib/ai-inline";
@@ -16,6 +19,7 @@ import {
   registerDocxAgentSession,
   unregisterDocxAgentSession,
   updateDocxAgentSession,
+  type DocxTaskOperationResult,
 } from "@/lib/docx-agent-host";
 import {
   clearDocxRecovery,
@@ -32,9 +36,11 @@ import {
   type DocxRecoveryTaskState,
   type DocxRecoveryApplied,
   type DocxRecoveryReceipt,
+  type DocxRecoveryOperation,
 } from "@/lib/docx-recovery";
 import { loadDocxSource, prepareDocxSave, type DocxSave, type DocxSource } from "@/lib/docx-workbench";
 import { journalRequest, type JournalCheck, type JournalProject, type JournalState, type JournalWorld } from "@/lib/journal-workbench";
+import { checkJournalTemplate, retainDocxFormat } from "@/lib/docx-template-client";
 import { registerProjectLeaveGuard } from "@/lib/project-leave-guards";
 import { registerEditorMutationOwner } from "@/lib/editor-mutation-lease";
 import { useDocxWorkspaceStore, type DocxWorkspaceRequest } from "@/store/docx-workspace";
@@ -160,6 +166,9 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const suggestionRef = useRef<Suggestion | null>(null);
   const [taskReady, setTaskReady] = useState(false);
   const appliedTasks = useRef(new Map<string, DocxRecoveryApplied & { suggestion?: Suggestion }>());
+  const taskOperations = useRef(new Map<string, DocxRecoveryOperation>(
+    (initialRecovery.current?.taskState?.operations ?? []).map((operation) => [operation.operationId, operation]),
+  ));
   const [recoveredActivities, setRecoveredActivities] = useState<DocxActivity[]>([]);
   const recoveredProposalIds = useRef(new Set<string>());
   const recoveredBytes = useRef(initialRecovery.current?.bytes);
@@ -191,6 +200,9 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const editorInstance = useRef<DocxEditorInstance | null>(null);
   const [editorReady, setEditorReady] = useState(false);
   const sessionRef = useRef<DocxSession | null>(null);
+  const liveSaveRef = useRef<(request: { expectedRevision: number; signal?: AbortSignal }) => Promise<DocxSaveResult>>(async () => { throw new Error("The DOCX editor is not ready."); });
+  const liveCheckRef = useRef<(request: { template: string; signal?: AbortSignal }) => Promise<DocxTemplateCheckResult>>(async () => { throw new Error("The DOCX editor is not ready."); });
+  const liveFormatRef = useRef<(query: DocxFormatReadQuery) => Promise<DocxFormatReadResult>>(async () => { throw new Error("The DOCX editor is not ready."); });
   const recoveryQueueRef = useRef<Promise<void>>(Promise.resolve());
   const recoveryEpoch = useRef(0);
   const [sessionId] = useState(() => `docx:${crypto.randomUUID()}`);
@@ -268,7 +280,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         const cleanup = recoveryQueueRef.current.then(async () => {
           const current = identityRef.current();
           if (receiptCheckpoint.current !== checkpoint || fixedSavePending.current || busySave.current ||
-            receipts.current.length || deferredWithdrawals.current.length || appliedTasks.current.size ||
+            receipts.current.length || deferredWithdrawals.current.length || appliedTasks.current.size || taskOperations.current.size ||
             current.sessionId !== checkpoint.document.sessionId ||
             current.sessionRevision !== checkpoint.document.sessionRevision ||
             current.sessionRevision !== current.savedRevision ||
@@ -332,6 +344,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     document: { ...identityRef.current() },
     applied: [...appliedTasks.current.values()].map(({ proposalId, document }) => ({ proposalId, document: { ...document } })),
     receipts: receipts.current.map((receipt) => ({ ...receipt, document: { ...receipt.document } })),
+    operations: [...taskOperations.current.values()],
   }), []);
 
   const queueRecoveryWrite = useCallback((
@@ -397,6 +410,41 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       savedRevision: initialRecovery.current ? -1 : 0,
       sourceSha256: identityRef.current().sourceSha256,
       session,
+      readFormat: (query) => liveFormatRef.current(query),
+      save: (request) => liveSaveRef.current(request),
+      check: (request) => liveCheckRef.current(request),
+      onTaskOperation: async (operation) => {
+        taskOperations.current.set(operation.operationId, operation);
+        await checkpointCurrent.current();
+        if (!receiptCheckpoint.current?.metadata.taskState?.operations?.some(
+          (recorded) => recorded.operationId === operation.operationId,
+        )) throw new Error("The DOCX operation completed, but its recovery checkpoint is pending.");
+      },
+      onTaskOperationRecorded: async (operationId) => {
+        const operation = taskOperations.current.get(operationId);
+        if (!operation) return;
+        const result = operation.result as DocxTaskOperationResult;
+        const changed = (result.operation === "format" || result.operation === "apply") && result.ok && result.result.changed;
+        if (changed) return;
+        // Native has retained the actual result (and verified saved source bytes).
+        // It no longer belongs to a later unsaved edit's recovery state.
+        taskOperations.current.delete(operationId);
+        const checkpoint = receiptCheckpoint.current;
+        if (!checkpoint) return;
+        const cleanup = recoveryQueueRef.current.then(async () => {
+          const current = identityRef.current();
+          if (receiptCheckpoint.current !== checkpoint || fixedSavePending.current || busySave.current ||
+            receipts.current.length || deferredWithdrawals.current.length || taskOperations.current.size ||
+            current.sessionId !== checkpoint.document.sessionId ||
+            current.sessionRevision !== checkpoint.document.sessionRevision ||
+            current.sessionRevision !== current.savedRevision ||
+            current.baselineId !== checkpoint.document.baselineId ||
+            current.sourceSha256 !== checkpoint.document.sourceSha256) return;
+          if (await discardDocxRecovery(checkpoint.metadata)) receiptCheckpoint.current = null;
+        });
+        recoveryQueueRef.current = cleanup.then(() => undefined, () => undefined);
+        await cleanup;
+      },
       canPresentSuggestion: () => !["streaming", "reviewing"].includes(suggestionRef.current?.phase ?? ""),
       onTaskSuggestion: (activity, target) => {
         if (!alive.current) throw new Error("The DOCX review surface closed.");
@@ -570,10 +618,15 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     }
   }
 
-  async function save() {
+  async function save(expectedRevision?: number, signal?: AbortSignal): Promise<DocxSaveResult | undefined> {
     const session = sessionRef.current;
     const editor = editorRef.current;
-    if (!source || !session || !editor || busySave.current || checking || recoveryConflict || resuming || !taskReady || saveRefused) return;
+    if (!source || !session || !editor || busySave.current || checking || recoveryConflict || resuming || !taskReady || saveRefused) {
+      if (expectedRevision !== undefined) throw new Error("The DOCX working copy cannot be saved while another document operation is pending.");
+      return;
+    }
+    if (signal?.aborted) throw new Error("The DOCX save was cancelled before it started.");
+    if (expectedRevision !== undefined && session.revision() !== expectedRevision) throw new Error("The DOCX session changed before saving.");
     busySave.current = true;
     recoveryEpoch.current += 1;
     setSaving(true);
@@ -589,6 +642,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         const taskState = taskStateAtExport();
         const bytes = await exporting;
         if (!bytes) throw new Error(text.notReady);
+        if (signal?.aborted) throw new Error("The DOCX save was cancelled before the fixed save was created.");
         request = prepareDocxSave({ ...source, baseline_id: baselineId }, exportRevision, bytes);
         taskState.pendingSave = recoveryPendingSave(request);
         snapshot = { appProjectId, workbenchProjectId: source.project_id, baseBaselineId: baselineId,
@@ -635,6 +689,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       receipts.current = receipts.current.filter((receipt) => !frozenReceipts.some((frozen) =>
         frozen.proposalId === receipt.proposalId && frozen.outcome.kind === receipt.outcome.kind &&
         frozen.document.sessionId === receipt.document.sessionId && frozen.document.sessionRevision === receipt.document.sessionRevision));
+      for (const operation of snapshot.taskState?.operations ?? []) taskOperations.current.delete(operation.operationId);
       pendingCheckpoint.current = null;
       fixedSavePending.current = false;
       setPendingSave(null);
@@ -647,8 +702,19 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       } catch (cause) { if (alive.current) setError(String(cause)); }
       try { await onSavedRef.current(); }
       catch (cause) { if (alive.current) setError(`${text.refreshFailed}: ${String(cause)}`); }
+      // The baseline save has committed. A later derivation failure is reported as such.
+      let formatStatus: NonNullable<DocxSaveResult["formatStatus"]> = "not_requested";
+      let formatError: string | undefined;
+      if (world?.template) {
+        try { await retainDocxFormat(source.project_id, result.baselineId); }
+        catch (cause) { formatError = String(cause); if (alive.current) setError(formatError); }
+        formatStatus = formatError ? "failed" : "recorded";
+      }
+      return { baselineId: result.baselineId, revision: result.revision, sourceSha256, formatStatus, ...(formatError ? { formatError } : {}),
+        document: { sessionId, baselineId: result.baselineId, sessionRevision: session.revision(), savedRevision: result.revision, dirty: session.revision() !== result.revision } };
     } catch (cause) {
       if (alive.current) setError(String(cause));
+      if (expectedRevision !== undefined) throw cause;
     } finally {
       busySave.current = false;
       if (!fixedSavePending.current) {
@@ -662,6 +728,55 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     }
   }
 
+  liveSaveRef.current = async ({ expectedRevision, signal }) => {
+    const result = await save(expectedRevision, signal);
+    if (!result) throw new Error("The fixed DOCX save has not committed. Resolve the displayed save state before retrying.");
+    return result;
+  };
+  liveFormatRef.current = async (query) => {
+    const session = sessionRef.current;
+    const editor = editorRef.current;
+    if (!session || !editor || !source) throw new Error(text.notReady);
+    const atRevision = session.revision();
+    const bytes = await editor.save();
+    if (!bytes) throw new Error(text.notReady);
+    const { openDocxFormatFacts } = await import("@/lib/docx-format");
+    const facts = await openDocxFormatFacts(new Uint8Array(bytes));
+    if (session.revision() !== atRevision) throw new Error("The DOCX session changed while its formatting was read. Read it again.");
+    const offset = query.offset ?? 0;
+    const limit = query.limit ?? 20;
+    const document = { sessionId, filename: source.filename, baselineId, sessionRevision: atRevision, savedRevision, dirty: atRevision !== savedRevision };
+    if (query.kind === "nodes") {
+      const selected = facts.query({ kind: "nodes", part: query.part, path: query.path, namespace_uri: query.namespaceUri,
+        local_name: query.localName, attribute: query.attribute && { namespace_uri: query.attribute.namespaceUri, local_name: query.attribute.localName, value: query.attribute.value }, offset, limit });
+      if (selected.kind !== "nodes") throw new Error("The format reader did not return nodes.");
+      return { document, sourceSha256: facts.snapshot.source_sha256, revision: atRevision, nodes: selected.nodes, total: selected.total, nextOffset: selected.next_offset };
+    }
+    const paragraph = query.paragraphRef ? session.listParagraphs().find((item) => item.handle.ref === query.paragraphRef) : undefined;
+    if (query.paragraphRef && !paragraph) throw new Error("The DOCX paragraph is no longer present.");
+    const all = facts.snapshot.objects.filter((object) => (!query.part || object.part === query.part) &&
+      (!query.path || query.path.every((value, index) => object.path[index] === value)));
+    const locator = paragraph && session.paragraphLocator?.(paragraph.handle);
+    const matched = locator ? all.find((object) => object.kind === "paragraph" && object.part === locator.part &&
+      object.path.length === locator.path.length && object.path.every((index, slot) => index === locator.path[slot])) : undefined;
+    if (paragraph && !matched) throw new Error("The live paragraph could not be located in its exported format facts. Read the document objects instead.");
+    const selected = paragraph ? (matched ? all.filter((object) => object.object_id === matched.object_id || object.evidence.paragraph_object_id === matched.object_id) : []) : all;
+    const page = selected.slice(offset, offset + limit);
+    const direct = paragraph && session.readParagraphFormatting ? session.readParagraphFormatting(paragraph.handle) : undefined;
+    return { document, sourceSha256: facts.snapshot.source_sha256, revision: atRevision, ...(direct ? { paragraph: direct } : {}), objects: page.map((object) => ({ ...object })), total: selected.length,
+      nextOffset: offset + page.length < selected.length ? offset + page.length : null };
+  };
+  liveCheckRef.current = async ({ template, signal }) => {
+    if (!source || sessionRef.current?.revision() !== savedRevision) throw new Error("Save the current DOCX working copy before checking it.");
+    if (signal?.aborted) throw new Error("The DOCX check was cancelled before it started.");
+    const state = await journalRequest<JournalState>("/api/state");
+    const current = state.projects.find((item) => item.project_id === source.project_id);
+    if (!current || current.baseline_id !== baselineId) throw new Error(text.newBaseline);
+    const result = await checkJournalTemplate(current, template, "agent");
+    if (alive.current) { setCheck(result); await onSavedRef.current(); }
+    return { template, check: { ...result } };
+  };
+
   async function checkSaved() {
     if (!source || !world || dirty || saving) return;
     setChecking(true);
@@ -670,6 +785,11 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       const state = await journalRequest<JournalState>("/api/state");
       const current = state.projects.find((item) => item.project_id === source.project_id);
       if (!current || current.baseline_id !== baselineId) throw new Error(text.newBaseline);
+      if (world.template) {
+        const result = await checkJournalTemplate(current, world.version_id);
+        if (alive.current) { setCheck(result); await onSavedRef.current(); }
+        return;
+      }
       if (current.binding?.baseline_id !== baselineId || current.binding.world_version_id !== world.version_id) {
         await journalRequest("/api/bind", {
           project_id: source.project_id, world_version_id: world.version_id,
@@ -773,16 +893,16 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
             onMinimize();
           }}>{text.askAgent}</Button>}
           <Button size="sm" variant="outline" disabled={!source || saving || checking || recoveryConflict || resuming || !taskReady || saveRefused || (!dirty && !pendingSave)} onClick={() => void save()}>
-            {saving ? <LoaderCircle className="mr-1 size-3.5 animate-spin" /> : <Save className="mr-1 size-3.5" />}
+            {saving ? <Spinner size="sm" className="mr-1" /> : <Save className="mr-1 size-3.5" />}
             {pendingSave ? text.retrySave : text.save}
           </Button>
           <Button size="sm" variant="outline" disabled={!source || saving} onClick={() => void download()}><Download className="mr-1 size-3.5" />{text.download}</Button>
           <Button size="sm" variant="outline" disabled={!world || !source || dirty || saving || checking || recoveryConflict || !!pendingSave} onClick={() => void checkSaved()}>
-            {checking ? <LoaderCircle className="mr-1 size-3.5 animate-spin" /> : <Check className="mr-1 size-3.5" />}{text.check}
+            {checking ? <Spinner size="sm" className="mr-1" /> : <Check className="mr-1 size-3.5" />}{text.check}
           </Button>
           {check && <span>{text.checked}: {check.validity} · {check.baseline_id}</span>}
         </div>
-        {source && <p className="truncate text-[10px] text-muted-foreground" title={baselineId}>{text.baseline}: {baselineId}</p>}
+        {source && <Tooltip label={baselineId}><p className="truncate text-[0.625rem] text-muted-foreground">{text.baseline}: {baselineId}</p></Tooltip>}
         {source && <p className="text-xs text-muted-foreground" data-testid="docx-font-state" data-measurer={fontMeasurement.measurer} data-resolving={fontMeasurement.resolving} data-producer={fontMeasurement.producer}>{fontMeasurement.resolving ? text.fontsResolving : fontMeasurement.measurer === "shaped" ? text.fontsShaped : text.fontsFixed}</p>}
         {recovery && <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.docx.recovery.restored, { time: new Date(recovery.updatedAt).toLocaleString(), revision: recovery.revision })}</p>}
         {recoveryConflict && <p role="alert" className="rounded border border-amber-500/40 p-2 text-xs">{text.recovery.conflict}</p>}
@@ -818,7 +938,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
                 {paragraphs.filter((item) => item.text.trim()).map((item, index) => <option key={item.handle.ref} value={item.handle.ref}>{index + 1}. {item.text.slice(0, 90)}</option>)}
               </select>
             </label>
-            <p className="text-[11px] text-muted-foreground">{text.targetHelp}</p>
+            <p className="text-[0.6875rem] text-muted-foreground">{text.targetHelp}</p>
             <Textarea aria-label={text.instruction} placeholder={text.instruction} rows={3} value={instruction} onChange={(event) => setInstruction(event.target.value)} />
             <div className="flex gap-2">
               <Button size="sm" disabled={!selected || !instruction.trim() || streaming || suggestion?.phase === "reviewing" || !sessionRef.current} onClick={() => void generate()}><Sparkles className="mr-1 size-3.5" />{text.generate}</Button>
@@ -836,7 +956,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
               </div>}
               {suggestion.phase === "applied" && <p className="flex items-center gap-1"><Undo2 className="size-3" />{text.undoHelp}</p>}
             </section>}
-            <p className="text-[11px] text-muted-foreground">{text.previewHelp}</p>
+            <p className="text-[0.6875rem] text-muted-foreground">{text.previewHelp}</p>
             <DocxRenderPanel projectId={project.project_id} baselineId={baselineId} dirty={dirty} fontRevision={fontRevision} fontsReady={editorReady && !fontMeasurement.resolving} />
           </aside>
         </div>

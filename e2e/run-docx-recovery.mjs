@@ -2,7 +2,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
-import { access, cp, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,8 +19,15 @@ const python = process.env.OLEAFLY_WORKBENCH_PYTHON ?? resolve("services/researc
 const liveTask = Boolean(process.env.OLEAFLY_DOCX_LIVE_URL);
 const attributionRecovery = process.env.OLEAFLY_DOCX_ATTRIBUTION_RECOVERY === "1";
 const fontLayout = process.env.OLEAFLY_DOCX_FONT_LAYOUT === "1";
-const fontPackages = fontLayout ? process.env.OLEAFLY_FONT_SOURCE_EVIDENCE : undefined;
-if ([liveTask, attributionRecovery, fontLayout].filter(Boolean).length > 1) throw new Error("Choose one isolated DOCX acceptance mode.");
+const templateAcceptance = process.env.OLEAFLY_DOCX_TEMPLATE === "1";
+const templateInput = process.env.OLEAFLY_JOURNAL_TEMPLATE;
+const templateInputHash = process.env.OLEAFLY_JOURNAL_TEMPLATE_SHA256;
+const englishInput = process.env.OLEAFLY_NATIVE_DOCX_EN;
+const englishInputHash = process.env.OLEAFLY_NATIVE_DOCX_EN_SHA256;
+const chineseInput = process.env.OLEAFLY_NATIVE_DOCX_ZH;
+const chineseInputHash = process.env.OLEAFLY_NATIVE_DOCX_ZH_SHA256;
+const fontPackages = fontLayout || templateAcceptance ? process.env.OLEAFLY_FONT_SOURCE_EVIDENCE : undefined;
+if ([liveTask, attributionRecovery, fontLayout, templateAcceptance].filter(Boolean).length > 1) throw new Error("Choose one isolated DOCX acceptance mode.");
 const liveUpstream = liveTask ? new URL(process.env.OLEAFLY_DOCX_LIVE_URL) : undefined;
 if (liveUpstream && (liveUpstream.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(liveUpstream.hostname)
     || liveUpstream.username || liveUpstream.password || liveUpstream.search || liveUpstream.hash)) {
@@ -30,8 +37,30 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const exists = async (path) => lstat(path).then(() => true, (error) => { if (error.code === "ENOENT") return false; throw error; });
 
 if (process.platform !== "darwin") throw new Error("This recovery acceptance runner currently supports packaged macOS Tauri apps only.");
-if (!binary || !author || !/^[a-f0-9]{64}$/.test(expectedHash ?? "")) throw new Error("Set OLEAFLY_E2E_APP_BINARY, OLEAFLY_REAL_DOCX and its exact OLEAFLY_REAL_DOCX_SHA256.");
-await Promise.all([access(binary), access(author), access(renderer), access(python)]);
+if (!binary) throw new Error("Set OLEAFLY_E2E_APP_BINARY.");
+if (templateAcceptance) {
+  if (
+    !templateInput ||
+    !englishInput ||
+    !chineseInput ||
+    !/^[a-f0-9]{64}$/.test(templateInputHash ?? "") ||
+    !/^[a-f0-9]{64}$/.test(englishInputHash ?? "") ||
+    !/^[a-f0-9]{64}$/.test(chineseInputHash ?? "")
+  ) {
+    throw new Error("Set OLEAFLY_JOURNAL_TEMPLATE, OLEAFLY_NATIVE_DOCX_EN, OLEAFLY_NATIVE_DOCX_ZH and their exact lowercase SHA-256 values.");
+  }
+  if (!templateInput.toLowerCase().endsWith(".doc")) throw new Error("OLEAFLY_JOURNAL_TEMPLATE must name a legacy .doc file.");
+} else if (!author || !/^[a-f0-9]{64}$/.test(expectedHash ?? "")) {
+  throw new Error("Set OLEAFLY_REAL_DOCX and its exact OLEAFLY_REAL_DOCX_SHA256.");
+}
+await Promise.all([
+  access(binary),
+  ...(templateAcceptance
+    ? [access(templateInput), access(englishInput), access(chineseInput)]
+    : [access(author)]),
+  access(renderer),
+  access(python),
+]);
 const runningApps = execFileSync("ps", ["-axo", "pid=,comm="], { encoding: "utf8" }).split("\n");
 for (const line of runningApps) {
   const executable = line.trim().replace(/^\d+\s+/, "");
@@ -45,9 +74,33 @@ for (const line of runningApps) {
 }
 const bundledIdentifier = execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", resolve(dirname(binary), "../Info.plist")], { encoding: "utf8" }).trim();
 if (bundledIdentifier !== identifier) throw new Error(`Refusing app identifier ${bundledIdentifier}. Build with src-tauri/tauri.e2e.conf.json.`);
-if (sha256(await readFile(author)) !== expectedHash) throw new Error("Author input SHA-256 does not match the supplied exact hash.");
+const acceptanceInputs = templateAcceptance
+  ? [
+      { role: "template", path: resolve(templateInput), expectedHash: templateInputHash },
+      { role: "english", path: resolve(englishInput), expectedHash: englishInputHash },
+      { role: "chinese", path: resolve(chineseInput), expectedHash: chineseInputHash },
+    ]
+  : [{ role: "author", path: resolve(author), expectedHash }];
+const inputHashes = async () => Promise.all(acceptanceInputs.map(async (input) => ({
+  ...input,
+  sha256: sha256(await readFile(input.path)),
+})));
+async function assertInputsUnchanged() {
+  for (const input of await inputHashes()) {
+    if (input.sha256 !== input.expectedHash) {
+      throw new Error(`${input.role} input SHA-256 changed: expected ${input.expectedHash}, found ${input.sha256}.`);
+    }
+  }
+}
+await assertInputsUnchanged();
+if (templateAcceptance) {
+  const signature = (await readFile(resolve(templateInput))).subarray(0, 8);
+  if (!signature.equals(Buffer.from("d0cf11e0a1b11ae1", "hex"))) {
+    throw new Error("The legacy template does not have a Compound File Binary signature.");
+  }
+}
 
-const parent = resolve(fontLayout ? ".private/docx-font-layout" : liveTask ? ".private/docx-task-live" : attributionRecovery ? ".private/docx-task-recovery" : ".private/docx-recovery-native");
+const parent = resolve(templateAcceptance ? ".private/journal-template-native" : fontLayout ? ".private/docx-font-layout" : liveTask ? ".private/docx-task-live" : attributionRecovery ? ".private/docx-task-recovery" : ".private/docx-recovery-native");
 await mkdir(parent, { recursive: true });
 const run = await mkdtemp(join(parent, "run-"));
 const data = join(run, "data");
@@ -71,6 +124,7 @@ let outcome = "FAILED";
 let failure;
 let cleaning;
 let relay;
+let normalizedTemplate;
 const wire = [];
 const forwarded = new Set();
 
@@ -143,7 +197,24 @@ async function move(source, target) {
 }
 
 async function record() {
-  await writeFile(join(run, "runner.json"), JSON.stringify({ outcome, failure, author, expectedHash, binary, data, socket, lifecycle, webStorage: moves }, null, 2));
+  const inputs = await inputHashes();
+  await writeFile(join(run, "runner.json"), JSON.stringify({
+    outcome,
+    failure,
+    mode: templateAcceptance ? "journal-template-native" : fontLayout ? "font-layout" : liveTask ? "live-task" : attributionRecovery ? "attribution-recovery" : "recovery",
+    inputs: templateAcceptance
+      ? [
+          ...inputs,
+          ...(normalizedTemplate ? [normalizedTemplate] : []),
+        ]
+      : inputs,
+    ...(templateAcceptance ? {} : { author, expectedHash }),
+    binary,
+    data,
+    socket,
+    lifecycle,
+    webStorage: moves,
+  }, null, 2));
 }
 
 async function stopApp(signal, required = false) {
@@ -195,6 +266,13 @@ async function cleanup() {
       locked = false;
     }
     if (liveTask) await writeFile(join(run, "live-wire.json"), JSON.stringify({ upstream: liveUpstream.href, requests: wire }, null, 2));
+    await assertInputsUnchanged();
+    if (normalizedTemplate) {
+      const normalizedHash = sha256(await readFile(normalizedTemplate.path));
+      if (normalizedHash !== normalizedTemplate.expectedHash) {
+        throw new Error(`normalized template input SHA-256 changed: expected ${normalizedTemplate.expectedHash}, found ${normalizedHash}.`);
+      }
+    }
   })();
   return cleaning;
 }
@@ -205,6 +283,7 @@ const bootSeed = {
   "oleafly.latexTools": "1", "oleafly.openInTree": "0", "oleafly.appFontSize": "16",
   "oleafly.assistant-runtime.v1": JSON.stringify({ state: { runtime: "built-in" }, version: 0 }),
 };
+const templateOutput = templateAcceptance ? join(run, "template") : undefined;
 const environment = {
   ...process.env,
   OLEAFLY_DATA_DIR: data,
@@ -213,7 +292,13 @@ const environment = {
   OLEAFLY_E2E_PRODUCTION: "1",
   OLEAFLY_DOCX_RECOVERY_RUN: run,
   ...(liveTask ? { OLEAFLY_DOCX_LIVE_RUN: run } : {}),
-  OLEAFLY_REAL_DOCX: resolve(author),
+  ...(templateAcceptance ? {
+    OLEAFLY_TEMPLATE_NATIVE_ACCEPTANCE: "1",
+    OLEAFLY_NATIVE_TEMPLATE_DOC: resolve(templateInput),
+    OLEAFLY_NATIVE_DOCX_EN: resolve(englishInput),
+    OLEAFLY_NATIVE_DOCX_ZH: resolve(chineseInput),
+    OLEAFLY_NATIVE_TEMPLATE_OUTPUT: templateOutput,
+  } : { OLEAFLY_REAL_DOCX: resolve(author) }),
   OLEAFLY_E2E_BOOT_LOCALSTORAGE: JSON.stringify(bootSeed),
   OLEAFLY_E2E_LAUNCH_LOCALSTORAGE: JSON.stringify({ "oleafly.liveCollaboration": "0", "oleafly.preview.detached.*": null }),
   TAURI_PLAYWRIGHT_SOCKET: socket,
@@ -244,11 +329,35 @@ async function runStage(stage) {
   await startApp(stage);
   console.log(`docx-recovery: ${stage}, owned app PID ${app.pid}`);
   const log = createWriteStream(join(run, `${stage}-playwright.log`));
-  const specification = fontLayout ? "e2e/tests/131-docx-font-layout.spec.ts" : liveTask ? "e2e/tests/129-docx-task-live.spec.ts" : attributionRecovery ? "e2e/tests/130-docx-task-recovery.spec.ts" : "e2e/tests/127-docx-recovery.spec.ts";
-  const filter = liveTask || fontLayout ? [] : ["--grep", `${stage} native`];
-  playwright = spawn("pnpm", ["exec", "playwright", "test", "-c", "e2e/playwright.config.ts", specification, ...filter, "--retries=0", "--output", join(run, stage)], {
-    cwd: repository, env: { ...environment, OLEAFLY_DOCX_RECOVERY_STAGE: stage }, stdio: ["ignore", "pipe", "pipe"],
-  });
+  const specifications = templateAcceptance
+    ? ["e2e/tests/139-journal-template-native.spec.ts", "e2e/tests/140-docx-format-task.spec.ts"]
+    : fontLayout
+      ? ["e2e/tests/131-docx-font-layout.spec.ts"]
+      : liveTask
+        ? ["e2e/tests/129-docx-task-live.spec.ts"]
+        : attributionRecovery
+          ? ["e2e/tests/130-docx-task-recovery.spec.ts"]
+          : ["e2e/tests/127-docx-recovery.spec.ts"];
+  const filter = templateAcceptance || liveTask || fontLayout ? [] : ["--grep", `${stage} native`];
+  playwright = templateAcceptance
+    ? spawn(process.execPath, [
+        "node_modules/@playwright/test/cli.js",
+        "test",
+        "-c",
+        "e2e/playwright.config.ts",
+        ...specifications,
+        ...filter,
+        "--retries=0",
+        "--output",
+        join(run, stage),
+      ], {
+        cwd: repository,
+        env: { ...environment, OLEAFLY_DOCX_RECOVERY_STAGE: stage },
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+    : spawn("pnpm", ["exec", "playwright", "test", "-c", "e2e/playwright.config.ts", ...specifications, ...filter, "--retries=0", "--output", join(run, stage)], {
+        cwd: repository, env: { ...environment, OLEAFLY_DOCX_RECOVERY_STAGE: stage }, stdio: ["ignore", "pipe", "pipe"],
+      });
   playwright.stdout.pipe(process.stdout, { end: false });
   playwright.stderr.pipe(process.stderr, { end: false });
   playwright.stdout.pipe(log, { end: false });
@@ -260,6 +369,43 @@ async function runStage(stage) {
   log.end();
   playwright = undefined;
   if (code !== 0) throw new Error(`${stage} failed with Playwright exit ${code}.`);
+  if (templateAcceptance) {
+    const templateRuns = (await readdir(templateOutput, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(templateOutput, entry.name))
+      .sort();
+    for (const templateRun of templateRuns) {
+      const normalizedPath = join(templateRun, "normalized-template.docx");
+      const reportPath = join(templateRun, "report.json");
+      if (!await exists(normalizedPath) || !await exists(reportPath)) continue;
+      const report = JSON.parse(await readFile(reportPath, "utf8"));
+      if (report.outcome !== "PASSED") throw new Error(`Template evidence report did not pass: ${reportPath}`);
+      const expected = Object.fromEntries(acceptanceInputs.map((input) => [input.role, input.expectedHash]));
+      if (
+        report.initialHashes?.template !== expected.template ||
+        report.initialHashes?.english !== expected.english ||
+        report.initialHashes?.chinese !== expected.chinese ||
+        report.finalHashes?.template !== expected.template ||
+        report.finalHashes?.english !== expected.english ||
+        report.finalHashes?.chinese !== expected.chinese
+      ) {
+        throw new Error(`Template evidence hashes differ from the runner inputs: ${reportPath}`);
+      }
+      normalizedTemplate = {
+        role: "normalized_template",
+        path: normalizedPath,
+        expectedHash: sha256(await readFile(normalizedPath)),
+      };
+      lifecycle.push({
+        action: "normalized-template-hash",
+        sha256: normalizedTemplate.expectedHash,
+        path: normalizedPath,
+        at: new Date().toISOString(),
+      });
+      break;
+    }
+    if (!normalizedTemplate) throw new Error(`Template acceptance did not retain normalized-template.docx under ${templateOutput}.`);
+  }
   await stopApp("SIGKILL", true);
   await record();
 }
@@ -296,11 +442,25 @@ try {
     if (entry.existed) { await move(original, entry.backup); entry.backedUp = true; await record(); }
   }
   console.log(`docx-recovery: retained acceptance data ${run}`);
-  for (const stage of fontLayout ? ["font-layout"] : liveTask ? ["live-task"] : attributionRecovery ? ["prepare", "restore-save", "reconcile"] : ["prepare", "restore", "discard"]) await runStage(stage);
+  for (const stage of templateAcceptance
+    ? ["template-native"]
+    : fontLayout
+      ? ["font-layout"]
+      : liveTask
+        ? ["live-task"]
+        : attributionRecovery
+          ? ["prepare", "restore-save", "reconcile"]
+          : ["prepare", "restore", "discard"]) await runStage(stage);
   if (liveTask && !wire.some(request => request.model === "gpt/gpt-6.1-sol" && request.reasoningEffort === "high" && request.status === 200 && request.finishedAt && /(^|\/)gpt-6\.1-sol$/.test(request.returnedModel ?? ""))) {
     throw new Error("The transparent relay did not verify a completed Sol/high request and a matching returned model label.");
   }
-  if (sha256(await readFile(author)) !== expectedHash) throw new Error("Author input changed during acceptance.");
+  await assertInputsUnchanged();
+  if (normalizedTemplate) {
+    const normalizedHash = sha256(await readFile(normalizedTemplate.path));
+    if (normalizedHash !== normalizedTemplate.expectedHash) {
+      throw new Error("Normalized template output changed during acceptance.");
+    }
+  }
   outcome = "PASSED";
 } catch (error) {
   failure = error instanceof Error ? error.stack : String(error);
@@ -308,9 +468,16 @@ try {
   process.exitCode = 1;
 } finally {
   try {
-    const authorHashAfter = sha256(await readFile(author));
-    lifecycle.push({ action: "author-hash-after", sha256: authorHashAfter });
-    if (authorHashAfter !== expectedHash) throw new Error("Author input changed during acceptance.");
+    for (const input of await inputHashes()) {
+      lifecycle.push({
+        action: "input-hash-after",
+        role: input.role,
+        path: input.path,
+        sha256: input.sha256,
+        at: new Date().toISOString(),
+      });
+    }
+    await assertInputsUnchanged();
   } catch (error) { failure = `${failure ?? ""}\n${error.stack ?? error}`; outcome = "FAILED"; process.exitCode = 1; }
   try { await cleanup(); }
   catch (error) { failure = `${failure ?? ""}\nCleanup failed: ${error.stack ?? error}`; outcome = "FAILED"; process.exitCode = 1; console.error(failure); }

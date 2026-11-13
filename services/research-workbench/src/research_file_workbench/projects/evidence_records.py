@@ -11,7 +11,7 @@ from research_file_workbench.common.json_io import (
     decode_json_object,
     encode_json_object,
 )
-from research_file_workbench.projects.artifact_records import store_blob
+from research_file_workbench.projects.artifact_records import read_artifact, store_blob
 from research_file_workbench.projects.baseline_records import get_baseline
 from research_file_workbench.projects.models import ProjectStoreError, require_record_text
 from research_file_workbench.projects.project_database import project_info
@@ -84,7 +84,7 @@ def store_evidence(
         elif row["payload"] != payload:
             raise ProjectStoreError("Evidence version already identifies different content")
         connection.execute(
-            "INSERT INTO baseline_evidence VALUES (?,?)", (baseline_id, evidence_version)
+            "INSERT OR IGNORE INTO baseline_evidence VALUES (?,?)", (baseline_id, evidence_version)
         )
 
 
@@ -110,7 +110,7 @@ def _stale_reasons(
     reasons = []
     if item["artifact_version_id"] not in cast(list[str], current_baseline["artifact_version_ids"]):
         reasons.append("source_version_changed")
-    if item["extraction_method_version"] != reader_version:
+    if _stored_method_version(connection, item) != _expected_method_version(item, reader_version):
         reasons.append("reader_version_changed")
     scope = item.get("scope")
     if scope in ({"object_type": "render_bundle"}, {"object_type": "derived_render"}):
@@ -134,6 +134,46 @@ def _stale_reasons(
         ):
             reasons.append("mapping_method_changed")
     return reasons
+
+
+def _expected_method_version(item: JsonObject, reader_version: str) -> str:
+    scope = item.get("scope")
+    if isinstance(scope, dict):
+        object_type = cast(JsonObject, scope).get("object_type")
+        if object_type in {"docx_format", "template_findings"}:
+            from research_file_workbench.projects.format_records import (
+                FORMAT_SNAPSHOT_METHOD_VERSION,
+                TEMPLATE_FINDINGS_METHOD_VERSION,
+            )
+
+            return (
+                FORMAT_SNAPSHOT_METHOD_VERSION
+                if object_type == "docx_format"
+                else TEMPLATE_FINDINGS_METHOD_VERSION
+            )
+    return reader_version
+
+
+def _stored_method_version(connection: sqlite3.Connection, item: JsonObject) -> str:
+    value = item.get("extraction_method_version")
+    if isinstance(value, str) and value.strip():
+        return value
+    scope = item.get("scope")
+    artifact_id = item.get("findings_artifact_version_id")
+    if (
+        isinstance(scope, dict)
+        and scope == {"object_type": "template_findings"}
+        and isinstance(artifact_id, str)
+    ):
+        from research_file_workbench.projects.format_records import (
+            TEMPLATE_FINDINGS_METHOD_VERSION,
+        )
+
+        artifact = decode_json_object(read_artifact(connection, artifact_id))
+        if not isinstance(artifact.get("findings"), list):
+            raise ProjectStoreError("Legacy template findings artifact is invalid")
+        return TEMPLATE_FINDINGS_METHOD_VERSION
+    raise ProjectStoreError("Stored evidence is missing extraction_method_version")
 
 
 def save_render_bundle(

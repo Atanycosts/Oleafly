@@ -1,4 +1,6 @@
 pub(crate) mod annotations;
+pub(crate) mod format;
+pub(crate) mod normalization;
 pub(crate) mod render;
 pub(crate) mod sync;
 pub(crate) mod tools;
@@ -107,7 +109,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         .json()
         .await
         .map_err(|error| error.to_string())?;
-    if session["contract_version"] != "journal-http-1.10.0" {
+    if session["contract_version"] != "journal-http-1.11.0" {
         return Err("This Workbench HTTP version is not supported.".into());
     }
     let token = session["token"]
@@ -343,6 +345,46 @@ pub async fn journal_workbench_request(
         });
     }
     Ok(result)
+}
+
+/// Normalize a user-selected template without opening the author path for writing.
+#[tauri::command]
+pub async fn journal_template_normalize(
+    name: String,
+    content_base64: String,
+    executable: Option<String>,
+) -> Result<Value, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content_base64)
+        .map_err(|error| format!("Could not read the selected Word template: {error}"))?;
+    let renderer = executable.map(PathBuf::from).or_else(render::find_renderer);
+    let temporary_root = crate::paths::oleafly_root()?.join("tmp/template-imports");
+    let normalized =
+        normalization::normalize_template_bytes(&name, bytes, renderer.as_deref(), &temporary_root)
+            .await?;
+    let provenance = normalized.conversion.as_ref().map(|conversion| {
+        serde_json::json!({
+            "engine": conversion.engine, "version": conversion.version,
+            "method": conversion.method, "converted_sha256": conversion.converted_sha256,
+        })
+    });
+    let filename = if normalized.conversion.is_some() {
+        format!(
+            "{}.docx",
+            std::path::Path::new(&name)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    } else {
+        name.clone()
+    };
+    Ok(serde_json::json!({
+        "original": {"filename": name, "content_base64": base64::engine::general_purpose::STANDARD.encode(normalized.original_bytes)},
+        "normalized": {"filename": filename, "content_base64": base64::engine::general_purpose::STANDARD.encode(normalized.docx_bytes), "provenance": provenance},
+        "original_sha256": normalized.original_sha256, "source_sha256": normalized.docx_sha256,
+    }))
 }
 
 #[tauri::command]

@@ -47,6 +47,45 @@ it("automatically installs only an exact catalog match for a confirmed journal r
   expect(screen.getByText(text.acquisitionOnly)).toBeInTheDocument();
 });
 
+it("acquires active template families without requiring a body-font guide rule", async () => {
+  const target = world();
+  target.rules = [];
+  target.template = {
+    source_id: "original", normalized_source_id: "normalized", snapshot_source_id: "snapshot",
+    source_sha256: "a".repeat(64), original_sha256: "b".repeat(64), provenance: null,
+    font_requirements: [{ family: "Exact CJK", roles: ["body", "heading"], scripts: ["east_asian"] }],
+  };
+  mocks.catalog.packs = [{ id: "cjk", families: ["Exact CJK"], installed: false }];
+  mocks.exact.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  const refresh = vi.fn(async () => {});
+  render(<DocxFontsPanel ready world={target} status={status} onRefresh={refresh} />);
+  await waitFor(() => expect(screen.getByTestId("docx-font-acquisition")).toHaveAttribute("data-state", "available"));
+  expect(mocks.install).toHaveBeenCalledExactlyOnceWith("cjk");
+  expect(refresh).toHaveBeenCalledOnce();
+  expect(screen.getByTestId("docx-template-font")).toHaveTextContent("body, heading");
+  expect(screen.getByTestId("docx-template-font")).toHaveTextContent("east_asian");
+  expect(screen.getByText(text.templateFonts)).toBeInTheDocument();
+  expect(screen.queryByText(text.noRequirements)).not.toBeInTheDocument();
+});
+
+it("acquires a shared guide and template family once while showing both sources", async () => {
+  const target = world();
+  target.template = {
+    source_id: "original", normalized_source_id: "normalized", snapshot_source_id: "snapshot",
+    source_sha256: "a".repeat(64), original_sha256: "b".repeat(64), provenance: null,
+    font_requirements: [{ family: "exact serif", roles: ["document_title"], scripts: ["latin"] }],
+  };
+  mocks.catalog.packs = [{ id: "exact", families: ["Exact Serif"], installed: false }];
+  mocks.exact.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  render(<DocxFontsPanel ready world={target} status={status} onRefresh={vi.fn(async () => {})} />);
+  await waitFor(() => expect(screen.getAllByTestId("docx-font-acquisition")).toHaveLength(2));
+  await waitFor(() => expect(screen.getAllByTestId("docx-font-acquisition").every((element) => element.dataset.state === "available")).toBe(true));
+  expect(mocks.install).toHaveBeenCalledExactlyOnceWith("exact");
+  expect(mocks.exact).toHaveBeenCalledTimes(2);
+  expect(screen.getByTestId("docx-journal-font")).toHaveTextContent(text.confirmed);
+  expect(screen.getByTestId("docx-template-font")).toHaveTextContent("document_title");
+});
+
 it.each(["candidate", "conflict"])("never downloads a %s journal rule or a document-only font", async (basis) => {
   render(<DocxFontsPanel ready world={world(basis)} status={status} onRefresh={vi.fn()} />);
   expect(screen.getByText(text.unconfirmed, { exact: false })).toBeInTheDocument();

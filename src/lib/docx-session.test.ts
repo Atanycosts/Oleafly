@@ -13,7 +13,9 @@ import {
   applyDocxSuggestion,
   captureDocxTarget,
   createDocxHostSession,
+  createDocxSession,
   DocxSessionError,
+  formatDocxParagraph,
   inspectDocxParagraph,
   listDocxParagraphs,
   type DocxTarget,
@@ -21,8 +23,15 @@ import {
 import {
   openHeadlessDocument,
   storyParagraphs,
+  writeOoxmlPackage,
   type OoxmlParagraphNode,
 } from "@docx-editor.dev/core/store";
+import { openTreeSession } from "@docx-editor.dev/core/binding";
+import type {
+  DocxEditorInstance,
+  TreeDocxSessionView,
+} from "@docx-editor.dev/core/editor";
+import { openDocxFormatFacts } from "./docx-format";
 
 const WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math";
@@ -36,7 +45,9 @@ const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationsh
 function syntheticDocx(paragraphs: readonly string[]): Uint8Array {
   const body = paragraphs
     .map((text) =>
-      text.startsWith("<w:p>") ? text : `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`,
+      text.startsWith("<w:p>") || text.startsWith("<w:tbl>")
+        ? text
+        : `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`,
     )
     .join("");
   return zipSync({
@@ -68,6 +79,48 @@ function treeParagraph(body: string | readonly string[]): OoxmlParagraphNode {
     throw new Error("The synthetic DOCX has no paragraph.");
   }
   return paragraph;
+}
+
+function editorSession(bytes: Uint8Array) {
+  const opened = openTreeSession(bytes);
+  if (!opened.ok) throw new Error(`The synthetic DOCX did not open: ${opened.reason}`);
+  const tree: TreeDocxSessionView = opened.session;
+  const surface = {
+    session: tree,
+    packageRevision: () => tree.packageRevision(),
+    flushPendingInput: () => {},
+    applyAutomationOps(
+      staged: (
+        relate: (url: string) => string | null,
+      ) => Parameters<TreeDocxSessionView["applyTreeOps"]>[0] | null,
+    ) {
+      const operations = staged((url) => url);
+      if (operations === null) {
+        return {
+          committed: false,
+          rejected: true,
+          opCount: 0,
+          reason: "planned operation refused",
+        };
+      }
+      return tree.applyTreeOps(operations);
+    },
+    editingMode: () => "edit" as const,
+    collaborationSession: () => null,
+    revisionDisplayMode: () => "allMarkup" as const,
+    save: () => writeOoxmlPackage(tree.currentPackage()),
+  };
+  const editor = {
+    surface,
+    exec: () => ({ ok: true }),
+    on: () => () => {},
+    can: () => ({ ok: false }),
+  } as unknown as DocxEditorInstance;
+  return {
+    session: createDocxSession(editor),
+    tree,
+    save: () => writeOoxmlPackage(tree.currentPackage()),
+  };
 }
 
 function one(host: AutomationHost, operation: AutomationBatchRequest["operations"][number]) {
@@ -300,6 +353,148 @@ describe("DOCX paragraph adapter over the real core", () => {
     ]);
     session.dispose();
     expect(() => session.listParagraphs()).toThrow();
+  });
+
+  it("formats a whole paragraph without replacing nested hyperlinks or equations", () => {
+    const host = open([
+      '<w:p><w:hyperlink w:anchor="target"><w:r><w:t>Linked</w:t></w:r></w:hyperlink><w:r><w:t xml:space="preserve"> and </w:t></w:r><m:oMath><m:r><m:t>x+1</m:t></m:r></m:oMath></w:p>',
+      "Other.",
+    ]);
+    const paragraph = listDocxParagraphs(host)[0];
+    const session = createDocxHostSession(host);
+
+    expect(formatDocxParagraph(host, paragraph.handle, 0, {
+      font: { bold: true, name: "Arial", size: 12, color: "#112233" },
+      paragraph: {
+        alignment: "Centered",
+        leftIndent: 12,
+        spaceAfter: 6,
+      },
+    })).toEqual({ ok: true, revision: 1, changed: true });
+
+    expect(session.readParagraphFormatting?.(paragraph.handle)).toMatchObject({
+      paragraphRef: paragraph.handle.ref,
+      text: paragraph.text,
+      revision: 1,
+      font: { bold: true, name: "Arial", size: 12, color: "#112233" },
+      paragraph: { alignment: "Centered", leftIndent: 12, spaceAfter: 6 },
+    });
+    const saved = host.save();
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) throw new Error(saved.error.message);
+    const xml = new TextDecoder().decode(unzipSync(saved.bytes)["word/document.xml"]);
+    expect(xml).toContain("<w:hyperlink");
+    expect(xml).toContain("<m:oMath");
+    expect(xml).toContain("<m:t>x+1</m:t>");
+    expect(xml).toContain("<w:b/>");
+    expect(xml).toContain('<w:jc w:val="center"');
+    expect(formatDocxParagraph(host, paragraph.handle, 0, {
+      font: { italic: true },
+    })).toEqual({
+      ok: false,
+      code: "stale-target",
+      message: "The target paragraph changed or was deleted since it was read.",
+      revision: 1,
+      changed: false,
+    });
+    expect(session.readParagraphFormatting?.(paragraph.handle)?.font.italic).toBeNull();
+  });
+
+  it("writes Latin and East Asian font slots with paragraph formatting in one tree transaction", () => {
+    const fixture = editorSession(syntheticDocx([
+      '<w:p><w:pPr><w:keepNext/><w:rPr><w:rFonts w:ascii="Old Latin" w:hAnsi="Old Latin" w:eastAsia="旧体" w:cs="Courier New" w:hint="eastAsia"/><w:color w:val="445566"/></w:rPr></w:pPr><w:hyperlink w:anchor="target"><w:r><w:rPr><w:rFonts w:ascii="Old Latin" w:hAnsi="Old Latin" w:eastAsia="旧体" w:cs="Courier New" w:hint="eastAsia"/><w:color w:val="445566"/></w:rPr><w:t>Linked</w:t></w:r></w:hyperlink><w:r><w:t xml:space="preserve"> and 中文 </w:t></w:r><w:fldSimple w:instr="PAGE"><w:r><w:t>7</w:t></w:r></w:fldSimple><m:oMath><m:r><m:t>x+1</m:t></m:r></m:oMath></w:p>',
+      '<w:tbl><w:tblGrid><w:gridCol w:w="1200"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>',
+    ]));
+    const paragraph = fixture.session.listParagraphs()[0];
+
+    expect(fixture.tree.packageRevision()).toBe(0);
+    expect(fixture.session.formatParagraph?.(paragraph.handle, 0, {
+      font: { name: "Arial", nameEastAsia: "宋体", size: 12 },
+      paragraph: {
+        alignment: "Centered",
+        leftIndent: 12,
+        spaceAfter: 6,
+      },
+    })).toEqual({ ok: true, revision: 1, changed: true });
+
+    expect(fixture.tree.packageRevision()).toBe(1);
+    expect(fixture.session.readParagraphFormatting?.(paragraph.handle)).toMatchObject({
+      revision: 1,
+      font: { name: "Arial", size: 12 },
+      paragraph: { alignment: "Centered", leftIndent: 12, spaceAfter: 6 },
+    });
+
+    const xml = new TextDecoder().decode(unzipSync(fixture.save())["word/document.xml"]);
+    expect(xml).toMatch(
+      /<w:rFonts[^>]*w:ascii="Arial"[^>]*w:cs="Courier New"[^>]*w:eastAsia="宋体"[^>]*w:hAnsi="Arial"[^>]*w:hint="eastAsia"\/>/,
+    );
+    expect(xml).toMatch(
+      /<w:pPr><w:keepNext\/>.*?<w:spacing w:after="120"\/>.*?<w:ind w:left="240"\/>.*?<w:jc w:val="center"\/>.*?<w:rPr><w:rFonts[^>]*w:eastAsia="宋体"[^>]*\/>.*?<\/w:rPr>/s,
+    );
+    expect(xml).toContain('<w:sz w:val="24"/>');
+    expect(xml).toContain("<w:hyperlink");
+    expect(xml).toContain("<w:fldSimple");
+    expect(xml).toContain("<m:oMath");
+    expect(xml).toContain("<w:tbl>");
+    expect(xml).toContain("<w:t>Cell</w:t>");
+
+    expect(fixture.session.formatParagraph?.(paragraph.handle, 0, {
+      font: { nameEastAsia: "黑体" },
+    })).toEqual({
+      ok: false,
+      code: "stale-target",
+      message: "The target paragraph changed or was deleted since it was read.",
+      revision: 1,
+      changed: false,
+    });
+    expect(fixture.tree.packageRevision()).toBe(1);
+  });
+
+  it("refuses an East Asian font on a host without a live tree and keeps ordinary fonts working", () => {
+    const host = open(["Target sentence."]);
+    const session = createDocxHostSession(host);
+    const paragraph = session.listParagraphs()[0];
+
+    expect(session.formatParagraph?.(paragraph.handle, 0, {
+      font: { nameEastAsia: "宋体" },
+    })).toEqual({
+      ok: false,
+      code: "unsupported-target",
+      message:
+        "East Asian font slots require a live editor tree session; this DOCX host cannot write them.",
+      revision: 0,
+      changed: false,
+    });
+    expect(session.formatParagraph?.(paragraph.handle, 0, {
+      font: { italic: true },
+    })).toEqual({ ok: true, revision: 1, changed: true });
+    expect(session.paragraphLocator?.(paragraph.handle)).toBeNull();
+  });
+
+  it("locates a generated paragraph identity by canonical path after writer reparse", async () => {
+    const text = "Paragraph without an authored identity.";
+    const source = syntheticDocx([text, text]);
+    const sourceXml = new TextDecoder().decode(unzipSync(source)["word/document.xml"]);
+    expect(sourceXml).not.toContain("w14:paraId");
+    const fixture = editorSession(source);
+    const paragraph = fixture.session.listParagraphs()[1];
+    expect(paragraph.paraId).toBeDefined();
+
+    const locator = fixture.session.paragraphLocator?.(paragraph.handle);
+    expect(locator).not.toBeNull();
+    if (!locator) throw new Error("The live paragraph has no canonical locator.");
+
+    const saved = fixture.save();
+    const facts = await openDocxFormatFacts(saved);
+    const objects = facts.snapshot.objects.filter(
+      (object) =>
+        object.kind === "paragraph" &&
+        object.part === locator.part &&
+        object.path.length === locator.path.length &&
+        object.path.every((value, index) => value === locator.path[index]),
+    );
+    expect(objects).toHaveLength(1);
+    expect(objects[0]?.text).toBe(text);
   });
 });
 

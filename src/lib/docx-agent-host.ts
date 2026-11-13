@@ -4,15 +4,20 @@ import {
   type DocxActivityDocument,
   type DocxDocumentRead,
   type DocxDocumentState,
+  type DocxFormatMutation,
+  type DocxFormatReadQuery,
+  type DocxFormatReadResult,
   type DocxOperationContext,
+  type DocxSaveResult,
   type DocxSuggestionApplyResult,
   type DocxSuggestionResult,
   type DocxTargetView,
+  type DocxTemplateCheckResult,
   type DocxToolsOptions,
   type DocxToolsHost,
 } from "@oleafly/ai-tools";
 import { runInlineCompletion } from "@/lib/ai-inline";
-import type { DocxSession, DocxTarget } from "@/lib/docx-session";
+import type { DocxApplyResult, DocxSession, DocxTarget } from "@/lib/docx-session";
 import type { DocxActivity, DocxDocumentIdentity } from "@/lib/docx-task-activity";
 import { useFilesStore } from "@/store/files";
 
@@ -28,6 +33,21 @@ export interface DocxAgentRegistration {
   canPresentSuggestion?(): boolean;
   onTaskSuggestion?(activity: DocxActivity, target: DocxTarget): void;
   session: DocxSession;
+  readFormat?(query: DocxFormatReadQuery): Promise<DocxFormatReadResult>;
+  save?(request: {
+    expectedRevision: number;
+    signal?: AbortSignal;
+  }): Promise<DocxSaveResult>;
+  check?(request: {
+    template: string;
+    signal?: AbortSignal;
+  }): Promise<DocxTemplateCheckResult>;
+  onTaskOperation?(receipt: {
+    operationId: string;
+    document: DocxDocumentIdentity;
+    result: DocxTaskOperationResult;
+  }): Promise<void>;
+  onTaskOperationRecorded?(operationId: string): Promise<void>;
   onSuggestion?(event: {
     target: DocxTarget;
     proposed: string;
@@ -334,11 +354,51 @@ export const DOCX_AGENT_HOST: DocxToolsHost = {
       document: state(registration),
     } satisfies DocxSuggestionApplyResult;
   },
+  readFormat: async (sessionId, query) => {
+    const registration = registrationFor(sessionId);
+    if (!registration.readFormat) throw new Error("Live DOCX formatting reads are unavailable for this working copy.");
+    if (query.paragraphRef) paragraphIndex(registration, query.paragraphRef);
+    return registration.readFormat(query);
+  },
+  formatParagraph: async (sessionId, paragraphRef, expectedRevision, format, context) => {
+    assertAttribution(context);
+    const registration = registrationFor(sessionId);
+    if (!registration.session.formatParagraph) throw new Error("Live DOCX formatting is unavailable for this working copy.");
+    if (context?.signal?.aborted) throw new Error("The DOCX format request was cancelled before mutation.");
+    const index = paragraphIndex(registration, paragraphRef);
+    const paragraph = registration.session.listParagraphs()[index];
+    const result = registration.session.formatParagraph(paragraph.handle, expectedRevision, format);
+    return { ...result, document: state(registration) } satisfies DocxSuggestionApplyResult;
+  },
+  saveDocument: async (sessionId, expectedRevision, context) => {
+    assertAttribution(context);
+    const registration = registrationFor(sessionId);
+    if (!registration.save) throw new Error("Live DOCX saving is unavailable for this working copy.");
+    if (context?.signal?.aborted) throw new Error("The DOCX save request was cancelled before it started.");
+    if (registration.session.revision() !== expectedRevision) {
+      throw new Error(`DOCX save revision changed: expected ${expectedRevision}, current ${registration.session.revision()}.`);
+    }
+    return registration.save({
+      expectedRevision,
+      ...(context?.signal ? { signal: context.signal } : {}),
+    });
+  },
+  checkTemplate: async (sessionId, template, context) => {
+    assertAttribution(context);
+    const registration = registrationFor(sessionId);
+    if (!registration.check) throw new Error("Explicit DOCX template checking is unavailable for this working copy.");
+    if (context?.signal?.aborted) throw new Error("The DOCX template check was cancelled before it started.");
+    return registration.check({
+      template,
+      ...(context?.signal ? { signal: context.signal } : {}),
+    });
+  },
 };
 
 export interface DocxTaskScope {
   projectId: string;
   workbenchProjectId: string | null;
+  operationId?: string;
 }
 
 function taskRegistration(scope: DocxTaskScope, sessionId?: string): RegisteredDocxSession {
@@ -355,6 +415,172 @@ export function docxTaskDocument(scope: DocxTaskScope, sessionId?: string): Docx
   return { sessionId: id, appProjectId: registration.appProjectId,
     workbenchProjectId: registration.workbenchProjectId, baselineId,
     sourceSha256: registration.sourceSha256, sessionRevision, savedRevision };
+}
+
+export async function settleTaskDocxOperation(
+  scope: DocxTaskScope, operationId: string, sessionId?: string,
+): Promise<void> {
+  await taskRegistration(scope, sessionId).onTaskOperationRecorded?.(operationId);
+}
+
+export interface DocxTaskReadFormatArgs { query: DocxFormatReadQuery }
+export interface DocxTaskFormatArgs {
+  paragraphRef: string; expectedRevision: number; format: DocxFormatMutation;
+}
+export interface DocxTaskApplyArgs {
+  targetId: string; expectedRevision: number; text: string;
+}
+export interface DocxTaskSaveArgs { expectedRevision: number }
+export interface DocxTaskCheckArgs { template: string }
+
+export type DocxTaskOperation = "read_format" | "format" | "apply" | "save" | "check";
+export type DocxTaskOperationArgs =
+  | DocxTaskReadFormatArgs | DocxTaskFormatArgs | DocxTaskApplyArgs
+  | DocxTaskSaveArgs | DocxTaskCheckArgs;
+export type DocxTaskOperationResult = (
+  | {
+      operation: "read_format"; ok: true; document: DocxDocumentIdentity;
+      result: DocxFormatReadResult;
+    }
+  | {
+      operation: "format" | "apply"; ok: boolean; document: DocxDocumentIdentity;
+      result: DocxApplyResult;
+    }
+  | {
+      operation: "save"; ok: true; document: DocxDocumentIdentity;
+      result: DocxSaveResult;
+    }
+  | {
+      operation: "check"; ok: true; document: DocxDocumentIdentity;
+      result: DocxTemplateCheckResult;
+    }) & { checkpoint?: { status: "recorded" | "failed"; error?: string } };
+
+async function checkpointTaskOperation(
+  scope: DocxTaskScope,
+  registration: RegisteredDocxSession,
+  result: DocxTaskOperationResult,
+): Promise<DocxTaskOperationResult> {
+  if (!scope.operationId || result.operation === "read_format") return result;
+  if (!registration.onTaskOperation) {
+    return { ...result, checkpoint: { status: "failed", error: "The DOCX operation checkpoint is unavailable." } };
+  }
+  try {
+    const receipt = result.operation === "check" ? {
+      ...result,
+      result: { template: result.result.template, check: Object.fromEntries(
+        ["check_id", "project_id", "baseline_id", "world_version_id", "summary"].filter((key) => result.result.check[key] !== undefined).map(
+          (key) => [key, result.result.check[key]],
+        ),
+      ) },
+    } : result;
+    await registration.onTaskOperation({ operationId: scope.operationId, document: result.document, result: receipt });
+    return { ...result, checkpoint: { status: "recorded" } };
+  } catch (cause) {
+    return { ...result, checkpoint: { status: "failed", error: String(cause) } };
+  }
+}
+
+export function runTaskDocxOperation(
+  scope: DocxTaskScope,
+  sessionId: string | undefined,
+  operation: "read_format",
+  args: DocxTaskReadFormatArgs,
+): Promise<Extract<DocxTaskOperationResult, { operation: "read_format" }>>;
+export function runTaskDocxOperation(
+  scope: DocxTaskScope,
+  sessionId: string | undefined,
+  operation: "format",
+  args: DocxTaskFormatArgs,
+): Promise<Extract<DocxTaskOperationResult, { operation: "format" }>>;
+export function runTaskDocxOperation(
+  scope: DocxTaskScope,
+  sessionId: string | undefined,
+  operation: "apply",
+  args: DocxTaskApplyArgs,
+): Promise<Extract<DocxTaskOperationResult, { operation: "apply" }>>;
+export function runTaskDocxOperation(
+  scope: DocxTaskScope,
+  sessionId: string | undefined,
+  operation: "save",
+  args: DocxTaskSaveArgs,
+): Promise<Extract<DocxTaskOperationResult, { operation: "save" }>>;
+export function runTaskDocxOperation(
+  scope: DocxTaskScope,
+  sessionId: string | undefined,
+  operation: "check",
+  args: DocxTaskCheckArgs,
+): Promise<Extract<DocxTaskOperationResult, { operation: "check" }>>;
+export async function runTaskDocxOperation(
+  scope: DocxTaskScope,
+  sessionId: string | undefined,
+  operation: DocxTaskOperation,
+  args: DocxTaskOperationArgs,
+): Promise<DocxTaskOperationResult> {
+  const registration = taskRegistration(scope, sessionId);
+  if (operation === "read_format") {
+    if (!registration.readFormat) throw new Error("Live DOCX formatting reads are unavailable for this working copy.");
+    const result = await registration.readFormat((args as DocxTaskReadFormatArgs).query);
+    return {
+      operation, ok: true, document: docxTaskDocument(scope, registration.sessionId), result,
+    };
+  }
+  if (operation === "format") {
+    if (!registration.session.formatParagraph) throw new Error("Live DOCX formatting is unavailable for this working copy.");
+    const input = args as DocxTaskFormatArgs;
+    const paragraph = registration.session.listParagraphs().find(
+      (item) => item.handle.ref === input.paragraphRef,
+    );
+    if (!paragraph) throw new Error(`Paragraph ${input.paragraphRef} is not present in this DOCX session.`);
+    const result = registration.session.formatParagraph(
+      paragraph.handle, input.expectedRevision, input.format,
+    );
+    return checkpointTaskOperation(scope, registration, {
+      operation, ok: result.ok, document: docxTaskDocument(scope, registration.sessionId), result,
+    }) as Promise<Extract<DocxTaskOperationResult, { operation: "format" }>>;
+  }
+  if (operation === "apply") {
+    const input = args as DocxTaskApplyArgs;
+    validateTaskDocxProposal(scope, input.targetId, input.expectedRevision, input.text, registration.sessionId);
+    const record = targets.get(input.targetId);
+    if (!record) throw new Error("The DOCX target is no longer available. Capture a fresh target.");
+    const latest = taskRegistration(scope, record.sessionId);
+    const target: DocxTarget = { paragraph: record.paragraph, original: record.original,
+      revision: record.revision, ...(record.paraId ? { paraId: record.paraId } : {}),
+      ...(record.structure ? { structure: record.structure } : {}) };
+    const result = latest.session.applySuggestion(target, input.text);
+    if (result.ok) latest.onApplied?.(target, input.text);
+    return checkpointTaskOperation(scope, latest, {
+      operation, ok: result.ok, document: docxTaskDocument(scope, latest.sessionId), result,
+    }) as Promise<Extract<DocxTaskOperationResult, { operation: "apply" }>>;
+  }
+  if (operation === "save") {
+    if (!registration.save) throw new Error("Live DOCX saving is unavailable for this working copy.");
+    const input = args as DocxTaskSaveArgs;
+    if (registration.session.revision() !== input.expectedRevision) {
+      throw new Error(`DOCX save revision changed: expected ${input.expectedRevision}, current ${registration.session.revision()}.`);
+    }
+    const result = await registration.save({ expectedRevision: input.expectedRevision });
+    const latest = taskRegistration(scope, registration.sessionId);
+    sessions.set(latest.sessionId, { ...latest, baselineId: result.baselineId,
+      savedRevision: result.revision, sourceSha256: result.sourceSha256 });
+    notify();
+    return checkpointTaskOperation(scope, latest, {
+      operation, ok: true, document: docxTaskDocument(scope, latest.sessionId), result,
+    }) as Promise<Extract<DocxTaskOperationResult, { operation: "save" }>>;
+  }
+  if (!registration.check) throw new Error("Explicit DOCX template checking is unavailable for this working copy.");
+  const input = args as DocxTaskCheckArgs;
+  if (!input.template.trim()) throw new Error("template must be an explicit world version ID.");
+  const document = docxTaskDocument(scope, registration.sessionId);
+  const result = await registration.check({ template: input.template });
+  const current = docxTaskDocument(scope, registration.sessionId);
+  if (current.sessionRevision !== document.sessionRevision || current.savedRevision !== document.savedRevision ||
+    current.baselineId !== document.baselineId || current.sourceSha256 !== document.sourceSha256) {
+    throw new Error("The DOCX working copy changed while its saved baseline was being checked. Read the current document before checking again.");
+  }
+  return checkpointTaskOperation(scope, registration, {
+    operation, ok: true, document, result,
+  }) as Promise<Extract<DocxTaskOperationResult, { operation: "check" }>>;
 }
 
 export function listTaskDocxDocuments(scope: DocxTaskScope, sessionId?: string) {

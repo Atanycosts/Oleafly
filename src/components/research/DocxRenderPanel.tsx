@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { FileText, LoaderCircle, RefreshCw } from "lucide-react";
+import { FileText, RefreshCw } from "lucide-react";
 import { PdfViewer } from "@/components/pdf/PdfViewer";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ensureDocxRender, findDocxRenderer, loadDocxPdf, type DocxRender } from "@/lib/docx-render";
@@ -56,7 +57,7 @@ export function DocxRenderPanel({ projectId, baselineId, dirty, fontRevision = 0
   return <section className="space-y-2 rounded border p-3 text-xs" aria-label={text.title}>
     <div className="flex items-center justify-between gap-2">
       <strong>{text.title}</strong>
-      {render.isFetching && <LoaderCircle className="size-3.5 animate-spin" aria-label={text.rendering} />}
+      {render.isFetching && <Spinner size="sm" aria-label={text.rendering} />}
     </div>
     <label className="flex items-center gap-2"><input type="checkbox" checked={auto} onChange={(event) => setAuto(event.target.checked)} />{text.auto}</label>
     <details>
@@ -79,9 +80,9 @@ export function DocxRenderPanel({ projectId, baselineId, dirty, fontRevision = 0
     </div>
     {shown && <>
       <p className={stale ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"} data-testid="docx-render-state">{stale ? text.stale : text.current} · {shown.manifest.page_count} {text.pages}</p>
-      <p className="break-all text-[10px] text-muted-foreground">{shown.manifest.render_record.renderer_version} · {shown.baseline_id}</p>
+      <p className="break-all text-[0.625rem] text-muted-foreground">{shown.manifest.render_record.renderer_version} · {shown.baseline_id}</p>
     </>}
-    <p className="text-[10px] text-muted-foreground">{text.help}</p>
+    <p className="text-[0.625rem] text-muted-foreground">{text.help}</p>
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="flex h-[88vh] max-w-5xl flex-col" data-testid="docx-render-preview">
         <DialogHeader><DialogTitle>{text.title}</DialogTitle><DialogDescription>{stale ? text.stale : text.current} · {shown?.baseline_id}</DialogDescription></DialogHeader>

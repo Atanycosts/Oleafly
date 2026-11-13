@@ -23,7 +23,14 @@ use tokio::sync::oneshot;
 struct Pending {
     reply: oneshot::Sender<Result<Value, String>>,
     task: Option<TaskBinding>,
+    operation: Option<PendingOperation>,
     claimed: bool,
+}
+
+struct PendingOperation {
+    id: String,
+    operation: String,
+    workbench_project_id: String,
 }
 
 fn pending() -> &'static Mutex<HashMap<String, Pending>> {
@@ -51,6 +58,7 @@ async fn renderer(
     operation: &str,
     arguments: Value,
     task: Option<&TaskBinding>,
+    operation_id: Option<&str>,
 ) -> Result<Value, String> {
     if app.get_webview_window("main").is_none() {
         return Err("Open the Oleafly DOCX working copy to use this task tool.".into());
@@ -64,18 +72,30 @@ async fn renderer(
         Pending {
             reply,
             task: task.cloned(),
+            operation: operation_id.map(|id| PendingOperation {
+                id: id.into(),
+                operation: operation.into(),
+                workbench_project_id: workbench_project_id
+                    .expect("tracked DOCX operations have a Workbench project")
+                    .into(),
+            }),
             claimed: false,
         },
     );
     let _forget = Forget(token.clone());
-    app.emit_to(
-        "main",
-        "research-docx-request",
-        json!({"token":token,"projectId":project_id,"workbenchProjectId":workbench_project_id,
-            "operation":operation,"arguments":arguments}),
-    )
-    .map_err(|error| error.to_string())?;
-    tokio::time::timeout(Duration::from_secs(45), answer)
+    let mut payload = json!({"token":token,"projectId":project_id,"workbenchProjectId":workbench_project_id,
+        "operation":operation,"arguments":arguments});
+    if let Some(operation_id) = operation_id {
+        payload["operationId"] = json!(operation_id);
+    }
+    app.emit_to("main", "research-docx-request", payload)
+        .map_err(|error| error.to_string())?;
+    let deadline = if matches!(operation, "save" | "check") {
+        150
+    } else {
+        45
+    };
+    tokio::time::timeout(Duration::from_secs(deadline), answer)
         .await
         .map_err(|_| {
             "The DOCX window did not answer. Reopen the working copy and retry.".to_string()
@@ -109,23 +129,80 @@ pub fn research_docx_request_claim(
 }
 
 #[tauri::command]
-pub fn research_docx_result(
+pub async fn research_docx_result(
+    app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     token: String,
     result: Option<Value>,
     error: Option<String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     if window.label() != "main" {
         return Err("Only the main DOCX window can answer this request.".into());
     }
     let pending = lock().remove(&token).ok_or("This DOCX request ended.")?;
-    let outcome = match (result, error) {
+    if pending.operation.is_some() && !pending.claimed {
+        let _ = pending.reply.send(Err(
+            "The DOCX result arrived before the request was claimed.".into(),
+        ));
+        return Ok(false);
+    }
+    let mut outcome = match (result, error) {
         (_, Some(error)) => Err(error),
         (Some(result), None) => Ok(result),
         _ => Err("The DOCX window returned no result.".into()),
     };
+    let mut recorded = false;
+    if let (Ok(result), Some(operation), Some(task)) =
+        (&mut outcome, &pending.operation, &pending.task)
+    {
+        let document = serde_json::from_value::<DocxDocumentIdentity>(result["document"].clone())
+            .map_err(|error| format!("The DOCX result has no valid document: {error}"));
+        let attempted = match document {
+            Ok(document) if operation.operation == "save" => {
+                let workbench = app.state::<crate::journal_workbench::JournalWorkbenchState>();
+                let hash = crate::journal_workbench::retained_docx_source_hash(
+                    &workbench,
+                    &document.workbench_project_id,
+                    &document.baseline_id,
+                )
+                .await;
+                hash.and_then(|hash| {
+                    if hash != document.source_sha256 {
+                        return Err(
+                            "The saved DOCX operation does not match the retained baseline.".into(),
+                        );
+                    }
+                    TaskStore::new(task.services.tasks_root.clone())?.finish_docx_operation(
+                        &task.project_id,
+                        &operation.workbench_project_id,
+                        &operation.id,
+                        document,
+                        result.clone(),
+                    )
+                })
+            }
+            Ok(document) => TaskStore::new(task.services.tasks_root.clone())?
+                .finish_docx_operation(
+                    &task.project_id,
+                    &operation.workbench_project_id,
+                    &operation.id,
+                    document,
+                    result.clone(),
+                ),
+            Err(error) => Err(error),
+        };
+        match attempted {
+            Ok(activity) => {
+                result["activity"] = json!(activity);
+                recorded = true;
+            }
+            Err(error) => {
+                result["activityPending"] = json!({"error":error,"operationCommitted":true});
+            }
+        }
+    }
     let _ = pending.reply.send(outcome);
-    Ok(())
+    Ok(recorded)
 }
 
 #[derive(Clone)]
@@ -148,19 +225,118 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 impl ApplicationTools for DocxTools {
     fn definitions(&self) -> Vec<ToolMeta> {
         vec![
-            ToolMeta::new("list_docx_documents", "List this task's explicitly bound live DOCX working copy. No other open documents are exposed. The task cannot apply edits or save over the manuscript.", schema(json!({}), &[])),
-            ToolMeta::new("read_docx_document", "Read a bounded paragraph window from this task's bound live DOCX session. The retained activity records the actual session revision and original saved baseline; it may contain unsaved user edits. Continue with nextOffset.", schema(json!({
-                "session_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}
-            }), &[])),
-            ToolMeta::new("capture_docx_target", "Capture a paragraph from the bound DOCX as a revision-checked target. The reference is valid only in this live session.", schema(json!({
-                "session_id":{"type":"string"},"paragraph_ref":{"type":"string"}
-            }), &["paragraph_ref"])),
-            ToolMeta::new("propose_docx_change", "Retain a proposed whole-paragraph replacement and show it beside the bound DOCX for the user's existing accept/reject workflow. Supply your own completed replacement text; this tool does not call another model, edit the document or save a baseline. It refuses stale targets. Runtime task/member/work attribution is recorded automatically.", schema(json!({
-                "target_id":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"text":{"type":"string","maxLength":32768}
-            }), &["target_id","expected_revision","text"])),
-            ToolMeta::new("docx_task_activity", "Read this task's retained DOCX activity, including earlier members' reads and proposals, user decisions, and exact saved-baseline receipts. History remains readable when the editor is closed. Continue with nextCursor when hasMore is true.", schema(json!({
-                "after_cursor":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}
-            }), &[])),
+            ToolMeta::new(
+                "list_docx_documents",
+                "List this task's explicitly bound live DOCX working copy. Read, format, apply, save and recheck operate on this same session. No other open documents are exposed.",
+                schema(json!({}), &[]),
+            ),
+            ToolMeta::new(
+                "read_docx_document",
+                "Read a bounded paragraph window from this task's bound live DOCX session. The retained activity records the actual session revision and original saved baseline; it may contain unsaved user edits. Continue with nextOffset.",
+                schema(
+                    json!({
+                        "session_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}
+                    }),
+                    &[],
+                ),
+            ),
+            ToolMeta::new(
+                "capture_docx_target",
+                "Capture a paragraph from the bound DOCX as a revision-checked target. The reference is valid only in this live session.",
+                schema(
+                    json!({
+                        "session_id":{"type":"string"},"paragraph_ref":{"type":"string"}
+                    }),
+                    &["paragraph_ref"],
+                ),
+            ),
+            ToolMeta::new(
+                "propose_docx_change",
+                "Retain a proposed whole-paragraph replacement and show it beside the bound DOCX for the user's existing accept/reject workflow. Supply your own completed replacement text; this tool does not call another model, edit the document or save a baseline. It refuses stale targets. Runtime task/member/work attribution is recorded automatically.",
+                schema(
+                    json!({
+                        "target_id":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"text":{"type":"string","maxLength":32768}
+                    }),
+                    &["target_id", "expected_revision", "text"],
+                ),
+            ),
+            ToolMeta::new(
+                "docx_task_activity",
+                "Read this task's retained DOCX activity, including earlier members' reads and proposals, user decisions, and exact saved-baseline receipts. History remains readable when the editor is closed. Continue with nextCursor when hasMore is true.",
+                schema(
+                    json!({
+                        "after_cursor":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}
+                    }),
+                    &[],
+                ),
+            ),
+            ToolMeta::new(
+                "read_docx_format",
+                "Read effective formatting or XML nodes from this task's bound live DOCX. The current session and saved baseline are distinct. The query window is bounded.",
+                schema(
+                    json!({
+                        "query":{"type":"object","properties":{
+                            "kind":{"type":"string","enum":["objects","nodes"]},"paragraph_ref":{"type":"string"},"part":{"type":"string"},
+                            "path":{"type":"array","items":{"type":"integer","minimum":0}},"namespace_uri":{"type":"string"},"local_name":{"type":"string"},
+                            "attribute":{"type":"object","properties":{
+                                "namespace_uri":{"type":"string"},"local_name":{"type":"string"},"value":{"type":"string"}
+                            },"required":["local_name"],"additionalProperties":false},
+                            "offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}
+                        },"additionalProperties":false}
+                    }),
+                    &[],
+                ),
+            ),
+            ToolMeta::new(
+                "apply_docx_format",
+                "Apply font or paragraph formatting to the bound live DOCX at expected_revision. The application preserves inline content and refuses stale revisions. This does not save; use save_docx_document next.",
+                schema(
+                    json!({
+                        "paragraph_ref":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},
+                        "font":{"type":"object","properties":{
+                            "name":{"type":"string","description":"Exact Latin font family."},"nameEastAsia":{"type":"string","minLength":1,"description":"Exact East Asian font family."},
+                            "size":{"type":"number","exclusiveMinimum":0},"bold":{"type":"boolean"},"italic":{"type":"boolean"},
+                            "underline":{"type":"string"},"color":{"type":"string"},"strikeThrough":{"type":"boolean"},"subscript":{"type":"boolean"},"superscript":{"type":"boolean"}
+                        },"additionalProperties":false},
+                        "paragraph":{"type":"object","properties":{
+                            "style":{"type":"string"},"alignment":{"type":"string","enum":["Left","Centered","Right","Justified"]},
+                            "firstLineIndent":{"type":"number"},"leftIndent":{"type":"number"},"rightIndent":{"type":"number"},
+                            "lineSpacing":{"type":"number"},"spaceBefore":{"type":"number"},"spaceAfter":{"type":"number"},"widowControl":{"type":"boolean"}
+                        },"additionalProperties":false}
+                    }),
+                    &["paragraph_ref", "expected_revision"],
+                ),
+            ),
+            ToolMeta::new(
+                "apply_docx_suggestion",
+                "Apply a captured whole-paragraph text change directly to the task's bound live DOCX. Use when the assigned work authorizes direct editing; propose_docx_change remains available for user review. Stale targets and complex inline content are refused.",
+                schema(
+                    json!({
+                        "target_id":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"text":{"type":"string","maxLength":32768}
+                    }),
+                    &["target_id", "expected_revision", "text"],
+                ),
+            ),
+            ToolMeta::new(
+                "save_docx_document",
+                "Save the bound live DOCX through the same fixed save and recovery chain as the user. Supply its current session revision. Returns the exact new Workbench baseline and source hash. Author inputs stay read only.",
+                schema(
+                    json!({
+                        "expected_revision":{"type":"integer","minimum":0}
+                    }),
+                    &["expected_revision"],
+                ),
+            ),
+            ToolMeta::new(
+                "check_docx_template",
+                "Explicitly choose a retained template world and check this bound DOCX's saved revision. Save current edits first. Returns the actual check tied to the exact manuscript and world versions.",
+                schema(
+                    json!({
+                        "template":{"type":"string","minLength":1}
+                    }),
+                    &["template"],
+                ),
+            ),
         ]
     }
 
@@ -200,6 +376,33 @@ struct History {
     #[serde(default)]
     after_cursor: u64,
     limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FormatRead {
+    query: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FormatEdit {
+    paragraph_ref: String,
+    expected_revision: u64,
+    font: Option<Value>,
+    paragraph: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Save {
+    expected_revision: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Check {
+    template: String,
 }
 
 fn active_task(store: &TaskStore, task: &TaskBinding) -> Result<(), String> {
@@ -258,6 +461,7 @@ impl DocxTools {
         let bound = store
             .docx_task_binding(&self.task.project_id, &self.task.task_id)?
             .ok_or("Bind this task to a DOCX working copy from the document's task panel first.")?;
+        let mut arguments = args.clone();
         let operation = match name {
             "list_docx_documents" => {
                 if args.as_object().is_none_or(|fields| !fields.is_empty()) {
@@ -305,10 +509,91 @@ impl DocxTools {
                 }
                 "propose"
             }
+            "read_docx_format" => {
+                let read: FormatRead =
+                    serde_json::from_value(args.clone()).map_err(|error| error.to_string())?;
+                if let Some(query) = read.query {
+                    if !query.is_object() {
+                        return Err("A DOCX format query must be an object.".into());
+                    }
+                    if query
+                        .get("offset")
+                        .is_some_and(|value| value.as_u64().is_none())
+                        || query.get("limit").is_some_and(|value| {
+                            value
+                                .as_u64()
+                                .is_none_or(|limit| !(1..=50).contains(&limit))
+                        })
+                    {
+                        return Err(
+                            "Read one to fifty format objects from a non-negative offset.".into(),
+                        );
+                    }
+                }
+                "read_format"
+            }
+            "apply_docx_format" => {
+                let edit: FormatEdit =
+                    serde_json::from_value(args.clone()).map_err(|error| error.to_string())?;
+                if edit.paragraph_ref.is_empty() || edit.font.is_none() && edit.paragraph.is_none()
+                {
+                    return Err(
+                        "A DOCX format edit needs a paragraph and formatting properties.".into(),
+                    );
+                }
+                let mut format = json!({});
+                if let Some(font) = edit.font {
+                    format["font"] = font;
+                }
+                if let Some(paragraph) = edit.paragraph {
+                    format["paragraph"] = paragraph;
+                }
+                arguments = json!({"paragraph_ref": edit.paragraph_ref,"expected_revision":edit.expected_revision,"format":format});
+                "format"
+            }
+            "apply_docx_suggestion" => {
+                let edit: Propose =
+                    serde_json::from_value(args.clone()).map_err(|error| error.to_string())?;
+                if edit.target_id.is_empty() || edit.text.len() > 32 * 1024 {
+                    return Err("Apply a captured DOCX target within the text limit.".into());
+                }
+                "apply"
+            }
+            "save_docx_document" => {
+                let save: Save =
+                    serde_json::from_value(args.clone()).map_err(|error| error.to_string())?;
+                arguments = json!({"expected_revision":save.expected_revision});
+                "save"
+            }
+            "check_docx_template" => {
+                let check: Check =
+                    serde_json::from_value(args.clone()).map_err(|error| error.to_string())?;
+                if check.template.trim().is_empty() {
+                    return Err("Choose an explicit template world version.".into());
+                }
+                "check"
+            }
             _ => return Err(format!("Unknown DOCX task tool: {name}")),
         };
-        let mut arguments = args.clone();
         arguments["session_id"] = json!(bound.session_id);
+        let tracked_operation = matches!(
+            operation,
+            "read_format" | "format" | "apply" | "save" | "check"
+        );
+        let intent = if tracked_operation {
+            Some(store.record_docx_activity(
+                &self.task.project_id,
+                &self.task.task_id,
+                self.task.generation,
+                bound.clone(),
+                DocxRuntimeEvent::OperationStarted {
+                    operation: operation.into(),
+                    request: arguments.clone(),
+                },
+            )?)
+        } else {
+            None
+        };
         let request = renderer(
             &self.app,
             &self.task.project_id,
@@ -316,12 +601,22 @@ impl DocxTools {
             operation,
             arguments,
             Some(&self.task),
+            intent.as_ref().map(|intent| intent.id.as_str()),
         );
-        let result = tokio::select! {
-            _ = self.task.cancel.cancelled() => return Err("The DOCX task request was cancelled.".into()),
-            result = request => result?,
+        let committed_operation = matches!(operation, "format" | "apply" | "save" | "check");
+        // Claim checks cancellation before work starts. Once the renderer claims a
+        // mutation, wait for its actual receipt instead of discarding a committed save.
+        let result = if committed_operation {
+            request.await?
+        } else {
+            tokio::select! {
+                _ = self.task.cancel.cancelled() => return Err("The DOCX task request was cancelled.".into()),
+                result = request => result?,
+            }
         };
-        active_task(&store, &self.task)?;
+        if !committed_operation {
+            active_task(&store, &self.task)?;
+        }
         if operation == "list" {
             let documents: Vec<DocxDocumentIdentity> =
                 serde_json::from_value(result["documents"].clone())
@@ -335,6 +630,45 @@ impl DocxTools {
         let document: DocxDocumentIdentity = serde_json::from_value(result["document"].clone())
             .map_err(|error| error.to_string())?;
         same_document(&bound, &document)?;
+        if tracked_operation {
+            if operation == "save" {
+                let workbench = self
+                    .app
+                    .state::<crate::journal_workbench::JournalWorkbenchState>();
+                let hash = crate::journal_workbench::retained_docx_source_hash(
+                    &workbench,
+                    &document.workbench_project_id,
+                    &document.baseline_id,
+                )
+                .await?;
+                if hash != document.source_sha256 {
+                    return Err(
+                        "The saved DOCX operation does not match the retained baseline.".into(),
+                    );
+                }
+            }
+            let retained = store.finish_docx_operation(
+                &self.task.project_id,
+                &bound.workbench_project_id,
+                &intent.expect("tracked DOCX operations have an intent").id,
+                document,
+                result.clone(),
+            );
+            let mut output = result;
+            match retained {
+                Ok(activity) => {
+                    output["activity"] = json!(activity);
+                    if let Some(output) = output.as_object_mut() {
+                        output.remove("activityPending");
+                    }
+                }
+                Err(error) => {
+                    output["activityPending"] =
+                        json!({"error":error,"operationCommitted":committed_operation})
+                }
+            }
+            return Ok(output);
+        }
         let event = match operation {
             "read" => {
                 let read: Read = serde_json::from_value(args).map_err(|error| error.to_string())?;
@@ -377,6 +711,7 @@ impl DocxTools {
                 "present",
                 json!({"activity":activity}),
                 Some(&self.task),
+                None,
             );
             let presented = tokio::select! {
                 _ = self.task.cancel.cancelled() => Err("The DOCX task was cancelled before presentation completed.".into()),
@@ -409,6 +744,7 @@ pub async fn research_docx_bind_task(
         None,
         "identity",
         json!({"session_id":session_id}),
+        None,
         None,
     )
     .await?;
@@ -509,6 +845,26 @@ mod tests {
     }
 
     #[test]
+    fn direct_operations_require_their_own_fixed_arguments() {
+        assert!(serde_json::from_value::<FormatEdit>(json!({
+            "paragraph_ref":"p1","expected_revision":2,"font":{"size":14}
+        }))
+        .is_ok());
+        assert!(serde_json::from_value::<FormatEdit>(json!({
+            "paragraph_ref":"p1","font":{"size":14}
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<Save>(json!({"expected_revision":-1})).is_err());
+        assert!(
+            serde_json::from_value::<Check>(json!({"template":"world","task_id":"forged"}))
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<FormatRead>(json!({"query":{},"project_id":"other"})).is_err()
+        );
+    }
+
+    #[test]
     fn renderer_identity_stays_bound_after_a_baseline_save() {
         let bound: DocxDocumentIdentity = serde_json::from_value(json!({
             "sessionId":"session", "appProjectId":"paper", "workbenchProjectId":"manuscript",
@@ -536,6 +892,7 @@ mod tests {
             Pending {
                 reply,
                 task: None,
+                operation: None,
                 claimed: false,
             },
         );

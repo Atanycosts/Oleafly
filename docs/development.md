@@ -133,6 +133,15 @@ Cargo or pnpm workspaces. Application data remains outside source control; the s
 does not relocate existing journal libraries. See the service README for portable tests and
 separate environment-bound acceptance checks.
 
+The journal panel can explicitly adopt `.doc` or `.docx` templates. Legacy Word conversion
+uses the existing local LibreOffice locator with a private profile and temporary directory.
+Only Transitional DOCX is supported by this format adapter. Strict OOXML is rejected with
+an instruction to resave it. The selected template retains original and normalized bytes,
+conversion provenance, complete package parts and a source-bound effective-format snapshot
+from the pinned DOCX core. Workbench owns storage, role/region comparison, coverage gaps and
+bounded raw/snapshot/finding queries. See the [journal contract](../services/research-workbench/contracts/journals/world-contract.json)
+and [template architecture](agent/architecture.md#word-模板与有效格式2026-11-14).
+
 The retained DOCX working-copy editor pins `@docx-editor.dev/core`, `react` and
 `fonts` to the same version. It loads on demand from the Journal checks panel.
 The core has a scoped multi-column paragraph-frame patch. Keep its readable source,

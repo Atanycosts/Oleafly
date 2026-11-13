@@ -476,6 +476,10 @@ function loadResearchDocxBridge(): Promise<() => void> {
   return import("@/lib/docx-task-activity").then((m) => m.mountDocxTaskBridge());
 }
 
+function loadJournalFormatBridge(): Promise<() => void> {
+  return import("@/lib/journal-format-bridge").then((m) => m.mountJournalFormatBridge());
+}
+
 const SIDEBAR_DEFAULT_PX = 340;
 
 function shownViewMode(detached: boolean, selected: ViewMode): ViewMode {
@@ -694,6 +698,7 @@ function AppContent() {
   useTauriSubscription(native ? loadMcpBridge : null, "start the MCP bridge");
   useTauriSubscription(native ? loadResearchPdfBridge : null, "start the research PDF bridge");
   useTauriSubscription(native ? loadResearchDocxBridge : null, "start the research DOCX bridge");
+  useTauriSubscription(native ? loadJournalFormatBridge : null, "start the journal format bridge");
   useTauriSubscription(
     native ? loadStuckWindowRestore : null,
     "reopen the work after a stuck window reload",

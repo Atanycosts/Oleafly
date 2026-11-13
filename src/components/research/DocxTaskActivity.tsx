@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { bindDocxTask, loadDocxTaskActivities, subscribeDocxTaskActivity, type DocxActivity } from "@/lib/docx-task-activity";
 import { listResearchTasks, type ResearchTask } from "@/lib/research-tasks";
 import { useResearchTasksStore } from "@/store/research-tasks";
@@ -20,7 +21,7 @@ export function DocxActivitySource({ activity }: { activity: DocxActivity }) {
   const { t } = useTranslation("researchTools");
   const text = t(($) => $.researchTools.docx.taskActivity, { returnObjects: true });
   const origin = activity.origin;
-  return <div className="space-y-1 text-[11px] text-muted-foreground">
+  return <div className="space-y-1 text-[0.6875rem] text-muted-foreground">
     <button type="button" className="text-primary underline" onClick={() => void openDocxTaskSource(activity.document.appProjectId, origin.taskId, "activity")}>{text.source}: {origin.taskId} · {text.generation} {origin.generation}</button>
     {origin.groupId && <button type="button" className="block text-primary underline" onClick={() => void openDocxTaskSource(activity.document.appProjectId, origin.taskId, "group")}>{text.group}: {origin.groupId}</button>}
     {origin.memberId && <p>{text.member}: {origin.memberId} · {origin.executionId}</p>}
@@ -100,7 +101,12 @@ export function DocxTaskActivity({ projectId, workbenchProjectId, sessionId }: {
     <div className="max-h-72 space-y-3 overflow-y-auto">
       {activities.map((activity) => <article key={activity.id} className="space-y-1 border-t pt-2" data-testid="docx-task-activity">
         <DocxActivitySource activity={activity} />
-        <p>{text.events[activity.event.type === "runtime" ? activity.event.event.kind : activity.event.outcome.kind]}{` · r${activity.document.sessionRevision}`}</p>
+        <p>{activity.event.type === "operationCheckpoint" ? text.events[activity.event.phase]
+          : activity.event.type === "runtime" && activity.event.event.kind === "operation"
+            ? `${text.events.operation} · ${activity.event.event.operation} · ${activity.event.event.result.ok ? text.operationSucceeded : text.operationFailed}`
+            : text.events[activity.event.type === "runtime" ? activity.event.event.kind : activity.event.outcome.kind]}{` · r${activity.document.sessionRevision}`}</p>
+        {activity.event.type === "operationCheckpoint" && <p className="break-all text-muted-foreground">{activity.event.operationId} · {activity.event.contentSha256}</p>}
+        {activity.event.type === "runtime" && activity.event.event.kind === "operation" && <details><summary>{text.source}</summary><CodeBlock code={JSON.stringify(activity.event.event.result, null, 2)} preClassName="whitespace-pre-wrap break-all" /></details>}
         {activity.event.type === "runtime" && activity.event.event.kind === "proposed" && <>
           <blockquote className="whitespace-pre-wrap border-l-2 pl-2 text-muted-foreground">{activity.event.event.target.original}</blockquote>
           <p className="whitespace-pre-wrap">{activity.event.event.proposed}</p>

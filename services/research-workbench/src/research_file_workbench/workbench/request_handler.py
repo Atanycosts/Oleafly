@@ -90,6 +90,22 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             parsed = urlparse(self.path)
             require_query_fields(parse_qs(parsed.query, keep_blank_values=True), set())
             payload = self._request_json()
+            from research_file_workbench.workbench.template_service import (
+                adopt_template,
+                check_template,
+                query_document,
+                retain_format,
+            )
+
+            template_routes = {
+                "/api/template-world": adopt_template,
+                "/api/docx-format": retain_format,
+                "/api/template-check": check_template,
+                "/api/docx-query": query_document,
+            }
+            if parsed.path in template_routes:
+                self._json(template_routes[parsed.path](self.server.service, payload))
+                return
             routes = {
                 "/api/worlds": self._create_world,
                 "/api/world-component": self._import_component,

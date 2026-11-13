@@ -5,6 +5,7 @@ import type { JournalCheck, JournalProject, JournalState, JournalWorld } from "@
 import type { DocxParagraph, DocxSession, DocxTarget } from "@/lib/docx-session";
 import type { DocxSave, DocxSource } from "@/lib/docx-workbench";
 import type { DocxRecoverySnapshot } from "@/lib/docx-recovery";
+import type { DocxSaveResult } from "@oleafly/ai-tools";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { projectLeaveAllowed } from "@/lib/project-leave-guards";
 import { acquireEditorMutationLease } from "@/lib/editor-mutation-lease";
@@ -1172,6 +1173,63 @@ it("clears a clean rejection checkpoint by its exact hash before closing", async
   expect(onClose).toHaveBeenCalledOnce();
   expect(harness.text("first")).toBe("Original");
   expect(mocks.applySuggestion).not.toHaveBeenCalled();
+});
+
+it("retires acknowledged save and check checkpoints before the next task edit", async () => {
+  mocks.saveRecovery.mockImplementation(async (identity, revision, _bytes, taskState) => ({
+    ...identity, revision, taskState, recoveryKey: "b".repeat(64),
+    contentSha256: "c".repeat(64), updatedAt: "2026-11-14T00:00:00Z",
+  }));
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  await renderReady(harness);
+  const registration = () => mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+  act(() => harness.edit("first", "First edit"));
+  mocks.saveBaseline.mockResolvedValueOnce({ baselineId: SAVED_BASELINE, revision: 1 });
+  let saved!: DocxSaveResult;
+  await act(async () => { saved = await registration().save({ expectedRevision: 1 }); });
+  const document = {
+    sessionId: registration().sessionId, appProjectId: "app-project", workbenchProjectId: PROJECT.project_id,
+    baselineId: saved.baselineId, sourceSha256: saved.sourceSha256, sessionRevision: 1, savedRevision: 1,
+  };
+  await act(async () => registration().onTaskOperation({
+    operationId: "first-save", document, result: { operation: "save", ok: true, document, result: saved },
+  }));
+  expect(mocks.discardRecovery).not.toHaveBeenCalled();
+  await act(async () => registration().onTaskOperationRecorded("first-save"));
+  expect(mocks.discardRecovery).toHaveBeenCalledOnce();
+  await act(async () => registration().onTaskOperation({
+    operationId: "first-check", document,
+    result: { operation: "check", ok: true, document, result: { template: WORLD_VERSION, check: { check_id: "first-check" } } },
+  }));
+  await act(async () => registration().onTaskOperationRecorded("first-check"));
+  expect(mocks.discardRecovery).toHaveBeenCalledTimes(2);
+  act(() => harness.edit("first", "Second edit"));
+  const edited = { ...document, sessionRevision: 2 };
+  await act(async () => registration().onTaskOperation({
+    operationId: "second-format", document: edited,
+    result: { operation: "format", ok: true, document: edited, result: { ok: true, changed: true, revision: 2 } },
+  }));
+  expect(mocks.saveRecovery.mock.calls.at(-1)?.[3].operations.map((operation: { operationId: string }) => operation.operationId))
+    .toEqual(["second-format"]);
+});
+
+it.each([false, true])("cleans a native-recorded format result with no changed bytes (ok=%s)", async (ok) => {
+  mocks.saveRecovery.mockImplementation(async (identity, revision, _bytes, taskState) => ({
+    ...identity, revision, taskState, recoveryKey: "b".repeat(64),
+    contentSha256: "c".repeat(64), updatedAt: "2026-11-14T00:00:00Z",
+  }));
+  await renderReady(sessionHarness([paragraph("first", "Original")]));
+  const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+  const document = {
+    sessionId: registration.sessionId, appProjectId: "app-project", workbenchProjectId: PROJECT.project_id,
+    baselineId: INITIAL_BASELINE, sourceSha256: SOURCE.source_sha256, sessionRevision: 0, savedRevision: 0,
+  };
+  await act(async () => registration.onTaskOperation({ operationId: "no-change", document,
+    result: { operation: "format", ok, document, result: { ok, changed: false, revision: 0 } },
+  }));
+  expect(mocks.discardRecovery).not.toHaveBeenCalled();
+  await act(async () => registration.onTaskOperationRecorded("no-change"));
+  expect(mocks.discardRecovery).toHaveBeenCalledOnce();
 });
 
 it("retains a clean rejection checkpoint until its failed receipt can be recorded", async () => {

@@ -12,6 +12,7 @@ import pymupdf
 from tests.journals.test_analysis import template_bytes
 from tests.journals.test_components import component
 from tests.workbench.test_server import _request, _world_payload
+from tests.workbench.test_template_service import setup_comparison
 from tests.workbench.test_workspace import bundle_upload, import_project, selection, upload
 
 
@@ -192,6 +193,18 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
     capture("pending_bundle", "POST", "/api/render-bundle", pending)
     empty_project = import_project(running_server, template_bytes())
     capture("empty_read", "POST", "/api/read", selection(empty_project, object_type="math"))
+    _, template_world, template_project, template_request = setup_comparison(running_server)
+    capture("template_review", "GET", f"/api/review?version_id={template_world['version_id']}")
+    status, template_check = _request(
+        running_server,
+        "POST",
+        "/api/template-check",
+        template_request,
+        running_server.session_token,
+    )
+    assert status == 200, template_check
+    capture("template_check", "GET", f"/api/check?check_id={template_check['check_id']}")
+    capture("template_history", "GET", f"/api/history?project_id={template_project['project_id']}")
     test_script = Path(__file__).with_name("web-response-contracts.test.mjs")
     response_file = tmp_path / "browser-responses.json"
     response_file.write_text(json.dumps(responses), encoding="utf-8")

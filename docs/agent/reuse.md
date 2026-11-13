@@ -104,6 +104,11 @@ HarfBuzz 初始化的 top-level await 复用 `vite-plugin-top-level-await@1.6.0`
 当前 npm `core@2.36.0` 发布元数据的 gitHead 是
 [`86869eedede5b793c910be804db6280b036b0b50`](https://github.com/eigenpal/docx-editor/tree/86869eedede5b793c910be804db6280b036b0b50)；
 上表 `6eb82e…` 保留最初选型调查输入，不代替这个发布包的源码身份。
+模板读取继续复用该版本的 `openHeadlessDocument`、样式级联、有效 run／段落布局、分节枚举和表格结构 API。
+`docx-format` 适配层保留源包字节和 canonical XML 路径，不再在 Python 重写一份 Word 样式计算器。
+旧 `.doc` 规范化复用现有本机 LibreOffice 定位与受控进程，来源和临时 profile 由应用保留与清理。
+Workbench 复用既有 source/world/baseline/check/artifact/evidence 存储，分页 findings 与大 world 引用沿已有工具表面读取。
+这套复用覆盖原始事实和有依据的有效格式比较，不把保留 XML 等同于全部 OOXML 渲染语义已实现。
 字体解析复用公开 `defineFontResolver`／`useFonts`／`setFonts`，下载复用应用既有字体包服务和缓存。
 按准确族、字重与 style 返回实际字节及 hash，不再接入跨族替代或近似 face。
 现有 fontdb、skrifa 用于字体识别，不新增字体转换器；无法直接交给内核的 TTC／可变字体如实缺失。

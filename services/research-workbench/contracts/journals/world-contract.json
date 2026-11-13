@@ -4,9 +4,9 @@
     "world_schema": "journal-world-1.1.0",
     "analyzer": "journal-world-analyzer-1.5.0",
     "checker": "journal-geometry-checker-1.2.0",
-    "http": "journal-http-1.10.0"
+    "http": "journal-http-1.11.0"
   },
-  "scope": "local_page_geometry_slice",
+  "scope": "journal_sources_and_selected_docx_template_comparison",
   "workflow": [
     "import_sources",
     "analyze_world",
@@ -21,7 +21,9 @@
     "guide_text",
     "guide_docx",
     "guide_pdf",
-    "rule_component_json"
+    "rule_component_json",
+    "template_original",
+    "docx_format_snapshot"
   ],
   "properties": [
     "page_width_twips",
@@ -47,7 +49,7 @@
     "evidence",
     "limitations"
   ],
-  "rule_scope": "all_sections only when explicitly supported by a supplied guideline or a template-wide candidate; per-template-section observations do not imply manuscript section correspondence",
+  "rule_scope": "Legacy geometry rules use all_sections. Selected-template rules use kind + role selectors; heading levels and caption types are resolved from the retained core snapshot by the object comparator.",
   "basis_states": [
     "confirmed",
     "candidate",
@@ -138,7 +140,7 @@
     "Disposition actions are note or defer and retain the original check verdict."
   ],
   "http": {
-    "contract_version": "journal-http-1.10.0",
+    "contract_version": "journal-http-1.11.0",
     "transport": "same_origin_json_on_ipv4_loopback_only",
     "session": {
       "route": "GET /api/session",
@@ -218,9 +220,21 @@
           "name",
           "content_base64"
         ],
-        "optional_body_fields": ["sources", "decisions", "preview"],
-        "source_fields": ["name", "kind", "content_base64"],
-        "decision_fields": ["property", "expected", "reason"],
+        "optional_body_fields": [
+          "sources",
+          "decisions",
+          "preview"
+        ],
+        "source_fields": [
+          "name",
+          "kind",
+          "content_base64"
+        ],
+        "decision_fields": [
+          "property",
+          "expected",
+          "reason"
+        ],
         "semantics": "Analyze a captured rule component and optional captured sources with all retained sources of the selected world. Carry prior operator decisions, then apply explicit operator-confirmed decisions, and save one immutable version. preview=true returns the analyzed world without saving sources or a version. Imported declarations remain candidates unless an existing confirmed guide or operator decision determines the same property. Existing manuscript bindings are unchanged. Invalid input saves nothing."
       },
       {
@@ -488,7 +502,7 @@
   "runtime_entry_point": "rfw-workbench serve",
   "runtime_boundary": "Local operator workbench; session and origin checks do not provide remote user authentication.",
   "source_review": {
-    "method_version": "journal-source-evidence-1.1.0",
+    "method_version": "journal-source-evidence-1.2.0",
     "relation_method_version": "journal-lexical-relations-1.0.0",
     "fields": [
       "method_version",
@@ -518,6 +532,153 @@
     "offset_unit": "unicode_code_points",
     "relation_score": "lexical cosine in [0,1], retrieval ranking only; no probability, merging or compliance inference",
     "pdf_source_version": "journal-pdf-source-1.0.0",
-    "pdf_fragment_binding": "PDF fragment identifiers bind pdf_source_version instead of the DOCX reader version; bbox values are PDF points with a top-left origin."
+    "pdf_fragment_binding": "PDF fragment identifiers bind pdf_source_version instead of the DOCX reader version; bbox values are PDF points with a top-left origin.",
+    "template_fragment_binding": "Selected-template object fragments bind core engine version and use normalized_source_id plus exact object part/path. Snapshot JSON supplies their facts. Original and normalized descriptors retain their source roles even when content IDs coincide; fragment_count counts unique fragments for that content ID."
+  },
+  "template_comparison": {
+    "contract_version": "docx-template-comparison-1.0.0",
+    "analyzer": "docx-template-analyzer-1.0.0",
+    "checker": "docx-template-checker-1.0.0",
+    "snapshot_method": "docx-core-format-snapshot-1.0.0",
+    "findings_evidence_method": "docx-template-comparison-1.0.0",
+    "snapshot_schema_version": 1,
+    "adoption": "Explicit template-world import selects the captured template as a project comparison basis without per-property confirmation. It does not authenticate publisher requirements.",
+    "storage": "Original bytes, normalized DOCX and snapshot JSON use existing content-addressed sources; baseline snapshots use artifact/evidence; comparisons use world/binding/check_record. No parallel database.",
+    "template_fields": [
+      "source_id",
+      "normalized_source_id",
+      "snapshot_source_id",
+      "source_sha256",
+      "original_sha256",
+      "provenance",
+      "authority"
+    ],
+    "optional_template_fields": {
+      "font_requirements": "Array of {family,roles:string[],scripts:string[]}; exact unique nonblank family names from textual run effective font slots active under script_usage. Excludes paragraph marks, empty text, unused slots and unused complex lanes. Uses template authority=user_designated_template for existing exact-family acquisition; implies no publisher authentication or compliance verdict."
+    },
+    "provenance": {
+      "engine": "string",
+      "version": "string",
+      "method": "string",
+      "converted_sha256": "normalized DOCX SHA-256"
+    },
+    "comparison": "Compare stable common effective properties by kind and semantic role. Heading level and figure/table caption context refine pairing. Explicit semantic regions refine section/paragraph/run/table/tr/tc profiles by region role, never section order, path, object ID or the values being compared. Mixed/unknown regions use common-property profiles; variable values remain cannot_determine. Old snapshots without regions retain common-property behavior. Do not compare text, IDs, direct declarations, paragraph marks, script usage, or example table dimensions as requirements. Font slots follow actual script usage.",
+    "object_region": {
+      "optional": true,
+      "fields": ["section_object_id", "role", "role_basis"],
+      "roles": ["front_matter", "body", "references", "appendix", "mixed", "unknown"],
+      "section_object_id": "Source-local retained section object ID for location; never cross-document pairing identity.",
+      "role_basis": "Same evidence shape as object role_basis; semantic section block membership supplied by the DOCX core adapter."
+    },
+    "verdicts": [
+      "observed_match",
+      "observed_difference",
+      "cannot_determine"
+    ],
+    "finding_fields": [
+      "case_id",
+      "object_id",
+      "kind",
+      "role",
+      "role_basis",
+      "part",
+      "path",
+      "property_path",
+      "observed",
+      "expected",
+      "template_object_ids",
+      "template_role_basis",
+      "verdict",
+      "template_object_count",
+      "expected_value_count"
+    ],
+    "case_identity": "case-sha256(object_id + NUL + property_path); stable for the same canonical object and property within a source version. Not a cross-document object identity.",
+    "optional_finding_fields": ["region", "reason"],
+    "coverage": "Missing semantic/region profiles with effective facts yield object cannot_determine with reason No corresponding template profile. World coverage_gaps aggregate template core unsupported codes and unknown/mixed role-region counts with representative object locators; exact facts remain in docx-query. They do not imply publisher violations or complete rendering interpretation.",
+    "http": {
+      "POST /api/template-world": {
+        "required": [
+          "journal_id",
+          "journal_name",
+          "article_type",
+          "stage",
+          "language",
+          "original",
+          "normalized",
+          "snapshot"
+        ],
+        "optional": [
+          "sources"
+        ],
+        "returns": "world with template metadata; sources from the same import are retained"
+      },
+      "POST /api/docx-format": {
+        "required": [
+          "project_id",
+          "baseline_id",
+          "snapshot"
+        ],
+        "returns": [
+          "baseline_id",
+          "snapshot_id",
+          "source_sha256",
+          "engine"
+        ]
+      },
+      "POST /api/template-check": {
+        "required": [
+          "project_id",
+          "expected_baseline_id",
+          "world_version_id",
+          "expected_binding_id",
+          "request_id",
+          "origin"
+        ],
+        "origin": {
+          "surface": "user | agent",
+          "reason": "optional string"
+        },
+        "returns": "existing check envelope plus template_comparison and typed object findings",
+        "idempotency": "Same project/request_id and exact payload replay the retained check; conflicting reuse returns 409. Replay does not rebind a newer baseline.",
+        "pagination": "template_comparison carries first 100 findings, total/has_more/next_offset and findings_artifact_version_id. Complete findings live once in existing project artifact/evidence. rule_results carry finding_selector and finding_summary, not duplicated object findings."
+      },
+      "POST /api/docx-query": {
+        "required": [
+          "target",
+          "operation"
+        ],
+        "target": "snapshot/part/nodes/relationships: {world_version_id} or {project_id,baseline_id}; findings: {check_id}",
+        "operations": [
+          "snapshot",
+          "part",
+          "nodes",
+          "relationships",
+          "findings"
+        ],
+        "part": "original part bytes as content_base64 with hash/content_type/length",
+        "pagination": "nodes, relationships and findings return total, has_more, next_offset; offset default 0, limit default 100, maximum 1000. Findings filters apply before pagination, so total counts filtered findings.",
+        "snapshot_pagination": "Without offset/limit, returns the complete retained snapshot. Either optional offset or limit requests a page of snapshot.objects: offset defaults to 0, limit defaults to 100, maximum 1000. Envelope total/has_more/next_offset describe objects; all other snapshot metadata including parts/capabilities/unsupported remains complete. A page is a view, not a replacement snapshot for POST /api/docx-format.",
+        "findings_target": {
+          "check_id": "retained check ID"
+        },
+        "findings_filters": [
+          "verdict",
+          "role",
+          "property_path"
+        ],
+        "findings_filter_semantics": "Optional exact-match string verdict/role/property_path filters are combined with AND.",
+        "findings_response": [
+          "schema_version",
+          "operation",
+          "check_id",
+          "source_sha256",
+          "findings",
+          "total",
+          "has_more",
+          "next_offset"
+        ]
+      }
+    },
+    "additional_guides": "Additional captured guide sources use the existing guide analyzer/checker; their normative verdicts remain separate from selected-template observed differences."
   }
 }

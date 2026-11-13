@@ -4,9 +4,13 @@ import type {
   AutomationChangeEvent,
   AutomationError,
   AutomationErrorCode,
+  AutomationFontRead,
+  AutomationFontWrite,
   AutomationHandle,
   AutomationHost,
   AutomationOperationResult,
+  AutomationParagraphFormatRead,
+  AutomationParagraphFormatWrite,
   AutomationSpanRef,
   AutomationUnsubscribe,
   AutomationValue,
@@ -18,9 +22,14 @@ import {
 } from "@docx-editor.dev/core/editor";
 import {
   canonicalOoxmlFingerprint,
+  mergedParagraphMarkProperties,
   ooxmlTreesEqual,
+  paragraphTextOf,
+  runPropertyEdits,
   type OoxmlNode,
   type OoxmlParagraphNode,
+  type OoxmlProperty,
+  type TreeDocOp,
 } from "@docx-editor.dev/core/store";
 
 export interface DocxParagraph {
@@ -42,10 +51,16 @@ export interface DocxTarget {
   readonly structure?: string;
 }
 
+export interface DocxParagraphLocator {
+  readonly part: string;
+  readonly path: number[];
+}
+
 export type DocxApplyErrorCode =
   | AutomationErrorCode
   | "stale-target"
-  | "unsupported-target";
+  | "unsupported-target"
+  | "invalid-format";
 
 export type DocxApplyResult =
   | {
@@ -66,9 +81,35 @@ export interface DocxSession {
   listParagraphs(): readonly DocxParagraph[];
   captureTarget(paragraph: AutomationHandle<"paragraph">): DocxTarget;
   applySuggestion(target: DocxTarget, text: string): DocxApplyResult;
+  formatParagraph?(
+    paragraph: AutomationHandle<"paragraph">,
+    expectedRevision: number,
+    format: DocxParagraphFormatWriteInput,
+  ): DocxApplyResult;
+  readParagraphFormatting?(paragraph: AutomationHandle<"paragraph">): DocxParagraphFormatting;
+  paragraphLocator?(
+    paragraph: AutomationHandle<"paragraph">,
+  ): DocxParagraphLocator | null;
   isSuggestionApplied(target: DocxTarget, text: string): boolean;
   subscribe(listener: (revision: number) => void): AutomationUnsubscribe;
   dispose(): void;
+}
+
+export interface DocxParagraphFormatWriteInput {
+  readonly font?: AutomationFontWrite & {
+    /** `w:rFonts/@w:eastAsia`, which the public automation font write does not expose yet. */
+    readonly nameEastAsia?: string;
+  };
+  readonly paragraph?: AutomationParagraphFormatWrite;
+}
+
+export interface DocxParagraphFormatting {
+  readonly paragraphRef: string;
+  readonly text: string;
+  readonly revision: number;
+  readonly paraId?: string;
+  readonly font: AutomationFontRead;
+  readonly paragraph: AutomationParagraphFormatRead;
 }
 
 export class DocxSessionError extends Error {
@@ -207,6 +248,48 @@ function findParagraph(node: OoxmlNode, nodeId: string): OoxmlParagraphNode | nu
   return null;
 }
 
+function findNodePath(
+  node: OoxmlNode,
+  nodeId: string,
+  path: readonly number[],
+): number[] | null {
+  if (node.id === nodeId) return [...path];
+  if (node.kind === "textValue") return null;
+  for (const [index, child] of node.children.entries()) {
+    const found = findNodePath(child, nodeId, [...path, index]);
+    if (found) return found;
+  }
+  return null;
+}
+
+function paragraphLocator(
+  host: AutomationHost,
+  tree: TreeDocxSessionView,
+  paragraph: AutomationHandle<"paragraph">,
+): DocxParagraphLocator | null {
+  let paraId: string;
+  try {
+    paraId = textAt(
+      execute(host, { operations: [{ op: "getParagraphId", paragraph }] }),
+      0,
+    );
+  } catch (error) {
+    if (
+      error instanceof DocxSessionError &&
+      (error.code === "invalid-handle" || error.code === "stale-revision")
+    ) {
+      return null;
+    }
+    throw error;
+  }
+  if (paraId === "") return null;
+  const nodeId = tree.nodeIdOf(paraId);
+  if (!nodeId) return null;
+  const part = tree.part();
+  const path = findNodePath(part.root, nodeId, [0]);
+  return path === null ? null : { part: part.name, path };
+}
+
 function safeForWholeParagraphReplacement(node: OoxmlParagraphNode): boolean {
   const runs = node.children.filter(
     (child): child is Extract<OoxmlNode, { kind: "run" }> => child.kind === "run",
@@ -327,6 +410,37 @@ function staleTarget(revision: number): DocxApplyResult {
   };
 }
 
+function invalidFormat(revision: number): DocxApplyResult {
+  return {
+    ok: false,
+    code: "invalid-format",
+    message: "Supply at least one font or paragraph format field.",
+    revision,
+    changed: false,
+  };
+}
+
+function invalidFormatMessage(revision: number, message: string): DocxApplyResult {
+  return {
+    ok: false,
+    code: "invalid-format",
+    message,
+    revision,
+    changed: false,
+  };
+}
+
+function unsupportedEastAsiaFont(revision: number): DocxApplyResult {
+  return {
+    ok: false,
+    code: "unsupported-target",
+    message:
+      "East Asian font slots require a live editor tree session; this DOCX host cannot write them.",
+    revision,
+    changed: false,
+  };
+}
+
 export function listDocxParagraphs(host: AutomationHost): readonly DocxParagraph[] {
   return readParagraphs(host, paragraphHandles(host, bodyOf(host))).map((details) => ({
     handle: details.paragraph,
@@ -393,6 +507,246 @@ export function applyDocxSuggestion(
   };
 }
 
+export function formatDocxParagraph(
+  host: AutomationHost,
+  paragraph: AutomationHandle<"paragraph">,
+  expectedRevision: number,
+  format: DocxParagraphFormatWriteInput,
+): DocxApplyResult {
+  if (
+    (!format.font || Object.keys(format.font).length === 0) &&
+    (!format.paragraph || Object.keys(format.paragraph).length === 0)
+  ) return invalidFormat(host.revision());
+  if (host.revision() !== expectedRevision) return staleTarget(host.revision());
+  if (format.font?.nameEastAsia !== undefined) return unsupportedEastAsiaFont(host.revision());
+  const font = format.font
+    ? {
+        bold: format.font.bold,
+        italic: format.font.italic,
+        underline: format.font.underline,
+        strikeThrough: format.font.strikeThrough,
+        highlightColor: format.font.highlightColor,
+        subscript: format.font.subscript,
+        superscript: format.font.superscript,
+        name: format.font.name,
+        size: format.font.size,
+        color: format.font.color,
+      }
+    : undefined;
+  const operations: AutomationBatchRequest["operations"] = [
+    ...(font
+      ? [{ op: "setFont" as const, span: { paragraph }, font }]
+      : []),
+    ...(format.paragraph
+      ? [{
+          op: "setParagraphFormat" as const,
+          paragraph: { paragraph },
+          format: format.paragraph,
+        }]
+      : []),
+  ];
+  const response = host.execute({ expectedRevision, operations });
+  if (response.ok) {
+    return { ok: true, revision: response.revision, changed: response.changed };
+  }
+  const error = errorAt(response);
+  if (error.code === "stale-revision" || error.code === "invalid-handle") {
+    return staleTarget(response.revision);
+  }
+  return {
+    ok: false,
+    code: error.code,
+    message: error.message,
+    revision: response.revision,
+    changed: false,
+  };
+}
+
+function eastAsiaProperties(
+  properties: readonly OoxmlProperty[],
+  eastAsia: string,
+): readonly OoxmlProperty[] {
+  const current = properties.find((property) => property.localName === "rFonts");
+  const attributes: Record<string, string> = { ...current?.attributes, eastAsia };
+  delete attributes.eastAsiaTheme;
+  return current
+    ? properties.map((property) =>
+        property === current ? { localName: "rFonts", attributes } : property,
+      )
+    : [...properties, { localName: "rFonts", attributes }];
+}
+
+function eastAsiaTreeOps(
+  tree: TreeDocxSessionView,
+  paragraphId: string,
+  eastAsia: string,
+): readonly TreeDocOp[] {
+  const part = tree.part();
+  const properties = [{ localName: "rFonts", attributes: { eastAsia } }];
+  const textLength = paragraphTextOf(part, paragraphId)?.length ?? 0;
+  return [
+    ...runPropertyEdits(part, paragraphId, 0, textLength, properties).map(
+      (edit) => ({
+        op: "setRunProperties" as const,
+        paragraphId,
+        start: edit.start,
+        end: edit.end,
+        properties: edit.properties,
+        ...(edit.targetRunIds === undefined
+          ? {}
+          : { targetRunIds: edit.targetRunIds }),
+      }),
+    ),
+    {
+      op: "setParagraphMarkProperties",
+      paragraphId,
+      properties: mergedParagraphMarkProperties(part, paragraphId, properties),
+    },
+  ];
+}
+
+function patchEastAsiaOps(
+  operations: readonly TreeDocOp[],
+  tree: TreeDocxSessionView,
+  eastAsia: string,
+): readonly TreeDocOp[] {
+  let patchedRuns = false;
+  const patched = operations.map((operation): TreeDocOp => {
+    if (
+      operation.op === "setRunProperties" ||
+      operation.op === "setParagraphMarkProperties"
+    ) {
+      patchedRuns = true;
+      return {
+        ...operation,
+        properties: eastAsiaProperties(operation.properties, eastAsia),
+      };
+    }
+    return operation;
+  });
+  if (patchedRuns) return patched;
+
+  const paragraphId = operations.find(
+    (operation): operation is Extract<TreeDocOp, { paragraphId: string }> =>
+      "paragraphId" in operation,
+  )?.paragraphId;
+  return paragraphId
+    ? [...eastAsiaTreeOps(tree, paragraphId, eastAsia), ...patched]
+    : patched;
+}
+
+function formatDocxEastAsiaOnly(
+  host: AutomationHost,
+  tree: TreeDocxSessionView | null,
+  paragraph: AutomationHandle<"paragraph">,
+  expectedRevision: number,
+  eastAsia: string,
+): DocxApplyResult {
+  if (host.revision() !== expectedRevision) return staleTarget(host.revision());
+  if (!tree) return unsupportedEastAsiaFont(host.revision());
+  const paraId = textAt(
+    execute(host, { operations: [{ op: "getParagraphId", paragraph }] }),
+    0,
+  );
+  const paragraphId = paraId === "" ? null : tree.nodeIdOf(paraId);
+  if (!paragraphId) return unsupportedTarget(host.revision());
+  const result = tree.applyTreeOps(eastAsiaTreeOps(tree, paragraphId, eastAsia));
+  if (result.rejected) {
+    return {
+      ok: false,
+      code: "transaction-refused",
+      message: result.reason ?? "The DOCX tree refused the font transaction.",
+      revision: host.revision(),
+      changed: false,
+    };
+  }
+  return {
+    ok: true,
+    revision: host.revision(),
+    changed: result.committed,
+  };
+}
+
+function withEastAsiaAutomation(
+  editor: DocxEditorInstance,
+  pending: () => string | null,
+): DocxEditorInstance {
+  return new Proxy(editor, {
+    get(target, property, receiver) {
+      if (property === "surface") {
+        const surface = target.surface;
+        if (!surface) return null;
+        return new Proxy(surface, {
+          get(surfaceTarget, surfaceProperty) {
+            const value = Reflect.get(surfaceTarget, surfaceProperty, surfaceTarget);
+            if (surfaceProperty !== "applyAutomationOps" || typeof value !== "function") {
+              return typeof value === "function" ? value.bind(surfaceTarget) : value;
+            }
+            return (
+              staged: Parameters<typeof surfaceTarget.applyAutomationOps>[0],
+              scope?: Parameters<typeof surfaceTarget.applyAutomationOps>[1],
+              packageEdits?: Parameters<typeof surfaceTarget.applyAutomationOps>[2],
+              requiresReview?: Parameters<typeof surfaceTarget.applyAutomationOps>[3],
+            ) => {
+              const eastAsia = pending();
+              if (eastAsia === null) {
+                return surfaceTarget.applyAutomationOps(
+                  staged,
+                  scope,
+                  packageEdits,
+                  requiresReview,
+                );
+              }
+              return surfaceTarget.applyAutomationOps(
+                (relate) => {
+                  const operations = staged(relate);
+                  return operations === null
+                    ? null
+                    : patchEastAsiaOps(operations, surfaceTarget.session, eastAsia);
+                },
+                scope,
+                packageEdits,
+                requiresReview,
+              );
+            };
+          },
+        });
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+export function readDocxParagraphFormatting(
+  host: AutomationHost,
+  paragraph: AutomationHandle<"paragraph">,
+): DocxParagraphFormatting {
+  const response = execute(host, {
+    operations: [
+      { op: "getParagraphId", paragraph },
+      { op: "getText", target: paragraph, projection: "model" },
+      { op: "getFont", span: { paragraph } },
+      { op: "getParagraphFormat", paragraph: { paragraph } },
+    ],
+  });
+  const font = valueAt(response, 2);
+  const format = valueAt(response, 3);
+  if (font.kind !== "font") throw new Error("The DOCX host did not answer font formatting.");
+  if (format.kind !== "paragraphFormat") {
+    throw new Error("The DOCX host did not answer paragraph formatting.");
+  }
+  const paraId = textAt(response, 0);
+  return {
+    paragraphRef: paragraph.ref,
+    text: textAt(response, 1),
+    revision: response.revision,
+    ...(paraId === "" ? {} : { paraId }),
+    font: font.font,
+    paragraph: format.format,
+  };
+}
+
 export function createDocxHostSession(host: AutomationHost): DocxSession {
   return createDocxSessionFromHost(host);
 }
@@ -400,6 +754,15 @@ export function createDocxHostSession(host: AutomationHost): DocxSession {
 function createDocxSessionFromHost(
   host: AutomationHost,
   inspect?: CanonicalInspector,
+  formatParagraph: (
+    paragraph: AutomationHandle<"paragraph">,
+    expectedRevision: number,
+    format: DocxParagraphFormatWriteInput,
+  ) => DocxApplyResult = (paragraph, expectedRevision, format) =>
+    formatDocxParagraph(host, paragraph, expectedRevision, format),
+  locateParagraph?: (
+    paragraph: AutomationHandle<"paragraph">,
+  ) => DocxParagraphLocator | null,
 ): DocxSession {
   return {
     revision: () => host.revision(),
@@ -407,6 +770,9 @@ function createDocxSessionFromHost(
     captureTarget: (paragraph) => captureDocxTarget(host, paragraph, inspect),
     applySuggestion: (target, text) =>
       applyDocxSuggestion(host, target, text, inspect),
+    formatParagraph,
+    readParagraphFormatting: (paragraph) => readDocxParagraphFormatting(host, paragraph),
+    paragraphLocator: locateParagraph ?? (() => null),
     isSuggestionApplied(target, text) {
       const current = readParagraph(host, target.paragraph);
       if (!current || current.text !== text) return false;
@@ -424,11 +790,60 @@ function createDocxSessionFromHost(
 }
 
 export function createDocxSession(editor: DocxEditorInstance): DocxSession {
+  let pendingEastAsia: string | null = null;
+  const host = createBrowserAutomationHost(
+    withEastAsiaAutomation(editor, () => pendingEastAsia),
+  );
   return createDocxSessionFromHost(
-    createBrowserAutomationHost(editor),
+    host,
     (paraId) => {
       const tree = editor.surface?.session;
       return tree ? canonicalParagraph(tree, paraId) : null;
+    },
+    (paragraph, expectedRevision, format) => {
+      const eastAsia = format.font?.nameEastAsia;
+      if (eastAsia === undefined) {
+        return formatDocxParagraph(host, paragraph, expectedRevision, format);
+      }
+      if (eastAsia.trim().length === 0 || eastAsia.length > 128) {
+        return invalidFormatMessage(
+          host.revision(),
+          "nameEastAsia must be a non-empty font name of at most 128 characters.",
+        );
+      }
+      const font = { ...format.font };
+      delete font.nameEastAsia;
+      const standardFont = Object.fromEntries(
+        Object.entries(font).filter(([, value]) => value !== undefined),
+      );
+      const hasFont = Object.keys(standardFont).length > 0;
+      const hasParagraph =
+        format.paragraph !== undefined &&
+        Object.keys(format.paragraph).length > 0;
+      const tree = editor.surface?.session ?? null;
+      if (!tree) return unsupportedEastAsiaFont(host.revision());
+      if (!hasFont && !hasParagraph) {
+        return formatDocxEastAsiaOnly(
+          host,
+          tree,
+          paragraph,
+          expectedRevision,
+          eastAsia,
+        );
+      }
+      pendingEastAsia = eastAsia;
+      try {
+        return formatDocxParagraph(host, paragraph, expectedRevision, {
+          ...(hasFont ? { font: standardFont } : {}),
+          ...(hasParagraph ? { paragraph: format.paragraph } : {}),
+        });
+      } finally {
+        pendingEastAsia = null;
+      }
+    },
+    (paragraph) => {
+      const tree = editor.surface?.session;
+      return tree ? paragraphLocator(host, tree, paragraph) : null;
     },
   );
 }
