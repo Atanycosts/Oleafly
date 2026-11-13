@@ -1,6 +1,6 @@
 # Agent 组件复用依据
 
-范围：截至 2026-11-12 已完成的固定源码调查、隔离探针和工作副本/任务接入。以下版本是固定输入，
+范围：截至 2026-11-13 已完成的固定源码调查、隔离探针和工作副本/任务接入。以下版本是固定输入，
 不代表今天的上游最新状态。当前产品能力见[状态页](status.md)，工作合同见[架构](architecture.md)。
 
 ## 已采用的底座
@@ -104,8 +104,10 @@ HarfBuzz 初始化的 top-level await 复用 `vite-plugin-top-level-await@1.6.0`
 当前 npm `core@2.36.0` 发布元数据的 gitHead 是
 [`86869eedede5b793c910be804db6280b036b0b50`](https://github.com/eigenpal/docx-editor/tree/86869eedede5b793c910be804db6280b036b0b50)；
 上表 `6eb82e…` 保留最初选型调查输入，不代替这个发布包的源码身份。
-字体组合复用公开 `defineFontResolver`／`useFonts`；实际族、字重、style 和 hash 对应本机字节，
-显式 CJK 替代不冒充宋体／黑体原字体。接口与限制见[架构](architecture.md#当前接入范围2026-11-11)。
+字体解析复用公开 `defineFontResolver`／`useFonts`／`setFonts`，下载复用应用既有字体包服务和缓存。
+按准确族、字重与 style 返回实际字节及 hash，不再接入跨族替代或近似 face。
+现有 fontdb、skrifa 用于字体识别，不新增字体转换器；无法直接交给内核的 TTC／可变字体如实缺失。
+期刊要求和下载后的实际字体分别核对，当前边界见[架构](architecture.md#当前接入范围2026-11-11)。
 同一发布源码的 [`semantic-layout.ts`](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/core/src/layout/semantic-layout.ts#L831)
 只在单栏节启用段落 frame；
 [`section-preparation.test.ts`](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/core/src/layout/__tests__/section-preparation.test.ts#L128)

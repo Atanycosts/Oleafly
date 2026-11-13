@@ -288,8 +288,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
     def _revise(self, payload: dict[str, object]) -> None:
         require_keys(payload, {"version_id", "rule_id", "expected", "reason"})
         expected = payload.get("expected")
-        if type(expected) is not int:
-            raise ValueError("expected must be an integer")
+        if type(expected) is not int and not isinstance(expected, str):
+            raise ValueError("expected must be an integer or font name")
         self._json(
             self.server.service.revise(
                 text(payload, "version_id"),

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DocxEditor, type DocxEditorRef, useDocxEditor, useEditorState, useFonts, useScopedChromeAnchor } from "@docx-editor.dev/react";
-import { packagedFonts } from "@docx-editor.dev/fonts";
 import type { DocxEditorInstance, FontMeasurementState } from "@docx-editor.dev/core/editor";
 import { Check, Download, LoaderCircle, Minimize2, Save, Sparkles, Square, Undo2, X } from "lucide-react";
 import "@docx-editor.dev/core/styles/editor.css";
@@ -11,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { runInlineCompletion } from "@/lib/ai-inline";
 import { base64ToBytes } from "@/lib/base64";
 import { downloadDocxCopy } from "@/lib/docx-download";
-import { createDocxFontResolver, type DocxFontSubstitution } from "@/lib/docx-fonts";
+import { createDocxFontResolver, type DocxFontStatus } from "@/lib/docx-fonts";
 import { createDocxSession, type DocxParagraph, type DocxSession, type DocxTarget } from "@/lib/docx-session";
 import {
   registerDocxAgentSession,
@@ -43,8 +42,8 @@ import { handoffToAssistant } from "@/features/assistant-handoff";
 import { settleDocxTaskActivity, type DocxActivity, type DocxDocumentIdentity, type DocxProposalOutcome } from "@/lib/docx-task-activity";
 import { DocxActivitySource, DocxTaskActivity } from "./DocxTaskActivity";
 import { DocxRenderPanel } from "./DocxRenderPanel";
+import { DocxFontsPanel } from "./DocxFontsPanel";
 
-const packagedFontResolver = packagedFonts();
 const fontShaping = Object.freeze({ maxFontBytes: 64 * 1024 * 1024 });
 const RECOVERY_DEBOUNCE_MS = 1500;
 
@@ -68,6 +67,7 @@ interface Suggestion {
 
 export function DocxWorkspaceHost() {
   const request = useDocxWorkspaceStore((state) => state.request);
+  const context = useDocxWorkspaceStore((state) => state.context);
   const minimized = useDocxWorkspaceStore((state) => state.minimized);
   const [prepared, setPrepared] = useState<DocxWorkspaceRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +88,7 @@ export function DocxWorkspaceHost() {
     return () => { active = false; };
   }, [request]);
   return request ? <>
-    {prepared === request && <DocxWorkspaceDialog {...request} minimized={minimized} onMinimize={() => useDocxWorkspaceStore.getState().minimize()} onClose={() => useDocxWorkspaceStore.getState().close()} />}
+    {prepared === request && context && <DocxWorkspaceDialog {...request} {...context} minimized={minimized} onMinimize={() => useDocxWorkspaceStore.getState().minimize()} onClose={() => useDocxWorkspaceStore.getState().close()} />}
     {error && <Dialog open onOpenChange={() => useDocxWorkspaceStore.getState().close()}><DialogContent><DialogHeader><DialogTitle>{t(($) => $.researchTools.docx.recovery.title)}</DialogTitle><DialogDescription>{error}</DialogDescription></DialogHeader></DialogContent></Dialog>}
     {minimized && <Button className="fixed bottom-6 right-6 z-40 shadow-lg" onClick={() => useDocxWorkspaceStore.getState().restore()}>{t(($) => $.researchTools.docx.restore)} · {request.project.name}</Button>}
   </> : null;
@@ -142,6 +142,8 @@ function SuggestionOverlay({ suggestion, accept, stop }: { suggestion: Suggestio
 
 /** A working copy of a retained baseline; the original author path is never opened for writing. */
 export default function DocxWorkspaceDialog({ appProjectId, project, world, recovery, onClose, onSaved, minimized = false, onMinimize }: Props) {
+  const onSavedRef = useRef(onSaved);
+  onSavedRef.current = onSaved;
   const { t, i18n } = useTranslation("researchTools");
   const text = t(($) => $.researchTools.docx, { returnObjects: true });
   const [source, setSource] = useState<DocxSource | null>(null);
@@ -186,6 +188,8 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const [closePrompt, setClosePrompt] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const editorRef = useRef<DocxEditorRef>(null);
+  const editorInstance = useRef<DocxEditorInstance | null>(null);
+  const [editorReady, setEditorReady] = useState(false);
   const sessionRef = useRef<DocxSession | null>(null);
   const recoveryQueueRef = useRef<Promise<void>>(Promise.resolve());
   const recoveryEpoch = useRef(0);
@@ -194,14 +198,17 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const alive = useRef(true);
   const [fontMeasurement, setFontMeasurement] = useState<FontMeasurementState>({ measurer: "fixed", resolving: true });
-  const [fontSubstitutions, setFontSubstitutions] = useState<DocxFontSubstitution[]>([]);
-  const [localFontResolver] = useState(() => createDocxFontResolver({
+  const [fontStatus, setFontStatus] = useState<DocxFontStatus>({ probed: false, missing: [], aliases: [] });
+  const createFontResolver = () => createDocxFontResolver({
     onError: (cause) => { if (alive.current) setError(`${text.fontError}: ${String(cause)}`); },
-    onSubstitutions: (substitutions) => {
-      if (alive.current) setFontSubstitutions((current) => [...new Map([...current, ...substitutions].map((item) => [item.from, item])).values()]);
-    },
-  }));
-  const fonts = useFonts(localFontResolver, packagedFontResolver);
+    onStatus: (value) => { if (alive.current) setFontStatus(value); },
+  });
+  const [localFontResolver] = useState(createFontResolver);
+  const fonts = useFonts(localFontResolver);
+  async function refreshFonts() {
+    const editor = editorInstance.current;
+    if (editor) await editor.setFonts(createFontResolver());
+  }
   const busySave = useRef(false);
   const discardingRef = useRef(false);
   const interactionRoot = useRef<HTMLDivElement>(null);
@@ -369,6 +376,8 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   }, [checking, checkpoint, dirty, discarding, pendingSave, resuming, revision, saving, source]);
 
   const ready = useCallback((editor: DocxEditorInstance) => {
+    editorInstance.current = editor;
+    setEditorReady(true);
     unsubscribeRef.current?.();
     unregisterDocxAgentSession(sessionId);
     sessionRef.current?.dispose();
@@ -632,7 +641,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
           baseBaselineId: request.expected_baseline_id, sourceSha256: source.source_sha256 }, committedBytes);
         if (!cleared) throw new Error(text.recovery.clearFailed);
       } catch (cause) { if (alive.current) setError(String(cause)); }
-      try { await onSaved(); }
+      try { await onSavedRef.current(); }
       catch (cause) { if (alive.current) setError(`${text.refreshFailed}: ${String(cause)}`); }
     } catch (cause) {
       if (alive.current) setError(String(cause));
@@ -665,7 +674,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       }
       const result = await journalRequest<JournalCheck>("/api/check", { project_id: source.project_id });
       if (result.baseline_id !== baselineId || result.world_version_id !== world.version_id) throw new Error(text.newBaseline);
-      if (alive.current) { setCheck(result); await onSaved(); }
+      if (alive.current) { setCheck(result); await onSavedRef.current(); }
     } catch (cause) {
       if (alive.current) setError(String(cause));
     } finally {
@@ -771,7 +780,6 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         </div>
         {source && <p className="truncate text-[10px] text-muted-foreground" title={baselineId}>{text.baseline}: {baselineId}</p>}
         {source && <p className="text-xs text-muted-foreground" data-testid="docx-font-state" data-measurer={fontMeasurement.measurer} data-resolving={fontMeasurement.resolving} data-producer={fontMeasurement.producer}>{fontMeasurement.resolving ? text.fontsResolving : fontMeasurement.measurer === "shaped" ? text.fontsShaped : text.fontsFixed}</p>}
-        {fontSubstitutions.length > 0 && <p className="text-xs text-muted-foreground" data-testid="docx-font-substitutions">{text.fontsSubstituted}: {fontSubstitutions.map((item) => `${item.from} → ${item.to}`).join(", ")}</p>}
         {recovery && <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.docx.recovery.restored, { time: new Date(recovery.updatedAt).toLocaleString(), revision: recovery.revision })}</p>}
         {recoveryConflict && <p role="alert" className="rounded border border-amber-500/40 p-2 text-xs">{text.recovery.conflict}</p>}
         {error && <p role="alert" className="break-words rounded border border-destructive/30 p-2 text-xs text-destructive">{error}</p>}
@@ -786,6 +794,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
             ><SessionBridge onReady={ready} onMeasurement={setFontMeasurement} /><SuggestionOverlay suggestion={suggestion} accept={accept} stop={stop} /></DocxEditor> : <p className="p-6 text-sm">{text.loading}</p>}
           </div>
           <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto" aria-label={text.work}>
+            <DocxFontsPanel world={world} status={fontStatus} ready={editorReady} onRefresh={refreshFonts} />
             {recovery?.taskState && !taskReady && <Button size="sm" variant="outline" disabled={resuming} onClick={() => retryResume.current()}>{text.recovery.restore}</Button>}
             {recoveredActivities.map((activity) => <div key={activity.id} className="rounded border p-2 text-xs" data-testid="docx-recovered-source">
               <p>{text.taskActivity.events.recovered}</p><DocxActivitySource activity={activity} />

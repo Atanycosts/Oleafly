@@ -358,7 +358,7 @@ def test_method_versions_reports_contract_versions_and_limits(tmp_path: Path) ->
     payload = _structured(library_root, "method_versions", {})
     assert isinstance(payload, dict)
     assert payload["server_id"] == "workbench-mcp"
-    assert payload["contract_version"] == "workbench-mcp-0.4.1"
+    assert payload["contract_version"] == "workbench-mcp-0.5.0"
     assert payload["scope"] == "local_read_write"
     assert payload["limits"]["manuscript_in_place_editing"] is False
     assert payload["limits"]["check_execution"] is True

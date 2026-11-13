@@ -235,19 +235,29 @@ token 更新候选展示，接受时再以一次 `replaceSpan` 事务替换格�
 关闭、项目离开、刷新和原生退出沿用既有 leave guard、editor mutation owner 与 quit guard，
 未完成会话要求先保存、下载或明确丢弃。
 
-字体接入复用应用既有 `system_fonts` 和 fontdb：按文档请求的族名批量查找本机静态独立 TTF/OTF，
-返回实际字体身份、字节和 hash，再通过公开 FontResolver 优先交给内核；缺失部分继续使用随包字体。
-族名查找不采用系统泛型替换，实际别名或近似字重以显式 substitution 连接，不伪造字节 metadata。
-当前 TTC、可变字体和内核不接受的 oblique face 不进入本机字节源。
-宿主通过公开 `fontShaping.maxFontBytes` 将排版执行上限也设为 64 MiB，和字节源单 face 上限一致，
-使本机大于内核默认 16 MiB 的静态 CJK 字体可以实际参与 HarfBuzz 度量。
-本机缺少宋体／SimSun、黑体／SimHei 时，分别尝试已安装的 Noto Serif CJK SC、Noto Sans CJK SC，
-界面明确显示实际替代；缺少替代字体时仍保留内核缺失提示。楷体没有被映射成宋体或黑体。
-原生命令和边界由 [`system_fonts.rs`](../../src-tauri/src/system_fonts.rs) 拥有，
-组合策略由 [`docx-fonts.ts`](../../src/lib/docx-fonts.ts) 拥有，不从文档族名构造文件路径或网络请求。
-界面读取内核 `fontMeasurement()` 的 resolving、fixed、shaped 状态，shaped 只代表使用字体字节度量，
-不表示所有字形可用或与 Office 分页一致。字体配置不改写作者的字体、样式或分节属性。
-这组字体只影响活动编辑器；LibreOffice PDF 仍由独立渲染进程及其字体环境排版。
+字体接入复用应用既有 `system_fonts`、fontdb 和字体包下载服务。按文档族名、字重和 style 取得
+本机及应用字体缓存中的静态独立 TTF/OTF，实际身份、字节和 hash 一同进入公开 FontResolver。
+仅同一实际 face 的本地化名称可以连通；不使用 Noto、Liberation 或近似字重／斜体代替作者声明。
+TTC、可变字体和内核不接受的 oblique face 当前列为不可用。宿主通过公开
+`fontShaping.maxFontBytes` 将单 face 执行上限设为 64 MiB。原生命令由
+[`system_fonts.rs`](../../src-tauri/src/system_fonts.rs) 拥有，字节适配由
+[`docx-fonts.ts`](../../src/lib/docx-fonts.ts) 拥有。
+
+期刊要求沿 Workbench 既有来源摘录、候选、适用范围、人工确认与不可变 world 版本保存。
+准确族名的数据合同由 [world-contract.json](../../services/research-workbench/contracts/journals/world-contract.json)
+拥有。文档当前使用的字体不自动成为期刊要求。已确认且适用于当前范围的字体缺失时，
+应用按字体包目录的准确 families 匹配，复用 `installFontComponent` 下载、校验和缓存，
+再核对实际字体，并通过公开 `setFonts()` 刷新当前会话。候选／冲突不触发下载；
+无准确下载源、下载失败及下载后仍不可用分别呈现，允许安装所需字体后刷新。
+不从文档族名拼接网络地址，不写作者 XML，不因刷新重建 session 或撤销历史。
+工作区收起后，同一文档再次打开会更新独立的 world／保存后回调上下文，保留原文档准备身份和活动编辑器；
+切换到其他文档的请求不会把当前会话误绑定到另一份期刊上下文。
+
+界面分别列出期刊要求与来源、文档常见四款 face 的缺失探测，以及内核 `fontMeasurement()` 状态。
+shaped 只表示使用字体字节度量，字体可用不代表稿件正确使用或符合期刊要求。
+当前 checker 对字体规则返回未检查，未新增逐 run／字形合规检测。
+应用缓存仅接入活动编辑器，独立 LibreOffice PDF 仍依赖它自身能识别的字体环境。
+2026-11-13 早期自动 CJK／随包替代策略已由上述准确字体策略取代，历史验收不能用作新策略的证据。
 
 启动时的轻量恢复入口枚举应用私有 checkpoint，不提前加载 DOCX 编辑内核或启动 Workbench。
 用户明确恢复后才连接 Workbench、核对原项目关联和原 baseline/source hash，再将快照字节打开为新的编辑会话。

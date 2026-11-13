@@ -149,18 +149,23 @@ The font package is excluded from Vite's development dependency optimizer: its
 `import.meta.url` assets must resolve beside the installed package, rather than
 under `.vite/assets` where missing fonts can return the HTML fallback with status 200.
 The development regression verifies actual font bytes, not the response status alone.
-The editor's local-font origin reuses native `system_fonts`/fontdb and supplies
-static standalone TTF/OTF bytes through the public FontResolver. TTC, variable fonts
-and oblique faces are currently outside this origin. Installed original fonts take
-precedence over packaged substitutes. The host sets the public per-face shaping
-ceiling to 64 MiB as well as the admission ceiling; the engine's default 16 MiB
-shaping limit rejects the installed 24–26 MB Noto Serif faces.
-Missing SimSun/宋体 and SimHei/黑体 can use
-installed Noto Serif CJK SC and Noto Sans CJK SC with explicit substitution notices;
-these families are optional and are not downloaded by opening a document.
-For this Mac's serif acceptance environment, install `font-noto-serif-cjk-sc` through
-Homebrew; no font binary is added to the repository. Native font/round-trip acceptance
-uses the isolated runner documented in [E2E](../e2e/README.md#native-docx-fonts-and-layout).
+The editor's exact-font origin reuses native `system_fonts`/fontdb and the existing
+application font-pack caches. It supplies static standalone TTF/OTF bytes through
+FontResolver, requiring the requested family, weight and style. TTC, variable fonts
+and oblique faces are currently unavailable through this origin. Do not substitute
+another family or nearest face to satisfy a journal font requirement. The host sets
+the public shaping ceiling to 64 MiB, matching the per-face admission ceiling.
+
+Confirmed journal body-font requirements carry exact family names and source evidence
+through the existing world/review/version contract. The DOCX panel automatically acquires
+an exact catalog family through the existing font-pack service and refreshes fonts with
+public `setFonts()` without reopening the document. A missing catalog source, failed
+download or unreadable face remains visible. Font availability does not establish
+manuscript compliance. Application caches are not automatically supplied to the independent
+LibreOffice process. Native download/font/round-trip acceptance uses the isolated runner
+in [E2E](../e2e/README.md#native-docx-fonts-and-layout). Do not install substitute fonts
+as an acceptance prerequisite. Existing Noto installations remain valid when that exact
+family is requested.
 DOCX work maintains new UI keys in the Chinese and English catalogs. Complete
 other-language coverage and validation are outside this round's scope. The current
 verified DOCX browser flow is macOS-only; Windows native validation is out of scope

@@ -29,7 +29,8 @@ import {
 	createJournalResearch,
 	journalRequest,
 	journalResearchPrompt,
-	journalUnitScale,
+	journalInputValue,
+	parseJournalInput,
 	loadJournalResearchResult,
 	type JournalCheck,
 	type JournalResearchResult,
@@ -188,11 +189,7 @@ export function JournalResearchPanel({
 					(saved.component?.rules ?? []).map((rule) => [
 						rule.property,
 						{
-							expected: String(
-								Number(
-									(rule.expected / journalUnitScale(rule.unit)).toFixed(4),
-								),
-							),
+							expected: journalInputValue(rule.expected, rule.unit),
 							confirm: false,
 						},
 					]),
@@ -258,10 +255,7 @@ export function JournalResearchPanel({
 				),
 				rules: rules.map((rule) => ({
 					...rule,
-					expected: Math.round(
-						Number(selected[rule.property].expected) *
-							journalUnitScale(rule.unit),
-					),
+					expected: parseJournalInput(selected[rule.property].expected, rule.unit),
 				})),
 			},
 		};
@@ -271,10 +265,7 @@ export function JournalResearchPanel({
 				.filter((rule) => selected[rule.property].confirm)
 				.map((rule) => ({
 					property: rule.property,
-					expected: Math.round(
-						Number(selected[rule.property].expected) *
-							journalUnitScale(rule.unit),
-					),
+					expected: parseJournalInput(selected[rule.property].expected, rule.unit),
 					reason,
 				})),
 		});
@@ -468,14 +459,7 @@ export function JournalResearchPanel({
 														const next = { ...previous };
 														if (checked)
 															next[rule.property] = {
-																expected: String(
-																	Number(
-																		(
-																			rule.expected /
-																			journalUnitScale(rule.unit)
-																		).toFixed(4),
-																	),
-																),
+																expected: journalInputValue(rule.expected, rule.unit),
 																confirm: false,
 															};
 														else delete next[rule.property];
@@ -492,22 +476,22 @@ export function JournalResearchPanel({
 										<div className="flex items-center gap-2 text-sm">
 											<span>{text.expected}</span>
 											<Input
-												type="number"
+												type={rule.unit === "font_family" ? "text" : "number"}
 												className="w-32"
 												aria-label={`${text.expected}: ${rule.property}`}
 												disabled={busy || !row}
 												value={
 													row?.expected ??
-													rule.expected / journalUnitScale(rule.unit)
+													journalInputValue(rule.expected, rule.unit)
 												}
 												min={
-													rule.property.includes("margin")
+													rule.unit === "font_family" ? undefined : rule.property.includes("margin")
 														? 0
 														: rule.unit === "count"
 															? 1
 															: 0.01
 												}
-												step={rule.unit === "count" ? 1 : "any"}
+												step={rule.unit === "font_family" ? undefined : rule.unit === "count" ? 1 : "any"}
 												onChange={(event) =>
 													setSelected((previous) => ({
 														...previous,
@@ -519,7 +503,7 @@ export function JournalResearchPanel({
 												}
 											/>
 											<span className="text-xs text-muted-foreground">
-												{rule.unit === "count"
+												{rule.unit === "font_family" ? "" : rule.unit === "count"
 													? text.unitCount
 													: rule.unit === "twips"
 														? "mm"

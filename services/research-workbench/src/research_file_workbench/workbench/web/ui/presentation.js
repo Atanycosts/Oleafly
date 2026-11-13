@@ -18,6 +18,7 @@ const messages = new Map([
   ["This line is outside the supported explicit requirement grammar.", "这段文字尚未提取为可检查要求。"],
   ["Unparsed, conditional or negative source context prevents confirmation.", "来源包含未解析内容或条件限制，需要人工确认。"],
   ["No applicable expectation was established for this geometry property.", "来源中尚未找到这项页面要求。"],
+  ["No applicable expectation was established for this property.", "来源中尚未找到这项要求。"],
   ["The manuscript has no declared section geometry.", "稿件中未找到页面设置声明。"],
   ["Template has no declared section geometry.", "模板中未找到页面设置声明。"],
   ["Hidden, revised, field or math text is not confirmed as guidance.", "此段含隐藏文字、修订、域或公式，需核对原文。"],

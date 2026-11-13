@@ -141,6 +141,12 @@ fn system_database() -> fontdb::Database {
     database
 }
 
+fn load_app_font_caches(database: &mut fontdb::Database, roots: &[std::path::PathBuf]) {
+    for root in roots {
+        database.load_fonts_dir(root);
+    }
+}
+
 fn installed_font_families() -> Vec<SystemFontFamily> {
     database_families(&system_database())
 }
@@ -245,59 +251,58 @@ fn resolve_font_faces(
     database: &fontdb::Database,
     requests: Vec<SystemFontRequest>,
 ) -> Result<SystemFontResolution, String> {
-    let families: BTreeMap<_, _> = database
-        .faces()
-        .flat_map(|face| &face.families)
-        .map(|(name, _)| (name.to_lowercase(), name.as_str()))
-        .collect();
     let mut result = SystemFontResolution::default();
     let mut total_bytes = 0;
     for requested in requests {
-        // Resolve only an actual family name. Generic family queries would silently
-        // choose another family and hide missing document fonts from the caller.
-        let face = families
-            .get(&requested.family.trim().to_lowercase())
-            .and_then(|name| {
-                database.query(&fontdb::Query {
-                    families: &[fontdb::Family::Name(name)],
-                    weight: fontdb::Weight(requested.weight),
-                    style: requested.style.into(),
-                    ..Default::default()
+        // Every candidate must be the requested family, weight and slant. A
+        // localized family name on this same face is an identity, not a substitute.
+        let wanted_family = requested.family.trim().to_lowercase();
+        let mut resolved = None;
+        for face in database.faces().filter(|face| {
+            face.weight.0 == requested.weight && face.style == requested.style.into()
+        }) {
+            let Some((family, _)) = face
+                .families
+                .iter()
+                .find(|(name, _)| name.to_lowercase() == wanted_family)
+            else {
+                continue;
+            };
+            let encoded = database
+                .with_face_data(face.id, |data, index| -> Result<_, String> {
+                    if !standalone_static_font(data, index) {
+                        return Ok(None);
+                    }
+                    if total_bytes + data.len() > MAX_FONT_BATCH_BYTES {
+                        return Err(
+                            "System font batch exceeds 256 MiB; request fewer faces.".into()
+                        );
+                    }
+                    total_bytes += data.len();
+                    Ok(Some((
+                        index,
+                        format!("{:x}", Sha256::digest(data)),
+                        STANDARD.encode(data),
+                    )))
                 })
-            })
-            .and_then(|id| database.face(id));
-        let Some(face) = face else {
-            result.missing.push(requested);
-            continue;
-        };
-        let encoded = database
-            .with_face_data(face.id, |data, index| -> Result<_, String> {
-                if !standalone_static_font(data, index) {
-                    return Ok(None);
-                }
-                if total_bytes + data.len() > MAX_FONT_BATCH_BYTES {
-                    return Err("System font batch exceeds 256 MiB; request fewer faces.".into());
-                }
-                total_bytes += data.len();
-                Ok(Some((
-                    index,
-                    format!("{:x}", Sha256::digest(data)),
-                    STANDARD.encode(data),
-                )))
-            })
-            .transpose()? // A missing/unreadable source is reported with other missing faces.
-            .flatten();
-        match encoded {
-            Some((face_index, sha256, content_base64)) => result.faces.push(SystemFontFace {
-                requested,
-                family: face.families[0].0.clone(),
-                postscript_name: face.post_script_name.clone(),
-                weight: face.weight.0,
-                style: face.style.into(),
-                face_index,
-                sha256,
-                content_base64,
-            }),
+                .transpose()? // A missing/unreadable source is reported with other missing faces.
+                .flatten();
+            if let Some((face_index, sha256, content_base64)) = encoded {
+                resolved = Some(SystemFontFace {
+                    requested: requested.clone(),
+                    family: family.clone(),
+                    postscript_name: face.post_script_name.clone(),
+                    weight: face.weight.0,
+                    style: face.style.into(),
+                    face_index,
+                    sha256,
+                    content_base64,
+                });
+                break;
+            }
+        }
+        match resolved {
+            Some(face) => result.faces.push(face),
             None => result.missing.push(requested),
         }
     }
@@ -312,9 +317,14 @@ pub async fn resolve_system_font_faces(
     if requests.is_empty() {
         return Ok(SystemFontResolution::default());
     }
-    tauri::async_runtime::spawn_blocking(move || resolve_font_faces(&system_database(), requests))
-        .await
-        .map_err(|error| error.to_string())?
+    let cache_roots = crate::assets::font_cache_roots()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut database = system_database();
+        load_app_font_caches(&mut database, &cache_roots);
+        resolve_font_faces(&database, requests)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]
@@ -338,12 +348,35 @@ mod tests {
         italic: bool,
         variable: bool,
     ) -> Vec<u8> {
-        let names = [(1u16, family), (6u16, postscript)];
-        let mut name = vec![0, 0, 0, 2, 0, 30];
+        font_bytes_with_alias(family, postscript, weight, italic, variable, None)
+    }
+
+    fn font_bytes_with_alias(
+        family: &str,
+        postscript: &str,
+        weight: u16,
+        italic: bool,
+        variable: bool,
+        alias: Option<&str>,
+    ) -> Vec<u8> {
+        let mut names = vec![(1u16, 0x409, family), (6u16, 0x409, postscript)];
+        if let Some(alias) = alias {
+            names.push((1, 0x804, alias));
+        }
+        let mut name = vec![0, 0];
+        name.extend((names.len() as u16).to_be_bytes());
+        name.extend((6 + names.len() as u16 * 12).to_be_bytes());
         let mut strings = Vec::new();
-        for (id, value) in names {
+        for (id, language, value) in names {
             let encoded: Vec<_> = value.encode_utf16().flat_map(u16::to_be_bytes).collect();
-            for number in [3, 1, 0x409, id, encoded.len() as u16, strings.len() as u16] {
+            for number in [
+                3,
+                1,
+                language,
+                id,
+                encoded.len() as u16,
+                strings.len() as u16,
+            ] {
                 name.extend(number.to_be_bytes());
             }
             strings.extend(encoded);
@@ -381,7 +414,7 @@ mod tests {
         database.load_font_data(italic.clone());
         let requests = vec![
             request(" oleafly TEST ", 400, SystemFontStyle::Normal),
-            request("Oleafly Test", 650, SystemFontStyle::Italic),
+            request("Oleafly Test", 700, SystemFontStyle::Italic),
         ];
         let result = resolve_font_faces(&database, requests.clone()).unwrap();
         assert!(result.missing.is_empty());
@@ -404,6 +437,86 @@ mod tests {
         }
         assert_eq!(result.faces[1].weight, 700);
         assert_eq!(result.faces[1].style, SystemFontStyle::Italic);
+    }
+
+    #[test]
+    fn exact_faces_reject_nearest_weight_slant_and_other_family() {
+        let mut database = fontdb::Database::new();
+        database.load_font_data(font_bytes("Exact", "Exact-Regular", 400, false, false));
+        let requests = vec![
+            request("Exact", 700, SystemFontStyle::Normal),
+            request("Exact", 400, SystemFontStyle::Italic),
+            request("Exact", 400, SystemFontStyle::Oblique),
+            request("Exact", 450, SystemFontStyle::Normal),
+            request("Other", 400, SystemFontStyle::Normal),
+        ];
+        let result = resolve_font_faces(&database, requests.clone()).unwrap();
+        assert!(result.faces.is_empty());
+        assert_eq!(result.missing, requests);
+    }
+
+    #[test]
+    fn localized_names_keep_the_same_face_identity_without_canonical_substitution() {
+        let bytes = font_bytes_with_alias(
+            "Exact Serif",
+            "ExactSerif-Regular",
+            400,
+            false,
+            false,
+            Some("确切衬线"),
+        );
+        let mut database = fontdb::Database::new();
+        database.load_font_data(bytes);
+        let result = resolve_font_faces(
+            &database,
+            vec![
+                request("确切衬线", 400, SystemFontStyle::Normal),
+                request("exact serif", 400, SystemFontStyle::Normal),
+            ],
+        )
+        .unwrap();
+        assert!(result.missing.is_empty());
+        assert_eq!(result.faces.len(), 2);
+        assert_eq!(result.faces[0].family, "确切衬线");
+        assert_eq!(result.faces[1].family, "Exact Serif");
+        assert_eq!(
+            result.faces[0].postscript_name,
+            result.faces[1].postscript_name
+        );
+        assert_eq!(result.faces[0].sha256, result.faces[1].sha256);
+        assert_eq!(
+            result.faces[0].content_base64,
+            result.faces[1].content_base64
+        );
+    }
+
+    #[test]
+    fn both_app_font_caches_supply_exact_faces_without_system_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let roots = [root.path().join("fonts"), root.path().join("typst-fonts")];
+        for (cache, family) in roots.iter().zip(["Cache Text", "Cache Typst"]) {
+            let pack = cache.join("pack");
+            std::fs::create_dir_all(&pack).unwrap();
+            std::fs::write(
+                pack.join("regular.ttf"),
+                font_bytes(family, "Cached-Regular", 400, false, false),
+            )
+            .unwrap();
+        }
+        let mut database = fontdb::Database::new();
+        load_app_font_caches(&mut database, &roots);
+        let result = resolve_font_faces(
+            &database,
+            vec![
+                request("Cache Text", 400, SystemFontStyle::Normal),
+                request("Cache Typst", 400, SystemFontStyle::Normal),
+            ],
+        )
+        .unwrap();
+        assert!(result.missing.is_empty());
+        assert_eq!(result.faces.len(), 2);
+        assert_eq!(result.faces[0].family, "Cache Text");
+        assert_eq!(result.faces[1].family, "Cache Typst");
     }
 
     #[test]

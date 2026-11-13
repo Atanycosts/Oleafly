@@ -51,7 +51,7 @@ from research_file_workbench.workbench.service import WorkbenchService
 SERVER_NAME = "research-file-workbench"
 SERVER_ID = "workbench-mcp"
 SERVER_VERSION = "0.4.1"
-CONTRACT_VERSION = "workbench-mcp-0.4.1"
+CONTRACT_VERSION = "workbench-mcp-0.5.0"
 LIBRARY_ROOT_ENV = "RFW_LIBRARY_ROOT"
 
 # Bound to contracts/s1/mcp-surface.json by tests/engineering/test_architecture.py. A change

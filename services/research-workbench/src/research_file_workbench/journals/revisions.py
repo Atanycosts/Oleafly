@@ -14,7 +14,7 @@ from research_file_workbench.journals.models import (
 
 
 def revise_rule(
-    world: JsonObject, rule_id: str, expected: int, reason: str, actor_id: str
+    world: JsonObject, rule_id: str, expected: int | str, reason: str, actor_id: str
 ) -> JsonObject:
     """Create a deterministic human-confirmed rule version, preserving source disagreement."""
     validate_world_for_execution(world)

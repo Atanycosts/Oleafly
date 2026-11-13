@@ -54,6 +54,8 @@ rejects("rejects another project's historical check", "history", (response) => {
 rejects("rejects inconsistent historical coverage", "history", (response) => { response.checks[0].rule_results[0].coverage.total_sections += 1; });
 rejects("rejects duplicate historical reads", "history", (response) => { response.reads.push(structuredClone(response.reads[0])); });
 rejects("rejects a source without its identity", "review", (response) => { delete response.sources[0].source_id; });
+rejects("rejects a font requirement with a numeric family", "font_world", (response) => { response.rules[0].expected = 400; });
+rejects("rejects a font requirement with numeric units", "font_world", (response) => { response.rules[0].unit = "twips"; });
 rejects("rejects cyclic source fragments", "review", (response) => { response.fragments[0].parent_fragment_id = response.fragments[0].fragment_id; });
 rejects("rejects invalid fragment offsets", "review", (response) => { response.fragments.find((item) => item.kind === "sentence").char_end += 1; });
 rejects("rejects source fragments attributed to another source", "review", (response) => { response.fragments[0].source_id = "different-source"; });

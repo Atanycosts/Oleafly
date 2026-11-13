@@ -21,7 +21,8 @@ import {
   journalMessage,
   journalQuery,
   journalRequest,
-  journalUnitScale,
+  journalInputValue,
+  parseJournalInput,
   linkJournalProject,
   loadJournalTarget,
   type JournalAnnotationObject,
@@ -175,15 +176,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     setSourcePage(null);
     setSelectedFragment(null);
     setManuscriptRead(null);
-    setRevisionValue(
-      selectedRule?.expected == null
-        ? ""
-        : String(
-            Number(
-              (selectedRule.expected / journalUnitScale(selectedRule.unit)).toFixed(4),
-            ),
-          ),
-    );
+    setRevisionValue(selectedRule ? journalInputValue(selectedRule.expected, selectedRule.unit) : "");
     setRevisionReason("");
     setDispositionAction("note");
     setDispositionNote("");
@@ -409,6 +402,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 <span>{text.journalVersion}</span>
                 <select
                   className={selectClass}
+                  data-testid="journal-world-select"
                   value={world?.version_id ?? ""}
                   disabled={busy}
                   onChange={(event) => void perform(() => chooseWorld(event.target.value))}
@@ -780,9 +774,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   onSubmit={(event) => {
                     event.preventDefault();
                     void perform(async () => {
-                      const expected = Math.round(
-                        Number(revisionValue) * journalUnitScale(rule.unit),
-                      );
+                      const expected = parseJournalInput(revisionValue, rule.unit);
                       const revised = await journalRequest<JournalWorld>("/api/revise", {
                         version_id: world.version_id,
                         rule_id: rule.rule_id,
@@ -796,14 +788,14 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 >
                   <label htmlFor={`${detailId}-expected`} className="block space-y-1">
                     <span>
-                      {text.expected} ({rule.unit === "count" ? text.unitCount : rule.unit === "twips" ? "mm" : "pt"})
+                      {text.expected}{rule.unit === "font_family" ? "" : ` (${rule.unit === "count" ? text.unitCount : rule.unit === "twips" ? "mm" : "pt"})`}
                     </span>
                     <Input
                       id={`${detailId}-expected`}
-                      type="number"
+                      type={rule.unit === "font_family" ? "text" : "number"}
                       required
-                      min={rule.property.includes("margin") ? 0 : rule.unit === "count" ? 1 : 0.01}
-                      step={rule.unit === "count" ? 1 : "any"}
+                      min={rule.unit === "font_family" ? undefined : rule.property.includes("margin") ? 0 : rule.unit === "count" ? 1 : 0.01}
+                      step={rule.unit === "font_family" ? undefined : rule.unit === "count" ? 1 : "any"}
                       value={revisionValue}
                       disabled={busy}
                       onChange={(event) => setRevisionValue(event.target.value)}

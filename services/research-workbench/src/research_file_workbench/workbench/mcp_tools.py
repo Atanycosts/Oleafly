@@ -410,7 +410,10 @@ def register_write_tools(
         ),
     )
     def revise_rule(
-        version_id: str, rule_id: str, expected: Annotated[int, Field(ge=0)], reason: str
+        version_id: str,
+        rule_id: str,
+        expected: Annotated[int, Field(ge=0)] | str,
+        reason: str,
     ) -> dict[str, Any]:
         return write(lambda: service.revise(version_id, rule_id, expected, reason))
 

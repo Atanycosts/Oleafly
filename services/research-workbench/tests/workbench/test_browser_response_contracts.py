@@ -42,6 +42,26 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
 
     capture("session", "GET", "/api/session")
     world = capture("world", "POST", "/api/worlds", _world_payload())
+    font_payload = _world_payload()
+    font_payload["sources"] = [
+        {
+            "name": "font-guide.txt",
+            "kind": "guide_text",
+            **upload(b"Body text must use PT Serif font."),
+        }
+    ]
+    font_world = capture("font_world", "POST", "/api/worlds", font_payload)
+    capture(
+        "font_revision",
+        "POST",
+        "/api/revise",
+        {
+            "version_id": font_world["version_id"],
+            "rule_id": font_world["rules"][0]["rule_id"],
+            "expected": "Times New Roman",
+            "reason": "Reviewed the applicable guide version",
+        },
+    )
     capture("review", "GET", f"/api/review?version_id={world['version_id']}")
     fixture = (
         Path(__file__).parents[1] / "fixtures/docx/normal/s1-figures-tables/s1-figures-tables.docx"
@@ -84,6 +104,18 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
         "/api/projects",
         {"name": "待核对论文", "filename": "稿件.docx", **upload(source)},
     )
+    font_binding = capture(
+        "font_binding",
+        "POST",
+        "/api/bind",
+        {
+            "project_id": project["project_id"],
+            "world_version_id": font_world["version_id"],
+            "expected_binding_id": None,
+        },
+    )
+    font_check = capture("font_check", "POST", "/api/check", {"project_id": project["project_id"]})
+    assert font_check["rule_results"][0]["verdict"] == "not_checked"
     capture(
         "binding",
         "POST",
@@ -91,7 +123,7 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
         {
             "project_id": project["project_id"],
             "world_version_id": world["version_id"],
-            "expected_binding_id": None,
+            "expected_binding_id": font_binding["binding_id"],
         },
     )
     capture("check", "POST", "/api/check", {"project_id": project["project_id"]})

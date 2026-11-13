@@ -69,3 +69,25 @@ it("offers rule and retained source fragment discussion inside the existing evid
   await waitFor(() => expect(within(dialog).getAllByTestId("journal-object-entry").some((node) => node.textContent === "source:world-current:guide-fragment")).toBe(true));
   expect(api.references).toContainEqual({ libraryRoot: "/retained/library", workbenchProjectId: "manuscript", kind: "source", objectId: "guide-fragment", worldVersionId: "world-current", checkId: "check-current" });
 });
+
+it("edits an exact font requirement as text and sends its name without numeric conversion", async () => {
+  const fontRule: JournalRule = { ...rule, rule_id: "font-rule", property: "body_font_family", expected: "Times New Roman", unit: "font_family", basis_status: "candidate" };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (path === "/api/revise") return { ...world, version_id: "world-font", rules: [fontRule] };
+    const response = await originalRequest(path, payload);
+    if (new URL(path, "http://workbench").pathname === "/api/world") return { ...response, rules: [fontRule] };
+    return response;
+  });
+  render(<JournalChecksPanel />);
+  fireEvent.click(await screen.findByRole("button", { name: /Times New Roman/ }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByText(text.reviseRequirement));
+  const input = within(dialog).getByDisplayValue("Times New Roman");
+  expect(input).toHaveAttribute("type", "text");
+  fireEvent.change(input, { target: { value: "PT Serif" } });
+  fireEvent.change(within(dialog).getByLabelText(text.decisionReason), { target: { value: "Reviewed the journal guide" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.saveRevision }));
+  await waitFor(() => expect(api.request).toHaveBeenCalledWith("/api/revise", { version_id: "world-current", rule_id: "font-rule", expected: "PT Serif", reason: "Reviewed the journal guide" }));
+});

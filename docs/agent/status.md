@@ -498,7 +498,46 @@ Workbench 完整 Python 门禁结果及历史 Phase 0 失败范围见 [S1 状态
 保留既有大 chunk 和原生 debug unwind 警告。此次未运行全仓前端/Rust 测试或更新正式安装版；Office 视觉等价、外部 Word/WPS 自动同步仍未验证，
 Windows 和其他语言仍明确不在范围内。恢复规则和边界见[架构](architecture.md#docx-实时工作表面)，复跑方式见 [E2E 说明](../../e2e/README.md#native-docx-crash-recovery)。
 
-### DOCX 字体与首页布局（2026-11-13）
+### DOCX 准确字体获取（2026-11-13）
+
+用户明确要求按期刊指定字体获取实际字体，自动跨族替代不再是产品策略。
+已撤去宋体／黑体到 Noto 的映射及随包替代组合。原生解析严格匹配实际 family、weight 和 style，
+本机系统字体和既有应用字体包缓存共用同一路径，无法直接使用的 TTC／可变字体保留为缺失。
+期刊正文族名进入现有来源、候选、确认和 world 版本流程，已确认且适用于当前范围的缺失字体
+按目录准确 families 自动下载、校验并回查。缺下载源、下载失败和下载后仍不可用分别呈现。
+刷新沿内核公开 `setFonts()` 更新同一活动会话，文档原有字体声明和作者输入不变。
+字体可用只表示字节可加载，checker 对该规则返回未检查，不宣称稿件字体或全篇排版合规。
+同文档最小化后切换期刊并恢复时，独立上下文会更新到所选 world，保留原编辑器及保存后回调；
+其他文档的请求不会改写当前文档上下文。
+
+当前应用缓存字体只接入编辑器，尚未接入独立 LibreOffice 字体环境；真实稿缺失字体仍须取得对应实际字体。
+目前目录没有宋体／黑体／楷体／等线等真实稿缺失字体的准确来源，不能宣称任意字体都已自动获取；
+缺失时内核仍可绘制临时预览，缺失列表明确保留，不能据此称为准确字体或期刊合规。
+原有首页多栏 frame 问题独立保留；中英文范围和 Windows 排除决定保持不变。
+
+最终 macOS 原生 `131-docx-font-layout` 在真实英文、中文输入分别通过（32.3／27.0 秒）。
+两份均验证准确 Times New Roman 原字节、内核实际 FontFace hash／加载及正文采用，无宿主跨族映射；
+缺失的中文字体如实列出。无改动导出均无部件增减、媒体／关系变化、受保护节点损失或正文变化，
+段落保持 515／533，styles、fontTable、sectPr、framePr、rFonts 属性保留；英文仍有下节记录的序列化差异。
+随后使用受控 PT Serif 指南经过真实 world 服务，在空应用缓存自动下载四款准确字体及许可，
+校验下载摘要、回查常规 face、确认浏览器采用相同 hash 的加载字体及实际正文 run。
+人工编辑后切换到另一 world、恢复工作区、刷新字体，session／revision／dirty 正文保持，撤销仍有效。
+该受控指南证明获取流程，不代表已识别作者真实期刊的全部要求。两份作者 hash 前后不变，
+E2E WebKit 存储已恢复，测试拥有的应用与 Workbench 进程已退出。
+证据位于本机忽略目录 `.private/docx-font-layout/run-nM8zUs/`（英文）、`run-nhCcvM/`（中文）。
+先前切换选择器时序及整句被拆为多个 run 的验收脚本失败保留在对应运行目录，没有改写为通过证据。
+
+11 个前端定向文件 157 项通过；原生 system_fonts 18 项、assets 6 项及显式本机 face/hash 探针 1 项通过，
+Rust 格式／库 Clippy、前端局部 lint、含 E2E 的 TypeScript、中英文目录／类型、DOCX notices 和相对文档链接通过。
+Workbench 完整 Python 门禁及历史 Phase 0 失败见 [S1 状态](../../services/research-workbench/docs/s1-progress.md)。
+最终普通生产构建及性能预算通过：入口 JavaScript 4,822,687 bytes，总 JavaScript 27,846,337 bytes，
+开发钩子计数 0，DOCX 内核仍按需加载；既有大 chunk 和原生 debug unwind 警告保留。
+未运行新的真实模型、全仓前端／Rust 测试、Windows、其他语言或 Word/WPS 视觉等价验收，未更新正式安装版。
+
+### DOCX 字体与首页布局（2026-11-13，历史）
+
+下述早期运行采用了后被用户否定的替代策略，保留作为字节接入和排版机制的历史证据。
+当前准确字体策略及验证以上一节为准，不把历史 Noto 替代运行当作期刊字体要求满足。
 
 活动编辑器现在优先通过应用既有 `system_fonts`／fontdb 取得本机静态独立字体字节，
 复用 EigenPal 公开 FontResolver 与随包字体组合。实际 family、字重、style、faceIndex 和 hash 对应原字节；

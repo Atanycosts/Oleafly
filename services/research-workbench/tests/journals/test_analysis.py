@@ -56,6 +56,51 @@ def rules(world):
     return {rule["property"]: rule for rule in world["rules"]}
 
 
+@pytest.mark.parametrize(
+    "text, family",
+    [
+        ("All manuscript body text must use Times New Roman font.", "Times New Roman"),
+        ("Body text must use PT Serif font.", "PT Serif"),
+        ("Body text must use Latin Modern Roman font.", "Latin Modern Roman"),
+        ("Body text must use Old English Text MT font.", "Old English Text MT"),
+        ("Body text must use Noto Sans CJK SC font.", "Noto Sans CJK SC"),
+        ("正文必须使用宋体字体。", "宋体"),
+        ("正文字体必须为黑体。", "黑体"),
+    ],
+)
+def test_body_font_requirement_preserves_exact_family_and_source(text, family):
+    world = analyze_world(
+        "journal-test", "Test", [SourceInput("guide.txt", "guide_text", text.encode())]
+    )
+    rule = rules(world)["body_font_family"]
+    assert rule["expected"] == family
+    assert rule["unit"] == "font_family"
+    assert rule["basis_status"] == "confirmed"
+    assert rule["evidence"][0]["quote"] == text
+    assert rule["evidence"][0]["locator"] == "line:1"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Body text should use Times New Roman font.",
+        "Body text must use Times New Roman or Arial font.",
+        "正文必须使用宋体或黑体字体。",
+        "正文字体必须为宋体和黑体。",
+        "正文字体必须为中文宋体 英文Times New Roman。",
+        "Body text must use Chinese SimSun English Times New Roman font.",
+        "If accepted, body text must use Times New Roman font.",
+        "中文摘要必须使用宋体字体。",
+    ],
+)
+def test_ambiguous_or_limited_font_guidance_does_not_become_universal(text):
+    world = analyze_world(
+        "journal-test", "Test", [SourceInput("guide.txt", "guide_text", text.encode())]
+    )
+    assert "body_font_family" not in rules(world)
+    assert world["coverage_gaps"]
+
+
 def test_repeated_analysis_has_stable_version_and_source_order():
     sources = [
         SourceInput("template.docx", "template_docx", template_bytes()),

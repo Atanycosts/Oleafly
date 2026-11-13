@@ -213,19 +213,27 @@ separately. Live-model, attribution-recovery and font/layout flags are mutually 
 
 Add `OLEAFLY_DOCX_FONT_LAYOUT=1` to the isolated runner command above to run
 `131-docx-font-layout.spec.ts` in one launch. It requires installed Times New Roman
-and Noto Serif/Sans CJK SC regular/bold faces, checks actual native font bytes against
-their SHA-256 and metadata, and opens the authorized manuscript in the real editor.
-An observer forwards the original browser `FontFace` constructor while hashing its
-binary input, then checks successful loading and membership in `document.fonts`
-against the independent native hashes. It checks settled HarfBuzz measurement,
-explicit CJK substitution, no-change export,
-package/object preservation, authored font/style/frame/section properties and reopen.
-Font files are not copied into acceptance evidence. The save-path hook selects the
-export path, so manual use of the native save dialog is outside this test.
-The runner retains local evidence under ignored `.private/docx-font-layout/run-*`;
-it restores E2E WebKit storage and checks the author hash before and after.
-No model is called. This does not establish Office-equivalent layout or make the
-editor's pages equal to an independently rendered LibreOffice PDF.
+regular/bold faces and network access to the existing PT Serif font-pack URLs. The
+isolated application cache must start without a standalone PT Serif face; a system TTC
+with that family does not satisfy the editor's current supported-source boundary.
+The test checks native font bytes/hash/metadata and observes the actual browser FontFace
+binary inputs, load state and membership in `document.fonts`. It opens the authorized
+manuscript, verifies settled shaping, truthful missing Chinese font faces, absence of
+host family substitution, no-change export and authored font/style/frame/section retention.
+It then imports a controlled guide requiring PT Serif through the real Workbench world
+service. The DOCX panel downloads the exact catalog font, rechecks actual native faces,
+and refreshes after an edit while preserving the active session, revision, dirty text and undo.
+It also minimizes the edited workspace, selects another retained journal world and resumes the
+same session with the updated font context before exercising refresh and undo.
+This controlled guide verifies the acquisition pipeline, not the author's actual journal rules.
+
+Font binaries are not copied into acceptance evidence. The save-path hook chooses the
+export path. The runner retains local evidence under ignored `.private/docx-font-layout/run-*`,
+restores E2E WebKit storage and checks the author hash before and after. No model is called.
+Missing fonts prevent full coverage. This test does not establish Office-equivalent layout,
+per-run font compliance or font availability in the independent LibreOffice renderer.
+The earlier 2026-11-13 Noto-substitution runs are retained historical evidence and do not
+validate this exact-font policy.
 
 Results and recovery material stay in ignored `.private/docx-recovery-native/run-*`.
 Normal exit and catchable failures restore the previous E2E WebKit storage. If the

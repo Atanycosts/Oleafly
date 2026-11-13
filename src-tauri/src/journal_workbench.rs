@@ -101,7 +101,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         .json()
         .await
         .map_err(|error| error.to_string())?;
-    if session["contract_version"] != "journal-http-1.8.0" {
+    if session["contract_version"] != "journal-http-1.9.0" {
         return Err("This Workbench HTTP version is not supported.".into());
     }
     let token = session["token"]

@@ -129,6 +129,10 @@ fn typst_fonts_cache() -> Result<PathBuf, String> {
     Ok(paths::assets_root()?.join(oleafly_core::typst_toolchain::TYPST_FONT_PACKS_DIR))
 }
 
+pub(crate) fn font_cache_roots() -> Result<[PathBuf; 2], String> {
+    Ok([fonts_cache()?, typst_fonts_cache()?])
+}
+
 fn pack_dir(pack: &FontPack) -> Result<PathBuf, String> {
     if !is_valid_id(&pack.id) {
         return Err(format!("illegal font pack id: {}", pack.id));
@@ -361,13 +365,18 @@ mod tests {
     }
 
     #[test]
-    fn typst_packs_name_the_families_they_provide() {
+    fn every_pack_names_the_families_it_provides() {
         let packs = repo_catalog();
         assert!(packs.iter().any(|p| p.typst));
-        for p in packs.iter().filter(|p| p.typst) {
+        for p in &packs {
             assert!(!p.families.is_empty(), "families listed: {}", p.id);
-            assert!(p.id.starts_with("typst-"), "typst pack id: {}", p.id);
+            if p.typst {
+                assert!(p.id.starts_with("typst-"), "typst pack id: {}", p.id);
+            }
         }
+        assert_eq!(packs[0].families, ["Lato"]);
+        assert_eq!(packs[1].families, ["PT Sans"]);
+        assert_eq!(packs[2].families, ["PT Serif"]);
     }
 
     #[test]
@@ -396,6 +405,10 @@ mod tests {
         assert!(pack_dir(&pack(false))
             .unwrap()
             .ends_with("fonts/typst-text"));
+        assert_eq!(
+            font_cache_roots().unwrap(),
+            [fonts_cache().unwrap(), typst_fonts_cache().unwrap()]
+        );
         std::env::remove_var("OLEAFLY_DATA_DIR");
     }
 

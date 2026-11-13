@@ -81,7 +81,7 @@ class WorkbenchService:
         captured = {f"source-{sha256_bytes(source.content)}": source.content for source in sources}
         return self.store.save_world(world, captured)
 
-    def revise(self, version_id: str, rule_id: str, expected: int, reason: str) -> JsonObject:
+    def revise(self, version_id: str, rule_id: str, expected: int | str, reason: str) -> JsonObject:
         """Create a reasoned local rule correction without changing existing bindings."""
         original = self.store.get_world(version_id)
         revised = revise_rule(original, rule_id, expected, reason, "local-operator")
@@ -126,7 +126,7 @@ class WorkbenchService:
             world = revise_rule(
                 world,
                 _text(decision, "rule_id"),
-                cast(int, decision["expected"]),
+                cast(int | str, decision["expected"]),
                 _text(decision, "reason"),
                 _text(decision, "actor_id"),
             )

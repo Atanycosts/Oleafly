@@ -259,7 +259,7 @@ def test_source_page_preview_serves_pdf_and_refuses_invalid_targets(running_serv
 def test_http_user_flow_uses_display_name_and_actual_filename(running_server):
     _, session = _request(running_server, "GET", "/api/session")
     token = session["token"]
-    assert session["contract_version"] == "journal-http-1.8.0"
+    assert session["contract_version"] == "journal-http-1.9.0"
     assert len(session["asset_version"]) == 64
     status, world = _request(running_server, "POST", "/api/worlds", _world_payload(), token)
     assert status == 200

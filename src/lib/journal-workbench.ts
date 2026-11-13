@@ -115,8 +115,8 @@ export interface JournalGap {
 export interface JournalRule {
   rule_id: string;
   property: string;
-  expected: number | null;
-  unit: "twips" | "count" | "half_points" | "spacing_twips";
+  expected: number | string | null;
+  unit: "twips" | "count" | "half_points" | "spacing_twips" | "font_family";
   basis_status: JournalBasis;
   scope: JournalScope & { section_scope: string };
   evidence: { source_id: string; locator: string; quote: string }[];
@@ -125,7 +125,7 @@ export interface JournalRule {
   resolution?: {
     reason: string;
     previous_basis_status: JournalBasis;
-    previous_expected: number | null;
+    previous_expected: number | string | null;
   };
 }
 
@@ -264,11 +264,22 @@ export function journalUnitScale(unit: string): number {
   return unit === "count" ? 1 : unit === "half_points" ? 2 : unit === "spacing_twips" ? 20 : 1440 / 25.4;
 }
 
-export function formatJournalValue(value: number | null, unit: string): string {
+export function formatJournalValue(value: number | string | null, unit: string): string {
   if (value === null) return "—";
+  if (typeof value === "string") return value;
   if (unit === "half_points") return `${value / 2} pt`;
   if (unit === "spacing_twips") return `${value / 20} pt`;
   return unit === "count" ? String(value) : `${Number(((value * 25.4) / 1440).toFixed(2))} mm`;
+}
+
+export function journalInputValue(value: number | string | null, unit: JournalRule["unit"]): string {
+  if (value === null) return "";
+  if (typeof value === "string") return value;
+  return String(Number((value / journalUnitScale(unit)).toFixed(4)));
+}
+
+export function parseJournalInput(value: string, unit: JournalRule["unit"]): number | string {
+  return unit === "font_family" ? value.trim() : Math.round(Number(value) * journalUnitScale(unit));
 }
 
 export async function capturedJournalFile(file: File) {
@@ -290,7 +301,7 @@ export interface JournalComponent {
     basis: string;
   };
   sources: { source_id: string; title: string; locator: string; quote: string }[];
-  rules: { property: string; expected: number; unit: JournalRule["unit"]; source_refs: string[] }[];
+  rules: { property: string; expected: number | string; unit: JournalRule["unit"]; source_refs: string[] }[];
 }
 
 export interface JournalResearchResult {
@@ -322,8 +333,8 @@ export function journalResearchPrompt(
     "Use the tools and existing task workspace. Save exactly one product result file at <recordDir>/journal-review.json (replace <recordDir> with this task's provided record directory). Do not write reports to the live project or change a captured manuscript. You may retain useful web pages in that record directory; no duplicate report is needed. The final response should summarize the actual result. Do not ask the user to copy JSON.",
     "The file must contain this JSON shape: {\"schema_version\":\"journal-research-result-1.0.0\",\"summary\":\"Readable research findings with citations, applicability and unresolved conditions\",\"component\":<the rule component below, or null when no supported values exist>,\"source_paths\":[\"relative paths actually saved by web_fetch\"],\"questions\":[\"specific decisions the user must make\"],\"actions\":[\"concrete manuscript actions citing section and guide location where supported\"]}. Save valid JSON, no Markdown fences. Use complete source_paths, not absolute paths. Quotes must come from retained fragments or fetched pages. This file supplies review candidates, never human confirmation.",
     "Keep the envelope fields schema_version, summary, component, source_paths, questions and actions as siblings. Inside component, keep schema_version, component_id, component_version, applicability, sources and rules as siblings. Close applicability before sources and component before source_paths. Read the saved file back and correct JSON or schema errors before finishing.",
-    "Extract explicitly stated supported numeric values as review candidates, preserving exact original quotes and source locators. A definition or template observation can supply a candidate even when its applicability to the declared context is unresolved. Explain those conditions in your reply and applicability.basis; do not turn a definition, recommendation, example or unstated condition into a universal journal requirement. This component proposes comparison values for all sections; the operator reviews their applicability before confirming them. Never fill missing values. Supported properties and integer storage units: page_width_twips, page_height_twips, top_margin_twips, right_margin_twips, bottom_margin_twips, left_margin_twips (twips = mm * 1440 / 25.4); columns (count); body_font_size_halfpoints (half_points = pt * 2); body_line_spacing_twips (spacing_twips = pt * 20). One inch is 1440 twips. Round to the nearest integer. Other requirements belong in your explanation. If no supported values are present, explain that and do not fabricate a component.",
-    "Use the following schema. Replace the example rules and sources with the supported values and exact quotes. Each source_refs entry must name an entry in sources. The unit string is part of the schema: body_line_spacing_twips requires unit spacing_twips, body_font_size_halfpoints requires half_points, columns requires count, and dimensions/margins require twips. Imported assertions are candidates; confirmation happens separately in the panel.",
+    "Extract explicitly stated supported values as review candidates, preserving exact original quotes and source locators. A definition or template observation can supply a candidate even when its applicability to the declared context is unresolved. Explain those conditions in your reply and applicability.basis. Preserve recommendations, examples and applicability conditions as such. This component proposes values for all sections, and the operator reviews their applicability before confirming them. Never fill missing values. Supported properties and integer storage units: page_width_twips, page_height_twips, top_margin_twips, right_margin_twips, bottom_margin_twips, left_margin_twips (twips = mm * 1440 / 25.4), columns (count), body_font_size_halfpoints (half_points = pt * 2), body_line_spacing_twips (spacing_twips = pt * 20). One inch is 1440 twips. Round to the nearest integer. body_font_family uses unit font_family and expected is the exact nonempty font family name as a string. Preserve the named font. Do not replace it with a similar or metrically compatible family. A font declaration in the manuscript alone does not establish a journal requirement. Where separate scripts, sections or alternative fonts are specified, explain that scope and retain the quote rather than inventing a single universal family. Other requirements belong in your explanation. If no supported values are present, explain that and do not fabricate a component.",
+    "Use the following schema. Replace the example rules and sources with the supported values and exact quotes. Each source_refs entry must name an entry in sources. The unit string is part of the schema: body_font_family requires font_family with a string value, body_line_spacing_twips requires spacing_twips, body_font_size_halfpoints requires half_points, columns requires count, and dimensions/margins require twips. Imported assertions are candidates. Confirmation happens separately in the panel. Font acquisition does not establish manuscript font compliance.",
     JSON.stringify(
       {
         schema_version: "journal-rule-component-1.0.0",

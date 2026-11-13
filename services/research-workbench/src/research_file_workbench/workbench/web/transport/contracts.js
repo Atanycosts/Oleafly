@@ -11,7 +11,7 @@ const labels = {
 const propertyLabels = {
   page_width_twips: "纸张宽度", page_height_twips: "纸张高度", top_margin_twips: "上边距",
   right_margin_twips: "右边距", bottom_margin_twips: "下边距", left_margin_twips: "左边距",
-  columns: "分栏", body_font_size_halfpoints: "正文字号", body_line_spacing_twips: "正文行距",
+  columns: "分栏", body_font_size_halfpoints: "正文字号", body_line_spacing_twips: "正文行距", body_font_family: "正文字体",
 };
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const isText = (value) => typeof value === "string" && value.trim().length > 0;
@@ -34,13 +34,15 @@ const isBasis = oneOf("confirmed", "candidate", "conflict");
 const isValidity = oneOf("CURRENT", "STALE");
 const isVerdict = oneOf("compliant", "violation", "observed_match", "observed_difference", "cannot_determine", "not_checked");
 const isProperty = (value) => Object.hasOwn(propertyLabels, value);
+const propertyUnit = (property) => property === "columns" ? "count" : property === "body_font_family" ? "font_family" : property === "body_font_size_halfpoints" ? "half_points" : property === "body_line_spacing_twips" ? "spacing_twips" : "twips";
+const isRuleValue = (property, value) => property === "body_font_family" ? isText(value) : isInteger(value);
 const isGap = recordOf({ code: isText, message: isText, source_id: nullable(isText), property: nullable(isText), locator: nullable(isText) });
 const isRule = (value) => recordOf({
-  rule_id: isText, property: isProperty, expected: nullable(isInteger), unit: oneOf("twips", "count"),
+  rule_id: isText, property: isProperty, expected: (item) => item === null || isRuleValue(value.property, item), unit: oneOf("twips", "count", "half_points", "spacing_twips", "font_family"),
   basis_status: isBasis, scope: isRuleScope, limitations: listOf(isText),
   evidence: listOf(recordOf({ source_id: isText, locator: isText, quote: isString })),
-  resolution: optional(recordOf({ reason: isText, actor_id: isText, previous_expected: nullable(isInteger), expected: isInteger })),
-})(value) && value.unit === (value.property === "columns" ? "count" : "twips");
+  resolution: optional(recordOf({ reason: isText, actor_id: isText, previous_expected: (item) => item === null || isRuleValue(value.property, item), expected: (item) => isRuleValue(value.property, item) })),
+})(value) && value.unit === propertyUnit(value.property);
 const worldSummaryShape = {
   version_id: isText, journal_id: isText, journal_name: isText,
   version_ordinal: (value) => isInteger(value) && value > 0, created_at: isText, scope: isScope,

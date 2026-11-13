@@ -12,6 +12,7 @@ export interface DocxWorkspaceRequest {
 
 export const useDocxWorkspaceStore = create<{
   request: DocxWorkspaceRequest | null;
+  context: Pick<DocxWorkspaceRequest, "world" | "onSaved"> | null;
   minimized: boolean;
   recoveryOpen: boolean;
   setRecoveryOpen(open: boolean): void;
@@ -21,11 +22,19 @@ export const useDocxWorkspaceStore = create<{
   close(): void;
 }>((set) => ({
   request: null,
+  context: null,
   minimized: false,
   recoveryOpen: false,
   setRecoveryOpen: (recoveryOpen) => set({ recoveryOpen }),
-  open: (request) => set((state) => state.request ? { minimized: false } : { request, minimized: false }),
+  open: (request) => set((state) => {
+    const context = { world: request.world, onSaved: request.onSaved };
+    if (!state.request) return { request, context, minimized: false };
+    if (state.request.appProjectId === request.appProjectId && state.request.project.project_id === request.project.project_id) {
+      return { context, minimized: false };
+    }
+    return { minimized: false };
+  }),
   minimize: () => set({ minimized: true }),
   restore: () => set({ minimized: false }),
-  close: () => set({ request: null, minimized: false }),
+  close: () => set({ request: null, context: null, minimized: false }),
 }));

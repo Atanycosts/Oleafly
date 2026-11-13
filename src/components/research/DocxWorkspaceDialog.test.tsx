@@ -25,18 +25,21 @@ const mocks = vi.hoisted(() => ({
   listRecovery: vi.fn(),
   contentHash: vi.fn(),
   settleActivity: vi.fn(),
-  fontOptions: null as null | { onError(cause: unknown): void; onSubstitutions(value: { from: string; to: string }[]): void },
+  fontOptions: null as null | { onError(cause: unknown): void; onStatus(value: import("@/lib/docx-fonts").DocxFontStatus): void },
   editorDocument: null as Uint8Array | null,
   fontShaping: undefined as { maxFontBytes: number } | undefined,
   runInlineCompletion: vi.fn(),
   createSession: vi.fn(),
   journalRequest: vi.fn(),
   editorSave: vi.fn(),
+  editorMounted: vi.fn(),
+  editorUnmounted: vi.fn(),
   applySuggestion: vi.fn(),
   registerAgentSession: vi.fn(),
   updateAgentSession: vi.fn(),
   unregisterAgentSession: vi.fn(),
   editor: {
+    setFonts: vi.fn(),
     scrollToAnchor: vi.fn(),
     highlightAnchor: vi.fn(),
     clearAnchorHighlight: vi.fn(),
@@ -65,6 +68,10 @@ vi.mock("@docx-editor.dev/react", async () => {
     ) {
       mocks.editorDocument = props.document;
       mocks.fontShaping = props.fontShaping;
+      React.useEffect(() => {
+        mocks.editorMounted();
+        return () => mocks.editorUnmounted();
+      }, []);
       React.useImperativeHandle(ref, () => ({
         save: mocks.editorSave,
         getEditor: () => mocks.editor,
@@ -76,8 +83,7 @@ vi.mock("@docx-editor.dev/react", async () => {
 
 vi.mock("./DocxTaskActivity", () => ({ DocxTaskActivity: () => <div data-testid="task-panel" />, DocxActivitySource: ({ activity }: { activity: { origin: { taskId: string } } }) => <span>{activity.origin.taskId}</span> }));
 vi.mock("@/lib/docx-task-activity", () => ({ settleDocxTaskActivity: mocks.settleActivity }));
-vi.mock("@docx-editor.dev/fonts", () => ({ packagedFonts: () => [] }));
-vi.mock("@/lib/docx-fonts", () => ({ createDocxFontResolver: (options: NonNullable<typeof mocks.fontOptions>) => { mocks.fontOptions = options; return () => undefined; } }));
+vi.mock("@/lib/docx-fonts", () => ({ hasExactDocxFont: vi.fn(), createDocxFontResolver: (options: NonNullable<typeof mocks.fontOptions>) => { mocks.fontOptions = options; return () => undefined; } }));
 vi.mock("@/lib/ai-inline", () => ({ runInlineCompletion: mocks.runInlineCompletion }));
 vi.mock("@/lib/docx-session", () => ({ createDocxSession: mocks.createSession }));
 vi.mock("@/lib/docx-agent-host", () => ({
@@ -235,7 +241,7 @@ async function startGeneration(instruction = "Improve this") {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.editor.measurement = { measurer: "fixed", resolving: false, producer: undefined };
-  useDocxWorkspaceStore.setState({ request: null, minimized: false, recoveryOpen: false });
+  useDocxWorkspaceStore.setState({ request: null, context: null, minimized: false, recoveryOpen: false });
   mocks.settleActivity.mockResolvedValue({});
   mocks.listRecovery.mockResolvedValue({ snapshots: [], failures: [] });
   mocks.editor.editorSnapshot = { isLoading: false, isOpening: false, parseError: null, page: { current: 1, total: 1 } };
@@ -294,12 +300,25 @@ it("keeps the 64 MiB shaping limit stable across editor updates", async () => {
   expect(mocks.createSession).toHaveBeenCalledOnce();
 });
 
-it("shows explicit CJK substitutions and a native font failure", async () => {
+it("shows missing document faces and a native font failure", async () => {
   await renderReady(sessionHarness([paragraph("first", "Original")]));
-  act(() => mocks.fontOptions?.onSubstitutions([{ from: "宋体", to: "Noto Serif CJK SC" }]));
-  expect(screen.getByTestId("docx-font-substitutions")).toHaveTextContent("宋体 → Noto Serif CJK SC");
+  act(() => mocks.fontOptions?.onStatus({ probed: true, missing: [{ family: "SimSun", weight: 400, style: "normal" }], aliases: [] }));
+  expect(screen.getByTestId("docx-font-missing")).toHaveTextContent("SimSun (400, normal)");
   act(() => mocks.fontOptions?.onError(new Error("Native read failed")));
   expect(screen.getByRole("alert")).toHaveTextContent(`${text.fontError}: Error: Native read failed`);
+});
+
+it("refreshes fonts in the existing edited session without changing its dirty state or document", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  await renderReady(harness);
+  const bytes = mocks.editorDocument;
+  act(() => harness.edit("first", "Unsaved edit"));
+  fireEvent.click(screen.getByTestId("docx-font-refresh"));
+  await waitFor(() => expect(mocks.editor.setFonts).toHaveBeenCalledOnce());
+  expect(mocks.createSession).toHaveBeenCalledOnce();
+  expect(mocks.editorDocument).toBe(bytes);
+  expect(harness.text("first")).toBe("Unsaved edit");
+  expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
 });
 
 describe("DocxWorkspaceDialog editing lifecycle", () => {
@@ -317,6 +336,71 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     await waitFor(() => expect(useDocxWorkspaceStore.getState().recoveryOpen).toBe(true));
     expect(useDocxWorkspaceStore.getState().request).toBeNull();
     expect(mocks.loadSource).not.toHaveBeenCalled();
+  });
+
+  it.each([null, WORLD])("refreshes a minimized workspace's world from %j without replacing its dirty session", async (initialWorld) => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    mocks.createSession.mockReturnValue(harness.session);
+    mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 1 });
+    const previousSaved = vi.fn(async () => {});
+    const nextSaved = vi.fn(async () => {});
+    const otherSaved = vi.fn(async () => {});
+    const request = { appProjectId: "app-project", project: PROJECT, world: initialWorld, onSaved: previousSaved };
+    useDocxWorkspaceStore.getState().open(request);
+    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost /></QueryClientProvider>);
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledOnce());
+    const editorNode = screen.getByTestId("mock-docx-editor");
+    const document = mocks.editorDocument;
+    const sessionId = mocks.registerAgentSession.mock.calls[0][0].sessionId;
+    const unregisterCount = mocks.unregisterAgentSession.mock.calls.length;
+    act(() => harness.edit("first", "Unsaved text"));
+    fireEvent.click(screen.getByRole("button", { name: text.minimize }));
+    expect(useDocxWorkspaceStore.getState().minimized).toBe(true);
+    const nextWorld = { ...WORLD, version_id: "world-next", journal_name: "Next journal" };
+    act(() => useDocxWorkspaceStore.getState().open({ ...request, world: nextWorld, onSaved: nextSaved }));
+    expect(screen.getByTestId("docx-font-world")).toHaveTextContent("world-next");
+    expect(useDocxWorkspaceStore.getState().request).toBe(request);
+    expect(screen.getByTestId("mock-docx-editor")).toBe(editorNode);
+    expect(mocks.editorDocument).toBe(document);
+    expect(mocks.editorMounted).toHaveBeenCalledOnce();
+    expect(mocks.editorUnmounted).not.toHaveBeenCalled();
+    expect(mocks.createSession).toHaveBeenCalledOnce();
+    expect(harness.session.dispose).not.toHaveBeenCalled();
+    expect(mocks.unregisterAgentSession).toHaveBeenCalledTimes(unregisterCount);
+    expect(mocks.loadSource).toHaveBeenCalledOnce();
+    expect(mocks.listRecovery).toHaveBeenCalledOnce();
+    expect(harness.text("first")).toBe("Unsaved text");
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+    act(() => useDocxWorkspaceStore.getState().open({ ...request, project: { ...PROJECT, project_id: "other-document" }, world: null, onSaved: otherSaved }));
+    expect(screen.getByTestId("docx-font-world")).toHaveTextContent("world-next");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(nextSaved).toHaveBeenCalledOnce());
+    expect(previousSaved).not.toHaveBeenCalled();
+    expect(otherSaved).not.toHaveBeenCalled();
+    expect(mocks.updateAgentSession).toHaveBeenCalledWith(sessionId, expect.objectContaining({ savedRevision: 1 }));
+  });
+
+  it("uses the latest onSaved context when a save finishes after the world changes", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    mocks.createSession.mockReturnValue(harness.session);
+    let finishSave!: (result: { baselineId: string; revision: number; sourceSha256: string }) => void;
+    mocks.commitRecovery.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+    const previousSaved = vi.fn(async () => {});
+    const nextSaved = vi.fn(async () => {});
+    const request = { appProjectId: "app-project", project: PROJECT, world: WORLD, onSaved: previousSaved };
+    useDocxWorkspaceStore.getState().open(request);
+    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost /></QueryClientProvider>);
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledOnce());
+    act(() => harness.edit("first", "Pending save"));
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(mocks.commitRecovery).toHaveBeenCalledOnce());
+    act(() => useDocxWorkspaceStore.getState().open({ ...request, world: null, onSaved: nextSaved }));
+    await act(async () => finishSave({ baselineId: SAVED_BASELINE, revision: 1, sourceSha256: "d".repeat(64) }));
+    await waitFor(() => expect(nextSaved).toHaveBeenCalledOnce());
+    expect(previousSaved).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("docx-font-world")).not.toBeInTheDocument();
+    expect(mocks.editorMounted).toHaveBeenCalledOnce();
+    expect(mocks.editorUnmounted).not.toHaveBeenCalled();
   });
 
   it("keeps the live package and session when the application language changes", async () => {

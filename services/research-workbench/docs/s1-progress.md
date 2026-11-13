@@ -39,7 +39,7 @@ rejected input and idempotency conflicts remain HTTP 400, with the existing erro
 and recorded request identity, digest, status and null result baseline. An idempotency
 conflict can reference another request's successful baseline, which is not a saved
 result for the submitted bytes. Ordinary read/binding conflicts keep their existing
-sanitized errors. The owning HTTP contract is now `journal-http-1.8.0`, synchronized
+sanitized errors. The recovery increment used `journal-http-1.8.0`, synchronized
 with the browser and native application connection check. Application checkpoint
 and task-attribution behavior is owned by the linked Agent status and architecture.
 
@@ -50,6 +50,25 @@ and replay against the retained ledger. Phase 0 still exits 1 with
 `CONTRACT_INVALID` / `PHASE0_INCOMPLETE` for the missing registered source identities
 and pinned Windows WPS environment; those historical requirements and evidence were
 not rewritten. This does not block the separately scoped macOS DOCX workflow.
+
+The 2026-11-13 exact-font correction retains body-font family requirements through the
+existing guide/component, evidence, decision and immutable world flow. Exact English/Chinese
+body-font instructions can be recognized deterministically. Model research still returns
+candidates for applicability review. Manuscript font declarations alone do not establish
+journal requirements. The machine-readable contract above owns the current method and
+transport versions. New checks require reanalysis under the current analyzer; retained older
+worlds/checks remain readable without re-executing an older method. Font rules return
+`not_checked`: the geometry checker neither audits declared run fonts nor certifies downloaded
+fonts or rendered glyphs. Exact font acquisition and live editor refresh belong to the
+[application status](../../../docs/agent/status.md#docx-准确字体获取2026-11-13), not this service.
+
+Final exact-font gates passed Ruff format (212 Python files), Ruff lint, mypy
+(118 source files), and the full suite (1073 passed, 33 existing platform skips, five
+PyMuPDF/SWIG warnings). Regressions cover exact family/source retention, multi-font
+and script-scoped guidance remaining gaps, real family names containing Latin/English/CJK,
+component decisions, unchecked font verdicts and CLI/browser string values. Historical
+Phase 0 validation still exits 1 for the previously recorded missing source identities and
+pinned Windows WPS environment; it does not provide new macOS rendering evidence.
 
 Scope decision (2026-11-07): the operator excludes a complete journal submission
 workflow and comprehensive submission acceptance from the product scope. They are
@@ -102,7 +121,7 @@ preserved all package parts, media, relationship semantics and protected nodes, 
 edited export changed only its intended paragraph. Mixed-format, field, OMML and image
 paragraph replacements were refused with `unsupported-target` and no revision change.
 This verifies the controlled structure round trip, not Word/WPS visual fidelity: the two
-documents still report substitute-font/fixed-measurer warnings, and the independent LibreOffice
+documents at that stage reported substitute-font/fixed-measurer warnings, and the independent LibreOffice
 render of the English manuscript has a first-page two-column title difference.
 
 The reader now reports selected VML `w:pict/v:imagedata` as an explicit `vml_picture` unsupported
