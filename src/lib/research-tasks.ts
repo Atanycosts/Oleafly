@@ -356,6 +356,7 @@ export type TaskRuntimeEvent =
   | { kind: "phase"; phase: TaskPhase };
 
 export type TaskObservation =
+  | { type: "docx"; activity: import("@/lib/docx-task-activity").DocxActivity }
   | { type: "member"; memberId: string; executionId: string; triggerIds: string[]; status: string }
   | { type: "requestContext"; sessionId: string; tools: { name: string; source: string; schemaSha256: string }[];
       schemaBytes: number; catalogBytes: number; skillBytes: number; requirementIds: string[] }

@@ -1,6 +1,8 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import topLevelAwait from "vite-plugin-top-level-await";
+import { minify } from "terser";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -40,6 +42,61 @@ const staticE2eClient = (): Plugin => ({
 export const LEGAL_COMMENT_PATTERN =
   /^!|@preserve|@license|@cc_on/i;
 
+export function docxAsyncInitialization(): Plugin {
+  const plugin = topLevelAwait();
+  const configure = plugin.config;
+  const configureHandler = typeof configure === "function" ? configure : configure?.handler;
+  const generate = plugin.generateBundle;
+  const handler = typeof generate === "function" ? generate : generate?.handler;
+  const notices = new Map<string, Set<string>>();
+  return {
+    ...plugin,
+    async config(config, env) {
+      // SWC 1.15's minifying printer corrupts escaped \\u in JSON catalog
+      // strings. Keep its async lowering unminified, then use Terser below.
+      const upstream = { ...config, build: { ...config.build, minify: false as const } };
+      const result = await configureHandler?.call(this, upstream, env);
+      config.build = { ...config.build, target: upstream.build.target };
+      return result;
+    },
+    async renderChunk(code, chunk) {
+      const comments = new Set<string>();
+      // SWC's async transform drops comments. Collect actual parsed comments
+      // before it runs so distribution notices survive in transformed chunks.
+      await minify(code, {
+        module: true,
+        compress: false,
+        mangle: false,
+        format: {
+          comments: (_node, comment) => {
+            if (LEGAL_COMMENT_PATTERN.test(comment.value)) {
+              comments.add(comment.type === "comment2" ? `/*${comment.value}*/` : `//${comment.value}\n`);
+            }
+            return false;
+          },
+        },
+      });
+      notices.set(chunk.moduleIds.join("\n"), comments);
+      return null;
+    },
+    async generateBundle(options, bundle, isWrite) {
+      await handler?.call(this, options, bundle, isWrite);
+      // The upstream plugin lowers async modules and then reprints every chunk
+      // with esbuild. Restore our UTF-8 minification and legal-comment policy.
+      for (const item of Object.values(bundle)) {
+        if (item.type !== "chunk") continue;
+        const result = await minify(item.code, {
+          module: true,
+          ecma: 2020,
+          compress: { passes: 4 },
+          format: { comments: false },
+        });
+        item.code = [...(notices.get(item.moduleIds.join("\n")) ?? [])].join("\n") + "\n" + result.code;
+      }
+    },
+  };
+}
+
 const LAZY_LOCALE_NAMESPACES = new Set(["cloud", "collab", "settingsFile"]);
 
 export function localeChunk(id: string): string | undefined {
@@ -56,7 +113,8 @@ export function localeChunk(id: string): string | undefined {
 export const POLYFILLS_CHUNK = "polyfills";
 
 export function polyfillsChunk(id: string): string | undefined {
-  return /\/packages\/preview\/src\/polyfills\.ts$/.test(id) ? POLYFILLS_CHUNK : undefined;
+  return /\/packages\/preview\/src\/(?:polyfills|worker-decompression)\.ts$/.test(id) ||
+    id === "\0vite/preload-helper.js" || id === "\0commonjsHelpers.js" ? POLYFILLS_CHUNK : undefined;
 }
 
 type OutputSummary = {
@@ -79,12 +137,24 @@ const requirePolyfillsFirst = (): Plugin => ({
   name: "require-polyfills-first",
   apply: "build",
   generateBundle(_options, bundle) {
-    const late = entriesLoadingBeforePolyfills(Object.values(bundle));
+    const outputs = Object.values(bundle);
+    const late = entriesLoadingBeforePolyfills(outputs);
     if (late.length > 0) {
       this.error(
         `${late.join(", ")} must import the ${POLYFILLS_CHUNK} chunk before any other chunk, or library code runs before the polyfills on older WebViews`,
       );
     }
+    const docx = new Set(outputs.filter((item) => item.type === "chunk" &&
+      Object.keys(item.modules).some((id) => id.includes("/@docx-editor.dev/core/dist/") || id.includes("/@docx-editor.dev/react/dist/")))
+      .map((item) => item.fileName));
+    const inspect = (name: string, visited: Set<string>) => {
+      if (visited.has(name)) return;
+      visited.add(name);
+      if (docx.has(name)) this.error(`DOCX editor entered the startup graph: ${name}`);
+      const chunk = bundle[name];
+      if (chunk?.type === "chunk") for (const dependency of chunk.imports) inspect(dependency, visited);
+    };
+    for (const item of outputs) if (item.type === "chunk" && item.isEntry) inspect(item.fileName, new Set());
   },
 });
 
@@ -189,9 +259,13 @@ export default defineConfig(async () => ({
     requirePolyfillsFirst(),
     staticE2eClient(),
     pdfjsAssets(),
+    docxAsyncInitialization(),
   ],
   optimizeDeps: {
-    exclude: ["harper.js"],
+    esbuildOptions: { supported: { "top-level-await": true } },
+    // The font resolver uses import.meta.url for its packaged font bytes.
+    // Prebundling relocates that URL into .vite and serves HTML for the assets.
+    exclude: ["harper.js", "@docx-editor.dev/fonts"],
     include: [
       "pdfjs-dist/build/pdf.worker.min.mjs",
       // PdfViewer lazy-loads the official link/structure helpers. Pre-bundle
@@ -224,7 +298,12 @@ export default defineConfig(async () => ({
   build: {
     rollupOptions: {
       output: {
+        // Named DOCX chunks must not take shared React/runtime dependencies out
+        // of the startup graph or run them ahead of the polyfill entry.
+        onlyExplicitManualChunks: true,
         manualChunks: (id: string) => {
+          if (id.includes("/@docx-editor.dev/core/dist/")) return "docx-core";
+          if (id.includes("/@docx-editor.dev/react/dist/")) return "docx-react";
           // The pdf.js main library is shared by several lazy consumers
           // (preview, import, preflight, AI tools). Without a name, rollup's
           // shared chunk adopts the pdf.worker?worker&url facade's name,

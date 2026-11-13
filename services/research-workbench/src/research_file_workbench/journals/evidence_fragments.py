@@ -16,13 +16,29 @@ from research_file_workbench.journals.pdf_analysis import (
     analyze_pdf_bytes,
 )
 
-EVIDENCE_METHOD_VERSION = "journal-source-evidence-1.1.0"
+EVIDENCE_METHOD_VERSION = "journal-source-evidence-1.2.0"
 
 
 def source_fragments(
     source_id: str, source_kind: str, payload: bytes
 ) -> tuple[list[JsonObject], list[str]]:
     """Extract fragments and reader issues for one retained source payload."""
+    if source_kind == "template_original":
+        return [], ["Original template bytes are retained; inspect normalized DOCX facts."]
+    if source_kind == "docx_format_snapshot":
+        snapshot = decode_json_object(payload)
+        return [
+            _fragment(
+                source_id,
+                "template_object",
+                str(item["object_id"]),
+                str(item.get("text") or item["role"]),
+                content=item,
+                part_path=str(item["part"]),
+                reader_version=str(cast(JsonObject, snapshot["engine"])["version"]),
+            )
+            for item in require_objects(snapshot["objects"], "core snapshot objects")
+        ], []
     if source_kind == "guide_pdf":
         return _pdf_fragments(source_id, payload)
     if source_kind == "guide_text":

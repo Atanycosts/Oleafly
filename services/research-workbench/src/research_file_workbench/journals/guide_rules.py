@@ -71,8 +71,23 @@ def recognize_guide(
     return observations, gaps
 
 
-def _requirements(text: str) -> tuple[dict[str, int], list[str]]:
+def _requirements(text: str) -> tuple[dict[str, int | str], list[str]]:
     text = text.removesuffix("。").removesuffix(".")
+    font = re.fullmatch(r"(?:All manuscript body text|Body text) must use (.+?) font", text, re.I)
+    if font is None:
+        font = re.fullmatch(r"正文必须使用(.+?)字体", text)
+    if font is None:
+        font = re.fullmatch(r"正文字体必须为(.+)", text)
+    if font is not None:
+        family = font.group(1).strip().strip('"“”')
+        if re.fullmatch(r"[^\W\d_][\w .+\-]*", family) and not re.search(
+            r"\b(?:or|and|for)\b|或者|或|以及|和|中文|英文|汉字|西文"
+            r"|\b(?:Chinese|English|Latin|CJK)\b.+\b(?:Chinese|English|Latin|CJK)\b",
+            family,
+            re.I,
+        ):
+            return {"body_font_family": family}, []
+        return {}, []
     paper = re.fullmatch(r"All manuscript pages must use (A4|US Letter|Letter) paper", text, re.I)
     if paper is None:
         paper = re.fullmatch(r"全文必须使用(A4|Letter)纸张", text, re.I)
@@ -89,7 +104,7 @@ def _requirements(text: str) -> tuple[dict[str, int], list[str]]:
         re.I,
     )
     if defined is not None:
-        properties = {
+        properties: dict[str, int | str] = {
             "columns": 2,
             "page_width_twips": _twips(defined.group(1), "in"),
             "page_height_twips": _twips(defined.group(2), "in"),

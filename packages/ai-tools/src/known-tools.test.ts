@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createOverleafTools } from "./overleaf-tools";
 import { createResearchTools } from "./research-tools";
-import { createFigureTools, createOleaflyTools } from "./tools";
+import { createDocxTools, createFigureTools, createOleaflyTools } from "./tools";
 
 function stubHost<T>(): T {
   return new Proxy({}, { get: () => vi.fn() }) as T;
@@ -31,6 +31,7 @@ describe("the approval rules' list of tools", () => {
         }),
       }),
       ...createFigureTools(stubHost()),
+      ...createDocxTools(stubHost()),
       ...createResearchTools(stubHost()),
       ...createOverleafTools(stubHost()),
     };

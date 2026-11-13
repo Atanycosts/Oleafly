@@ -1035,6 +1035,200 @@ fn independent_pending_work_is_frozen_without_pulling_in_waiting_ancestors() {
 }
 
 #[test]
+fn preexisting_unreported_work_does_not_block_an_independent_checkpoint() {
+    let fixture = Fixture::new();
+    let owner = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    let explorer = fixture.member("Explorer").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Check this earlier result", &[&explorer]),
+    );
+    fixture.message(
+        &GroupActor::user(),
+        request("Keep this other question unfinished", &[&explorer]),
+    );
+    let earlier = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let unreported_id = earlier.work[1].id.clone();
+    fixture
+        .store
+        .settle_member_work(
+            &earlier,
+            &crate::collaboration::WorkSettlementDraft {
+                work_ids: vec![earlier.work[0].id.clone()],
+                status: WorkStatus::Completed,
+                summary: "The first result was checked.".into(),
+                wait_for: Vec::new(),
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(
+            &earlier,
+            &outcome("Only the first result was checked."),
+            None,
+        )
+        .unwrap();
+    let before = fixture.snapshot();
+    let unreported = work(&before, &unreported_id).clone();
+    assert_eq!(unreported.status, WorkStatus::Waiting);
+    assert!(unreported.waits.is_empty());
+    assert!(unreported.result_message_id.is_none());
+
+    fixture.message(
+        &GroupActor::user(),
+        request("Complete the independent owner task", &[&owner]),
+    );
+    let owner_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let original_id = owner_turn.work[0].id.clone();
+    let review = fixture.message(
+        &GroupActor::user(),
+        request("Check the independent methods result", &[&methods]),
+    );
+    let checkpoint = fixture
+        .store
+        .member_checkpoint_request(&owner_turn)
+        .unwrap()
+        .unwrap();
+    assert!(checkpoint.event_ids.is_empty());
+    fixture
+        .store
+        .checkpoint_member_turn(
+            &owner_turn,
+            &checkpoint_outcome("Wait for the independent check", checkpoint),
+        )
+        .unwrap();
+    let methods_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    assert_eq!(methods_turn.member.id, methods);
+    assert_eq!(methods_turn.work[0].cause_id, review.id);
+    fixture
+        .store
+        .finish_member_turn(
+            &methods_turn,
+            &outcome("Methods checked the independent result."),
+            None,
+        )
+        .unwrap();
+
+    let reopened = TaskStore::new(fixture.store.root().to_path_buf()).unwrap();
+    let resumed = reopened
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .expect("An unrelated unreported item must not block the checkpoint handoff");
+    assert_eq!(resumed.member.id, owner);
+    assert!(resumed.work.iter().any(|work| work.id == original_id));
+    let handoff = event(&resumed, "member_checkpoint_resumed");
+    assert!(evidence_contains(
+        handoff,
+        "Methods checked the independent result."
+    ));
+    assert!(!evidence_contains(handoff, &unreported_id));
+    let snapshot = reopened.group_snapshot("paper", fixture.id(), 0).unwrap();
+    assert_eq!(work(&snapshot, &unreported_id), &unreported);
+    assert_eq!(
+        checkpoint_evidence(&snapshot).colleague_work_ids,
+        vec![methods_turn.work[0].id.clone()]
+    );
+    reopened
+        .finish_member_turn(&resumed, &outcome("Integrated the methods result."), None)
+        .unwrap();
+    assert!(reopened.claim_member_turn(&fixture.task).unwrap().is_none());
+    let snapshot = reopened.group_snapshot("paper", fixture.id(), 0).unwrap();
+    assert_eq!(work(&snapshot, &original_id).status, WorkStatus::Completed);
+    assert_eq!(work(&snapshot, &unreported_id), &unreported);
+}
+
+#[test]
+fn frozen_work_left_unreported_still_blocks_its_checkpoint() {
+    let fixture = Fixture::new();
+    let owner = fixture.member("Coordinator").to_owned();
+    let methods = fixture.member("Methods").to_owned();
+    fixture.message(
+        &GroupActor::user(),
+        request("Complete the owner task", &[&owner]),
+    );
+    let owner_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let original_id = owner_turn.work[0].id.clone();
+    for body in ["Check the methods result", "Check the other methods result"] {
+        fixture.message(&GroupActor::user(), request(body, &[&methods]));
+    }
+    let checkpoint = fixture
+        .store
+        .member_checkpoint_request(&owner_turn)
+        .unwrap()
+        .unwrap();
+    fixture
+        .store
+        .checkpoint_member_turn(
+            &owner_turn,
+            &checkpoint_outcome("Wait for both methods checks", checkpoint),
+        )
+        .unwrap();
+    let methods_turn = fixture
+        .store
+        .claim_member_turn(&fixture.task)
+        .unwrap()
+        .unwrap();
+    let unreported_id = methods_turn.work[1].id.clone();
+    fixture
+        .store
+        .settle_member_work(
+            &methods_turn,
+            &crate::collaboration::WorkSettlementDraft {
+                work_ids: vec![methods_turn.work[0].id.clone()],
+                status: WorkStatus::Completed,
+                summary: "Only the first methods result was checked.".into(),
+                wait_for: Vec::new(),
+                result_refs: Vec::new(),
+            },
+        )
+        .unwrap();
+    fixture
+        .store
+        .finish_member_turn(
+            &methods_turn,
+            &outcome("The other check remains unfinished."),
+            None,
+        )
+        .unwrap();
+
+    let reopened = TaskStore::new(fixture.store.root().to_path_buf()).unwrap();
+    assert!(reopened.claim_member_turn(&fixture.task).unwrap().is_none());
+    let snapshot = reopened.group_snapshot("paper", fixture.id(), 0).unwrap();
+    assert_eq!(
+        work(&snapshot, &original_id).status,
+        WorkStatus::Checkpointed
+    );
+    assert_eq!(work(&snapshot, &unreported_id).status, WorkStatus::Waiting);
+    assert!(work(&snapshot, &unreported_id).waits.is_empty());
+    assert!(checkpoint_evidence(&snapshot)
+        .colleague_work_ids
+        .contains(&unreported_id));
+    assert!(!snapshot
+        .events
+        .iter()
+        .any(|event| event.kind == "member_checkpoint_resumed"));
+}
+
+#[test]
 fn reopened_paused_or_closed_checkpoint_does_not_release_original_work() {
     let fixture = Fixture::new();
     let owner = fixture.member("Coordinator").to_owned();

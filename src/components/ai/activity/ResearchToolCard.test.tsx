@@ -244,3 +244,14 @@ describe("ResearchToolCard actions", () => {
     expect(await screen.findByText(enAi.toolCard.previewFailed)).toBeInTheDocument();
   });
 });
+
+it("offers exact cached paper PDF review independently of project artifact actions", async () => {
+  render(<ResearchToolCard tc={{ name: "read_paper", status: "done", output: JSON.stringify({
+    key: "paper-a", text: "[p. 2]\nFull paper evidence", pdfReference: { projectId: "original", path: "sources/papers/a.pdf", pdfSha256: "hash" },
+    source: { pdf: { pageStart: 2, pageEnd: 2, pageCount: 4 } },
+  }) }} />);
+  fireEvent.click(header());
+  expect(screen.getByText(/Full paper evidence/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: enAi.paperReader.openPdf })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: enAi.toolCard.openFile })).toBeNull();
+});

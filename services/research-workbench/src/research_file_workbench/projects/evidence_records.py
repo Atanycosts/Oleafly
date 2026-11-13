@@ -11,7 +11,7 @@ from research_file_workbench.common.json_io import (
     decode_json_object,
     encode_json_object,
 )
-from research_file_workbench.projects.artifact_records import store_blob
+from research_file_workbench.projects.artifact_records import read_artifact, store_blob
 from research_file_workbench.projects.baseline_records import get_baseline
 from research_file_workbench.projects.models import ProjectStoreError, require_record_text
 from research_file_workbench.projects.project_database import project_info
@@ -63,8 +63,11 @@ def store_evidence(
                 raise ProjectStoreError(f"Evidence {name} must contain nonblank strings")
         if not {version_id, reader_version}.issubset(cast(list[str], item["dependencies"])):
             raise ProjectStoreError("Evidence dependencies must include its source and reader")
-        if item["kind"] != "source_observation" or item["verification_record_ids"] != []:
-            raise ProjectStoreError("Only unreviewed source observations are supported")
+        if (
+            item["kind"] not in {"source_observation", "derived_render"}
+            or item["verification_record_ids"] != []
+        ):
+            raise ProjectStoreError("Only unreviewed source observations and renders are supported")
         if (
             item["artifact_version_id"] != version_id
             or item["extraction_method_version"] != reader_version
@@ -81,7 +84,7 @@ def store_evidence(
         elif row["payload"] != payload:
             raise ProjectStoreError("Evidence version already identifies different content")
         connection.execute(
-            "INSERT INTO baseline_evidence VALUES (?,?)", (baseline_id, evidence_version)
+            "INSERT OR IGNORE INTO baseline_evidence VALUES (?,?)", (baseline_id, evidence_version)
         )
 
 
@@ -107,11 +110,12 @@ def _stale_reasons(
     reasons = []
     if item["artifact_version_id"] not in cast(list[str], current_baseline["artifact_version_ids"]):
         reasons.append("source_version_changed")
-    if item["extraction_method_version"] != reader_version:
+    if _stored_method_version(connection, item) != _expected_method_version(item, reader_version):
         reasons.append("reader_version_changed")
-    if item.get("scope") == {"object_type": "render_bundle"}:
+    scope = item.get("scope")
+    if scope in ({"object_type": "render_bundle"}, {"object_type": "derived_render"}):
         from research_file_workbench.docx.page_mapping import PAGE_MAPPING_VERSION
-        from research_file_workbench.projects.render_validation import BUNDLE_VERSION
+        from research_file_workbench.projects.render_validation import SUPPORTED_BUNDLE_VERSIONS
 
         stored_record = item.get("value")
         if not isinstance(stored_record, dict):
@@ -123,11 +127,53 @@ def _stale_reasons(
         manifest = cast(JsonObject, record["manifest"])
         if bound_baseline != current_baseline["baseline_id"]:
             reasons.append("baseline_binding_changed")
-        if manifest.get("version") != BUNDLE_VERSION:
+        if manifest.get("version") not in SUPPORTED_BUNDLE_VERSIONS:
             reasons.append("bundle_method_changed")
-        if manifest.get("mapping_version") != PAGE_MAPPING_VERSION:
+        if scope == {"object_type": "render_bundle"} and (
+            manifest.get("mapping_version") != PAGE_MAPPING_VERSION
+        ):
             reasons.append("mapping_method_changed")
     return reasons
+
+
+def _expected_method_version(item: JsonObject, reader_version: str) -> str:
+    scope = item.get("scope")
+    if isinstance(scope, dict):
+        object_type = cast(JsonObject, scope).get("object_type")
+        if object_type in {"docx_format", "template_findings"}:
+            from research_file_workbench.projects.format_records import (
+                FORMAT_SNAPSHOT_METHOD_VERSION,
+                TEMPLATE_FINDINGS_METHOD_VERSION,
+            )
+
+            return (
+                FORMAT_SNAPSHOT_METHOD_VERSION
+                if object_type == "docx_format"
+                else TEMPLATE_FINDINGS_METHOD_VERSION
+            )
+    return reader_version
+
+
+def _stored_method_version(connection: sqlite3.Connection, item: JsonObject) -> str:
+    value = item.get("extraction_method_version")
+    if isinstance(value, str) and value.strip():
+        return value
+    scope = item.get("scope")
+    artifact_id = item.get("findings_artifact_version_id")
+    if (
+        isinstance(scope, dict)
+        and scope == {"object_type": "template_findings"}
+        and isinstance(artifact_id, str)
+    ):
+        from research_file_workbench.projects.format_records import (
+            TEMPLATE_FINDINGS_METHOD_VERSION,
+        )
+
+        artifact = decode_json_object(read_artifact(connection, artifact_id))
+        if not isinstance(artifact.get("findings"), list):
+            raise ProjectStoreError("Legacy template findings artifact is invalid")
+        return TEMPLATE_FINDINGS_METHOD_VERSION
+    raise ProjectStoreError("Stored evidence is missing extraction_method_version")
 
 
 def save_render_bundle(
@@ -180,10 +226,11 @@ def save_render_bundle(
         "confirmation_reason": confirmation_reason,
     }
     version_id = f"artifact-version-{baseline['source_sha256']}"
+    derived = manifest.get("evidence_kind") == "derived_pdf"
     evidence: JsonObject = {
         "evidence_id": f"evidence-{digest}",
         "evidence_version": bundle_id,
-        "kind": "source_observation",
+        "kind": "derived_render" if derived else "source_observation",
         "artifact_version_id": version_id,
         "object_locator": {"render_bundle_id": bundle_id},
         "parse_status": "partial",
@@ -195,9 +242,16 @@ def save_render_bundle(
             require_record_text(manifest.get("mapping_version"), "mapping method"),
             *sorted(registered),
         ],
-        "statement": "Registered render and mapping evidence; not semantic verification.",
-        "scope": {"object_type": "render_bundle"},
-        "extraction_method": "render_bundle_registration",
+        "statement": (
+            "Retained derived PDF from an explicit LibreOffice headless render; "
+            "not independent visual or page-mapping verification."
+            if derived
+            else "Registered render and mapping evidence; not semantic verification."
+        ),
+        "scope": {"object_type": "derived_render" if derived else "render_bundle"},
+        "extraction_method": (
+            "libreoffice_headless_render" if derived else "render_bundle_registration"
+        ),
         "extraction_method_version": reader_version,
         "verification_record_ids": [],
         "content_hash": sha256_text(encode_json_object(record)),
@@ -221,8 +275,11 @@ def get_render_bundle(
         raise ProjectStoreError("Render bundle is not registered for this baseline")
     evidence = decode_json_object(row["payload"])
     record = evidence.get("value")
-    if evidence.get("scope") != {"object_type": "render_bundle"} or not isinstance(record, dict):
-        raise ProjectStoreError("Requested evidence is not a render bundle")
+    if evidence.get("scope") not in (
+        {"object_type": "render_bundle"},
+        {"object_type": "derived_render"},
+    ) or not isinstance(record, dict):
+        raise ProjectStoreError("Requested evidence is not a render registration")
     record = cast(JsonObject, record)
     manifest = record.get("manifest")
     if (
@@ -247,14 +304,26 @@ def list_render_bundles(
     if identity is None:
         return []
     get_baseline(connection, identity)
+    return _list_render_records(connection, cast(str, identity), "render_bundle")
+
+
+def list_derived_renders(connection: sqlite3.Connection, baseline_id: str) -> list[JsonObject]:
+    """List derived PDFs for one explicit baseline without mixing page bundles."""
+    get_baseline(connection, baseline_id)
+    return _list_render_records(connection, baseline_id, "derived_render")
+
+
+def _list_render_records(
+    connection: sqlite3.Connection, baseline_id: str, scope: str
+) -> list[JsonObject]:
     rows = connection.execute(
         "SELECT e.evidence_version FROM evidence e JOIN baseline_evidence b "
         "ON b.evidence_version=e.evidence_version WHERE b.baseline_id=? "
-        "AND json_extract(e.payload,'$.scope.object_type')='render_bundle' "
+        "AND json_extract(e.payload,'$.scope.object_type')=? "
         "ORDER BY b.rowid",
-        (identity,),
+        (baseline_id, scope),
     ).fetchall()
-    return [get_render_bundle(connection, cast(str, identity), row[0]) for row in rows]
+    return [get_render_bundle(connection, baseline_id, row[0]) for row in rows]
 
 
 def list_evidence(

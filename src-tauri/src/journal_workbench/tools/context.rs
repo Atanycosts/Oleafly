@@ -64,45 +64,81 @@ fn coverage_summary(gaps: &Value) -> Value {
 
 fn receipt_summary(receipt: &WorkbenchRecordReceipt) -> Value {
     let record = &receipt.record;
-    let names: &[&str] = match record.kind.as_str() {
-        "world" => &[
+    let pointer = record.snapshot["projection"] == "retained_pointer";
+    let names: &[&str] = if pointer {
+        &[
+            "projection",
+            "kind",
+            "contentStatus",
+            "snapshotOmitted",
+            "domainReadable",
+            "contentNote",
+            "snapshotSha256",
+            "snapshotBytes",
             "journal_id",
+            "journal_name",
+            "version_id",
             "version_ordinal",
-            "scope",
-            "analyzer_version",
-            "reader_version",
-            "coverage_gaps",
-            "limitations",
-        ],
-        "rule_version" => &[
+            "ruleCount",
+            "manualDecisionCount",
+            "coverageGapCount",
+            "template",
+            "templateSources",
+            "world_version_id",
+            "rule_id",
             "property",
+            "label",
             "expected",
             "unit",
             "scope",
             "basis_status",
             "confirmation_method",
             "resolution",
+            "evidenceCount",
+            "templateObjectCount",
             "limitations",
-        ],
-        "check" => &[
-            "baseline_id",
-            "binding_id",
-            "world_version_id",
-            "source_sha256",
-            "checker_version",
-            "reader_version",
-            "summary",
-            "coverage_gaps",
-            "limitations",
-        ],
-        "binding" => &[
-            "binding_id",
-            "baseline_id",
-            "world_version_id",
-            "previous_binding_id",
-        ],
-        "disposition" => &["disposition_id", "check_id", "rule_id", "action"],
-        _ => &[],
+        ]
+    } else {
+        match record.kind.as_str() {
+            "world" => &[
+                "journal_id",
+                "version_ordinal",
+                "scope",
+                "analyzer_version",
+                "reader_version",
+                "coverage_gaps",
+                "limitations",
+            ],
+            "rule_version" => &[
+                "property",
+                "expected",
+                "unit",
+                "scope",
+                "basis_status",
+                "confirmation_method",
+                "resolution",
+                "limitations",
+            ],
+            "check" => &[
+                "baseline_id",
+                "binding_id",
+                "world_version_id",
+                "source_sha256",
+                "checker_version",
+                "reader_version",
+                "summary",
+                "coverage_gaps",
+                "limitations",
+            ],
+            "binding" => &[
+                "binding_id",
+                "baseline_id",
+                "world_version_id",
+                "previous_binding_id",
+            ],
+            "disposition" => &["disposition_id", "check_id", "rule_id", "action"],
+            _ => &[],
+        }
     };
     let mut summary = fields(&record.snapshot, names);
     if let Some(gaps) = record.snapshot.get("coverage_gaps") {
@@ -110,7 +146,7 @@ fn receipt_summary(receipt: &WorkbenchRecordReceipt) -> Value {
     }
     // Do not collapse missing coverage, unreviewed decisions or unsupported
     // record kinds into a successful/empty verdict.
-    if record.kind == "world" {
+    if record.kind == "world" && !pointer {
         summary["ruleCount"] = record.snapshot["rules"].as_array().map(Vec::len).into();
         summary["manualDecisionCount"] = record.snapshot["manual_decisions"]
             .as_array()
@@ -125,11 +161,31 @@ fn compact_receipt(receipt: &WorkbenchRecordReceipt, current: &Value) -> Value {
     let mut result = json!({
         "sequence":receipt.sequence,"kind":record.kind,"recordId":record.record_id,
         "revision":record.revision,"object":record.object,"eventKind":record.event_kind,
-        "snapshotSha256":receipt.snapshot_sha256,"summary":receipt_summary(receipt),
+        "snapshotSha256":receipt.snapshot_sha256,"receiptSnapshotSha256":receipt.snapshot_sha256,
+        "summary":receipt_summary(receipt),
         "snapshotOmitted":true,
         "fullRead":full_read(receipt.sequence - 1, 1),
         "verifyFullRead":{"sequence":receipt.sequence,"snapshotSha256":receipt.snapshot_sha256}
     });
+    if record.snapshot["projection"] == "retained_pointer" {
+        result["snapshotState"] = json!("retained_pointer");
+        result["contentIncluded"] = json!(false);
+        result["contentAvailableInReceipt"] = json!(false);
+        result["assessment"] = json!("not_evaluated_from_pointer");
+        result["domainRead"] = record.snapshot["domainRead"].clone();
+        result["contentSnapshotSha256"] = record.snapshot["snapshotSha256"].clone();
+        result["verifyDomainRead"] = json!({
+            "snapshotSha256":record.snapshot["snapshotSha256"],
+            "snapshotBytes":record.snapshot["snapshotBytes"]
+        });
+        result["domainReadNote"] = json!(
+            "This native receipt is a pointer. The full world/rule body remains in Workbench and is not summarized as a passing verdict."
+        );
+    } else {
+        result["snapshotState"] = json!("embedded");
+        result["contentIncluded"] = json!(false);
+        result["contentAvailableInReceipt"] = json!(true);
+    }
     if record.kind == "check" {
         result["currentCheckState"] = current["checks"][&record.record_id].clone();
     }
@@ -178,7 +234,7 @@ pub(super) fn task_context(
         json!({"taskId":context.task_id,"scope":context.scope,"records":records,
         "current":current,"nextSequence":context.next_sequence,"hasMore":context.has_more,
         "detail":"compact","synchronization":{"status":"synchronized","atomicExternalSnapshot":false},
-        "readBoundary":"Receipt snapshots are omitted, not deleted. Rule evidence, conflicts and coverage in omitted bodies have not been summarized as passing. Read the exact world/rule/check before judging them. Full-read sequence and snapshotSha256 must match. The current projection can advance between reads; its hash refers to the full retained snapshot, not this summary."}),
+        "readBoundary":"Receipt snapshots are omitted, not deleted. Retained-pointer receipts identify domain-readable world/rule records and carry the full-content hash and exact domainRead parameters; they do not summarize omitted evidence as passing. Rule evidence, conflicts and coverage in omitted bodies have not been summarized as passing. Read the exact world/rule/check before judging them. Full-read sequence and snapshotSha256 must match. The current projection can advance between reads; its hash refers to the full retained snapshot, not this summary."}),
     )
 }
 

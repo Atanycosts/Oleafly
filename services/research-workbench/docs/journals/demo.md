@@ -28,11 +28,14 @@ Open `http://127.0.0.1:8765/`. The workbench supports this path:
 7. Compare two world versions before changing a binding. The comparison includes basis, source
    evidence and scope, so equal dimensions alone do not imply identical requirements.
 
-The browser keeps the served asset identity internally and requires
-`journal-http-1.5.0` and obtains its process token from `/api/session`; this is local session
-protection, not remote account authentication. The server captures HTML/CSS/JavaScript at startup.
-After editing application code, restart the service and reload the browser rather than relying on
-a refresh to replace a running Python process or its assets.
+The browser keeps the served asset identity internally, requires the HTTP contract declared by the
+[journal world contract](../../contracts/journals/world-contract.json), and obtains its process
+token from `/api/session`; this is local session protection, not remote account authentication.
+`GET /api/manuscript-source` accepts an explicit project and baseline ID, returns the stored DOCX
+artifact and hash, and neither reads the original author path nor records a read receipt. The server
+captures HTML/CSS/JavaScript at startup. After editing application code, restart the service and
+reload the browser rather than relying on a refresh to replace a running Python process or its
+assets.
 
 A saved old check is a historical record. After changing its binding, baseline or supported method,
 it appears stale and requires a new check for current use. Merely adding a newer journal version

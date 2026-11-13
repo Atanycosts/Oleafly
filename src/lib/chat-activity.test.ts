@@ -715,3 +715,19 @@ describe("projectToolEntry reuse", () => {
     }
   });
 });
+
+it("projects paper text and its exact cache reference without treating it as a project file", () => {
+  const pdfReference = { projectId: "original", path: "sources/papers/a.pdf", pdfSha256: "pdf-hash" };
+  const view = projectToolEntry({ name: "read_paper", status: "done", input: JSON.stringify({ path: "author-input.pdf" }), output: JSON.stringify({
+    key: "paper-a", title: "Actual paper", text: "[p. 3]\nActual passage", sourceUrl: "https://example.org/a.pdf", nextOffset: 4000,
+    pdfReference, source: { path: "sources/papers/a.txt", offset: 2000, endOffset: 4000, fileSha256: "text-hash", pdf: { path: "sources/papers/a.pdf", sha256: "pdf-hash", pageStart: 3, pageEnd: 4, pageCount: 12 } },
+  }) });
+  expect(view.kind).toBe("source");
+  expect(view.output).toBe("[p. 3]\nActual passage");
+  expect(view.summary).toBe("Actual paper");
+  expect(view.url).toBe("https://example.org/a.pdf");
+  expect(view.artifactTarget).toBeUndefined();
+  expect(view.path).toBeUndefined();
+  expect(view.retainedPaper).toEqual({ reference: pdfReference, pageStart: 3, pageEnd: 4, pageCount: 12 });
+  expect(view.paperWindow).toEqual({ offset: 2000, endOffset: 4000, textSha256: "text-hash", nextOffset: 4000 });
+});

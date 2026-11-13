@@ -1,0 +1,731 @@
+import type { AutomationHandle } from "@docx-editor.dev/core/automation";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useFilesStore } from "@/store/files";
+import type {
+  DocxApplyResult,
+  DocxParagraph,
+  DocxSession,
+  DocxTarget,
+} from "./docx-session";
+
+const mocks = vi.hoisted(() => ({
+  runInlineCompletion: vi.fn(),
+}));
+
+vi.mock("@/lib/ai-inline", () => ({
+  runInlineCompletion: mocks.runInlineCompletion,
+}));
+
+import {
+  createDocxAgentTools,
+  DOCX_AGENT_HOST,
+  registerDocxAgentSession,
+  resetDocxAgentHostForTest,
+  runTaskDocxOperation,
+  unregisterDocxAgentSession,
+  updateDocxAgentSession,
+} from "./docx-agent-host";
+
+type DocxFormatReadQuery = Parameters<NonNullable<typeof DOCX_AGENT_HOST.readFormat>>[1];
+type Exec = (input?: unknown) => Promise<unknown>;
+
+function paragraph(ref: string, text: string, paraId = ref): DocxParagraph {
+  return {
+    handle: { kind: "paragraph", ref } as AutomationHandle<"paragraph">,
+    text,
+    paraId,
+  };
+}
+
+function harness(initial = [paragraph("p1", "Original paragraph.")]) {
+  let revision = 0;
+  let paragraphs = [...initial];
+  const listeners = new Set<(revision: number) => void>();
+  const session: DocxSession = {
+    revision: () => revision,
+    listParagraphs: () => paragraphs,
+    captureTarget: (handle): DocxTarget => {
+      const paragraph = paragraphs.find((item) => item.handle.ref === handle.ref);
+      if (!paragraph) throw new Error("missing paragraph");
+      return {
+        paragraph: paragraph.handle,
+        original: paragraph.text,
+        revision,
+        paraId: paragraph.paraId,
+        structure: `structure:${paragraph.text}`,
+      };
+    },
+    applySuggestion: vi.fn((target: DocxTarget, text: string): DocxApplyResult => {
+      const current = paragraphs.find((item) => item.handle.ref === target.paragraph.ref);
+      if (!current || current.text !== target.original) {
+        return {
+          ok: false,
+          code: "stale-target",
+          message: "The target changed.",
+          revision,
+          changed: false,
+        };
+      }
+      paragraphs = paragraphs.map((item) =>
+        item.handle.ref === target.paragraph.ref ? { ...item, text } : item,
+      );
+      revision += 1;
+      for (const listener of listeners) listener(revision);
+      return { ok: true, revision, changed: true };
+    }),
+    isSuggestionApplied: (target, text) =>
+      paragraphs.find((item) => item.handle.ref === target.paragraph.ref)?.text === text,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    dispose: vi.fn(),
+  };
+  return {
+    session,
+    edit(ref: string, text: string) {
+      paragraphs = paragraphs.map((item) =>
+        item.handle.ref === ref ? { ...item, text } : item,
+      );
+      revision += 1;
+      for (const listener of listeners) listener(revision);
+    },
+  };
+}
+
+function register(session: DocxSession, overrides: Record<string, unknown> = {}) {
+  return registerDocxAgentSession({
+    sessionId: "session-1",
+    appProjectId: "app-project",
+    workbenchProjectId: "paper-project",
+    title: "Paper",
+    filename: "paper.docx",
+    baselineId: "baseline-1",
+    savedRevision: 0,
+    sourceSha256: "a".repeat(64),
+    session,
+    ...overrides,
+  });
+}
+
+function tool(name: keyof ReturnType<typeof createDocxAgentTools>): Exec {
+  return createDocxAgentTools()[name].execute as Exec;
+}
+
+beforeEach(() => {
+  resetDocxAgentHostForTest();
+  useFilesStore.setState({ projectId: "app-project" });
+  mocks.runInlineCompletion.mockReset();
+});
+
+describe("active DOCX Agent host", () => {
+  it("keeps a fresh recovered session dirty until it has a saved session revision", async () => {
+    const local = harness([paragraph("p1", "Recovered unsaved text.")]);
+    register(local.session, { savedRevision: -1 });
+    const read = await DOCX_AGENT_HOST.readDocument();
+    expect(read.document).toMatchObject({ sessionRevision: 0, savedRevision: -1, dirty: true });
+    expect(read.paragraphs[0].text).toBe("Recovered unsaved text.");
+    updateDocxAgentSession("session-1", { baselineId: "recovered-saved", savedRevision: 0 });
+    expect((await DOCX_AGENT_HOST.readDocument()).document).toMatchObject({ baselineId: "recovered-saved", dirty: false });
+  });
+  it("lists and reads the live session while separating it from the saved baseline", async () => {
+    const local = harness();
+    register(local.session);
+    local.edit("p1", "Unsaved text.");
+
+    expect(await tool("list_docx_documents")({})).toEqual({
+      documents: [
+        expect.objectContaining({
+          sessionId: "session-1",
+          baselineId: "baseline-1",
+          sessionRevision: 1,
+          savedRevision: 0,
+          dirty: true,
+        }),
+      ],
+    });
+    expect(await tool("read_docx_document")({})).toEqual({
+      document: expect.objectContaining({
+        sessionRevision: 1,
+        savedRevision: 0,
+        dirty: true,
+      }),
+      paragraphs: [
+        { paragraphRef: "p1", text: "Unsaved text.", paraId: "p1" },
+      ],
+    });
+
+    updateDocxAgentSession("session-1", {
+      baselineId: "baseline-2",
+      savedRevision: 1,
+    });
+    expect(await tool("read_docx_document")({})).toMatchObject({
+      document: {
+        baselineId: "baseline-2",
+        sessionRevision: 1,
+        savedRevision: 1,
+        dirty: false,
+      },
+    });
+  });
+
+  it("captures, suggests and applies one current paragraph", async () => {
+    const local = harness();
+    register(local.session);
+    mocks.runInlineCompletion.mockResolvedValue("Revised paragraph.");
+
+    const captured = (await tool("capture_docx_target")({
+      paragraph_ref: "p1",
+    })) as { targetId: string; revision: number; structure: string };
+    expect(captured).toMatchObject({
+      paragraphRef: "p1",
+      text: "Original paragraph.",
+      revision: 0,
+      structure: "structure:Original paragraph.",
+    });
+
+    const suggestion = (await tool("suggest_docx_change")({
+      paragraph_ref: "p1",
+      instruction: "Make it clearer.",
+      expected_revision: 0,
+    })) as {
+      target: { targetId: string };
+      proposed: string;
+      document: { sessionRevision: number; dirty: boolean };
+    };
+    expect(mocks.runInlineCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instruction: "Make it clearer.",
+        selection: "Original paragraph.",
+      }),
+    );
+    expect(suggestion).toMatchObject({
+      proposed: "Revised paragraph.",
+      document: { sessionRevision: 0, dirty: false },
+    });
+
+    expect(await tool("apply_docx_suggestion")({
+      target_id: suggestion.target.targetId,
+      expected_revision: 0,
+      text: suggestion.proposed,
+    })).toMatchObject({
+      ok: true,
+      changed: true,
+      document: { sessionRevision: 1, savedRevision: 0, dirty: true },
+    });
+  });
+
+  it("rejects stale expected and target revisions without overwriting newer text", async () => {
+    const local = harness();
+    register(local.session);
+    mocks.runInlineCompletion.mockResolvedValue("Never applied.");
+    const suggestion = (await tool("suggest_docx_change")({
+      paragraph_ref: "p1",
+      instruction: "Revise.",
+    })) as { target: { targetId: string } };
+
+    expect(await tool("suggest_docx_change")({
+      paragraph_ref: "p1",
+      instruction: "Revise.",
+      expected_revision: 4,
+    })).toEqual({
+      error: expect.stringContaining("expected revision 4, current revision 0"),
+    });
+    expect(await tool("apply_docx_suggestion")({
+      target_id: suggestion.target.targetId,
+      expected_revision: 4,
+      text: "Wrong revision.",
+    })).toMatchObject({
+      ok: false,
+      code: "stale-target",
+      changed: false,
+    });
+
+    local.edit("p1", "User changed this.");
+    expect(await tool("apply_docx_suggestion")({
+      target_id: suggestion.target.targetId,
+      expected_revision: 0,
+      text: "Never overwrite.",
+    })).toEqual({
+      error: "Error: The DOCX suggestion target changed since it was captured.",
+    });
+    expect(local.session.listParagraphs()[0].text).toBe("User changed this.");
+  });
+
+  it("rejects a target that changes while the suggestion is being generated", async () => {
+    const local = harness();
+    register(local.session);
+    let finish!: (value: string) => void;
+    mocks.runInlineCompletion.mockReturnValue(
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+    );
+
+    const pending = tool("suggest_docx_change")({
+      paragraph_ref: "p1",
+      instruction: "Revise.",
+    });
+    local.edit("p1", "User changed this first.");
+    finish("Late suggestion.");
+
+    await expect(pending).resolves.toEqual({
+      error:
+        "Error: The DOCX request was cancelled or its target changed.",
+    });
+  });
+
+  it("streams the candidate to the caller and honors cancellation", async () => {
+    const local = harness();
+    register(local.session);
+    const controller = new AbortController();
+    const onToken = vi.fn();
+    mocks.runInlineCompletion.mockImplementation(
+      async ({ signal, onToken: emit }) => {
+        emit("Partial candidate");
+        expect(signal.aborted).toBe(false);
+        return "Partial candidate";
+      },
+    );
+
+    const streamingTools = createDocxAgentTools({
+      signal: controller.signal,
+      onToken,
+    });
+    expect(await (streamingTools.suggest_docx_change.execute as Exec)({
+      paragraph_ref: "p1",
+      instruction: "Revise.",
+    })).toMatchObject({ proposed: "Partial candidate" });
+    expect(onToken).toHaveBeenCalledWith("Partial candidate");
+
+    const captured = (await tool("capture_docx_target")({
+      paragraph_ref: "p1",
+    })) as { targetId: string };
+    controller.abort();
+    const cancelledTools = createDocxAgentTools({
+      signal: controller.signal,
+    });
+    expect(await (cancelledTools.apply_docx_suggestion.execute as Exec)({
+      target_id: captured.targetId,
+      expected_revision: 0,
+      text: "Changed.",
+    })).toMatchObject({
+      error: expect.stringContaining("cancelled"),
+    });
+  });
+
+  it("cannot apply a target after its session closes", async () => {
+    const local = harness();
+    register(local.session);
+    const captured = (await tool("capture_docx_target")({
+      paragraph_ref: "p1",
+    })) as { targetId: string };
+    unregisterDocxAgentSession("session-1");
+    const reopened = harness();
+    register(reopened.session);
+
+    expect(await tool("apply_docx_suggestion")({
+      target_id: captured.targetId,
+      expected_revision: 0,
+      text: "Must not apply.",
+    })).toMatchObject({
+      error: expect.stringContaining("no longer available"),
+    });
+    expect(reopened.session.applySuggestion).not.toHaveBeenCalled();
+  });
+
+  it("cannot use a target ID from another app project", async () => {
+    const local = harness();
+    register(local.session);
+    const captured = (await tool("capture_docx_target")({
+      paragraph_ref: "p1",
+    })) as { targetId: string };
+    useFilesStore.setState({ projectId: "other-project" });
+
+    expect(await tool("apply_docx_suggestion")({
+      target_id: captured.targetId,
+      expected_revision: 0,
+      text: "Must not apply.",
+    })).toMatchObject({
+      error: expect.stringContaining("not bound to the Agent for this project"),
+    });
+    expect(local.session.applySuggestion).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unbound or other-project session", async () => {
+    expect(await tool("read_docx_document")({})).toEqual({
+      error: "Error: No active DOCX working copy is bound to the Agent.",
+    });
+    const local = harness();
+    register(local.session, { appProjectId: "other-project" });
+    expect(await tool("read_docx_document")({ session_id: "session-1" })).toEqual({
+      error:
+        "Error: DOCX session session-1 is not bound to the Agent for this project.",
+    });
+  });
+
+  it("removes targets when the working copy closes", async () => {
+    const local = harness();
+    register(local.session);
+    const captured = (await tool("capture_docx_target")({
+      paragraph_ref: "p1",
+    })) as { targetId: string };
+    unregisterDocxAgentSession("session-1");
+
+    expect(await tool("apply_docx_suggestion")({
+      target_id: captured.targetId,
+      expected_revision: 0,
+      text: "Changed.",
+    })).toEqual({
+      error: `Error: DOCX suggestion target ${captured.targetId} is no longer available.`,
+    });
+  });
+
+  it("does not bypass the session's complex-structure refusal", async () => {
+    const local = harness();
+    register(local.session);
+    local.session.applySuggestion = vi.fn((): DocxApplyResult => ({
+      ok: false,
+      code: "unsupported-target",
+      message: "Mixed formatting.",
+      revision: 0,
+      changed: false,
+    }));
+    const captured = (await tool("capture_docx_target")({
+      paragraph_ref: "p1",
+    })) as { targetId: string };
+
+    expect(await tool("apply_docx_suggestion")({
+      target_id: captured.targetId,
+      expected_revision: 0,
+      text: "Flattened.",
+    })).toMatchObject({
+      ok: false,
+      code: expect.any(String),
+      changed: false,
+    });
+  });
+
+  it("rejects a stale target when the approval flow inspects it again", async () => {
+    const local = harness();
+    register(local.session);
+    const captured = (await tool("capture_docx_target")({
+      paragraph_ref: "p1",
+    })) as { targetId: string };
+
+    local.edit("p1", "User changed this while approval was pending.");
+
+    await expect(DOCX_AGENT_HOST.inspectTarget(captured.targetId)).rejects.toThrow(
+      "The DOCX suggestion target changed since it was captured.",
+    );
+    expect(local.session.applySuggestion).not.toHaveBeenCalled();
+  });
+});
+
+function readableFormat(revision = 0, dirty = false) {
+  return {
+    document: { sessionId: "session-1", baselineId: "baseline-1",
+      sessionRevision: revision, savedRevision: 0, dirty, filename: "paper.docx" },
+    sourceSha256: "b".repeat(64), revision,
+    paragraph: { paragraphRef: "p1", text: "Original paragraph.", revision,
+      font: { bold: null, italic: null, underline: null, strikeThrough: null,
+        highlightColor: null, subscript: null, superscript: null, name: null, size: null, color: null },
+      paragraph: { alignment: "Left" as const, style: null, firstLineIndent: null,
+        leftIndent: null, rightIndent: null, lineSpacing: null, spaceBefore: null,
+        spaceAfter: null, widowControl: null, readingOrder: "LeftToRight" as const } },
+    objects: [{ object_id: "word/document.xml#0.0", kind: "paragraph" }],
+    total: 1, nextOffset: null,
+  };
+}
+
+describe("live DOCX format, save and template tools", () => {
+  it("reads scoped format, applies one revisioned format transaction and preserves the actual session state", async () => {
+    const local = harness();
+    const readFormat = vi.fn(async (_query: DocxFormatReadQuery) =>
+      readableFormat(local.session.revision(), local.session.revision() !== 0));
+    const formatParagraph = vi.fn((handle, expectedRevision, format): DocxApplyResult => {
+      if (expectedRevision !== local.session.revision()) {
+        return { ok: false, code: "stale-target", message: "stale",
+          revision: local.session.revision(), changed: false };
+      }
+      expect(handle).toEqual(paragraph("p1", "Original paragraph.").handle);
+      expect(format).toEqual({
+        font: { name: "Arial", size: 12 },
+        paragraph: { alignment: "Centered", spaceAfter: 6 },
+      });
+      local.edit("p1", "Original paragraph.");
+      return { ok: true, revision: 1, changed: true };
+    });
+    local.session.formatParagraph = formatParagraph;
+    register(local.session, { readFormat });
+    const confirm = vi.fn(async () => true);
+    const mutationAllowed = vi.fn(() => true);
+    const tools = createDocxAgentTools({ confirm, mutationAllowed });
+
+    expect(await (tools.read_docx_format.execute as Exec)({
+      query: { paragraph_ref: "p1", kind: "objects", limit: 10 },
+    })).toMatchObject({ paragraph: { paragraphRef: "p1" }, nextOffset: null });
+    expect(await (tools.apply_docx_format.execute as Exec)({
+      paragraph_ref: "p1",
+      expected_revision: 0,
+      font: { name: "Arial", size: 12 },
+      paragraph: { alignment: "Centered", spaceAfter: 6 },
+    })).toMatchObject({
+      ok: true,
+      changed: true,
+      revision: 1,
+      document: { sessionRevision: 1, savedRevision: 0, dirty: true },
+    });
+    expect(formatParagraph).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
+      tool: "apply_docx_format",
+      path: "paper.docx#p1",
+    }));
+    expect(mutationAllowed).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors decline and cancellation before changing the live session", async () => {
+    const local = harness();
+    const readFormat = vi.fn(async () => readableFormat());
+    const formatParagraph = vi.fn(() => ({ ok: true as const, revision: 1, changed: true }));
+    local.session.formatParagraph = formatParagraph;
+    register(local.session, { readFormat });
+
+    expect(await (createDocxAgentTools({ confirm: async () => false })
+      .apply_docx_format.execute as Exec)({
+      paragraph_ref: "p1", expected_revision: 0, font: { bold: true },
+    })).toMatchObject({ declined: true });
+    expect(formatParagraph).not.toHaveBeenCalled();
+
+    const controller = new AbortController();
+    controller.abort();
+    expect(await (createDocxAgentTools({ signal: controller.signal })
+      .apply_docx_format.execute as Exec)({
+      paragraph_ref: "p1", expected_revision: 0, font: { bold: true },
+    })).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(formatParagraph).not.toHaveBeenCalled();
+  });
+
+  it("passes the explicit world version and expected save revision to session callbacks", async () => {
+    const local = harness();
+    const save = vi.fn(async ({ expectedRevision }) => ({
+      baselineId: "baseline-2", revision: expectedRevision, sourceSha256: "c".repeat(64),
+      document: { sessionId: "session-1", baselineId: "baseline-2",
+        sessionRevision: expectedRevision, savedRevision: expectedRevision, dirty: false },
+    }));
+    const check = vi.fn(async ({ template }) => ({ template, check: { check_id: "check-7" } }));
+    register(local.session, { save, check });
+    const controller = new AbortController();
+    const tools = createDocxAgentTools({ signal: controller.signal });
+
+    expect(await (tools.save_docx_document.execute as Exec)({ expected_revision: 0 }))
+      .toMatchObject({ baselineId: "baseline-2", revision: 0 });
+    expect(await (tools.check_docx_template.execute as Exec)({
+      template: "world-v7",
+    })).toEqual({
+      template: "world-v7",
+      check: { check_id: "check-7" },
+    });
+    expect(save).toHaveBeenCalledWith({ expectedRevision: 0, signal: controller.signal });
+    expect(check).toHaveBeenCalledWith({ template: "world-v7", signal: controller.signal });
+
+    expect(await (tools.check_docx_template.execute as Exec)({ template: " " })).toEqual({
+      error: "template must be an explicit world version ID.",
+    });
+    expect(check).toHaveBeenCalledOnce();
+  });
+
+  it("reports unavailable callbacks instead of rebinding or adding a default", async () => {
+    const local = harness();
+    register(local.session);
+    const tools = createDocxAgentTools();
+    for (const [run, error] of [
+      [() => (tools.read_docx_format.execute as Exec)({}),
+        "Live DOCX formatting reads are unavailable for this working copy."],
+      [() => (tools.save_docx_document.execute as Exec)({ expected_revision: 0 }),
+        "Live DOCX saving is unavailable for this working copy."],
+      [() => (tools.check_docx_template.execute as Exec)({ template: "world-v7" }),
+        "Explicit DOCX template checking is unavailable for this working copy."],
+    ] as const) expect(await run()).toEqual({ unavailable: true, error });
+  });
+});
+
+describe("task-provided DOCX proposals", () => {
+  const scope = { projectId: "app-project", workbenchProjectId: "paper-project" };
+  it("carries the actual completed operation status in every task envelope", async () => {
+    const local = harness();
+    const readFormat = vi.fn(async () => readableFormat());
+    const save = vi.fn(async ({ expectedRevision }) => ({
+      baselineId: "baseline-2", revision: expectedRevision, sourceSha256: "c".repeat(64),
+      document: { sessionId: "session-1", baselineId: "baseline-2",
+        sessionRevision: expectedRevision, savedRevision: expectedRevision, dirty: false },
+    }));
+    const check = vi.fn(async ({ template }) => ({ template, check: { check_id: "check-7" } }));
+    register(local.session, {
+      readFormat,
+      save,
+      check,
+      ...{
+        session: {
+          ...local.session,
+          formatParagraph: () => ({
+            ok: false as const, code: "invalid-format" as const, message: "invalid",
+            revision: 0, changed: false as const,
+          }),
+          applySuggestion: () => ({
+            ok: false as const, code: "unsupported-target" as const, message: "unsupported",
+            revision: 0, changed: false as const,
+          }),
+        },
+      },
+    });
+
+    expect(await runTaskDocxOperation(scope, "session-1", "read_format", {
+      query: { paragraphRef: "p1", kind: "objects", limit: 10 },
+    })).toMatchObject({ operation: "read_format", ok: true });
+    expect(await runTaskDocxOperation(scope, "session-1", "format", {
+      paragraphRef: "p1", expectedRevision: 0, format: { font: { bold: true } },
+    })).toMatchObject({ operation: "format", ok: false, result: { ok: false } });
+
+    const { captureTaskDocxTarget } = await import("./docx-agent-host");
+    const { target } = captureTaskDocxTarget(scope, "session-1", "p1");
+    expect(await runTaskDocxOperation(scope, "session-1", "apply", {
+      targetId: target.targetId, expectedRevision: 0, text: "Replacement.",
+    })).toMatchObject({ operation: "apply", ok: false, result: { ok: false } });
+    expect(await runTaskDocxOperation(scope, "session-1", "save", {
+      expectedRevision: 0,
+    })).toMatchObject({ operation: "save", ok: true });
+    expect(await runTaskDocxOperation(scope, "session-1", "check", {
+      template: "world-v7",
+    })).toMatchObject({ operation: "check", ok: true });
+  });
+
+  it("keeps thrown task operation failures as errors", async () => {
+    const local = harness();
+    register(local.session, {
+      readFormat: async () => { throw new Error("format read failed"); },
+    });
+    await expect(runTaskDocxOperation(scope, "session-1", "read_format", {
+      query: { paragraphRef: "p1", kind: "objects", limit: 10 },
+    })).rejects.toThrow("format read failed");
+  });
+
+  it("validates without generation and presents only retained proposals to the original session", async () => {
+    const local = harness();
+    const onTaskSuggestion = vi.fn();
+    register(local.session, { sourceSha256: "a".repeat(64), onTaskSuggestion });
+    const { captureTaskDocxTarget, validateTaskDocxProposal, presentTaskDocxProposal } = await import("./docx-agent-host");
+    const captured = captureTaskDocxTarget(scope, "session-1", "p1");
+    const verified = validateTaskDocxProposal(scope, captured.target.targetId, 0, "Task text.", "session-1");
+    expect(verified.document).toEqual({ sessionId: "session-1", appProjectId: "app-project", workbenchProjectId: "paper-project", baselineId: "baseline-1", sourceSha256: "a".repeat(64), sessionRevision: 0, savedRevision: 0 });
+    expect(onTaskSuggestion).not.toHaveBeenCalled();
+    const activity = { id: "proposal-1", document: verified.document, origin: { taskId: "task-1", generation: 3, groupId: null, memberId: null, executionId: null, workIds: [] }, proposalId: null, createdAt: 1, event: { type: "runtime", event: { kind: "proposed", target: verified.target, proposed: "Task text." } } } as const;
+    presentTaskDocxProposal(scope, { ...activity, origin: { ...activity.origin, workIds: [] } });
+    expect(onTaskSuggestion).toHaveBeenCalledWith(activity, expect.objectContaining({ original: "Original paragraph.", revision: 0 }));
+    expect(mocks.runInlineCompletion).not.toHaveBeenCalled();
+    expect(local.session.applySuggestion).not.toHaveBeenCalled();
+  });
+  it("refuses busy, stale, foreign and closed target references", async () => {
+    const local = harness();
+    const canPresentSuggestion = vi.fn(() => false);
+    register(local.session, { canPresentSuggestion });
+    const { captureTaskDocxTarget, validateTaskDocxProposal } = await import("./docx-agent-host");
+    const { target } = captureTaskDocxTarget(scope, "session-1", "p1");
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 0, "Candidate")).toThrow("awaiting review");
+    canPresentSuggestion.mockReturnValue(true);
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 0, "Candidate", "another-session")).toThrow("another session");
+    expect(() => validateTaskDocxProposal({ ...scope, workbenchProjectId: "other" }, target.targetId, 0, "Candidate")).toThrow("unavailable");
+    local.edit("p1", "User text");
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 0, "Candidate")).toThrow("changed");
+    unregisterDocxAgentSession("session-1");
+    register(local.session);
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 0, "Candidate")).toThrow("no longer available");
+  });
+  it("reads bounded windows using explicit task scope even when a different project is selected", async () => {
+    const local = harness(Array.from({ length: 55 }, (_, index) => paragraph(`p${index}`, `Text ${index}`)));
+    register(local.session);
+    useFilesStore.setState({ projectId: "another-ui-project" });
+    const { readTaskDocxDocument, listTaskDocxDocuments } = await import("./docx-agent-host");
+    expect(readTaskDocxDocument(scope, "session-1", 20)).toMatchObject({ offset: 20, nextOffset: 40, totalParagraphs: 55, paragraphs: expect.arrayContaining([{ paragraphRef: "p20", text: "Text 20", paraId: "p20" }]) });
+    expect(readTaskDocxDocument(scope, "session-1", 50).nextOffset).toBeNull();
+    expect(() => readTaskDocxDocument(scope, "session-1", 0, 51)).toThrow("fifty");
+    expect(listTaskDocxDocuments(scope, "other")).toEqual([]);
+    expect(readTaskDocxDocument({ ...scope, workbenchProjectId: null }, "session-1", 0, 1).document.workbenchProjectId).toBe("paper-project");
+  });
+  it("enforces the UTF-8 read budget without truncating a paragraph", async () => {
+    const local = harness([paragraph("p1", "字".repeat(8000)), paragraph("p2", "字".repeat(8000))]);
+    register(local.session);
+    const { readTaskDocxDocument } = await import("./docx-agent-host");
+    const first = readTaskDocxDocument(scope, "session-1");
+    expect(first.paragraphs).toHaveLength(1);
+    expect(first.nextOffset).toBe(1);
+    local.edit("p1", "字".repeat(12000));
+    expect(() => readTaskDocxDocument(scope, "session-1")).toThrow("32 KiB");
+  });
+});
+
+it("retains a native operation receipt before returning a committed task edit", async () => {
+  const local = harness();
+  local.session.formatParagraph = vi.fn((): DocxApplyResult => {
+    local.edit("p1", "Original paragraph.");
+    return { ok: true, changed: true, revision: 1 };
+  });
+  let finish!: () => void;
+  const onTaskOperation = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+  register(local.session, { onTaskOperation });
+  let returned = false;
+  const work = runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "durable-intent" },
+    "session-1", "format", { paragraphRef: "p1", expectedRevision: 0, format: { font: { bold: true } } })
+    .then((result) => { returned = true; return result; });
+  expect(onTaskOperation).toHaveBeenCalledWith(expect.objectContaining({
+    operationId: "durable-intent", document: expect.objectContaining({ sessionRevision: 1 }),
+    result: expect.objectContaining({ operation: "format", ok: true }),
+  }));
+  expect(returned).toBe(false);
+  finish();
+  expect(await work).toMatchObject({ operation: "format", ok: true, checkpoint: { status: "recorded" } });
+});
+
+it("reports a checkpoint failure while preserving the actual committed operation result", async () => {
+  const local = harness();
+  local.session.formatParagraph = vi.fn((): DocxApplyResult => {
+    local.edit("p1", "Original paragraph.");
+    return { ok: true, changed: true, revision: 1 };
+  });
+  register(local.session, { onTaskOperation: async () => { throw new Error("disk full"); } });
+  expect(await runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "durable-intent" },
+    "session-1", "format", { paragraphRef: "p1", expectedRevision: 0, format: { font: { nameEastAsia: "宋体" } } }))
+    .toMatchObject({ operation: "format", ok: true, result: { changed: true }, checkpoint: { status: "failed", error: "Error: disk full" } });
+  expect(local.session.revision()).toBe(1);
+});
+
+it("checkpoints a retained check identity without copying the full findings into task recovery", async () => {
+  const local = harness();
+  const onTaskOperation = vi.fn(async () => {});
+  register(local.session, { onTaskOperation, check: async () => ({ template: "world-7", check: {
+    check_id: "checked", project_id: "paper-project", baseline_id: "baseline-1", world_version_id: "world-7",
+    summary: { observed_difference: 2 }, template_comparison: { findings: Array.from({ length: 100 }, () => ({ observed: "long" })) },
+  } }) });
+  const result = await runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "check-intent" },
+    "session-1", "check", { template: "world-7" });
+  expect(result.result).toHaveProperty("check.template_comparison.findings");
+  expect(onTaskOperation.mock.calls[0]).toEqual([expect.objectContaining({ result: expect.objectContaining({
+    result: { template: "world-7", check: { check_id: "checked", project_id: "paper-project", baseline_id: "baseline-1",
+      world_version_id: "world-7", summary: { observed_difference: 2 } } },
+  }) })]);
+});
+
+it("refuses to attribute a completed baseline check to a newer live edit", async () => {
+  const local = harness();
+  const onTaskOperation = vi.fn(async () => {});
+  let finish!: (result: { template: string; check: Record<string, unknown> }) => void;
+  register(local.session, { onTaskOperation, check: () => new Promise((resolve) => { finish = resolve; }) });
+  const checking = runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "check-intent" },
+    "session-1", "check", { template: "world-7" });
+  local.edit("p1", "User edited during the check");
+  finish({ template: "world-7", check: { check_id: "checked", baseline_id: "baseline-1" } });
+  await expect(checking).rejects.toThrow("changed while its saved baseline was being checked");
+  expect(onTaskOperation).not.toHaveBeenCalled();
+});

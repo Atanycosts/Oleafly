@@ -51,6 +51,40 @@ def test_template_candidate_never_becomes_violation():
     assert result["summary"]["observed_match"] == 6
 
 
+def test_font_acquisition_requirement_does_not_claim_manuscript_compliance():
+    world = _world(
+        "All manuscript pages must use A4 paper.\n"
+        "All manuscript body text must use Times New Roman font."
+    )
+    result = check_world(world, _result())
+    font = next(item for item in result["rule_results"] if item["property"] == "body_font_family")
+    assert font["basis_status"] == "confirmed"
+    assert font["applicability"] == "APPLICABLE"
+    assert font["verdict"] == "not_checked"
+    assert font["findings"] == []
+    assert font["coverage"]["observed_sections"] == 0
+    assert any("exact font acquisition" in item for item in font["limitations"])
+    assert result["summary"]["compliant"] == 2
+
+
+def test_conflicting_font_sources_keep_quotes_until_an_explicit_versioned_decision():
+    world = analyze_world(
+        "journal-test",
+        "Test",
+        [
+            SourceInput("a", "guide_text", b"Body text must use Times New Roman font."),
+            SourceInput("b", "guide_text", b"Body text must use PT Serif font."),
+        ],
+    )
+    rule = world["rules"][0]
+    assert rule["basis_status"] == "conflict"
+    assert rule["expected"] is None
+    revised = revise_rule(world, rule["rule_id"], "Times New Roman", "Confirmed guide", "editor")
+    assert revised["rules"][0]["expected"] == "Times New Roman"
+    assert revised["rules"][0]["evidence"] == rule["evidence"]
+    assert world["rules"][0]["expected"] is None
+
+
 def test_missing_section_values_remain_cannot_determine():
     world = _world("All manuscript pages must have 1 inch margins on all sides.")
     result = check_world(world, _result(((11906, 16838, None, None),)))

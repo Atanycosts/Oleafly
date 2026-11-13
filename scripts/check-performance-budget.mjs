@@ -187,7 +187,13 @@ const limits = {
   // macOS.
   // +60 KB for the brand logos of the common custom AI providers, Brave Search,
   // Tavily and Mathpix in Settings: 21,044,294 bytes on macOS and Linux.
-  totalJavaScript: 21_080_000,
+  // The on-demand DOCX working copy adds the 2.36.0 editing/layout engine,
+  // React chrome, OOXML automation and lazy metafile/image converters.
+  // After the async build transform is re-minified as UTF-8, the graph is
+  // 27.80 MB. The entry remains 4.79 MB and the DOCX core is 3.90 MB.
+  // Keep the startup and individual-asset gates unchanged. The separate
+  // Vite graph check rejects loading the DOCX engine before opening it.
+  totalJavaScript: 28_000_000,
   largestLocaleChunk: 950_000,
   largestCss: 400_000,
   harperWasm: 19_000_000,

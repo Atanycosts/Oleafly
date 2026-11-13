@@ -1,5 +1,5 @@
 {
-  "contract_version": "workbench-mcp-0.4.1",
+  "contract_version": "workbench-mcp-0.5.0",
   "status": "implemented_slice_pending_full_s1_acceptance",
   "entry_point": "rfw-workbench-mcp",
   "transport": "stdio",
@@ -43,14 +43,14 @@
     "source_page"
   ],
   "method_versions": {
-    "http": "journal-http-1.5.0",
-    "reader": "s1-readonly-reader-1.4.0",
+    "http": "journal-http-1.11.0",
+    "reader": "s1-readonly-reader-1.5.0",
     "report": "1.0.0",
     "query": "s1-read-query-1.7.0",
     "read_receipt": "s1-read-receipt-1.2.0",
     "world_schema": "journal-world-1.1.0",
-    "analyzer": "journal-world-analyzer-1.4.0",
-    "checker": "journal-geometry-checker-1.1.0"
+    "analyzer": "journal-world-analyzer-1.5.0",
+    "checker": "journal-geometry-checker-1.2.0"
   },
   "not_permitted": [
     "modify a manuscript's bytes in place; updates are new retained baselines",

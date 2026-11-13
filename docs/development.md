@@ -53,6 +53,31 @@ covers the port pattern, the contribution registry, and the alias wiring.
 - [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your OS
 - No system document engines are required. The setup scripts stage the same pinned Tectonic, Biber, Pandoc, and Typst binaries shipped with Oleafly.
 
+The local macOS development setup uses Homebrew for global tools:
+
+```bash
+brew install node@22 pnpm@11 python@3.12 uv rustup gh
+```
+
+Some formulae are keg-only. Put their executable directories first in both login
+and non-login shell configuration:
+
+```bash
+export PATH="$(brew --prefix node@22)/bin:$(brew --prefix pnpm@11)/bin:$(brew --prefix python@3.12)/libexec/bin:$(brew --prefix rustup)/bin:$(brew --prefix)/bin:$PATH"
+```
+
+This also puts Homebrew's `cargo` and `rustc` proxies ahead of older rustup proxies
+in `~/.cargo/bin`; the existing compiler installations remain available. Set
+`pnpm_config_pm_on_fail=warn` to keep using the installed Homebrew pnpm within
+the required major version instead of downloading another package-manager runtime;
+pnpm reports the difference from the exact `packageManager` pin. Keep that repository
+pin and the frozen lockfile unchanged. Configure uv with
+`python-preference = "only-system"` and `python-downloads = "never"` in its user
+`uv.toml`, so project environments use the Homebrew Python rather than an automatic
+interpreter download. Homebrew manages rustup; rustup still selects the exact Rust
+compiler required by `rust-toolchain.toml`. Maven and a JDK are not Oleafly build
+dependencies.
+
 ## First run
 
 ```bash
@@ -107,6 +132,104 @@ The Python module keeps its own `pyproject.toml`, tests and contracts. It does n
 Cargo or pnpm workspaces. Application data remains outside source control; the source merge
 does not relocate existing journal libraries. See the service README for portable tests and
 separate environment-bound acceptance checks.
+
+The journal panel can explicitly adopt `.doc` or `.docx` templates. Legacy Word conversion
+uses the existing local LibreOffice locator with a private profile and temporary directory.
+Only Transitional DOCX is supported by this format adapter. Strict OOXML is rejected with
+an instruction to resave it. The selected template retains original and normalized bytes,
+conversion provenance, complete package parts and a source-bound effective-format snapshot
+from the pinned DOCX core. Workbench owns storage, role/region comparison, coverage gaps and
+bounded raw/snapshot/finding queries. See the [journal contract](../services/research-workbench/contracts/journals/world-contract.json)
+and [template architecture](agent/architecture.md#word-模板与有效格式2026-11-14).
+
+The retained DOCX working-copy editor pins `@docx-editor.dev/core`, `react` and
+`fonts` to the same version. It loads on demand from the Journal checks panel.
+The core has a scoped multi-column paragraph-frame patch. Keep its readable source,
+installed ESM/CJS patch and public-API regression together; see the
+[rebuild instructions](../patches/docx-core/README.md) before upgrading.
+After upgrading those packages, run `pnpm docx:notices` and check the generated
+upstream notices with `node scripts/sync-docx-notices.mjs --check`. Vite lowers
+HarfBuzz's async initialization through `vite-plugin-top-level-await`; its scoped
+SWC pin follows the upstream compatibility issue linked in `pnpm-workspace.yaml`.
+The same workspace file explicitly permits SWC's native-binding installation check
+alongside esbuild, so a fresh pnpm install completes without an ignored-build error.
+The adapter preserves distribution comments and UTF-8 catalogs, keeps the engine
+out of the startup graph, and retains the PDF polyfill import order. Verify with
+`src/lib/vite-config.test.ts`, a production build and `pnpm check:performance`.
+Large frontend builds on this Mac need `NODE_OPTIONS=--max-old-space-size=8192`.
+The font package is excluded from Vite's development dependency optimizer: its
+`import.meta.url` assets must resolve beside the installed package, rather than
+under `.vite/assets` where missing fonts can return the HTML fallback with status 200.
+The development regression verifies actual font bytes, not the response status alone.
+The editor's exact-font origin reuses native `system_fonts`/fontdb and the existing
+application font-pack caches. It supplies static standalone TTF/OTF bytes through
+FontResolver, requiring the requested family, weight and style. TTC, variable fonts
+and oblique faces are currently unavailable through this origin. Do not substitute
+another family or nearest face to satisfy a journal font requirement. The host sets
+the public shaping ceiling to 64 MiB, matching the per-face admission ceiling.
+
+Confirmed journal body-font requirements carry exact family names and source evidence
+through the existing world/review/version contract. The DOCX panel automatically acquires
+an exact catalog family through the existing font-pack service and refreshes fonts with
+public `setFonts()` without reopening the document. A missing catalog source, failed
+download or unreadable face remains visible. Font availability does not establish
+manuscript compliance. Oleafly passes the application font-cache roots to Workbench,
+which copies current TTF/OTF bytes into each conversion's private `profile/user/fonts` directory.
+Native exact face resolution also retains those original bytes and metadata in
+`assets/resolved-fonts`, including system-only Latin fonts. Rendering waits for editor
+initialization and settled font resolution before snapshotting those caches. Multiple
+versions of the same face still require inspecting the actual PDF font evidence.
+An editor font refresh also regenerates the saved PDF; explicit PDF refresh forces conversion,
+while an ordinary reopen recovers the latest compatible retained render. Native download/font/round-trip acceptance uses the isolated runner
+in [E2E](../e2e/README.md#native-docx-fonts-and-layout). Do not install substitute fonts
+as an acceptance prerequisite. Existing Noto installations remain valid when that exact
+family is requested.
+The exact Microsoft SimSun, SimHei and KaiTi sources reuse the Fontist-pinned Office for Mac
+15.11.1 package. DengXian uses Microsoft's standalone East Asian package. Package extraction
+requires `7zz` or `7z` and `tar`; on this Mac use `brew install sevenzip` and the existing tar.
+The application checks for 7-Zip before downloading a package. These are local setup prerequisites,
+not bundled tools. The shared Office archive is approximately 737 MB and remains cached for
+other faces and projects. Interrupted downloads currently restart from the beginning.
+For optional static PDF inspection use Homebrew Poppler (`brew install poppler`).
+Downloaded archives and extracted faces are SHA-256 checked; package fonts also verify actual
+family, PostScript name, weight, style and recorded version. This verifies the catalog source,
+without adding a version requirement to a journal rule that only names a family. Source receipts
+and the editor show actual versions/hashes. The render record distinguishes supplied cache bytes
+from actual PDF font names; same-family versions selected by system and LibreOffice may differ.
+DOCX work maintains new UI keys in the Chinese and English catalogs. Complete
+other-language coverage and validation are outside this round's scope. The current
+verified DOCX browser flow is macOS-only; Windows native validation is out of scope
+for this round rather than a pending check. See the current
+[Agent status](agent/status.md#docx-任务活动与保存归属2026-11-12).
+
+Saved DOCX PDF previews use a locally installed LibreOffice executable. The native bridge checks
+`OLEAFLY_LIBREOFFICE`, the configured `soffice` locator, and standard macOS/Windows install
+locations; the sidebar also accepts an explicit executable path. Workbench reads only the retained
+baseline, creates a private temporary LibreOffice profile below its own library, checks the PDF
+signature and page count, and records renderer identity with the derived bundle. A missing or
+non-LibreOffice executable fails the render rather than silently changing engines. WPS remains an
+optional external editor/render source and is not required for the embedded flow.
+
+DOCX recovery checkpoints live in the selected application's private data directory.
+Startup lists available copies without starting Workbench or loading the editor. Explicit
+restore validates the original baseline/source identity and opens unsaved bytes in a fresh
+session. A newer retained version blocks an overwrite; the recovery list can save an exact
+copy through the native save dialog. Discard requires confirmation and the selected content
+hash. Recovery covers the latest completed checkpoint, with a fresh revision/undo history.
+The macOS [native recovery acceptance](../e2e/README.md#native-docx-crash-recovery)
+uses isolated app and WebKit data, actual process death, retained DOCX bytes and LibreOffice.
+Checkpoints also retain explicit task sources and a fixed pending save when present.
+Native commit replays the exact bytes and request before the frontend clears the copy;
+resume records a new session's explicit recovery edge. An unchanged recovered copy saves
+its original bytes. Its first subsequent edit withdraws recovered save attribution;
+undo or matching text does not reacquire it. A structured, persisted refusal permits explicit
+discard without a Saved receipt; transport, hash and receipt errors retain the fixed request.
+While that request is unresolved, later edits stay in memory and do not replace its checkpoint.
+The opt-in task-attribution recovery mode
+in the same runner exercises both acceptance-before-save death and a committed save
+whose response never reaches the frontend, plus a stale request's confirmed refusal and discard.
+The owning wire contract is
+[`docx_recovery.rs`](../src-tauri/src/docx_recovery.rs).
 
 ## Documentation and artifacts
 
@@ -454,6 +577,18 @@ The test process holds every person's copy of the project, so its own memory
 grows with the documents. `CROWD_SOAK_MAX_CHARS` keeps that bounded.
 
 ## Coding style
+
+Local delegated development follows one controller and at most two responsibility
+chats, with four active agents globally including the controller and delegation
+depth at most two. Give each assignment its goal, necessary inputs, owned files,
+acceptance criteria and prohibited actions. Keep concurrent writes disjoint.
+The Sol controller handles complex implementation and final review at `high`,
+with `xhigh` or `max` for difficult architecture decisions. Current subagent
+assignments use `auto/deepseek-v4.1-flash` at `low`; this endpoint does not
+advertise `none`. Keep each delegated task bounded by its owned files and
+acceptance criteria. Do not use Doubao or Trae for this project.
+These are development delegation settings,
+not the application's model catalog or the user's task runtime defaults.
 
 - TypeScript: follow what's already there. No comments unless asked. Respect `noUnusedLocals`/`noUnusedParameters`.
 - Rust: idiomatic, small commands, friendly error strings.

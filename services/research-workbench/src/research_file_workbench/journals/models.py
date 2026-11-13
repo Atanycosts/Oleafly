@@ -7,11 +7,17 @@ from typing import cast
 from research_file_workbench.common.hashing import sha256_bytes, sha256_text
 from research_file_workbench.common.json_io import JsonObject, encode_json_object
 
-ANALYZER_VERSION = "journal-world-analyzer-1.4.0"
-CHECKER_VERSION = "journal-geometry-checker-1.1.0"
+ANALYZER_VERSION = "journal-world-analyzer-1.5.0"
+CHECKER_VERSION = "journal-geometry-checker-1.2.0"
 WORLD_SCHEMA_VERSION = "journal-world-1.1.0"
 COMPONENT_SCHEMA_VERSION = "journal-rule-component-1.0.0"
-SOURCE_KINDS = {"template_docx", "guide_text", "guide_docx", "guide_pdf", "rule_component_json"}
+SOURCE_KINDS = {
+    "template_docx",
+    "guide_text",
+    "guide_docx",
+    "guide_pdf",
+    "rule_component_json",
+}
 PROPERTY_LABELS = {
     "page_width_twips": "Page width",
     "page_height_twips": "Page height",
@@ -22,6 +28,7 @@ PROPERTY_LABELS = {
     "columns": "Column count",
     "body_font_size_halfpoints": "Body type size",
     "body_line_spacing_twips": "Body line spacing",
+    "body_font_family": "Body font family",
 }
 ASSURANCE_LIMITATION = (
     "Confirmed means an explicit requirement recognized in an operator-supplied guide for the "
@@ -91,7 +98,7 @@ def validate_world_identity(world: JsonObject) -> None:
         "limitations",
         "version_id",
     }
-    require_keys(world, required, {"manual_decisions", "version_ordinal", "created_at"})
+    require_keys(world, required, {"manual_decisions", "version_ordinal", "created_at", "template"})
     if world["schema_version"] != WORLD_SCHEMA_VERSION:
         raise WorldAnalysisError("Unsupported journal world schema")
     for key in ("journal_name", "analyzer_version", "reader_version"):
@@ -113,8 +120,12 @@ def validate_world_identity(world: JsonObject) -> None:
         name = require_text(source["name"], "source name")
         kind = require_text(source["kind"], "source kind")
         status = require_text(source["status"], "source analysis status")
-        if kind not in SOURCE_KINDS or status not in {
+        allowed_kinds = SOURCE_KINDS | (
+            {"template_original", "docx_format_snapshot"} if "template" in world else set()
+        )
+        if kind not in allowed_kinds or status not in {
             "analyzed",
+            "captured",
             "analyzed_with_gaps",
             "unsupported",
         }:
@@ -125,6 +136,11 @@ def validate_world_identity(world: JsonObject) -> None:
         identities.add(identity)
         source_ids.add(source["source_id"])
         require_strings(source["limitations"], "source limitations")
+    if "template" in world:
+        from research_file_workbench.journals.template_models import validate_template_world
+
+        validate_template_world(world)
+        return
     rules = require_objects(world["rules"], "world rules")
     rule_ids: set[str] = set()
     for rule in rules:
@@ -159,6 +175,12 @@ def validate_world_identity(world: JsonObject) -> None:
 def validate_world_for_execution(world: JsonObject) -> None:
     """Require current analysis semantics and consistent local confirmation evidence."""
     validate_world_identity(world)
+    if "template" in world:
+        from research_file_workbench.journals.template_models import TEMPLATE_ANALYZER_VERSION
+
+        if world["analyzer_version"] != TEMPLATE_ANALYZER_VERSION:
+            raise WorldAnalysisError("Template analyzer changed; recapture the template")
+        return
     if world["analyzer_version"] != ANALYZER_VERSION:
         raise WorldAnalysisError("Journal analyzer changed; reanalyze sources before a new check")
     from research_file_workbench.docx.report import READER_VERSION
@@ -283,8 +305,8 @@ def _validate_decision(decision: JsonObject) -> None:
         require_text(decision[key], key)
     if re.fullmatch(r"world-[0-9a-f]{64}", cast(str, decision["base_version_id"])) is None:
         raise WorldAnalysisError("Manual decision requires an exact prior world version")
-    if type(decision["expected"]) is not int:
-        raise WorldAnalysisError("Manual decision expected value must be an integer")
+    if type(decision["expected"]) is not int and not isinstance(decision["expected"], str):
+        raise WorldAnalysisError("Manual decision expected value must be an integer or font name")
 
 
 def require_object(value: object, label: str) -> JsonObject:
@@ -345,6 +367,8 @@ def validate_scope(value: object, *, rule: bool = False) -> JsonObject:
 
 def property_unit(property_name: str) -> str:
     """Return the stored unit for one supported page-geometry property."""
+    if property_name == "body_font_family":
+        return "font_family"
     if property_name == "columns":
         return "count"
     if property_name == "body_font_size_halfpoints":
@@ -354,10 +378,17 @@ def property_unit(property_name: str) -> str:
     return "twips"
 
 
-def require_expected(property_name: str, expected: object) -> int:
-    """Require an integer observation in the supported property's physical domain."""
+def require_expected(property_name: str, expected: object) -> int | str:
+    """Require a value in the supported property's declared domain."""
     if property_name not in PROPERTY_LABELS:
         raise WorldAnalysisError(f"Unsupported journal property: {property_name}")
+    if property_name == "body_font_family":
+        family = require_text(expected, "font family")
+        if len(family) > 512 or family != family.strip() or any(ord(c) < 32 for c in family):
+            raise WorldAnalysisError(
+                "Font family must be a trimmed name without control characters"
+            )
+        return family
     minimum = 0 if property_name.endswith("margin_twips") else 1
     if type(expected) is not int or expected < minimum:
         raise WorldAnalysisError(f"Invalid expected value for {property_name}")

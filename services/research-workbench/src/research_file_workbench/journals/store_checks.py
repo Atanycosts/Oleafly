@@ -61,9 +61,15 @@ def _validate_new_check(connection: sqlite3.Connection, check: JsonObject) -> No
         raise BindingConflictError(
             "Check binding is no longer current; check the selected binding again"
         )
-    if check["checker_version"] != CHECKER_VERSION:
+    template_check = "template_comparison" in check
+    if template_check:
+        from research_file_workbench.journals.template_models import TEMPLATE_CHECKER_VERSION
+
+        if check["checker_version"] != TEMPLATE_CHECKER_VERSION:
+            raise WorldStoreError("New template checks must use the current method")
+    if not template_check and check["checker_version"] != CHECKER_VERSION:
         raise WorldStoreError("New checks must use the current checker method")
-    if check.get("reader_version") != READER_VERSION:
+    if not template_check and check.get("reader_version") != READER_VERSION:
         raise WorldStoreError("New checks must use the current reader method")
     validate_check_dependencies(check)
     world = world_record(

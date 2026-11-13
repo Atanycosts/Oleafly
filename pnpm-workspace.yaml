@@ -2,6 +2,8 @@ packages:
   - "packages/*"
 
 allowBuilds:
+  # Validate the native SWC package used by the DOCX build adapter.
+  "@swc/core": true
   esbuild: true
 
 catalog:
@@ -12,6 +14,9 @@ catalog:
 # GHSA-2v37-7h3g-55p8: custom generators loop forever on size zero, < 3.3.18.
 # Force transitive build and test dependencies to patched versions.
 overrides:
+  # vite-plugin-top-level-await 1.6 uses the pre-1.16 SWC function-body AST.
+  # https://github.com/Menci/vite-plugin-top-level-await/issues/79
+  "vite-plugin-top-level-await>@swc/core": "1.15.47"
   # GHSA-qr28-fpjm-wq7f: quadratic replacement of percent-encoded runs in
   # decode-uri-component <= 0.5.0, reached through @lobehub/ui > query-string.
   decode-uri-component@<0.5.1: "0.5.1"
@@ -73,6 +78,7 @@ overrides:
   "@tiptap/pm": 3.29.2
 
 patchedDependencies:
+  '@docx-editor.dev/core@2.36.0': patches/@docx-editor.dev__core@2.36.0.patch
   '@replit/codemirror-emacs@6.1.0': patches/@replit__codemirror-emacs@6.1.0.patch
   emscripten-wasm-loader@3.0.3: patches/emscripten-wasm-loader@3.0.3.patch
   hunspell-asm@4.0.2: patches/hunspell-asm@4.0.2.patch

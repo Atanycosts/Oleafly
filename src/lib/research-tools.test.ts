@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   getConfig: vi.fn(),
   verifyCitation: vi.fn(),
+  readProjectPaper: vi.fn(),
   createResearchTask: vi.fn(),
   startResearchTask: vi.fn(),
   listResearchTasks: vi.fn(),
@@ -13,7 +14,7 @@ const files = vi.hoisted(() => ({ projectId: "paper" as string | null }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@/lib/tauri", () => ({ getConfig: mocks.getConfig }));
-vi.mock("@/lib/research-literature", () => ({ verifyCitation: mocks.verifyCitation }));
+vi.mock("@/lib/research-literature", () => ({ verifyCitation: mocks.verifyCitation, readProjectPaper: mocks.readProjectPaper }));
 vi.mock("@/lib/ai-rag", () => ({ retrieveProjectChunks: vi.fn().mockResolvedValue([]) }));
 vi.mock("@/lib/research-tasks", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/research-tasks")>()),
@@ -117,6 +118,7 @@ describe("app-level research tools wiring", () => {
     expect(Object.keys(createResearchAiTools()).sort()).toEqual([
       "literature_search",
       "project_library_search",
+      "read_paper",
       "research_task_create",
       "research_task_status",
       "verify_citation",
@@ -130,6 +132,7 @@ describe("app-level research tools wiring", () => {
     expect(Object.keys(createResearchAiTools()).sort()).toEqual([
       "literature_search",
       "project_library_search",
+      "read_paper",
       "verify_citation",
     ]);
     expect(createResearchTaskAiTools()).toEqual({});
@@ -451,5 +454,25 @@ describe("research tasks an agent creates without everything set", () => {
         expect.objectContaining({ runtimeId: "builtin", agentId: "lemonade", modelId: "Qwen3-4B" }),
       );
     });
+  });
+});
+
+describe("ordinary paper reading", () => {
+  it("keeps the project captured at tool creation and works with research tasks off", async () => {
+    flag.enabled = false;
+    const result = { text: "[p. 1]\nActual full text", nextOffset: 1234, pdfReference: { projectId: "paper", path: "sources/papers/a.pdf", pdfSha256: "hash" } };
+    mocks.readProjectPaper.mockResolvedValue(result);
+    const tools = createResearchAiTools();
+    files.projectId = "other-project";
+    expect(await tools.read_paper.execute({ path: "input.pdf", offset: 0, max_chars: 2000 })).toBe(result);
+    expect(mocks.readProjectPaper).toHaveBeenCalledWith("paper", { path: "input.pdf", offset: 0, max_chars: 2000 });
+  });
+
+  it("requires an open project at creation even if a project opens later", async () => {
+    files.projectId = null;
+    const tools = createResearchAiTools();
+    files.projectId = "later";
+    expect(await tools.read_paper.execute({ path: "input.pdf" })).toEqual({ error: "Open a project first." });
+    expect(mocks.readProjectPaper).not.toHaveBeenCalled();
   });
 });

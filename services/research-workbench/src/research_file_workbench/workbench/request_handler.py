@@ -12,6 +12,10 @@ from research_file_workbench.docx.query import ReadQuery, ReadQueryError
 from research_file_workbench.journals.models import SourceInput, require_keys
 from research_file_workbench.journals.store_records import BindingConflictError, WorldStoreError
 from research_file_workbench.projects.models import BaselineConflictError, ProjectStoreError
+from research_file_workbench.projects.render_service import (
+    RenderConversionError,
+    RendererUnavailableError,
+)
 from research_file_workbench.workbench.get_routes import handle_api_get
 from research_file_workbench.workbench.http_boundary import (
     HTTP_CONTRACT_VERSION,
@@ -21,7 +25,6 @@ from research_file_workbench.workbench.http_boundary import (
     captured_bytes,
     decode_request_json,
     discard_request_body,
-    encode_error_body,
     encode_json_body,
     named_upload,
     optional_text,
@@ -87,12 +90,29 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             parsed = urlparse(self.path)
             require_query_fields(parse_qs(parsed.query, keep_blank_values=True), set())
             payload = self._request_json()
+            from research_file_workbench.workbench.template_service import (
+                adopt_template,
+                check_template,
+                query_document,
+                retain_format,
+            )
+
+            template_routes = {
+                "/api/template-world": adopt_template,
+                "/api/docx-format": retain_format,
+                "/api/template-check": check_template,
+                "/api/docx-query": query_document,
+            }
+            if parsed.path in template_routes:
+                self._json(template_routes[parsed.path](self.server.service, payload))
+                return
             routes = {
                 "/api/worlds": self._create_world,
                 "/api/world-component": self._import_component,
                 "/api/projects": self._create_project,
                 "/api/read": self._read_manuscript,
                 "/api/render-bundle": self._register_render_bundle,
+                "/api/render-baseline": self._render_baseline,
             }
             route = routes.get(parsed.path)
             if route is not None:
@@ -127,10 +147,16 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json_error(HTTPStatus.FORBIDDEN, str(exc))
         except BindingConflictError as exc:
             self._json_error(HTTPStatus.CONFLICT, str(exc))
-        except BaselineConflictError:
-            self._json_error(HTTPStatus.CONFLICT, "论文版本已变化，请重新读取当前状态。")
+        except BaselineConflictError as exc:
+            self._json_error(
+                HTTPStatus.CONFLICT, "论文版本已变化，请重新读取当前状态。", result=exc.result
+            )
         except ManuscriptUpdateRefused as exc:
-            self._json_error(HTTPStatus.BAD_REQUEST, str(exc))
+            self._json_error(HTTPStatus.BAD_REQUEST, str(exc), result=exc.result)
+        except RendererUnavailableError as exc:
+            self._json_error(HTTPStatus.SERVICE_UNAVAILABLE, str(exc), code=exc.code)
+        except RenderConversionError as exc:
+            self._json_error(HTTPStatus.BAD_GATEWAY, str(exc), code=exc.code)
         except ReadQueryError:
             self._json_error(
                 HTTPStatus.BAD_REQUEST,
@@ -278,8 +304,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
     def _revise(self, payload: dict[str, object]) -> None:
         require_keys(payload, {"version_id", "rule_id", "expected", "reason"})
         expected = payload.get("expected")
-        if type(expected) is not int:
-            raise ValueError("expected must be an integer")
+        if type(expected) is not int and not isinstance(expected, str):
+            raise ValueError("expected must be an integer or font name")
         self._json(
             self.server.service.revise(
                 text(payload, "version_id"),
@@ -334,6 +360,25 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 page_evidence=None
                 if payload["page_evidence"] is None
                 else named_upload(payload, "page_evidence"),
+            )
+        )
+
+    def _render_baseline(self, payload: dict[str, object]) -> None:
+        require_keys(
+            payload,
+            {
+                "project_id",
+                "baseline_id",
+                "reason",
+                "libreoffice_executable",
+            },
+        )
+        self._json(
+            self.server.service.render_baseline(
+                text(payload, "project_id"),
+                text(payload, "baseline_id"),
+                libreoffice_executable=text(payload, "libreoffice_executable"),
+                reason=text(payload, "reason"),
             )
         )
 
@@ -399,9 +444,25 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
     def _json(self, value: dict[str, object]) -> None:
         self._send(HTTPStatus.OK, encode_json_body(value), "application/json; charset=utf-8")
 
-    def _json_error(self, status: HTTPStatus, message: str, *, allow: str | None = None) -> None:
+    def _json_error(
+        self,
+        status: HTTPStatus,
+        message: str,
+        *,
+        allow: str | None = None,
+        code: str | None = None,
+        result: dict[str, object] | None = None,
+    ) -> None:
+        payload: dict[str, object] = {"error": message}
+        if result is not None:
+            payload.update(result)
+        if code is not None:
+            payload["code"] = code
         self._send(
-            status, encode_error_body(message), "application/json; charset=utf-8", allow=allow
+            status,
+            encode_json_body(payload),
+            "application/json; charset=utf-8",
+            allow=allow,
         )
 
     def _send(

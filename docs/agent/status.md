@@ -1,6 +1,6 @@
 # Oleafly Agent：当前状态与实施计划
 
-核对日期：2026-11-10。范围：Oleafly 的普通 Agent、ResearchTask、任务群及应用接入。
+核对日期：2026-11-14。范围：Oleafly 的普通 Agent、ResearchTask、任务群及应用接入。
 本文维护当前能力、交付状态和剩余工作；[架构](architecture.md)维护工作合同，
 [复用依据](reuse.md)维护固定版本的组件选择。Workbench 领域实现与验收由
 [S1 状态页](../../services/research-workbench/docs/s1-progress.md)维护。
@@ -34,17 +34,18 @@
 
 | 能力 | 已实现的范围 | 仍有边界 |
 | --- | --- | --- |
-| 单 Agent 应用操作 | 冻结编辑器缓冲、选区、执行端及任务输入；修改任务副本、编译、读取实际 PDF 图文并预览；文献原文到正文纠错和实验方案已有真实模型样例。 | 尚未完成所有文献、引文及其他应用入口的贯通。 |
+| 单 Agent 应用操作 | 冻结编辑器缓冲、选区、执行端及任务输入；修改任务副本、编译、读取实际 PDF 图文并预览；普通聊天与任务执行共用论文读取服务，文献原文到正文纠错和实验方案已有真实模型样例。 | 结构化引文写入及其他应用入口仍需按实际场景贯通。 |
 | 持久任务群 | 成员身份、独立会话/执行/用量、消息、逐成员工作、关注、共享预算与恢复；嵌套委派先让出本轮，最终结果返回原请求者。 | 同群串行执行；不宣称并行多写或任意外部执行端均支持。 |
 | 相关变化后介入 | 显式订阅、成功受管读写和标注处理形成的对象关联；对新文件/run/明确标注做有界语义职责匹配，保留理由和实际用量。可在完整工具批次后保留原工作、让相关同事介入并接回，并支持逐项结果与局部等待。 | 单次 provider 响应和单个工具内不抢占；helper、shell、MCP 和外部写入尚不统一归因；Workbench 语义匹配未接。 |
 | 历史标注与规则吸收 | 普通聊天、ResearchTask 与内置成员共用原话、handling、distillation 和持续要求；有来源候选支持后次处理晋升、同范围替换，以及受管写入前按需提供规则。 | 结构和来源核验不等于语义正确；任意 `@模型`的一轮指定执行及自动能力调整待实现。 |
 | ACP 接续 | 启动各路径提供当前结构化标注；prepared 与完整 prompt 帧 flush 后的 delivered 分开。 | 回执只到本地传输；持续 ACP 任务群和运行中轮内标注未接。 |
 | 动态上下文 | 精简技能目录、逐轮 schemas、工具发现、按需技能加载、摘要和精确回读；相等 JSON 事件详情在模型视图中去重，支持 `group_context(eventId)` 读取完整原事件；界面首屏分页、运行时恢复保留完整群执行历史。 | 文件证据不缩短，字节缩减不直接证明 token 或费用降低。界面按稳定游标继续加载事件和执行，精确记录按项目、任务及群归属回读。 |
 | 文件与 helper 来源 | 受管 `read_file` 留存精确字节、hash 和调用归属；最终 ToolOutcome 决定成功来源；helper 累计用量汇总。 | 其他 helper 工具活动和独立费用明细未采集；外部直接读取不在同一覆盖中。 |
-| 文献全文窗口 | `read_paper` 与任务 PDF 窗口返回字节偏移、文本与 PDF hash、页范围，并留存匹配快照；可沿 `nextOffset` 连续读取。 | DOI 或标题匹配不证明全文支持主张；只有实际读到的段落与页范围可作为来源证据，摘要范围须明确。 |
+| 文献全文窗口 | 普通聊天、单任务与任务群共用 `read_paper`；返回字节偏移、文本与 PDF hash、页范围。普通聊天以保留引用连续读窗并回看准确 PDF，任务保留原有来源快照。 | DOI 或标题匹配不证明全文支持主张；只有实际读到的段落与页范围可作为来源证据，摘要范围须明确。 |
 | PDF 历史选段 | 原件、当时选段、当前源码和新产物分开；输入初始化阻塞执行；处理结果可回到原页。 | 正常打包流程及恢复已有验收，取消/删除交错由 store/命令回归覆盖，未做完整原生 UI 时序验收。 |
 | 期刊原生接续 | context/read/check 复用领域服务；任务绑定领域输入；明确记录类型的重扫、回执、订阅和重启补接。 | 不等于全领域事件日志，不把 DOCX 检查推广为 LaTeX 检查；CLI daemon 无原生期刊工具。 |
 | Finding 与处置 | 数字检查保留规则与输入版本，人工处置和当前有效性分开。 | 尚未成为涵盖代码、引用与所有领域的一套通用检查器。 |
+| DOCX 持续工作 | 受管工作副本、即时编辑与分页、一项流式段落建议、人工干预、接受/撤销/重做、DOCX 导出和保存版本的基线/期刊检查；LibreOffice 为明确 baseline 自动生成并打开对应 PDF。普通 Agent 与 MCP 共用活动会话服务；单任务和任务群可明确绑定会话，读取、捕获目标、提交候选、按 revision 修改格式、保存并按指定模板复查，保留实际 task/work/member/execution 归属及精确保存结果。未保存字节、任务来源、待补结果与固定保存请求写入应用私有 latest recovery checkpoint，启动后可明确恢复、下载或丢弃；工作副本可收起后恢复。 | 文本建议仅支持格式一致的纯文本整段替换；模板及有效格式边界见[格式闭环](#word-模板读取与格式闭环2026-11-14)。恢复限最近一次完成的 checkpoint；外部 Word/WPS 自动同步、跨版本页映射未接。 |
 
 相关所有者：
 [TaskStore](../../crates/oleafly-research/src/store/mod.rs)、
@@ -243,6 +244,49 @@ checkpoint 遗漏逐项摘要与引用，以及界面重复把等待请求当成
 benchmark。实现继续扩展现有 TaskStore 与应用服务，没有新增框架、数据库表或依赖。
 正式安装版与 Windows 服务未更新。
 
+2026-11-13 补查发现：另一成员早先遗漏且没有请求依赖的 waiting 事项，会被后来的独立 checkpoint
+冻结，导致本次同事核查完成后原工作仍无法接回。[回归](../../crates/oleafly-research/src/store/checkpoints_tests.rs)
+先复现了该阻塞，随后修正冻结条件。重开 TaskStore 后，独立核查的结果可交回原成员，旧遗漏项的状态、
+摘要和引用均保持不变；本次冻结的核查若后来被遗漏，仍阻止接回。65 项协作/store（含 12 项 checkpoint）
+及 12 项群调度回归通过，ResearchTask 全目标 Clippy、格式与受影响文档链接检查通过。
+随后在最终隔离 macOS 原生包上通过两个相反场景：旧遗漏项保留为 waiting，新的独立核查完成后仍可交回原成员；
+本次冻结的核查若遗漏，原成员继续 checkpointed，任务保留为未启动 queued。SIGKILL 后重启，两者的工作、
+摘要、引用及执行记录一致且没有自动调用；通过界面显式 Start 才处理剩余工作。再次 SIGKILL／重启后，
+完成结果与执行次数保持一致，没有重复处理；只读 SQLite 回读与原生 API 的工作和结果相符。
+新增[三阶段用例](../../e2e/tests/132-task-checkpoint-recovery.spec.ts)的 prepare、resume、verify 均通过，
+当前 12 项 checkpoint 和 12 项群调度回归复跑通过。测试决策由脚本驱动，没有新真实模型或研究质量结论。
+原始依据保留于本机忽略目录 `.private/task-checkpoint-native/run-IhU2E2/`；较早 `run-9Etg2e/`
+因新增脚本未等待侧栏挂载而失败，修正后重跑通过，失败依据仍保留。两次运行均退出测试拥有的应用并恢复原 E2E
+WebKit 存储；正式安装版未更新。复跑方式见 [E2E 说明](../../e2e/README.md#native-task-checkpoint-recovery)。
+
+### 普通聊天与任务共用论文阅读（2026-11-10）
+
+普通聊天新增 `read_paper`，复用任务已有的 paper 服务、缓存、文件访问和 PDF.js 文本桥，
+支持 DOI 开放副本、arXiv、HTTPS PDF、项目 PDF 和 linked 来源。作者项目及 linked 输入保持只读，
+PDF 与文本留在应用数据；本地首读按字节选择版本，后续窗口携带返回的保留引用，原文件替换或删除后
+仍读同一版本。聊天工具卡显示实际范围并打开对应 PDF，不将缓存路径当作作者项目文件。
+任务副本、来源快照及 review/apply 继续沿用原实现。Research Tasks 关闭时普通阅读仍可使用。
+
+独立复核发现临时论文预览会覆盖和清除主稿的全局 PDF controller，已在现有 Viewer 增加默认开启的
+注册开关，论文预览使用自身 ref。真实 Viewer/controller 回归覆盖打开、跳页、缩放和关闭后主稿仍可定位；
+隔离打包 UI 另验证预览前、中、后均能通过全局 controller 读主稿文字。修复后只读终审未留下 P0–P2。
+
+原生 [125 系列用例](../../e2e/tests/125-shared-paper-reader.spec.ts)分别验证普通聊天连续窗口、
+修稿、编译、实际 PDF 文本回读与准确版本预览，以及单任务和单成员任务群的同一路径；任务没有应用到原项目。
+脚本 provider 验证业务集成，不证明模型推理或多成员收益。早期失败来自验收脚本的选择器、结果辨识和
+职责评估响应，修正后对应路径通过，失败日志保留。
+
+同一隔离包另运行一次真实 `gpt/gpt-6.1-sol`／high 探针：读取两页教学 PDF，修正 validation/test 混用和
+92→91 的方向，保留两项数值，编译成功并读回新 PDF；输入 PDF 原字节不变。单次约 45 秒，provider 报告
+95,224 输入、279 输出 token；费用未知。这支持该具体操作链，不代表广泛研究质量或任务群收益。
+
+必要的 paper、桌面适配、审批与前端定向回归、类型、受影响 lint、相关 Clippy、前端和原生 debug 构建通过。
+构建仍有既有大 chunk 与 debug unwind 表警告。未重复全仓测试，未验证 Windows、远程 DOI/arXiv 下载或
+完整 SyncTeX 原生操作时序，未改动期刊领域服务。结构化引文写入未在本轮实现。
+本地依据保留于忽略目录 `.private/shared-paper-reader-native-20261110/`，包含构建、失败与通过日志和真实探针
+的输入、工具结果、源码与用量；干净 checkout 通过上述用例运行合成验收，真实探针需显式配置 provider。
+当前源码在工作分支，尚未提交；正式安装版及 Windows 服务未更新。
+
 ### 上下文进入时机研究（2026-11-10）
 
 真实 Sol/high 协调者与两位 Trae/high 成员研究上下文与同事介入时机。用户在初始决定补充
@@ -286,20 +330,474 @@ system、tools、其他消息与采样设置完全一致；两次重复、随机
 及四份原始 SSE。重启后事件、群组、标注、工作和 PDF hash 完全一致，
 没有新增执行，原事件另经只读 SQLite 核对。五页 PDF 已回读及逐页检查。正式安装版与 Windows 服务未更新。
 
+### DOCX 工作副本首个闭环（2026-11-11）
+
+此节保留首版接入的验收范围；后续的重启恢复与[任务活动接入](#docx-任务活动与保存归属2026-11-12)继续扩展同一工作副本。
+
+当前实现在 [Draft PR #9](https://github.com/Atanycosts/Oleafly/pull/9) 中，分支为
+`codex/shared-paper-reader`。固定版本 EigenPal core/react/fonts 已接入
+“期刊检查 → 编辑 DOCX 工作副本”。工作副本从显式 baseline 的留存字节打开，在应用级弹窗编辑和分页，
+源文件仍是只读输入。选段请求复用既有内联 provider 流，建议在目标旁及工作栏出现；
+接受一项形成一次编辑事务，修改目标文本或结构会取消旧建议，其他段落可继续输入。
+
+保存取得实际 DOCX 字节后复用 Workbench 基线事务，失败重试固定原请求和字节，导出期间的新编辑仍标为未保存；保存成功后，渲染面板按该 baseline 查找或调用显式选择的 LibreOffice，记录可追溯的 PDF bundle 和页数，并提供精确 PDF 读取。
+成功后保持编辑会话，检查只针对明确保存的 baseline/world。新 `manuscript-source` HTTP 路径提供显式历史版本的
+精确留存字节，不读取作者路径、不伪造结构化读回执；HTTP 身份见[机器合同](../../services/research-workbench/contracts/journals/world-contract.json)。
+关闭、项目离开、更新安装、刷新与退出复用已有保护；切换侧栏不会卸载工作副本。
+同轮还修复了研究中复现的源码内联建议覆盖人工局部输入问题。真实 Chrome + Python Workbench 流程另外验证了活动会话工具读取、收起/恢复、真实 LibreOffice 转换和精确 PDF 读取。
+
+验证使用合成 DOCX，保留字段、简单 OMML 和表格。真实 Chrome 的生产 React 编辑器与真实 Python Workbench
+已完成键盘输入、流式建议、接受、工具栏撤销/重做、目标内人工编辑撤下候选、DOCX 字节保存、旧检查过期、
+新基线检查及保存版本重新打开。同一流程也通过生产资源与应用配置的 CSP，字体及 HarfBuzz WASM 正常加载。
+随后用迁移来的真实英文稿（515 段）和中文稿（533 段）各跑一遍同一链路；修复大文档打开完成早于 automation
+session 可读的初始化竞态后，两次均在首次读取时拿到活动 session，纯文本修改、撤销/重做、人工介入取消建议、
+混合格式/域/公式/图片整段替换拒绝、编辑版保存及重开均通过。无改动导出和编辑版导出均无部件丢失、媒体变化、
+关系语义变化或受保护节点损失；每个编辑版只有预期的一段文本变化。Tauri IPC 和 token provider 在该浏览器验收中按脚本驱动，不能算原生应用或真实模型编辑验收。
+独立回归覆盖结构变化、删除目标、混合格式/链接等受保护结构、导出期间编辑、响应丢失后同请求重试、
+已保存但面板刷新失败，以及退出保护。
+
+本轮受影响前端测试文件的原有 112 项用例通过，新增 DOCX/Agent/权限定向回归在本次收尾复跑中另有 107 项通过；源码内联干预修复另有 73 项定向回归通过。
+Workbench 的 workspace/server/architecture 定向验证为 58 通过、1 项既有 macOS loopback-alias 跳过；本次渲染服务复跑为 120 通过、1 项既有跳过，
+仍有 5 项既有 PyMuPDF/SWIG 警告。受影响 Python 格式/lint、全部 118 个源文件 mypy、TypeScript、
+受影响前端 lint、中英文语言目录、语言类型生成及上游 notice 核对通过，原生 Rust 库 `cargo check` 通过。
+生产构建保留大 chunk 提示；新增按需文档内核使 JavaScript 总预算调整为 28 MB，启动与单文件上限不变，
+且构建拒绝 DOCX 内核进入启动图。实际最终大小见保留的 performance 日志。未重复全仓测试。
+
+构建中曾遇到默认 Node 堆 OOM、TLA 插件与新版 SWC AST 不兼容、polyfill 顺序变化、
+SWC 压缩破坏 JSON 内 LaTeX 转义及语言包体积膨胀；前述失败已复现并修正，
+生产浏览器流程验证了修正后的运行结果。
+
+真实论文验收仍不证明 Word/WPS 往返排版保真：首版英文和中文界面分别出现替代字体/固定度量告警，独立 LibreOffice 渲染还发现英文首页双栏标题布局差异。
+字体字节接入和该布局差异的定位由下文[准确字体获取](#docx-准确字体获取2026-11-13)及其历史布局记录接续，不把首版告警当作当前全部状态。
+Workbench reader 已将英文 VML 图片从静默漏报改为 `vml_picture` unsupported 观察（reader 版本 `s1-readonly-reader-1.5.0`）；VML 绘制语义和页面位置仍未解释。
+首版接入只支持一项内联建议，当时工具已在普通 Agent/MCP 的应用业务层可用，尚无 TaskStore task/work/member/execution 归属；后续已由下节任务活动接入补齐。
+latest recovery checkpoint 已接入应用私有目录：保存 DOCX 字节、稳定工作副本 key、原始 baseline/source hash、会话 revision、更新时间和内容 hash，使用现有原子写入；保存失败、hash 不匹配或清除失败都会保留快照。启动候选选择、明确恢复/下载/丢弃、界面与 Agent 的未保存状态重建及恢复后保存已在 2026-11-12 补齐，原生验收范围见下文。外部 Word/WPS 同步、跨版本页映射、真实论文的 Word/WPS
+往返保真和中文字体布局尚未验证或实现。内核可直接进行富文本编辑，但 Agent 整段替换只接受格式一致的纯文本，
+不扁平化域、公式、绘图、修订或混合格式。当前上游工具栏为英文，应用工作栏已有中英文。
+
+DOCX 本地化范围（2026-11-11）：新键只维护中文和英文；其他应用语言的完整覆盖和全语言校验
+不属于本轮范围，不列为待补欠账。受影响的中文、英文语言目录与语言类型生成已经通过；
+其他语言仍回退英文，这是当前范围边界，不能据此宣称全语言目录已经通过。
+
+DOCX 平台范围（2026-11-11）：本轮在 macOS 上完成上述浏览器与定向验证，Windows 原生应用验证
+本轮不在范围内，不列为待验证项；正式安装版及 Windows 服务未因本轮源码更新。
+
+必要合成输入、浏览器截图与最终检查日志选留于本机忽略目录
+`.private/upstream-reuse/docx-live-implementation-20261111/`，不随干净 checkout 发布。
+2026-11-11 checkpoint 存储接入时，前端 recovery/工作区 17 项和 Rust recovery 4 项定向测试通过，当时尚未运行跨进程重启或恢复 UI。该历史缺口现已由下述原生验收覆盖。源码沿用上述 Draft PR，尚未发布。
+
+2026-11-12 本机环境修复：Node、pnpm、Python、uv、GitHub CLI、rustup/Cargo/Rust 的登录及非登录 shell
+入口已统一到 Homebrew；Rust 编译器仍按仓库固定为 1.98.1，Workbench `.venv` 已用 Homebrew Python 重建。
+原先独立安装的 Maven/Java 入口也已迁至 Homebrew，并验证 Maven 实际使用 Homebrew JDK；二者不是 Oleafly 构建依赖。
+pnpm 使用 Homebrew
+安装的 11 系列并明确提示与仓库精确 pin 的版本差异，不再自动下载另一套 pnpm。
+SheetJS 缓存内容与锁文件完整性一致，依赖链接已恢复，SWC 原生绑定的构建许可已显式补齐；
+`pnpm install --offline --frozen-lockfile`、常规 lint、语言类型、中英文目录及 DOCX notice 核对通过。
+前端 DOCX/Agent/recovery/论文预览/构建配置定向测试 167 项通过；重建环境中的 Workbench
+reader/render/server/workspace 测试 167 项通过、1 项既有跳过，保留既有 PyMuPDF/SWIG 警告。
+生产构建与性能预算通过：入口 JavaScript 4,795,811 bytes，总 JavaScript 27,818,828 bytes；
+仍有既有大 chunk 提示。Rust 格式检查及 4 项 recovery 测试通过，保留 debug 链接的 unwind 表警告。
+生产浏览器 harness 的 HarfBuzz 初始化改用动态导入后，也通过相同的启动图检查；
+真实 Chrome、生产资源及应用 CSP 下的合成 DOCX smoke 通过，覆盖人工干预、撤销、精确保存版本、
+重新打开和 LibreOffice PDF。该 smoke 仍使用脚本 Tauri IPC/provider，不是原生应用或真实模型验收。
+环境规则见[开发说明](../development.md#prerequisites)。这些结果不扩大前述原生应用、真实模型或排版保真的验收范围。
+
+2026-11-12 重启恢复：启动轻量入口枚举健康 checkpoint 并单独显示坏记录；恢复时核对原项目关联、baseline/source hash，
+新会话在 UI 和 Agent 中均从未保存状态开始。若稿件已有较新版本，保留旧基线和恢复字节、禁用覆盖保存，提供副本下载。
+普通打开遇到未处理快照会先进入恢复选择；后台导出串行化，保存/丢弃会使迟到导出失效，保存后的新 checkpoint 使用新 baseline 与源 hash。
+切换应用语言不重载文档或清除编辑历史。
+
+使用隔离的 macOS 原生 Tauri E2E 包和真实 Python Workbench，对迁移目录中的英文、中文论文各执行
+“实际编辑 → 原生 checkpoint → SIGKILL → 重启发现 → 下载所选 checkpoint 副本并核对 hash → 明确恢复 → UI/Agent 未保存正文一致 → 继续编辑 → 保存 →
+精确新 baseline 和 LibreOffice PDF → 关闭重开 → 再编辑/SIGKILL/重启 → 二次确认丢弃”。两份均通过，
+英文 PDF 10 页、中文 PDF 26 页，源和 PDF hash 均与留存记录匹配，首屏 PDF 文本包含继续编辑标记；原稿 hash 前后相同。
+恢复后导出的两份 DOCX 未丢失部件、媒体、关系语义或受保护节点，段落数仍为 515/533，各只有预期一段文本变化。
+该验收通过原生 IPC 和真实编辑内核执行，没有模型 provider；它证明上述恢复/保存/预览路径，不证明 Word/WPS 排版保真。
+用例及执行方式见 [E2E 说明](../../e2e/README.md#native-docx-crash-recovery)。原始输入、截图及确定字节保存在本机忽略目录
+`.private/docx-recovery-native/run-idjThk/`（英文）与 `run-KbA1MA/`（中文），不随干净 checkout 发布。
+下载使用应用现有的原生选定路径授权和字节写入命令；验收脚本代选保存路径，未人工操作系统保存对话框。
+两次运行均恢复了原 E2E WebKit 存储，测试拥有的应用和 Workbench 进程已退出。恢复范围是最近一次成功导出的 checkpoint，未到快照的最后输入、旧撤销历史、选择和未接受建议不恢复。
+
+恢复功能定向验证包括 Rust recovery 8 项；最终工作区生命周期回归 20 项通过，覆盖丢弃失败后无需再次编辑也会重建 checkpoint。
+原生包构建、Rust 格式检查与库 clippy、前端 lint、中英文目录和语言类型核对通过。最终普通生产构建及性能预算通过：入口 JavaScript 4,817,363 bytes，总 JavaScript 27,826,451 bytes，生产包开发钩子计数为 0，DOCX 内核仍按需加载；保留既有大 chunk 提示。
+全语言 hook 在本次新增键后仍因其他 22 个语言目录缺少 1,760 个键失败，沿用已明确排除这些语言的范围；不宣称全 hook 通过。
+
+### DOCX 任务活动与保存归属（2026-11-12）
+
+本节保留 11-12 候选审阅路径的验收范围；11-14 新增的直接格式修改、保存及模板复查由
+[Word 模板读取与格式闭环](#word-模板读取与格式闭环2026-11-14)接续。
+
+继续在 [Draft PR #9](https://github.com/Atanycosts/Oleafly/pull/9) 中交付。用户从 DOCX 侧明确绑定尚未开始的任务，
+单任务和任务群通过既有 TaskBridge/ApplicationTools 共用活动会话的列举、窗口读取、目标捕获和候选服务。
+任务提供完整替换文本，不再次调用界面模型；候选先进入 TaskStore，再交给已有接受/拒绝界面，
+任务的源码隔离及 review/apply 合同继续生效。当时的工具不提供直接应用或保存权限。
+
+读取、目标和候选保留实际文档 revision、baseline/source hash；task/generation、群组、成员执行及当时运行 work
+由存储事务解析，单任务不补造成员身份。用户接受、拒绝、撤下和保存结果沿原 proposal 回连，任务结束或重跑后也能追加到原代次。
+保存回执核对 Workbench 留存字节的实际 hash，不把“已接受”当成“已保存”。回执失败时只重试记录，不重复修改或保存。
+活动正文继续存于不可变 observation；稀疏自增游标索引仅引用事件，删除任务后不会复用旧游标。
+文档侧历史可跳到对应任务或群组，收起再恢复 DOCX 保持同一编辑会话；关闭重开和恢复使用新 session，不重新挂载旧 target。
+
+定向回归覆盖活动持久化、跨项目/任务隔离、实际成员来源、旧代次结果、精确捕获、幂等保存结果、旧库升级和删除后的游标继续读取，
+以及过期/取消/重复 renderer 请求不能接管展示。TaskStore DOCX 11 项、原生桥接 4 项、前端 6 文件 62 项通过。
+前端 lint、Rust 格式检查、应用库及 ResearchTask 全目标 Clippy、中英文语言目录、语言类型及已安装 DOCX notice 核对通过。
+当前共有 22 个语言目录；全语言校验因明确排除的其余 20 个目录缺少 2,200 个键失败，中英文通过，不宣称全语言或全 hook 通过。
+本轮提交沿用中英文范围，绕过含全语言校验的 pre-commit；必要检查按上述范围独立执行。
+
+最终隔离 macOS 原生包通过两条流程：原有单任务/任务群共用文献服务读取合成 PDF、隔离 LaTeX 修改、编译和 PDF 文本核查，
+以及合成 DOCX 的单任务和任务群绑定、读取/捕获/提案、任务结束后人工接受与保存、实际成员/work 来源、精确 baseline/hash、
+LibreOffice PDF、分页历史读取、来源跳转、收起/恢复同一会话及关闭重开新会话。DOCX 用例的中英文替换均保留合成域、OMML 和表格。
+使用真实 Tauri runtime、编辑内核、TaskStore、Python Workbench 和 LibreOffice；模型决策由脚本驱动，不作为真实模型质量证据。
+本机忽略证据为 `.private/docx-task-native/run-anxSST/`；测试拥有的应用和 Workbench 已退出，原 E2E WebKit 存储已恢复，
+只读监测的作者文件 hash 前后相同。此轮任务验收使用合成 DOCX，没有改写真实论文。
+
+较早验收 `run-uH5JRC/` 未等待任务下拉选项出现，`run-zXwlpp/` 未加载历史第二页即检查保存回执，均为脚本失败，
+修正后在上述最终包通过；失败依据继续保留。来源跳转首次打开时的项目绑定竞态、删除任务后的游标复用及 Clippy 枚举体积问题已修复，
+相应回归通过；构建仍有既有大 chunk 与原生 debug unwind 表警告。
+最终普通生产构建及性能预算通过：入口 JavaScript 4,818,235 bytes，总 JavaScript 27,842,385 bytes，
+生产开发钩子计数为 0，DOCX 内核保持按需加载。此次没有重复全仓测试或更新正式安装版。
+
+首版任务活动接入的待补结果队列仅在会话内存中；下文的保存恢复增量已将其接入同一 checkpoint，替代这项限制。
+本轮没有新增 DOCX 群订阅、自动唤醒或并发编辑。该合成流程没有验收真实模型编辑质量；随后真实稿窄验收见下文，Office 视觉保真和外部 Word/WPS 同步仍未验收；
+Windows 与其余语言目录仍明确不在本轮范围内。原生合成验收的重跑方式见 [E2E 说明](../../e2e/README.md#native-docx-task-activity)。
+
+2026-11-13 真实模型窄验收：复用同一隔离 macOS 原生包、TaskStore、DOCX 编辑内核、Python Workbench 和 LibreOffice，
+分别对迁移目录中的英文、中文论文运行单任务与单成员任务群。模型读取实际段落窗口，自选一个格式一致的纯文本段落并提交唯一语言候选；
+脚本不预置替换文，通过现有界面接受、保存、打开精确版本 PDF 并关闭重开。透明本地 relay 原样转发请求和响应，仅保存模型、档位、工具名、状态及用量元数据；
+两次运行的全部完成请求均为 `gpt/gpt-6.1-sol`、`high`、HTTP 200，并返回同名模型标签。这核对了可观察的路由标签，不证明物理后端身份。
+
+| 实际稿件与路径 | 任务活跃秒数 | provider 报告输入 / 输出 token | 机械结果 |
+| --- | ---: | ---: | --- |
+| 英文，单任务 | 62.78 | 138,783 / 1,196 | 一项提案、接受/精确保存、10 页 PDF、重开通过。 |
+| 中文，单成员任务群 | 71.03 | 179,448 / 1,572 | 一项提案、实际 member/execution/work 完成及回执归属、接受/精确保存、26 页 PDF、重开通过。 |
+
+两份保存包均无部件增减、媒体变化、关系语义变化或受保护节点损失，段落数仍为 515/533，各只有预期一段文本变化；
+两份作者原稿 hash 前后相同。主控分别审读完整原段落与候选：英文仅将 `recorded by separate transactions` 改为
+`recorded in separate transactions`，中文仅将“可以以密文形式保存”改为“可采用密文形式保存”，技术术语、数字、限制条件和结论保留。
+另核对 PDF 中实际改句，查看首页及改段所在第 2/3 页，未发现这些页的空白、乱码或正文截断；仍保留已知英文首页标题局限。
+这只接受两次窄措辞修改，不证明普遍论文编辑质量、多成员收益、整个文档视觉正确或 Word/WPS 排版等价；费用未知。
+自动验收原记录保持 `MECHANICAL_ACCEPTANCE_PASSED_CONTENT_REVIEW_PENDING`，本段单独记录主控内容复核，不改写原始证据。
+
+新增 opt-in 用例及执行方式见 [E2E 说明](../../e2e/README.md#native-docx-task-activity)。原始事件、提案、导出字节及截图留在本机忽略目录
+`.private/docx-task-live/run-jnoFc0/`（英文）和 `run-Un6Hyp/`（中文），干净 checkout 不包含这些材料。
+较早 `run-vQF4B4/` 把专用 DOCX read/capture observation 误当通用工具完成记录，`run-RM8FwC/` 的白名单误拒绝合法 `group_work_settle`，
+均在接受/保存前发生脚本失败，模型已正常提案，失败记录保留。用例现按 callId 核对实际 request/result、专用来源和正向工具范围；
+最终中文运行另经只读回放，符合收紧后的无未来订阅合同，没有重复模型调用。
+新增用例连同仓库 TypeScript 配置及声明的类型检查为 0 diagnostics；默认运行实际跳过该 opt-in 用例，runner 的 Node 语法和 diff 空白检查通过。
+Biome 配置不覆盖 E2E 文件，未宣称其 lint 通过。共享 runner 的默认恢复路径另用英文真实稿复跑三个阶段，通过；证据为
+`.private/docx-recovery-native/run-W6E8oR/`。本次全部运行的作者 hash 不变、原 E2E WebKit 存储已恢复，测试拥有的应用及 Workbench 已退出。
+此次只新增验收入口与状态/开发说明，没有修改产品实现或重建应用，未重复全仓测试、更新正式安装版或扩大平台/语言范围。
+
+2026-11-13 保存恢复增量：沿用同一应用私有 checkpoint，原子保留实际 DOCX 字节、当时有效的任务来源、待补结果及固定保存请求。
+重启在新 session 中记录明确 Recovered 来源，保留原任务/成员/execution/work；不重放修改、不重挂旧 target。
+原样恢复使用原快照字节保存；首次继续编辑撤下恢复来源对新导出的保存资格，撤销或相同文本不重新认领。
+原生 commit 重放固定请求、核对 Workbench 留存 hash 并幂等补齐 Saved，界面确认后才清除 checkpoint。
+结果未知时保留请求和副本重试；Workbench 明确拒绝同一请求后，界面保留未保存状态，允许下载并明确放弃，不补 Saved。
+若已成功的旧请求遇到更高当前版本，只补原保存历史，保留旧副本供下载，不覆盖较新版本。
+固定请求未确认期间，后续编辑仅保留在会话内，后台导出不覆盖固定快照；恢复保证仍限最近一次完成的 checkpoint。
+
+最终隔离 macOS 原生包在真实英文、中文稿上各通过 `130-docx-task-recovery` 三阶段：实际任务群候选 → 人工接受及 checkpoint → SIGKILL →
+新 session 恢复任务来源 → UI 保存 → 原生 Workbench/Saved 完成后截断 React 响应 → SIGKILL → 原请求确认及清除快照。
+两个故障点的接续均只生成一个新 baseline 和一条 Saved，原 proposal 来源及精确字节/hash 一致。
+之后在同一隔离库推进 baseline，UI 确认旧固定请求的持久冲突结果；两次真实原生拒绝响应均被计数，副本下载 hash 相同，明确丢弃后没有新增 Saved 或改动较新版本。
+两份保存包无部件增减、媒体变化、关系语义变化或受保护节点损失，段落数仍为 515/533，各一处预期文本变化；LibreOffice PDF 为 10/26 页并实际打开。
+作者输入 hash 前后相同，三个阶段均记录了真实 SIGKILL，E2E WebKit 存储恢复，测试拥有的应用和 Workbench 已退出。
+本机忽略依据为 `.private/docx-task-recovery/run-mT1fAz/`（英文）与 `run-bXRH0P/`（中文）；模型决定由脚本驱动，不新增真实模型编辑质量结论。
+共享 runner 的默认 `127-docx-recovery` 英文真实稿回归也通过，依据为 `.private/docx-recovery-native/run-dtL9Zj/`。
+
+新增验收较早的 `run-ebV8GV/` 试图覆盖不可写的 invoke，`run-BzDn7u/` 未等待绑定落库，`run-QS0yJM/` 使用未登记的测试导入，
+`run-sWFskK/` 将含 UI 字段的文档对象直接传入严格 native 合同，均为脚本失败；相应原始运行继续保留。
+最后的重复拒绝断言经终审收紧为计数原生响应，最终中英文运行按收紧后用例通过。
+TaskStore DOCX 12 项、原生 recovery 15 项及结构化 HTTP 结果 1 项、前端恢复/任务活动 6 文件 75 项通过；
+此前相邻会话/Agent host/渲染/构建配置 5 文件 71 项回归通过。Rust 格式、应用与 ResearchTask 库 Clippy、
+前端局部 lint、含新增 E2E 的 TypeScript、中英文目录、语言类型和 DOCX notices 核对通过。
+Workbench 完整 Python 门禁结果及历史 Phase 0 失败范围见 [S1 状态](../../services/research-workbench/docs/s1-progress.md)。
+最终普通生产构建和性能预算通过：入口 JavaScript 4,820,244 bytes，总 JavaScript 27,848,056 bytes，开发钩子计数 0，DOCX 内核仍按需加载。
+保留既有大 chunk 和原生 debug unwind 警告。此次未运行全仓前端/Rust 测试或更新正式安装版；Office 视觉等价、外部 Word/WPS 自动同步仍未验证，
+Windows 和其他语言仍明确不在范围内。恢复规则和边界见[架构](architecture.md#docx-实时工作表面)，复跑方式见 [E2E 说明](../../e2e/README.md#native-docx-crash-recovery)。
+
+### DOCX 准确字体获取（2026-11-13）
+
+用户明确要求按期刊指定字体获取实际字体，自动跨族替代不再是产品策略。
+已撤去宋体／黑体到 Noto 的映射及随包替代组合。原生解析严格匹配实际 family、weight 和 style，
+本机系统字体和既有应用字体包缓存共用同一路径，无法直接使用的 TTC／可变字体保留为缺失。
+期刊正文族名进入现有来源、候选、确认和 world 版本流程，已确认且适用于当前范围的缺失字体
+按目录准确 families 自动下载、校验并回查。缺下载源、下载失败和下载后仍不可用分别呈现。
+刷新沿内核公开 `setFonts()` 更新同一活动会话，文档原有字体声明和作者输入不变。
+字体可用只表示字节可加载，checker 对该规则返回未检查，不宣称稿件字体或全篇排版合规。
+同文档最小化后切换期刊并恢复时，独立上下文会更新到所选 world，保留原编辑器及保存后回调；
+其他文档的请求不会改写当前文档上下文。
+
+产品目录已接入准确 SimSun／SimHei／KaiTi 和 DengXian，沿既有应用下载服务复用
+[Fontist 固定配方及 Microsoft HTTPS 来源](reuse.md#准确中文字体来源2026-11-13)。
+Office for Mac 整包提供前三族，独立 East Asian 包提供等线常规／粗体／细体；
+整包与提取成员均校验 SHA-256，静态字体核对实际族名、PostScript 名、字重、style 和来源版本，
+并保留来源回执。当前为 SimSun 5.04i、SimHei 5.03i、KaiTi 5.01i、DengXian 1.14，
+版本用于如实记录来源，不把只指定家族的期刊要求升级为指定版本。
+本机前提是 Homebrew `sevenzip` 和既有 tar；没有随应用打包解包器。缺工具在下载前报错，
+约 737 MB 的 Office 整包只需完整缓存一次，供其他字体和项目复用；中断下载暂不续传，
+卸载字体后保留共享整包。缺失或不适用的 face 继续明确列出，常规 face 可用不代表完整族或稿件合规。
+
+下载字体及解析成功的准确系统字体均供给独立 LibreOffice：原生解析先把实际 face 原字节和元数据
+留存到应用私有 `assets/resolved-fonts`，同实际族／字重／style 更新已有缓存。原生启动器提供缓存根，
+每次转换读取当前缓存、按摘要去重、
+复制到私有 `profile/user/fonts` 并校验已有回执。渲染分别记录供给字体摘要、当前缓存集合身份及
+PDF 实际字体名，供给摘要不冒充 PDF 完整嵌入字节。字体刷新或显式 PDF 刷新产生新转换；
+普通重开只复用相同缓存内容及方法的最新渲染，在途同环境请求合并，失败保留旧 PDF 并标旧。
+跨重开的缓存判断及新 HTTP 响应由[渲染合同](../../services/research-workbench/contracts/s1/render-bundle.json)拥有。
+自动 PDF 请求等待编辑器就绪和字体解析完成，旧方法的历史渲染继续可读，但不作当前兼容结果。
+这修复系统 Times New Roman 未进入独立 profile、落到 LiberationSerif 的供给缺口；
+同族多版本的最终选择和全篇准确排版仍需单独核对。
+中英文范围和 Windows 排除决定保持不变。
+
+编辑器首页已在固定 EigenPal 2.36.0 内核上接入有限多栏 frame 支持：明确宽于每栏的固定宽页／页边距框
+沿既有排除区域对各相交栏避让，不同 text-relative 框组按源顺序堆叠，保留相邻作者段落共享框。
+不等宽栏调整会使 prepared-block 和 prepass 的接纳结果同时失效，保留节点的 warm/cold 回归先红后绿。
+源码差异、发布 ESM/CJS 补丁和重建方法见[补丁说明](../../patches/docx-core/README.md)。
+窄框、自动宽度、文字水平锚定和侧绕框继续原多栏行为，作者样式／frame XML 不变。
+独立 LibreOffice 26.8.2.2 仍忽略样式继承 frame；隔离副本物化后还触发上游
+[tdf#164445](https://bugs.documentfoundation.org/show_bug.cgi?id=164445) 的框倒序问题。
+产品没有引入该物化方案，保存 PDF 的标题 frame 问题仍保留为上游限制。
+
+上述字体／frame 增量保留其 2026-11-13 验收范围。随后模板规范化、全包查询、core 有效格式与角色比较
+由[Word 模板读取与格式闭环](#word-模板读取与格式闭环2026-11-14)接续，
+原来“只比较既有少量属性”的限制已被扩展；模板观察仍不能等同于出版社的全部强制要求。
+领域当前状态见 [S1 状态](../../services/research-workbench/docs/s1-progress.md#selected-word-template-comparison-2026-11-14)。
+
+本轮系统字体供给与编辑器 frame 修复后，隔离 macOS 原生 `131` 在真实英文、中文稿分别通过
+（3.3／4.2 分钟），本机忽略依据为 `.private/docx-font-layout/run-qpxmVe/` 和 `run-ZgTveB/`。
+英文编辑器标题／作者实测宽度为 468／453.6 pt，两栏正文在框组下方开始；打开、重开、准确字体刷新及
+实际编辑保存后均检查源顺序和几何，并可视复核保存后的首页。两份渲染均供给准确 Times New Roman
+四个 face；英文 PDF 实际嵌入常规／粗体／斜体，中文嵌入常规／粗体，子集版本与本次解析一致。
+两份均实际嵌入 SimSun 5.04i，中文另有 SimHei 5.03i；四 face 独立探针补充验证粗斜体嵌入，
+不能要求真实稿嵌入未使用的 face。保存 PDF 仍为 10／26 页，保存标记可提取。
+两份包的部件、媒体、关系语义和受保护节点保留，段落数仍为 515／533，各只有一次预期文本修改；
+作者输入 hash 前后相同，E2E WebKit 存储已恢复，测试拥有的应用和 Workbench 均退出。
+这没有消除所有字体替代：缺失 Cambria Math 的公式仍出现 LiberationSerif 等字体。
+主控查看实际 PDF 首页，中文未见明显乱码或截断；英文 PDF 仍显示上述 LibreOffice 窄栏标题，
+不能把编辑器跨栏修复算作 PDF frame 修复或全篇 Word/WPS 保真。
+
+当前源码验证：固定内核源码布局回归 12 文件 72 项、安装包公开 API／前端 5 文件 90 项、
+原生 system_fonts 19 项通过（另 1 项依赖本机环境的测试在普通运行中忽略）。
+源码格式／lint／类型、Rust 局部格式及应用库 Clippy、前端局部 lint、包含 E2E 的 TypeScript、
+中英文目录／语言类型、DOCX notices、冻结依赖安装及文档链接均通过。Workbench 完整门禁结果由
+上述领域状态拥有。最终普通生产构建及性能预算通过：入口 JavaScript 4,822,689 bytes，
+总 JavaScript 27,848,074 bytes，开发钩子计数 0，DOCX 内核仍按需加载。
+此前 `run-aHo3Pt` 的验收脚本在显式字体刷新转换完成前记录数量，误判重开新增记录；
+`run-4VvKv6` 误要求中文稿嵌入未用的斜体，均在保留原始失败证据后收紧到实际行为再通过。
+本轮未运行全仓前端／Rust 测试、DOCX 协同或新真实模型实验，未更新正式安装版。
+
+Windows 26100 Hans CAB 的本机研究保持独立：实际解出较新 SimHei／KaiTi／DengXian／FangSong，
+整包 SHA-1 对上固定清单，但仅 HTTP、HTTPS 证书名不匹配且未验 CAB 签名，因此未接入自动目录。
+较新 Windows 标准 SimSun 的 TTC 来源已定位，TTC 提取仍未实现。
+
+包提取真实回归已验证上述六个 face 的字节／元数据，并拒绝错族声明。
+早期 macOS 中文原生扩展 `131` 在 `.private/docx-font-layout/run-XJihrW/` 通过：
+空字体缓存以四种受控准确族规则触发产品提取，内核实际载入 SimSun 的匹配 hash，
+同一 session／revision 和作者字体声明保留；整包来自此前已完整校验的官方归档，未新增网络下载。
+重复检查无包进度事件、整包修改时间不变；字体准备前后导出的 DOCX 字节一致。
+真实稿 PDF 为 26 页，实际嵌入子集读回 SimSun 5.04i 和 SimHei 5.03i；
+KaiTi／DengXian 的供给不代表该 PDF 使用了它们，拉丁字体仍有替代。
+该早期运行不覆盖随后新增的跨会话缓存身份判断与实际编辑／保存验收，由下述最终运行接续。
+指南 ID 格式和选择器等待时序的失败探针保留在 `run-S4tUJf/`、`run-nujxXH/`，未改写为通过。
+
+此前字体包与保存增量的隔离 macOS 原生包在真实中文和英文稿上分别通过 `131`（3.5／3.6 分钟），
+证据为本机忽略目录 `.private/docx-font-layout/run-ilC23E/`（中文）与 `run-oknADL/`（英文）。
+两次均从两个完整校验的官方归档缓存提取四个准确家族，保存来源回执、版本和摘要，
+内核实际载入匹配 hash 的 SimSun，保持同一 session／revision；字体准备后的导出保留包结构和作者格式。
+正常重开复用已完成的同环境 PDF，未增加转换记录；之后通过既有 Agent host 做一次受支持的文本编辑，
+由界面保存新 baseline 并重新生成对应精确 source hash 的 PDF。两份保存包均无部件增减、媒体变化、
+关系语义变化或受保护节点损失，段落数仍为 533／515，各只有一处预期文本变化。
+中文／英文 PDF 分别为 26／10 页，实际子集均读回 SimSun 5.04i，中文另读回 SimHei 5.03i；
+保存标记在两份 PDF 首页可提取；主控可视复核两份首页，中文未见明显乱码或正文截断，
+英文仍复现标题占左栏的既有 frame 问题。未验全篇视觉保真。
+KaiTi／DengXian 只证明准确提取与供给，不宣称 PDF 实际使用；拉丁字体仍有 LiberationSerif 替代。
+Microsoft 部分验证完整归档复用和实际提取，没有重新下载整包；PT Serif 部分则分别经过真实网络下载，
+同会话刷新、切换 world、保留 dirty 文本及撤销均通过。两份作者原稿 hash 前后不变，
+原 E2E WebKit 存储恢复，测试拥有的应用及 Workbench 均退出。该确定性编辑没有新增真实模型质量结论。
+列表读取和实际字体 staging 之间的缓存变更仍可能引起同环境重复转换，但记录保留实际供给身份，
+不把旧缓存 PDF 复用为当前结果；该窄并发窗口尚未做原子合并。
+
+上述字体包与保存增量的源码定向验证通过：前端 6 文件 85 项，原生 assets 9 项和 system_fonts 18 项，
+另有真实 Microsoft 归档六个 face 的显式提取探针通过；两个依赖本机材料的测试在常规运行中跳过。
+Rust 局部格式及应用库 Clippy、含 `131` 的 TypeScript、前端局部 lint、中英文目录／类型及 DOCX notices 通过。
+Workbench 完整 Python 门禁及仍失败的历史 Phase 0 见 [S1 状态](../../services/research-workbench/docs/s1-progress.md)。
+最终普通生产构建及性能预算通过：入口 JavaScript 4,822,689 bytes，总 JavaScript 27,847,573 bytes，
+开发钩子计数 0，DOCX 内核仍按需加载；既有大 chunk 与原生 debug unwind 警告保留。
+未更新正式安装版，未扩大平台或语言范围。
+
+此前准确字体首版 macOS 原生 `131-docx-font-layout` 在真实英文、中文输入分别通过（32.3／27.0 秒）。
+两份均验证准确 Times New Roman 原字节、内核实际 FontFace hash／加载及正文采用，无宿主跨族映射；
+缺失的中文字体如实列出。无改动导出均无部件增减、媒体／关系变化、受保护节点损失或正文变化，
+段落保持 515／533，styles、fontTable、sectPr、framePr、rFonts 属性保留；英文仍有下节记录的序列化差异。
+随后使用受控 PT Serif 指南经过真实 world 服务，在空应用缓存自动下载四款准确字体及许可，
+校验下载摘要、回查常规 face、确认浏览器采用相同 hash 的加载字体及实际正文 run。
+人工编辑后切换到另一 world、恢复工作区、刷新字体，session／revision／dirty 正文保持，撤销仍有效。
+该受控指南证明获取流程，不代表已识别作者真实期刊的全部要求。两份作者 hash 前后不变，
+E2E WebKit 存储已恢复，测试拥有的应用与 Workbench 进程已退出。
+证据位于本机忽略目录 `.private/docx-font-layout/run-nM8zUs/`（英文）、`run-nhCcvM/`（中文）。
+先前切换选择器时序及整句被拆为多个 run 的验收脚本失败保留在对应运行目录，没有改写为通过证据。
+
+11 个前端定向文件 157 项通过；原生 system_fonts 18 项、assets 6 项及显式本机 face/hash 探针 1 项通过，
+Rust 格式／库 Clippy、前端局部 lint、含 E2E 的 TypeScript、中英文目录／类型、DOCX notices 和相对文档链接通过。
+Workbench 完整 Python 门禁及历史 Phase 0 失败见 [S1 状态](../../services/research-workbench/docs/s1-progress.md)。
+该首版普通生产构建及性能预算通过：入口 JavaScript 4,822,687 bytes，总 JavaScript 27,846,337 bytes，
+开发钩子计数 0，DOCX 内核仍按需加载；既有大 chunk 和原生 debug unwind 警告保留。
+未运行新的真实模型、全仓前端／Rust 测试、Windows、其他语言或 Word/WPS 视觉等价验收，未更新正式安装版。
+
+### Word 模板读取与格式闭环（2026-11-14）
+
+期刊面板现可明确选用 `.doc`／`.docx` 模板，选定后立即作为比较依据，无须逐项确认模板中的字体或字号。
+旧 Word 通过本机 LibreOffice 在独立临时目录内转为 Transitional DOCX，原始字节、规范化字节、摘要和转换来源
+共同留存，作者原路径只读。Strict OOXML 入口明确拒绝并要求先另存为 Transitional，不返回空的成功结果。
+
+当前读取范围已扩展到完整包部件、关系、原始 XML／二进制，以及固定 DOCX core 计算的有效段落和 run 格式、
+分节与表格结构。格式快照绑定源 hash 和内核版本，沿 Workbench 既有 source/world/baseline/artifact/evidence 保存。
+面板和 Agent 可按部件、节点路径、命名空间、对象及属性读取，快照与 finding 支持分页，完整 finding 只留存一次。
+语义比较按标题、作者、摘要、正文、题注、参考文献等角色及真实节块区域建立 profile；不按跨文档 XML 路径、
+节序或示例表格尺寸配对。同角色格式混合、无对应 profile、未知对象和无法解释的结构保留明确的不确定性及依据。
+全部 XML 可读不表示每种 OOXML 行为都已解释成有效格式或期刊强制要求。
+
+模板比较返回观察一致、观察差异或无法判定，只有独立指南的明确约束可以产生违规判定。
+真实 IJAM 模板只有一个两栏且包含多种内容角色的 section；标题是该节中的跨栏 frame，不能把它写成独立单栏节。
+模板活跃 run 的字体要求包括 Times New Roman 和 Symbol，没有实际使用的东亚字体槽；空标记和未启用的字体槽
+不触发下载。明确选用的模板字体进入既有准确字体获取服务，界面保留家族、角色、文字类型和实际字体版本／摘要。
+
+普通 Agent、MCP、任务及任务群共用活动编辑器 host 的格式读取、显式 revision 修改、保存及指定模板复查工具。
+保存核对 Workbench 留存的 baseline/source hash；任务 intent 在 renderer 交接前落库，完成结果继承实际
+task/generation/member/execution/work 来源。checkpoint 保留操作引用及紧凑回执，已经发生的编辑或保存不会因
+任务随后取消而失去来源。恢复与幂等规则见[架构](architecture.md#word-模板与有效格式2026-11-14)，
+合同字段由 [journal contract](../../services/research-workbench/contracts/journals/world-contract.json) 拥有。
+
+真实 IJAM 规范化模板及中英文稿的浏览器验收通过：英文 53,161 条 finding、54 页结果，中文 54,395 条、55 页结果，
+完整遍历、筛选、重复检查身份和留存摘要一致，作者 hash 前后不变，没有将模板差异报告为违规。
+本机忽略依据为 `.private/journal-template-acceptance/real-bqD6BA/report.json`；确定性小样例另验证修改后差异转为一致。
+Workbench 完整门禁通过 Ruff 格式／lint、mypy 和 1140 项测试（33 项既有跳过），领域范围见
+[S1 当前状态](../../services/research-workbench/docs/s1-progress.md#selected-word-template-comparison-2026-11-14)。
+原生验收入口及隔离恢复方式见 [E2E 说明](../../e2e/README.md#journal-template-acceptance)。
+
+最终隔离 macOS 原生 `139`／`140` 两项通过。`139` 实际从旧 `.doc` 采用模板，导入并查询两份真实稿，
+通过普通 Agent 工具把中文标题指定 run 的字号从 16 pt 改为模板观察的 24 pt，保存后同一 case 由差异转为一致，
+关闭重开及导出 XML 的确切路径仍为 24 pt。英文无改动导出、中文修改保存和无原始 paraId 的重复文本小样例均保留
+包部件、媒体、关系、受保护节点及正文；英文／中文段落数仍为 515／533，只有 `document.xml` 发生序列化或预期编辑变化。
+重复文本样例只把第二段的东亚字体从 SimHei 改为 KaiTi，第一段宋体、两段 Arial 和各自字号保持，重开后仍可区分。
+
+`140` 通过脚本 provider 驱动真实原生任务群与活动编辑器，完成读取格式及两轮格式修改、保存和复查，
+revision 从 0 到 1 再到 2，两个保存版本的 baseline／hash 各自核对；第一次检查过期、第二次保持当前。
+7 项 intent 与 7 项完成结果及 6 项 checkpoint 连回实际 task/generation/member/execution/work，
+没有用模型参数伪造来源。操作确认后的清理保证第二轮保存成功，关闭后能正常重开新 session（revision 0、saved 0、
+dirty=false、第二次保存的 baseline／hash），无遗留恢复提示。此验收证明原生操作及归属机制，不代表真实模型编辑质量。
+本机忽略依据为 `.private/journal-template-native/run-tSTnM7/runner.json`、其 `template/run-T6cvu4/report.json`
+和 `docx-format-task-report.json`；三份作者输入与规范化模板摘要一致，7 项 E2E WebKit 存储均恢复，测试拥有的进程已退出。
+此前脚本定位、工具发现及回执形状断言失败保留在各自运行目录，未改写为通过结果。
+
+源码检查包含前端完整运行 1,677 个文件：23,818 项通过、8 项跳过，5 项失败集中于 DOCX 设计规范及
+原生 MCP 写工具清单；修正后相关 57 项通过。随后操作确认、无变化清理、检查期间修改及任务连续保存的
+定向回归通过，当前相关 7 文件 108 项通过、1 项本机材料探针跳过。全项目 TypeScript、前端 Biome、
+中英文目录／类型及 DOCX notices 通过；原生任务 5 项及应用／Research 库 Clippy 通过。
+普通生产构建及性能预算通过：入口 JavaScript 4,824,892 bytes，总 JavaScript 27,909,306 bytes，
+生产开发钩子计数 0，DOCX 内核仍按需加载；既有大 chunk 和原生 debug unwind 提示保留。
+这不是完整 Rust 工作区测试或 Office 全篇视觉等价结论。
+
+### DOCX 字体与首页布局（2026-11-13，历史）
+
+下述早期运行采用了后被用户否定的替代策略，保留作为字节接入和排版机制的历史证据。
+当前准确字体策略及验证以上一节为准，不把历史 Noto 替代运行当作期刊字体要求满足。
+
+活动编辑器现在优先通过应用既有 `system_fonts`／fontdb 取得本机静态独立字体字节，
+复用 EigenPal 公开 FontResolver 与随包字体组合。实际 family、字重、style、faceIndex 和 hash 对应原字节；
+不存在的族名不做系统泛型替换，localized alias 和近似字重用显式关系连接。
+宋体／SimSun 和黑体／SimHei 缺失时分别尝试已安装的 Noto Serif CJK SC、Noto Sans CJK SC，
+界面显示实际替代，保留内核缺失提示。当前本机源不提供 TTC、可变字体或 oblique face，楷体没有被映射成其他字体。
+本机 Noto Serif CJK SC 2.003 通过 Homebrew 安装，仓库没有新增字体文件或依赖。
+
+Vite 开发预打包曾把随包字体 URL 移到 `.vite/assets`，缺失资源返回 HTTP 200 HTML，导致固定度量；
+现已排除该字体包的预打包，回归直接核对字体响应字节。两份真实稿的开发探针均能加载随包字节。
+首次原生字体验收 `run-u6xyPP` 进一步发现 CJK 文件大于 HarfBuzz 默认 16 MiB 执行上限，报 `fontOverLimit`；
+宿主现通过公开接口把执行上限与 native 单 face 上限统一为 64 MiB，保留错误展示。
+独立终审另修复第二次替代查询失败会丢弃已成功原字体的局部失败扩大问题，相关回归通过。
+
+最终 macOS 原生 `131-docx-font-layout` 在真实英文、中文稿分别通过。独立核对 native 字节/hash/metadata，
+再观察内核实际传入浏览器 FontFace 的二进制 hash、加载成功及 `document.fonts` 成员，
+并核对实际正文 run 使用对应私有字体。两份均达到 shaped／resolving=false、无字体错误，
+英文使用本机 Times New Roman，中文正文／标题使用明确声明的 Noto Serif／Sans 替代。
+无改动导出均无部件增减、媒体或关系语义变化、受保护节点损失及正文文本变化，段落仍为 515／533；
+styles、fontTable、sectPr、framePr 和 rFonts 属性保留。英文 `document.xml` 仍有内核序列化变化：
+一个 paraId／textId 重新生成，以及无首尾空白正文的 `xml:space="preserve"` 去除；不宣称包字节或所有段落 ID 完全相同。
+关闭重开后仍使用字体字节度量且为未修改状态，作者原稿 hash 前后不变，E2E WebKit 存储恢复，测试拥有的进程已退出。
+主控查看两份首屏，中文标题、摘要字形可读；英文标题仍窄栏，不把局部页面检查扩展成全篇视觉保真。
+最终证据位于本机忽略目录 `.private/docx-font-layout/run-OK1bxl/`（英文）与 `run-Ukg5LL/`（中文）；
+此前通过运行及首次失败均保留，字体文件没有复制进验收证据。复跑入口见 [E2E 说明](../../e2e/README.md#native-docx-fonts-and-layout)。
+
+英文原稿首页声明双栏节内的 468 pt 页锚定 Title frame 和 453.6 pt Authors frame，导出后这些属性完整保留。
+固定发布源码与公开 API 单栏／双栏探针确认：当前内核只在单栏节启用段落 frame，双栏标题因而按普通栏宽排版。
+原稿独立 LibreOffice 转换与已保存稿均为 10 页，首页标题的文字、bbox、字号和字体相同；这是该渲染器对原稿的解释差异，
+没有证据表明本次导出删除标题属性。源码与修复边界见[组件复用](reuse.md#docx-编辑与实时工作机制)，
+探针、固定源码及页面对照位于本机忽略目录 `.private/docx-layout-investigation/`。
+本轮未解除内核多栏 frame 门禁、未改作者 XML、未修改 LibreOffice 的字体选择或布局路径；这些字体也不改变独立 PDF 引擎的环境。
+
+前端定向 7 文件 124 项、native system_fonts 15 项及显式本机字体探针 1 项通过；该环境探针在普通运行中按 opt-in 忽略，已单独执行通过。
+Rust 格式和库 Clippy、前端局部 lint、包含新增 E2E 的 TypeScript、中英文目录、语言类型及 DOCX notices 通过。
+最终隔离原生包、普通生产构建和性能预算通过：入口 JavaScript 4,820,463 bytes，总 JavaScript 27,851,811 bytes，开发钩子计数 0，DOCX 仍按需加载。
+保留既有大 chunk 与 debug unwind 提示；未重复全仓前端／Rust／Python 测试、未更新正式安装版。
+Windows 和其他语言仍不在本轮范围内。本轮证明实际字体接入、明确替代与上述导出保护，不证明 Word/WPS 排版等价、全篇字形覆盖或外部文档自动同步。
+
+### DOCX 实时工作形态研究（2026-11-10，历史）
+
+此节记录接入前的调查与复现。当前接入和已修复问题见[首个闭环](#docx-工作副本首个闭环2026-11-11)。
+
+主控与两位研究责任人核对当前实现和固定版本上游源码，使用隔离合成输入验证版本、位置与编辑语义。
+当时交付是[目标设计](architecture.md#docx-实时工作表面)、
+[组件取舍](reuse.md#docx-编辑与实时工作机制)及下列验证结果，没有接入 DOCX 编辑内核。
+目前工作分支为 `codex/shared-paper-reader`，调查基点为 `cfae9fd7`；既有论文阅读未提交改动继续保留。
+
+产品方向是正文内实时生成、可接管编辑与按对象展示工作。token 更新建议展示，完成的编辑事务进入活动会话，
+实际导出字节再进入 Workbench 基线/检查/预览链。已有授权直接改写可按完整片段应用，不增加逐段审批。
+内核需同时证明位置跟随、用户介入、按来源撤销和保存回执；源码提供某个 API 不足以宣布闭环完成。
+当前同群串行调度不因呈现多项工作而变成并发。
+
+已运行的定向验证与复现：
+
+- 现有内联建议、范围跟随与流式 provider 三个测试文件共 35 项通过，证明这些既有文本编辑路径。
+  隔离组件探针另运行 4 项，其中 3 项复验上述既有行为，1 项**复现缺口**：用户在候选范围内把 `world` 改为 `woRld` 后，
+  建议仍可接受并覆盖该输入为 `there`。当时断言通过表示复现成立，也不是 DOCX 引擎结果；该问题已在后续首版接入中修复。
+- 复制公开合成 DOCX，仅改 ZIP comment，所有包部件和文字不变，但两版对象目录各有 32 个 object ID，交集为空。
+  另一探针前插段落，原文 locator 从 `paragraph[1]` 移至 `paragraph[2]`。现有证据 ID 应保留快照语义，
+  会话锚点须由编辑内核另行维护，外部 Word/WPS 重存后的对齐不能据此承诺。
+- 同一 Python 服务探针提交两份基线后删除原输入，原 request 仍重放同一响应，旧读记录能精确恢复；
+  迟到保存返回 `BASELINE_CONFLICT`，旧游标不能读取新基线。另有 4 项既有双连接冲突、派生 stale、
+  读期间更新及原件删除后重放回归通过。这些证明可复用的领域保存边界，不证明编辑器导出成功。
+- EigenPal `@docx-editor.dev/core@2.36.0` 无界面探针及主控复跑完成窄正文替换、DOCX 保存与重开；
+  旧 expectedRevision 返回 `stale-revision`，内容与数字 revision 不再改变。两个替换放在一个 batch
+  只推进一个数字 revision 并发一次变更事件；三次累计替换各推进一个 revision 并发一次事件。
+  proposeReplacement 生成两个均署 Agent A 的删除/插入修订标记。
+  未改动段落中的合成 Zotero 域指令、简单 OMML `x`、未知命名空间元素与一个未引用二进制部件保持。
+  XML 被规范化并新增段落 ID，不是逐字节无损；保留孤立二进制也不证明 MathType/OLE 功能或域刷新。
+  探针未引入 Pro，没有证明浏览器单次撤销、修订审阅 UI、分页/PDF 或真实论文保真。
+- 源码复核发现现有 transcript flush 在提交失败后仍答复，SharedDocument 存盘等待也未传递所有失败或超时。
+  这是接入 DOCX 时必须补齐的完成语义，未做故障注入，不把现有返回值写成确定字节已保存的回执。
+
+本轮未运行原生 Office 的交互编辑器、真实模型编辑、外部 Word/WPS 往返、真实排版一致性、并发群编辑或
+导出失败/重启恢复集成；真实浏览器结构往返已运行并通过，但不代表上述视觉或原生能力；未改作者原稿、领域合同或正式安装版。宿主 `pnpm exec` 因缺少本机可执行包失败，
+上述前端定向回归通过仓库已安装的 Vitest Node 入口运行，没有修复全局工具链。探针、必要输出与源码定位
+保留在本地忽略目录 `.private/upstream-reuse/docx-live-research-20261110/`，干净 checkout 不包含这些运行证据。
+
 ## 剩余工作与推进顺序
 
-1. 优先追查真实研究任务中“已有独立分析却未结算原工作、未形成稿件”的断点，先打通配对实验的初始化合同，
+1. DOCX 工作副本、重启恢复、跨崩溃任务/保存归属和保存版本的 LibreOffice PDF 已接入。真实论文结构往返及中英文各一次真实模型窄语言修改已验证；
+   下一步围绕这两份实际稿件改善字体、英文首页标题分页和高级对象语义，逐项验证显示及导出结果；外部 Word/WPS 更新仍需单独接入，保持人工接管、撤销和精确保存身份。
+2. 继续追查真实研究任务中“已有独立分析却未结算原工作、未形成稿件”的断点，先打通配对实验的初始化合同，
    再以真实遗漏、澄清与探索场景比较完成度和处理成本；不增加成员或扩大额度掩盖负结果。
    单次长响应/工具仍不能抢占，职责判断的频率与冗余介入须按真实结果调整。
-2. 按实际场景继续贯通文献、引用和其他应用入口，沿“当前对象 → 来源 → 业务操作 →
+3. 按实际场景继续贯通文献、引用和其他应用入口，沿“当前对象 → 来源 → 业务操作 →
    结果核查 → 原对象回链 → 界面接管”验收，不只验证能读取文件。
-3. 扩展已实现的语义职责匹配和候选吸收到有实际缺口的领域，再做一次指定模型及有依据的能力改进，
+4. 扩展已实现的语义职责匹配和候选吸收到有实际缺口的领域，再做一次指定模型及有依据的能力改进，
    保留来源和候选身份，不把情绪或附和变成事实。
-4. 外部 ACP/CLI 执行端出现已复现的投递或副作用缺口时，再借用相应 receipt/fencing 合同；
+5. 外部 ACP/CLI 执行端出现已复现的投递或副作用缺口时，再借用相应 receipt/fencing 合同；
    不重复引入现有 TaskStore 已有的本地队列和恢复。
-5. Windows 小模型仅替换有明确输入输出和对照的窄环节。此前小样本标定及部署记录是历史材料，
+6. Windows 小模型仅替换有明确输入输出和对照的窄环节。此前小样本标定及部署记录是历史材料，
    当前服务状态和“能补主 Agent 漏项”的收益均未由本线确认。
-6. 跨任务记忆作为可选来源候选与检索辅助，按实际缺口验证；不接管当前状态，
+7. 跨任务记忆作为可选来源候选与检索辅助，按实际缺口验证；不接管当前状态，
    也不把历史建议升级成用户要求或已验证事实。
 
 后续改动更新本页相关正文；技术合同改[架构](architecture.md)，组件选择改[复用依据](reuse.md)。

@@ -50,6 +50,7 @@ import {
 } from "@/components/editor/cm/controller";
 import { openProjectLocation } from "@/lib/open-location";
 import { sharedWriteRefusal, writeSharedText } from "@/lib/shared-document-writes";
+import { createDocxAgentTools } from "@/lib/docx-agent-host";
 
 export type { ToolApprovalRequest, ConfirmFn } from "@oleafly/ai-tools";
 
@@ -481,8 +482,9 @@ export function createOleaflyTools(opts?: {
   onImage?: (dataUrl: string) => void;
   mutationAllowed?: () => boolean;
   runId?: () => string | null;
+  signal?: AbortSignal;
 }) {
-  return createOleaflyToolsCore(HOST, {
+  const core = createOleaflyToolsCore(HOST, {
     ...opts,
     resolveExecCwd: agentExecCwd,
     authorizeExec: async (projectId, command, runIdOverride) => {
@@ -496,6 +498,7 @@ export function createOleaflyTools(opts?: {
     execCommand: (projectId, command, authorization) =>
       agentExec(projectId, command, authorization.runId, authorization.approvalToken),
   });
+  return Object.assign(core, createDocxAgentTools(opts));
 }
 
 export function createFigureTools(opts?: {

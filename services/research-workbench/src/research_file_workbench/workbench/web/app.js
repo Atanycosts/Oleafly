@@ -6,7 +6,7 @@ import { renderSourceReview, openSourceLibrary } from "./views/source-review.js"
 import { createManuscriptWorkspace } from "./views/manuscript.js";
 import { userMessage, evidenceQuote } from "./ui/presentation.js";
 
-const HTTP_CONTRACT_VERSION = "journal-http-1.5.0";
+const HTTP_CONTRACT_VERSION = "journal-http-1.11.0";
 const state = {
   token: null, worlds: [], projects: [], capabilities: {}, world: null,
   projectId: null, check: null, ruleId: null, filter: "all", sources: [], busy: false,
@@ -478,11 +478,13 @@ function renderDetail() {
   byId("rule-limits").replaceChildren(...limits.map((limit) => element("li", "", userMessage(limit))));
   show("rule-limits-section", limits.length > 0);
   show("disposition-section", Boolean(check));
-  byId("revise-value-label").textContent = rule.unit === "count" ? "要求栏数" : "要求值（毫米）";
+  byId("revise-value-label").textContent = rule.unit === "font_family" ? "要求字体" : rule.unit === "count" ? "要求栏数" : rule.unit === "twips" ? "要求值（毫米）" : "要求值（点）";
+  byId("revise-expected").type = rule.unit === "font_family" ? "text" : "number";
   byId("revise-expected").step = rule.unit === "count" ? "1" : "any";
   byId("revise-expected").min = rule.property.endsWith("margin_twips") ? "0" : rule.unit === "count" ? "1" : String(25.4 / 1440);
   if (byId("revise-expected").dataset.originalValue === undefined) {
-    const value = rule.expected === null ? "" : String(rule.unit === "twips" ? Number((rule.expected * 25.4 / 1440).toFixed(3)) : rule.expected);
+    const scale = rule.unit === "twips" ? 1440 / 25.4 : rule.unit === "half_points" ? 2 : rule.unit === "spacing_twips" ? 20 : 1;
+    const value = rule.expected === null ? "" : rule.unit === "font_family" ? rule.expected : String(Number((rule.expected / scale).toFixed(4)));
     byId("revise-expected").value = value;
     byId("revise-expected").dataset.originalValue = value;
   }
@@ -652,10 +654,11 @@ async function reviseRule(event) {
   const input = byId("revise-expected").value.trim();
   const numeric = Number(input);
   const reason = byId("revise-reason").value.trim();
-  if (!rule || !input || !Number.isFinite(numeric) || numeric < 0 || !reason) { errorAt("revise-error", "请填写有效的要求值和确认依据。"); return; }
+  if (!rule || !input || !reason || (rule.unit !== "font_family" && (!Number.isFinite(numeric) || numeric < 0))) { errorAt("revise-error", "请填写有效的要求值和确认依据。"); return; }
   if (rule.unit === "count" && !Number.isInteger(numeric)) { errorAt("revise-error", "栏数需要填写整数。"); return; }
-  const expected = rule.unit === "twips" ? Math.round(numeric * 1440 / 25.4) : numeric;
-  if (!Number.isSafeInteger(expected) || (expected < 1 && !rule.property.endsWith("margin_twips"))) { errorAt("revise-error", "纸张尺寸和栏数必须大于零，请填写有效数值。"); return; }
+  const scale = rule.unit === "twips" ? 1440 / 25.4 : rule.unit === "half_points" ? 2 : rule.unit === "spacing_twips" ? 20 : 1;
+  const expected = rule.unit === "font_family" ? input : Math.round(numeric * scale);
+  if (rule.unit !== "font_family" && (!Number.isSafeInteger(expected) || (expected < 1 && !rule.property.endsWith("margin_twips")))) { errorAt("revise-error", "纸张尺寸和栏数必须大于零，请填写有效数值。"); return; }
   await perform("正在保存已确认规则的新版本…", async () => {
     const world = await api("/api/revise", { version_id: state.world.version_id, rule_id: rule.rule_id, expected, reason });
     clearDraft(); await refreshAfterWrite("规则新版本已保存", world.version_id);

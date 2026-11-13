@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { testCatalogTranslator } from "@oleafly/i18n-contract/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -57,11 +57,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock("./mainThreadWorker", () => ({
   installMainThreadPdfWorker: () => harness.installMainThread(),
-}));
-vi.mock("./pdfController", () => ({
-  registerPdfView: vi.fn(),
-  clearPdfView: vi.fn(),
-  pageClickToBp: vi.fn(() => null),
 }));
 vi.mock("pdfjs-dist/web/pdf_viewer.mjs", () => ({
   EventBus: class {
@@ -211,7 +206,8 @@ vi.mock("pdfjs-dist", () => {
   };
 });
 
-import { PdfViewer } from "./PdfViewer";
+import { PdfViewer, type PdfViewerHandle } from "./PdfViewer";
+import { gotoPdfPage } from "./pdfController";
 import { sharedPdfDocumentOptions } from "./pdfDocumentOptions";
 
 const t = testCatalogTranslator<PreviewMessageKey>("preview");
@@ -251,6 +247,63 @@ afterEach(() => {
 });
 
 describe("PdfViewer loading", () => {
+  it("keeps global manuscript navigation after an independent preview opens, zooms and closes", async () => {
+    harness.pages = [page(), page()];
+    const mainData = new Uint8Array([1]);
+    const previewData = new Uint8Array([2]);
+    const previewRef = createRef<PdfViewerHandle>();
+    const main = render(
+      <div style={{ overflowY: "auto" }}>
+        <PdfViewer data={mainData} scale={1} documentIdentity="manuscript" t={t} />
+      </div>,
+    );
+    const mainPane = main.container.firstElementChild as HTMLElement;
+    Object.defineProperties(mainPane, {
+      scrollHeight: { value: 2000 },
+      clientHeight: { value: 500 },
+    });
+    const mainScroll = vi.fn();
+    mainPane.scrollTo = mainScroll;
+    await waitFor(() => expect(mainPane.querySelector("[data-pdf-state]")).toHaveAttribute("data-pdf-state", "ready"));
+
+    const navigateManuscript = async () => {
+      mainScroll.mockClear();
+      expect(await gotoPdfPage(2)).toBe(true);
+      expect(mainScroll).toHaveBeenCalledOnce();
+    };
+    await navigateManuscript();
+
+    const preview = render(
+      <div style={{ overflowY: "auto" }}>
+        <PdfViewer ref={previewRef} data={previewData} scale={1} documentIdentity="paper" registerGlobalController={false} t={t} />
+      </div>,
+    );
+    const previewPane = preview.container.firstElementChild as HTMLElement;
+    Object.defineProperties(previewPane, {
+      scrollHeight: { value: 2000 },
+      clientHeight: { value: 500 },
+    });
+    const previewScroll = vi.fn();
+    previewPane.scrollTo = previewScroll;
+    await waitFor(() => expect(previewPane.querySelector("[data-pdf-state]")).toHaveAttribute("data-pdf-state", "ready"));
+    await navigateManuscript();
+    act(() => previewRef.current?.gotoPage(2));
+    expect(previewScroll).toHaveBeenCalledOnce();
+
+    preview.rerender(
+      <div style={{ overflowY: "auto" }}>
+        <PdfViewer ref={previewRef} data={previewData} scale={1.5} documentIdentity="paper" registerGlobalController={false} t={t} />
+      </div>,
+    );
+    // Let the 120 ms zoom-settle registration path run as well as initial layout.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 160)); });
+    await navigateManuscript();
+    preview.unmount();
+    await navigateManuscript();
+    main.unmount();
+    expect(await gotoPdfPage(2)).toBe(false);
+  });
+
   it("reports the renderer as unavailable when the main-thread fallback cannot start", async () => {
     harness.pages = [page()];
     harness.loadErrors = [Object.assign(new Error("Missing PDF"), { name: "MissingPDFException" })];

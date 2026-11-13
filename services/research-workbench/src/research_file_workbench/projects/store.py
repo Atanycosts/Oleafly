@@ -13,6 +13,7 @@ from research_file_workbench.projects import (
     author_decision_records,
     baseline_records,
     evidence_records,
+    format_records,
     read_records,
 )
 from research_file_workbench.projects.models import (
@@ -119,6 +120,23 @@ class ProjectStore:
                 artifact_records.read_artifact(connection, version_id)
             yield baseline
 
+    def save_template_findings(self, baseline_id: str, findings: list[JsonObject]) -> str:
+        """Retain complete object findings using existing content-addressed artifacts."""
+        with connect_project(self.database_path) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return format_records.save_template_findings(connection, baseline_id, findings)
+
+    def save_format_snapshot(self, baseline_id: str, snapshot: JsonObject) -> JsonObject:
+        """Retain core facts on an exact immutable baseline."""
+        with connect_project(self.database_path) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return format_records.save_format_snapshot(connection, baseline_id, snapshot)
+
+    def get_format_snapshot(self, baseline_id: str) -> JsonObject:
+        """Read the latest retained core method result for the selected baseline."""
+        with connect_project(self.database_path) as connection:
+            return format_records.get_format_snapshot(connection, baseline_id)
+
     def save_render_bundle(
         self,
         *,
@@ -149,6 +167,11 @@ class ProjectStore:
         """List registrations for the requested or current baseline without marking them read."""
         with connect_project(self.database_path) as connection:
             return evidence_records.list_render_bundles(connection, baseline_id)
+
+    def list_derived_renders(self, baseline_id: str) -> list[JsonObject]:
+        """List derived PDF registrations for one explicit baseline."""
+        with connect_project(self.database_path) as connection:
+            return evidence_records.list_derived_renders(connection, baseline_id)
 
     def list_baselines(self) -> list[JsonObject]:
         """Return immutable baseline history in insertion order."""

@@ -83,7 +83,7 @@ def analyze_world(
             gaps.append(
                 coverage_gap(
                     "property_not_established",
-                    "No applicable expectation was established for this geometry property.",
+                    "No applicable expectation was established for this property.",
                     property_name=property_name,
                 )
             )
@@ -99,8 +99,8 @@ def analyze_world(
         "coverage_gaps": sorted(gaps, key=encode_json_object),
         "limitations": [
             ASSURANCE_LIMITATION,
-            "Coverage is limited to declared page geometry; no full-journal compliance is "
-            "established.",
+            "Coverage is limited to declared page geometry and body font requirements; "
+            "font availability and full-journal compliance are not established by analysis.",
         ],
     }
     world["version_id"] = world_version_id(world)
@@ -176,6 +176,8 @@ def _source_rules(
             )
         )
     for property_name in PROPERTY_LABELS:
+        if property_name == "body_font_family":
+            continue
         values = [getattr(section, property_name) for section in result.sections]
         if not values or any(value is None for value in values):
             gaps.append(
@@ -241,7 +243,7 @@ def _aggregate_rules(
         relevant = [item for item in observations if item["property"] == property_name]
         if not relevant:
             continue
-        values = {cast(int, item["expected"]) for item in relevant}
+        values = {cast(int | str, item["expected"]) for item in relevant}
         confirmed = [item for item in relevant if item["basis_status"] == "confirmed"]
         state = "conflict" if len(values) > 1 else "confirmed" if confirmed else "candidate"
         evidence = {
@@ -297,6 +299,11 @@ def validate_world_sources(world: JsonObject, sources: dict[str, bytes]) -> None
     descriptors = require_objects(world["sources"], "world sources", nonempty=True)
     if set(sources) != {item["source_id"] for item in descriptors}:
         raise WorldAnalysisError("World source bytes and descriptors must match exactly")
+    if "template" in world:
+        from research_file_workbench.journals.template_models import validate_template_sources
+
+        validate_template_sources(world, sources)
+        return
     captured: list[SourceInput] = []
     for item in descriptors:
         source_id = cast(str, item["source_id"])
@@ -323,7 +330,7 @@ def validate_world_sources(world: JsonObject, sources: dict[str, bytes]) -> None
         rebuilt = revise_rule(
             rebuilt,
             cast(str, decision["rule_id"]),
-            cast(int, decision["expected"]),
+            cast(int | str, decision["expected"]),
             cast(str, decision["reason"]),
             cast(str, decision["actor_id"]),
         )

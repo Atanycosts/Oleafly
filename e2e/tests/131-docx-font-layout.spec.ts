@@ -1,0 +1,492 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
+import { strToU8, zipSync } from "fflate";
+import type { BrowserPageAdapter, TauriPage } from "@srsholmes/tauri-playwright";
+import type { DocxDocumentRead } from "../../packages/ai-tools/src/tools";
+import type { DocxRender } from "../../src/lib/docx-render";
+import { test, expect } from "../fixtures";
+import { createBlankProject, openRailTab } from "../helpers";
+import { scriptValue } from "../script-value";
+
+const enabled = process.env.OLEAFLY_DOCX_FONT_LAYOUT === "1";
+type Page = TauriPage | BrowserPageAdapter;
+const input = process.env.OLEAFLY_REAL_DOCX;
+const inputHash = process.env.OLEAFLY_REAL_DOCX_SHA256;
+const run = process.env.OLEAFLY_DOCX_RECOVERY_RUN;
+const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+const output = (name: string) => resolve(run!, name);
+const live = (page: Page) => page.evaluate<DocxDocumentRead>(`window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m => m.DOCX_AGENT_HOST.readDocument())`);
+
+interface FontRequest { family: string; weight: number; style: "normal" | "italic" }
+interface FontFace {
+  requested: FontRequest; family: string; postscriptName: string;
+  weight: number; style: string; faceIndex: number; sha256: string;
+  computedSha256: string; bytes: number; signature: string;
+  version: string | null;
+}
+interface FontResult { faces: FontFace[]; missing: FontRequest[] }
+interface PdfFont { name: string; versions: string[] }
+
+async function verifyTitleLayout(page: Page, stage: string) {
+  if (inputHash !== "778b76e7abcd01fbd68fa3e09a75bf07a726c6febeb18f758131e2c562027c2d") return;
+  const snapshot = await live(page);
+  const titleTarget = snapshot.paragraphs.find(item => item.text.startsWith("Auditable privacy protection for Hyperledger Fabric"))!;
+  await page.selectOption('[data-testid="docx-workspace"] aside select', titleTarget.paragraphRef);
+  await expect.poll(() => page.evaluate(`Array.from(document.querySelectorAll('[data-testid="docx-editor-surface"] .docx-paragraph-fragment')).some(item => item.textContent.startsWith('Auditable privacy protection for Hyperledger Fabric'))`)).toBe(true);
+  const paragraphs = await page.evaluate<{ text: string; page: string | null; box: { x: number; y: number; width: number; bottom: number } }[]>(`Array.from(document.querySelectorAll('[data-testid="docx-editor-surface"] .docx-paragraph-fragment')).map(item => ({
+    text: item.textContent, page: item.closest('[data-page-index]')?.getAttribute('data-page-index') ?? null,
+    box: item.getBoundingClientRect().toJSON()
+  }))`);
+  const title = paragraphs.find(item => item.text.startsWith("Auditable privacy protection for Hyperledger Fabric"))!;
+  const authors = paragraphs.find(item => item.text.includes("First A. Author"))!;
+  const correspondence = paragraphs.find(item => item.text.startsWith("Corresponding author:"))!;
+  const abstract = paragraphs.find(item => item.text.startsWith("Abstract—"))!;
+  expect(title).toBeDefined();
+  expect(authors).toBeDefined();
+  expect(correspondence).toBeDefined();
+  expect(abstract).toBeDefined();
+  expect(title.box.width).toBeGreaterThan(abstract.box.width * 1.7);
+  expect(authors.box.width).toBeGreaterThan(abstract.box.width * 1.7);
+  expect(authors.box.y).toBeGreaterThanOrEqual(title.box.bottom - 1);
+  expect(correspondence.box.y).toBeGreaterThanOrEqual(authors.box.bottom - 1);
+  const body = paragraphs.filter(item => item.page === title.page && item.box.width < title.box.width * 0.7 && item.text.trim().length > 40);
+  expect(body.some(item => item.box.x > abstract.box.x + abstract.box.width)).toBe(true);
+  for (const paragraph of body) expect(paragraph.box.y).toBeGreaterThanOrEqual(correspondence.box.bottom - 1);
+  await writeFile(output(`${stage}-title-layout.json`), JSON.stringify(paragraphs.filter(item => item.page === title.page), null, 2));
+  await page.screenshot({ path: output(`${stage}-title-layout.png`) });
+}
+
+async function verifyPdfLatinFonts(render: DocxRender, fonts: PdfFont[]) {
+  const faces: FontFace[] = JSON.parse(await readFile(output("native-fonts.json"), "utf8"));
+  for (const face of faces) {
+    expect(render.manifest.render_record.supplied_fonts?.some(item => item.sha256 === face.sha256 && item.version === face.version)).toBe(true);
+    // Both real fixtures use regular/bold TNR. Only the English fixture uses
+    // italic TNR prose; unused faces are supplied but need not be embedded.
+    if (face.style === "italic" && (face.weight === 700 || inputHash !== "778b76e7abcd01fbd68fa3e09a75bf07a726c6febeb18f758131e2c562027c2d")) continue;
+    expect(fonts.some(item => item.name.endsWith(face.postscriptName) && (face.version === null || item.versions.includes(face.version))), `${face.postscriptName} is embedded with the resolved version`).toBe(true);
+  }
+}
+
+const state = (page: Page) => page.evaluate<{
+  measurer: string | null; resolving: string | null; producer: string | null;
+  missing: string | null; aliases: string | null; alerts: string[]; registeredFonts: { family: string; status: string }[];
+  admittedFonts: { sha256: string | null; family: string; status: string; registered: boolean }[];
+  runs: { text: string | null; family: string }[];
+}>(`(() => {
+  const state = document.querySelector('[data-testid="docx-font-state"]');
+  return { measurer: state?.getAttribute('data-measurer') ?? null,
+    resolving: state?.getAttribute('data-resolving') ?? null,
+    producer: state?.getAttribute('data-producer') ?? null,
+    missing: document.querySelector('[data-testid="docx-font-missing"]')?.textContent ?? null,
+    aliases: document.querySelector('[data-testid="docx-font-aliases"]')?.textContent ?? null,
+    alerts: Array.from(document.querySelectorAll('[role="alert"]')).map(item => item.textContent),
+    registeredFonts: Array.from(document.fonts).map(font => ({ family: font.family, status: font.status })),
+    admittedFonts: (window.__docxFontEvidence ?? []).map(record => ({ sha256: record.sha256,
+      family: record.face.family, status: record.face.status, registered: document.fonts.has(record.face) })),
+    runs: Array.from(document.querySelectorAll('[data-testid="docx-editor-surface"] .layout-run-text')).filter((run, index) => index < 250 || /[\\u4e00-\\u9fff]/.test(run.textContent ?? '')).map(run => ({
+      text: run.textContent, family: getComputedStyle(run).fontFamily })) };
+})()`);
+
+async function click(page: Page, label: string) {
+  await page.evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('[data-testid="docx-workspace"] button')).find(item => item.textContent.trim() === ${scriptValue(label)});
+    if (!button || button.disabled) throw new Error('Unavailable button: ' + ${scriptValue(label)});
+    button.click();
+  })()`);
+}
+
+// Opt-in local fonts and manuscripts; no model calls or renderer equivalence claim.
+test("native DOCX uses byte-backed local fonts and preserves source formatting", async ({ tauriPage: page }) => {
+  test.skip(!enabled, "Run with OLEAFLY_DOCX_FONT_LAYOUT=1 and the isolated DOCX runner.");
+  test.setTimeout(600_000);
+  expect(run).toBeTruthy();
+  expect(inputHash).toMatch(/^[a-f0-9]{64}$/);
+  const source = await readFile(input!);
+  expect(hash(source)).toBe(inputHash);
+  const requested: FontRequest[] = ["Times New Roman"].flatMap(family => [
+    { family, weight: 400, style: "normal" as const },
+    { family, weight: 700, style: "normal" as const },
+    { family, weight: 400, style: "italic" as const },
+    { family, weight: 700, style: "italic" as const },
+  ]);
+  const resolved = await page.evaluate<FontResult>(`window.__TAURI_INTERNALS__.invoke('resolve_system_font_faces', { requests: ${scriptValue(requested)} }).then(async result => ({
+    missing: result.missing,
+    faces: await Promise.all(result.faces.map(async ({ contentBase64, ...face }) => {
+      const bytes = Uint8Array.from(atob(contentBase64), c => c.charCodeAt(0));
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+      return { ...face, computedSha256: Array.from(digest, b => b.toString(16).padStart(2, '0')).join(''),
+        bytes: bytes.length, signature: String.fromCharCode(...bytes.slice(0, 4)) };
+    }))
+  }))`);
+  expect(resolved.missing).toEqual([]);
+  expect(resolved.faces).toHaveLength(requested.length);
+  for (const face of resolved.faces) {
+    expect(face.computedSha256).toBe(face.sha256);
+    expect(face.family).toBe(face.requested.family);
+    expect(face.faceIndex).toBe(0);
+    expect(face.postscriptName.length).toBeGreaterThan(0);
+    expect(face.bytes).toBeGreaterThan(1_000);
+    expect(face.signature).not.toBe("ttcf");
+  }
+  await writeFile(output("native-fonts.json"), JSON.stringify(resolved.faces, null, 2));
+  const missingRequest = { family: "Oleafly Unavailable Journal Font 2026", weight: 400, style: "normal" };
+  expect(await page.evaluate(`window.__TAURI_INTERNALS__.invoke('resolve_system_font_faces', { requests: [${scriptValue(missingRequest)}] }).then(result => ({ faces: result.faces.length, missing: result.missing }))`)).toEqual({ faces: 0, missing: [missingRequest] });
+
+  await createBlankProject(page, `DOCX fonts ${basename(input!)} ${Date.now()}`);
+  // Observe the actual bytes passed by Core's admitted-source registration. The
+  // native constructor and loading behavior remain unchanged; no product API is added.
+  await page.evaluate(`(() => {
+    const Constructor = window.FontFace;
+    window.__docxFontEvidence = [];
+    window.FontFace = new Proxy(Constructor, { construct(target, args) {
+      const face = Reflect.construct(target, args);
+      const source = args[1];
+      if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
+        const record = { face, sha256: null };
+        window.__docxFontEvidence.push(record);
+        const bytes = source instanceof ArrayBuffer ? new Uint8Array(source) : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+        crypto.subtle.digest('SHA-256', bytes).then(hash => {
+          record.sha256 = Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+        });
+      }
+      return face;
+    }});
+  })()`);
+  await openRailTab(page, "Journal checks");
+  const panel = page.getByTestId("journal-checks-panel");
+  await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled({ timeout: 30_000 });
+  await panel.getByText("Import DOCX", { exact: true }).click();
+  await page.fill('[role="dialog"] input:not([type="file"])', `Typography ${basename(input!)}`);
+  await page.setInputFiles('[role="dialog"] input[type="file"]', [{ name: basename(input!), mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: source }]);
+  await page.click('[role="dialog"] button[type="submit"]');
+  await expect(page.locator('[role="dialog"]')).toHaveCount(0);
+  await panel.getByText("Edit DOCX working copy", { exact: true }).click();
+  await expect.poll(() => live(page).then(read => read.document.dirty, () => null), { timeout: 90_000 }).toBe(false);
+  await expect.poll(() => state(page).then(value => ({ measurer: value.measurer, resolving: value.resolving })), { timeout: 90_000 }).toEqual({ measurer: "shaped", resolving: "false" });
+  const fonts = await state(page);
+  expect(fonts.producer).toBeTruthy();
+  expect(fonts.registeredFonts.some(face => face.status === "loaded")).toBe(true);
+  expect(fonts.missing).toMatch(/宋体|SimSun/);
+  expect(fonts.aliases ?? "").not.toMatch(/Noto|Liberation|Carlito/);
+  const actualFamilies = new Set(["Times New Roman"]);
+  await expect.poll(async () => {
+    const captured = await state(page);
+    return resolved.faces.filter(face => actualFamilies.has(face.family)).every(face => captured.admittedFonts.some(
+      loaded => loaded.sha256 === face.sha256 && loaded.status === "loaded" && loaded.registered,
+    ));
+  }, { timeout: 30_000 }).toBe(true);
+  const rendered = await state(page);
+  const familiesUsed = new Set(["Times New Roman"]);
+  for (const family of familiesUsed) {
+    const hashes = new Set(resolved.faces.filter(face => face.family === family).map(face => face.sha256));
+    const aliases = rendered.admittedFonts.filter(face => hashes.has(face.sha256 ?? "")).map(face => face.family);
+    expect(rendered.runs.some(run => aliases.some(alias => run.family.includes(alias))), `${family} is used by an actual text run`).toBe(true);
+  }
+  const paragraphs = await page.evaluate(`Array.from(document.querySelectorAll('[data-testid="docx-editor-surface"] .docx-paragraph-fragment')).slice(0, 15).map(item => ({ text: item.textContent, box: item.getBoundingClientRect().toJSON() }))`);
+  await writeFile(output("editor-font-state.json"), JSON.stringify({ ...await state(page), paragraphs }, null, 2));
+  await page.screenshot({ path: output("opened.png") });
+  await verifyTitleLayout(page, "opened");
+  const exported = output("no-change.docx");
+  await page.evaluate(`window.__e2eSetNextSavePath(${scriptValue(exported)})`);
+  await click(page, "Download DOCX copy");
+  await expect.poll(() => readFile(exported).then(bytes => bytes.length, () => 0), { timeout: 30_000 }).toBeGreaterThan(0);
+  const comparison = JSON.parse(execFileSync(resolve("services/research-workbench/.venv/bin/python"), [resolve("e2e/tests/docx-real-package.py"), input!, exported], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }));
+  await writeFile(output("package-comparison.json"), JSON.stringify(comparison, null, 2));
+  expect(comparison.missingParts).toEqual([]);
+  expect(comparison.addedParts).toEqual([]);
+  expect(comparison.changedMedia).toEqual([]);
+  expect(comparison.changedRelationships).toEqual([]);
+  expect(comparison.lostOrModifiedProtectedNodes).toEqual({});
+  expect(comparison.paragraphTextChanges).toEqual([]);
+  expect(comparison.paragraphCount.after).toBe(comparison.paragraphCount.before);
+  // Font origins and measurement must not alter the authored font/style/frame settings.
+  const format = execFileSync(resolve("services/research-workbench/.venv/bin/python"), ["-c", `
+import sys,zipfile,xml.etree.ElementTree as E
+def semantic(node):
+ return (node.tag,sorted(node.attrib.items()),node.text if node.text and node.text.strip() else None,[semantic(child) for child in node])
+with zipfile.ZipFile(sys.argv[1]) as source,zipfile.ZipFile(sys.argv[2]) as exported:
+ for name in ['word/styles.xml','word/fontTable.xml']:
+  if name in source.namelist(): assert semantic(E.fromstring(source.read(name)))==semantic(E.fromstring(exported.read(name))),name
+ ns={'w':'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+ before=E.fromstring(source.read('word/document.xml'));after=E.fromstring(exported.read('word/document.xml'))
+ for kind in ['sectPr','framePr','rFonts']:
+  assert [semantic(n) for n in before.findall('.//w:'+kind,ns)]==[semantic(n) for n in after.findall('.//w:'+kind,ns)],kind
+print('authored styles, font table, section, frame and font properties retained')
+`, input!, exported], { encoding: "utf8" });
+  await writeFile(output("format-comparison.txt"), format);
+  await click(page, "Close");
+  await panel.getByText("Edit DOCX working copy", { exact: true }).click();
+  await expect.poll(() => state(page).then(value => ({ measurer: value.measurer, resolving: value.resolving })), { timeout: 90_000 }).toEqual({ measurer: "shaped", resolving: "false" });
+  expect((await live(page)).document.dirty).toBe(false);
+  expect((await state(page)).missing).toMatch(/宋体|SimSun/);
+  await verifyTitleLayout(page, "reopened");
+  expect(hash(await readFile(input!))).toBe(inputHash);
+  if (process.env.OLEAFLY_FONT_SOURCE_EVIDENCE) await verifyMicrosoftFontPackages(page);
+  await verifyJournalFontDownload(page);
+  await writeFile(output("result.json"), JSON.stringify({ outcome: "EXACT_FONT_SOURCES_AND_ROUNDTRIP_PASSED", inputHash, format: format.trim(), microsoftPackageCache: Boolean(process.env.OLEAFLY_FONT_SOURCE_EVIDENCE), scope: "macOS native font IPC and actual editor FontFace bytes; exact TNR supply and PDF subset versions; optional Microsoft package extraction; real English title frames; same-session refresh, actual edit/save and structural round trip. LibreOffice title-frame import and full Office layout equivalence remain unverified or limited." }, null, 2));
+});
+
+async function selectFontWorld(page: Page, family: string) {
+  const world = await page.evaluate<{ version_id: string }>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(m => m.journalRequest('/api/worlds', {
+    journal_id: 'exact-microsoft-font-' + ${scriptValue(family.toLowerCase())}, journal_name: 'Controlled exact font ' + ${scriptValue(family)}, article_type: 'research_article', stage: 'initial_submission', language: 'en',
+    sources: [{ name: 'controlled-font-guide.txt', kind: 'guide_text', content_base64: ${scriptValue(Buffer.from(`Body text must use ${family} font.`).toString("base64"))} }]
+  }))`);
+  await page.click('[aria-label="Refresh journal checks"]');
+  await expect.poll(() => page.evaluate(`Array.from(document.querySelectorAll('[data-testid="journal-world-select"] option')).some(option => option.value === ${scriptValue(world.version_id)})`)).toBe(true);
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="journal-checks-panel"]')?.getAttribute('aria-busy')`)).toBe("false");
+  await page.selectOption('[data-testid="journal-world-select"]', world.version_id);
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="journal-checks-panel"]')?.getAttribute('aria-busy')`)).toBe("false");
+  await page.getByTestId("journal-checks-panel").getByText("Edit DOCX working copy", { exact: true }).click();
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="docx-font-world"]')?.textContent ?? null`)).toContain(world.version_id);
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="docx-font-acquisition"]')?.getAttribute('data-state') ?? null`), { timeout: 120_000 }).toBe("available");
+  return world;
+}
+
+async function verifyMicrosoftFontPackages(page: Page) {
+  const snapshot = await live(page);
+  const data = process.env.OLEAFLY_DATA_DIR!;
+  const cache = resolve(data, "assets", "font-packages");
+  const cacheState = async () => Promise.all((await readdir(cache)).sort().map(async name => {
+    const file = await stat(resolve(cache, name));
+    return { name, size: file.size, modified: file.mtimeMs };
+  }));
+  const archivesBefore = await cacheState();
+  await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(async m => {
+    window.__fontPackageProgress = {};
+    window.__fontPackageUnlisten = await m.onAssetProgress({ component: item => {
+      window.__fontPackageProgress[item.component] = item;
+    }});
+  })`);
+  const expected = [
+    { family: "SimSun", id: "microsoft-simsun", version: "Version 5.04i", sha256: "e72e26043ece0a899366f93e3fd48ca0aa9f285f9e81e3573f076813bb96d0ff" },
+    { family: "SimHei", id: "microsoft-simhei", version: "Version 5.03i", sha256: "ef70e6bba293c9d30bdeb0dba2dd6019cceacbfddab3fb0c550ff14d9127c813" },
+    { family: "KaiTi", id: "microsoft-kaiti", version: "Version 5.01i", sha256: "483c7cdec7874dcc6c39d278c367c512a1b909b34d2776fd72c2a941fc3cfd2e" },
+    { family: "DengXian", id: "microsoft-dengxian", version: "Version 1.14", sha256: "a3057626822c986aff0d2c9ec3b90a1a64180f29cbbb5708116e0489ac3355f9" },
+  ];
+  const nativeFaces: unknown[] = [];
+  for (const font of expected) {
+    const request = { family: font.family, weight: 400, style: "normal" };
+    expect(await page.evaluate(`window.__TAURI_INTERNALS__.invoke('resolve_system_font_faces', { requests: [${scriptValue(request)}] }).then(result => result.faces.length)`)).toBe(0);
+    await click(page, "Minimize");
+    await selectFontWorld(page, font.family);
+    const face = await page.evaluate<FontFace>(`window.__TAURI_INTERNALS__.invoke('resolve_system_font_faces', { requests: [${scriptValue(request)}] }).then(result => { const { contentBase64, ...face } = result.faces[0]; return face; })`);
+    expect(face).toMatchObject({ family: font.family, weight: 400, style: "normal", sha256: font.sha256, version: font.version });
+    nativeFaces.push(face);
+    const current = await live(page);
+    expect(current.document.sessionId).toBe(snapshot.document.sessionId);
+    expect(current.document.sessionRevision).toBe(snapshot.document.sessionRevision);
+    expect(current.document.dirty).toBe(false);
+    if (font.family === "SimSun") {
+      await expect.poll(() => state(page).then(value => value.admittedFonts.some(item => item.sha256 === font.sha256 && item.status === "loaded" && item.registered)), { timeout: 30_000 }).toBe(true);
+      await expect(page.getByTestId("docx-font-versions")).toContainText(font.version);
+      const paragraph = (await live(page)).paragraphs.find(item => /[\u4e00-\u9fff]/.test(item.text));
+      expect(paragraph).toBeDefined();
+      await expect.poll(() => page.evaluate(`Array.from(document.querySelectorAll('[data-testid="docx-workspace"] aside select option')).some(option => option.value === ${scriptValue(paragraph!.paragraphRef)})`)).toBe(true);
+      await page.selectOption('[data-testid="docx-workspace"] aside select', paragraph!.paragraphRef);
+      if (inputHash === "778b76e7abcd01fbd68fa3e09a75bf07a726c6febeb18f758131e2c562027c2d") {
+        await page.evaluate(`(() => {
+          const surface = document.querySelector('[data-testid="docx-editor-surface"]');
+          for (let node = surface.querySelector('.docx-pages'); node && surface.contains(node); node = node.parentElement) {
+            if (node.scrollHeight > node.clientHeight && /auto|scroll/.test(getComputedStyle(node).overflowY)) node.scrollTop = node.scrollHeight;
+          }
+        })()`);
+      }
+      await writeFile(output("cjk-navigation.json"), JSON.stringify(await page.evaluate(`({
+        selected: document.querySelector('[data-testid="docx-workspace"] aside select')?.value,
+        paragraphs: Array.from(document.querySelectorAll('[data-testid="docx-editor-surface"] .docx-paragraph-fragment')).map(item => item.textContent).slice(-20)
+      })`), null, 2));
+      await expect.poll(() => state(page).then(value => value.runs.some(run => /[\u4e00-\u9fff]/.test(run.text ?? ""))), { timeout: 30_000 }).toBe(true);
+      const applied = await state(page);
+      const aliases = applied.admittedFonts.filter(item => item.sha256 === font.sha256).map(item => item.family);
+      expect(applied.runs.some(run => aliases.some(alias => run.family.includes(alias)))).toBe(true);
+    }
+    const receipt = JSON.parse(await readFile(resolve(data, "assets", "fonts", font.id, "source.json"), "utf8"));
+    expect(receipt.files.some((file: { sha256: string }) => file.sha256 === font.sha256)).toBe(true);
+    await writeFile(output(`${font.id}-receipt.json`), JSON.stringify(receipt, null, 2));
+  }
+  const rendersBeforeRefresh = await page.evaluate<DocxRender[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(m => m.loadDocxRenders(${scriptValue(snapshot.document.workbenchProjectId)}, ${scriptValue(snapshot.document.baselineId)}))`);
+  await page.getByTestId("docx-font-refresh").click();
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="docx-font-acquisition"]')?.getAttribute('data-state') ?? null`)).toBe("available");
+  expect(await cacheState()).toEqual(archivesBefore);
+  expect(await page.evaluate(`window.__fontPackageProgress`)).toEqual({});
+  await page.evaluate(`window.__fontPackageUnlisten()`);
+  await writeFile(output("microsoft-fonts.json"), JSON.stringify({ nativeFaces, archivesBefore, archivesAfter: await cacheState(), progress: {}, sessionId: snapshot.document.sessionId, scope: "Missing exact-family rules triggered real package extraction from verified complete archive cache; no new network bytes and no manuscript font declaration changes." }, null, 2));
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="docx-font-state"]')?.getAttribute('data-resolving')`), { timeout: 90_000 }).toBe("false");
+  const exported = output("exact-fonts-no-change.docx");
+  await page.evaluate(`window.__e2eSetNextSavePath(${scriptValue(exported)})`);
+  await click(page, "Download DOCX copy");
+  await expect.poll(() => readFile(exported).then(bytes => bytes.length, () => 0), { timeout: 30_000 }).toBeGreaterThan(0);
+  const originalExport = output("no-change.docx");
+  const comparison = JSON.parse(execFileSync(resolve("services/research-workbench/.venv/bin/python"), [resolve("e2e/tests/docx-real-package.py"), originalExport, exported], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }));
+  expect(comparison.missingParts).toEqual([]);
+  expect(comparison.addedParts).toEqual([]);
+  expect(comparison.changedMedia).toEqual([]);
+  expect(comparison.changedRelationships).toEqual([]);
+  expect(comparison.lostOrModifiedProtectedNodes).toEqual({});
+  expect(comparison.paragraphTextChanges).toEqual([]);
+  await writeFile(output("exact-fonts-package.json"), JSON.stringify(comparison, null, 2));
+  await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy", { timeout: 150_000 });
+  await expect.poll(async () => {
+    const renders = await page.evaluate<DocxRender[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(m => m.loadDocxRenders(${scriptValue(snapshot.document.workbenchProjectId)}, ${scriptValue(snapshot.document.baselineId)}))`);
+    return renders.some(item => !rendersBeforeRefresh.some(previous => previous.bundle_id === item.bundle_id)
+      && expected.every(font => item.manifest.render_record.supplied_fonts?.some(face => face.sha256 === font.sha256)));
+  }, { timeout: 150_000 }).toBe(true);
+  await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy", { timeout: 150_000 });
+  const renders = await page.evaluate<DocxRender[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(m => m.loadDocxRenders(${scriptValue(snapshot.document.workbenchProjectId)}, ${scriptValue(snapshot.document.baselineId)}))`);
+  const render = [...renders].reverse().find(item => item.manifest.render_record.supplied_fonts?.some(face => face.sha256 === expected[0].sha256))!;
+  expect(render.manifest.render_record.pdf_font_names?.some(name => /SimSun/.test(name))).toBe(true);
+  const pdf = await page.evaluate<number[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(async m => Array.from(await m.loadDocxPdf(${scriptValue(snapshot.document.workbenchProjectId)}, ${scriptValue(render)})))`);
+  expect(hash(Uint8Array.from(pdf))).toBe(render.manifest.pdf_sha256);
+  await writeFile(output("exact-fonts-real-manuscript.pdf"), Uint8Array.from(pdf));
+  await writeFile(output("exact-fonts-real-render.json"), JSON.stringify(render, null, 2));
+  const pdfFonts = JSON.parse(execFileSync(resolve("services/research-workbench/.venv/bin/python"), [resolve("e2e/tests/docx-pdf-fonts.py"), output("exact-fonts-real-manuscript.pdf")], { encoding: "utf8" }));
+  expect(pdfFonts.some((font: { name: string; versions: string[] }) => /SimSun/.test(font.name) && font.versions.includes(expected[0].version))).toBe(true);
+  await verifyPdfLatinFonts(render, pdfFonts);
+  await verifyTitleLayout(page, "exact-fonts");
+  await writeFile(output("exact-fonts-pdf-fonts.json"), JSON.stringify(pdfFonts, null, 2));
+  await click(page, "Close");
+  await page.getByTestId("journal-checks-panel").getByText("Edit DOCX working copy", { exact: true }).click();
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="docx-font-acquisition"]')?.getAttribute('data-state') ?? null`), { timeout: 90_000 }).toBe("available");
+  await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy", { timeout: 90_000 });
+  const reopened = await page.evaluate<DocxRender[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(m => m.loadDocxRenders(${scriptValue(snapshot.document.workbenchProjectId)}, ${scriptValue(snapshot.document.baselineId)}))`);
+  expect(reopened).toHaveLength(renders.length);
+  const paragraphs = await live(page);
+  let edited: { original: string; proposed: string } | null = null;
+  for (const paragraph of paragraphs.paragraphs.filter(item => item.text.trim().length > 40 && item.text.length < 400).slice(0, 30)) {
+    const result = await page.evaluate<{ ok: boolean; code?: string }>(`window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(async m => {
+      const target = await m.DOCX_AGENT_HOST.captureTarget(${scriptValue(paragraphs.document.sessionId)}, ${scriptValue(paragraph.paragraphRef)});
+      return m.DOCX_AGENT_HOST.applySuggestion({ targetId: target.targetId, expectedRevision: target.revision, text: ${scriptValue(paragraph.text + " FONT SAVE CHECK")} });
+    })`);
+    if (result.ok) { edited = { original: paragraph.text, proposed: paragraph.text + " FONT SAVE CHECK" }; break; }
+    expect(result.code).toBe("unsupported-target");
+  }
+  expect(edited, "real manuscript has a supported plain-text paragraph for saved-PDF acceptance").not.toBeNull();
+  await expect.poll(() => live(page).then(value => value.document.dirty)).toBe(true);
+  await click(page, "Save manuscript version");
+  await expect.poll(() => live(page).then(value => value.document.dirty), { timeout: 90_000 }).toBe(false);
+  const saved = await live(page);
+  expect(saved.document.baselineId).not.toBe(snapshot.document.baselineId);
+  const source = await page.evaluate<{ content_base64: string; source_sha256: string }>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(m => m.journalRequest('/api/manuscript-source?project_id=' + ${scriptValue(saved.document.workbenchProjectId)} + '&baseline_id=' + ${scriptValue(saved.document.baselineId)}))`);
+  const savedPath = output("exact-fonts-saved.docx");
+  await writeFile(savedPath, Buffer.from(source.content_base64, "base64"));
+  expect(hash(await readFile(savedPath))).toBe(source.source_sha256);
+  const savedComparison = JSON.parse(execFileSync(resolve("services/research-workbench/.venv/bin/python"), [resolve("e2e/tests/docx-real-package.py"), input!, savedPath], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }));
+  expect(savedComparison.missingParts).toEqual([]);
+  expect(savedComparison.addedParts).toEqual([]);
+  expect(savedComparison.changedMedia).toEqual([]);
+  expect(savedComparison.changedRelationships).toEqual([]);
+  expect(savedComparison.lostOrModifiedProtectedNodes).toEqual({});
+  expect(savedComparison.paragraphTextChanges).toHaveLength(1);
+  await writeFile(output("exact-fonts-saved-package.json"), JSON.stringify({ edited, comparison: savedComparison }, null, 2));
+  await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy", { timeout: 150_000 });
+  const savedRenders = await page.evaluate<DocxRender[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(m => m.loadDocxRenders(${scriptValue(saved.document.workbenchProjectId)}, ${scriptValue(saved.document.baselineId)}))`);
+  const savedRender = savedRenders[savedRenders.length - 1];
+  expect(savedRender.manifest.source_sha256).toBe(source.source_sha256);
+  const savedPdf = await page.evaluate<number[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(async m => Array.from(await m.loadDocxPdf(${scriptValue(saved.document.workbenchProjectId)}, ${scriptValue(savedRender)})))`);
+  await writeFile(output("exact-fonts-saved.pdf"), Uint8Array.from(savedPdf));
+  await writeFile(output("exact-fonts-saved-render.json"), JSON.stringify(savedRender, null, 2));
+  const savedPdfFonts = JSON.parse(execFileSync(resolve("services/research-workbench/.venv/bin/python"), [resolve("e2e/tests/docx-pdf-fonts.py"), output("exact-fonts-saved.pdf")], { encoding: "utf8" }));
+  expect(savedPdfFonts.some((font: { name: string; versions: string[] }) => /SimSun/.test(font.name) && font.versions.includes(expected[0].version))).toBe(true);
+  await verifyPdfLatinFonts(savedRender, savedPdfFonts);
+  await verifyTitleLayout(page, "saved");
+  await writeFile(output("exact-fonts-saved-pdf-fonts.json"), JSON.stringify(savedPdfFonts, null, 2));
+}
+
+async function verifyJournalFontDownload(page: Page) {
+  const before = await page.evaluate(`window.__TAURI_INTERNALS__.invoke('resolve_system_font_faces', { requests: [{ family: 'PT Serif', weight: 400, style: 'normal' }] }).then(result => result.faces.length)`);
+  expect(before, "isolated cache starts without a standalone PT Serif face").toBe(0);
+  await click(page, "Close");
+  await expect(page.getByTestId("docx-workspace")).toHaveCount(0);
+  const fontWorld = await page.evaluate<{ version_id: string }>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(m => m.journalRequest('/api/worlds', {
+    journal_id: 'font-acquisition-probe', journal_name: 'Font acquisition acceptance', article_type: 'research_article', stage: 'initial_submission', language: 'en',
+    sources: [{ name: 'controlled-font-guide.txt', kind: 'guide_text', content_base64: btoa('Body text must use PT Serif font.') }]
+  }))`);
+  await openRailTab(page, "Journal checks");
+  const panel = page.getByTestId("journal-checks-panel");
+  const fixture = zipSync({
+    "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
+    "_rels/.rels": strToU8('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'),
+    "word/document.xml": strToU8('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:rFonts w:ascii="PT Serif" w:hAnsi="PT Serif"/><w:sz w:val="24"/></w:rPr><w:t>Controlled exact journal font acquisition and refresh.</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>'),
+  });
+  await panel.getByText("Import DOCX", { exact: true }).click();
+  await page.fill('[role="dialog"] input:not([type="file"])', "Controlled font acquisition");
+  await page.setInputFiles('[role="dialog"] input[type="file"]', [{ name: "exact-font-fixture.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: Buffer.from(fixture) }]);
+  await page.click('[role="dialog"] button[type="submit"]');
+  await expect(page.locator('[role="dialog"]')).toHaveCount(0);
+  await page.click('[aria-label="Refresh journal checks"]');
+  await expect.poll(() => page.evaluate(`Array.from(document.querySelectorAll('[data-testid="journal-checks-panel"] select option')).some(option => option.value === ${scriptValue(fontWorld.version_id)})`)).toBe(true);
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="journal-checks-panel"]')?.getAttribute('aria-busy')`)).toBe("false");
+  await page.selectOption('[data-testid="journal-world-select"]', fontWorld.version_id);
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="journal-checks-panel"]')?.getAttribute('aria-busy')`)).toBe("false");
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="journal-world-select"]')?.value`)).toBe(fontWorld.version_id);
+  await panel.getByText("Edit DOCX working copy", { exact: true }).click();
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="docx-font-world"]')?.textContent ?? null`)).toContain(fontWorld.version_id);
+  await writeFile(output("font-acquisition-context.json"), JSON.stringify(await page.evaluate(`window.__oleaflyE2EImport('/src/store/docx-workspace.ts').then(m => {
+    const request = m.useDocxWorkspaceStore.getState().request;
+    return { project: request?.project, world: request?.world, text: document.querySelector('[data-testid="docx-fonts-panel"]')?.textContent };
+  })`), null, 2));
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="docx-font-acquisition"]')?.getAttribute('data-state') ?? null`), { timeout: 120_000 }).toBe("available");
+  const available = await page.evaluate<{ faces: { family: string; sha256: string; weight: number; style: string }[]; missing: FontRequest[] }>(`window.__TAURI_INTERNALS__.invoke('resolve_system_font_faces', { requests: [{ family: 'PT Serif', weight: 400, style: 'normal' }] }).then(result => ({ faces: result.faces.map(({contentBase64,...face}) => face), missing: result.missing }))`);
+  expect(available.missing).toEqual([]);
+  expect(available.faces[0]).toMatchObject({ family: "PT Serif", weight: 400, style: "normal" });
+  expect(available.faces[0].sha256).toBe("a4951fade06ff8f09b7673aa81ffb65a8cd409e24d3289a6dc670bc4dda2557a");
+  await writeFile(output("font-acquisition-font-state.json"), JSON.stringify(await state(page), null, 2));
+  await expect.poll(async () => {
+    const current = await state(page);
+    await writeFile(output("font-acquisition-font-state.json"), JSON.stringify(current, null, 2));
+    const admitted = current.admittedFonts.find(face => face.sha256 === available.faces[0].sha256 && face.status === "loaded" && face.registered);
+    const textRuns = current.runs.filter(run => run.text?.trim());
+    return !!admitted && textRuns.map(run => run.text).join("").includes("Controlled exact journal font") && textRuns.every(run => run.family.startsWith(admitted.family));
+  }, { timeout: 30_000 }).toBe(true);
+  const packs = await page.evaluate<{ id: string; installed: boolean; families: string[] }[]>(`window.__TAURI_INTERNALS__.invoke('list_font_components')`);
+  expect(packs.find(pack => pack.id === "ptserif")).toMatchObject({ installed: true, families: ["PT Serif"] });
+  await expect.poll(() => live(page).then(value => value.document.dirty, () => null)).toBe(false);
+  await page.evaluate(`(() => {
+    const paragraph = document.querySelector('[data-testid="docx-editor-surface"] .docx-paragraph-fragment');
+    paragraph.scrollIntoView({ block: 'center' });
+    const rect = paragraph.getBoundingClientRect();
+    const clientX = rect.left + 4, clientY = rect.top + Math.min(8, rect.height / 2);
+    const target = document.elementFromPoint(clientX, clientY);
+    const options = { bubbles: true, cancelable: true, clientX, clientY, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    target.dispatchEvent(new PointerEvent('pointerdown', options));
+    target.dispatchEvent(new MouseEvent('mousedown', options));
+    target.dispatchEvent(new PointerEvent('pointerup', { ...options, buttons: 0 }));
+    target.dispatchEvent(new MouseEvent('mouseup', { ...options, buttons: 0 }));
+    target.dispatchEvent(new MouseEvent('click', { ...options, buttons: 0 }));
+  })()`);
+  await page.keyboard.press("Home");
+  await page.keyboard.insertText("FONT REFRESH PROBE ");
+  await expect.poll(() => live(page).then(value => value.paragraphs.some(item => item.text.includes("FONT REFRESH PROBE")))).toBe(true);
+  const snapshot = await live(page);
+  expect(snapshot.document.dirty).toBe(true);
+  await click(page, "Minimize");
+  const nextWorld = await page.evaluate<{ version_id: string }>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(m => m.journalRequest('/api/worlds', {
+    journal_id: 'font-context-probe', journal_name: 'Updated font context acceptance', article_type: 'research_article', stage: 'initial_submission', language: 'en',
+    sources: [{ name: 'controlled-font-guide.txt', kind: 'guide_text', content_base64: btoa('Body text must use PT Serif font.') }]
+  }))`);
+  await page.click('[aria-label="Refresh journal checks"]');
+  await expect.poll(() => page.evaluate(`Array.from(document.querySelectorAll('[data-testid="journal-world-select"] option')).some(option => option.value === ${scriptValue(nextWorld.version_id)})`)).toBe(true);
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="journal-checks-panel"]')?.getAttribute('aria-busy')`)).toBe("false");
+  await page.selectOption('[data-testid="journal-world-select"]', nextWorld.version_id);
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="journal-checks-panel"]')?.getAttribute('aria-busy')`)).toBe("false");
+  await panel.getByText("Edit DOCX working copy", { exact: true }).click();
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="docx-font-world"]')?.textContent ?? null`)).toContain(nextWorld.version_id);
+  expect((await live(page)).document.sessionId).toBe(snapshot.document.sessionId);
+  await page.getByTestId("docx-font-refresh").click();
+  await expect.poll(() => page.evaluate(`document.querySelector('[data-testid="docx-font-state"]')?.getAttribute('data-resolving')`)).toBe("false");
+  const after = await live(page);
+  expect(after.document.sessionId).toBe(snapshot.document.sessionId);
+  expect(after.document.sessionRevision).toBe(snapshot.document.sessionRevision);
+  expect(after.document.dirty).toBe(true);
+  expect(after.paragraphs.map(item => item.text)).toEqual(snapshot.paragraphs.map(item => item.text));
+  expect(hash(fixture)).toBe(after.document.sourceSha256);
+  await page.evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('[data-testid="docx-editor-surface"] button')).find(item => (item.getAttribute('aria-label') ?? '').startsWith('Undo'));
+    if (!button || button.disabled) throw new Error('Undo is unavailable after font refresh');
+    button.click();
+  })()`);
+  await expect.poll(() => live(page).then(value => value.paragraphs.some(item => item.text.includes("FONT REFRESH PROBE")))).toBe(false);
+  await writeFile(output("font-acquisition.json"), JSON.stringify({ outcome: "EXACT_JOURNAL_FONT_DOWNLOADED", family: "PT Serif", faces: available.faces, refreshRetainsSession: true, worldSwitchRetainsSession: true, scope: "controlled journal guide through retained world and native catalog download; does not modify manuscript font declarations or prove journal compliance" }, null, 2));
+}

@@ -61,6 +61,7 @@ vi.mock("@oleafly/ai-tools", () => ({
     return {};
   },
 }));
+vi.mock("@/lib/docx-agent-host", () => ({ createDocxAgentTools: () => ({}) }));
 vi.mock("@/lib/tauri", () => mocks.api);
 vi.mock("@/store/files", () => ({ useFilesStore: { getState: () => mocks.files } }));
 vi.mock("@/store/compile", () => ({ useCompileStore: { getState: () => mocks.compile } }));

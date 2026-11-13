@@ -46,8 +46,8 @@ export function renderManuscriptMap({ root, breadcrumb, project, data, check, bu
     const line = svgLine(HUB_POSITION, position);
     line.dataset.ruleId = result?.rule_id ?? property;
     edges.append(line);
-    const unit = property === "columns" ? "count" : "twips";
-    const value = !check ? "待读取" : observed === null ? "未声明" : observed === "mixed" ? "分节不一致" : formatValue(observed, unit);
+    const unit = property === "columns" ? "count" : property === "body_font_size_halfpoints" ? "half_points" : property === "body_line_spacing_twips" ? "spacing_twips" : "twips";
+    const value = !check ? "待读取" : property === "body_font_family" ? "未检查" : observed === null ? "未声明" : observed === "mixed" ? "分节不一致" : formatValue(observed, unit);
     const appearance = check ? getAppearance(verdict, check) : null;
     const tone = appearance ? appearance.tone : "tone-undeclared";
     const blink = appearance?.blink ?? "";

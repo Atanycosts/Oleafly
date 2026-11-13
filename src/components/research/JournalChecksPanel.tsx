@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ensureAiProviderOrOpenSettings, handoffToAssistant } from "@/features/assistant-handoff";
 import { useFilesStore } from "@/store/files";
+import { useDocxWorkspaceStore } from "@/store/docx-workspace";
 import { getResearchWorkspace } from "@/lib/research-workspace";
 import { pickOpenPaths } from "@/lib/tauri";
 import type { AnnotationTarget } from "@/lib/task-collaboration";
@@ -20,7 +21,8 @@ import {
   journalMessage,
   journalQuery,
   journalRequest,
-  journalUnitScale,
+  journalInputValue,
+  parseJournalInput,
   linkJournalProject,
   loadJournalTarget,
   type JournalAnnotationObject,
@@ -39,6 +41,8 @@ import {
 import { JournalResearchPanel } from "./JournalResearchPanel";
 import { JournalAnnotations } from "./JournalAnnotations";
 import { JournalObjectView } from "./JournalObjectView";
+import { checkJournalTemplate, importJournalTemplate } from "@/lib/docx-template-client";
+import { JournalTemplatePanel } from "./JournalTemplatePanel";
 
 const selectClass = "h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-xs";
 const panelClass = "space-y-3 rounded-lg border border-sidebar-border p-3";
@@ -69,7 +73,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
   const [history, setHistory] = useState<JournalCheck[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState<"manuscript" | "update" | "world" | null>(null);
+  const [form, setForm] = useState<"manuscript" | "update" | "world" | "template" | null>(null);
   const [rule, setRule] = useState<JournalRule | null>(null);
   const [review, setReview] = useState<JournalReview | null>(null);
   const [manuscriptRead, setManuscriptRead] = useState<ManuscriptRead | null>(null);
@@ -174,15 +178,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     setSourcePage(null);
     setSelectedFragment(null);
     setManuscriptRead(null);
-    setRevisionValue(
-      selectedRule?.expected == null
-        ? ""
-        : String(
-            Number(
-              (selectedRule.expected / journalUnitScale(selectedRule.unit)).toFixed(4),
-            ),
-          ),
-    );
+    setRevisionValue(selectedRule ? journalInputValue(selectedRule.expected, selectedRule.unit) : "");
     setRevisionReason("");
     setDispositionAction("note");
     setDispositionNote("");
@@ -370,6 +366,19 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   {text.importManuscript}
                 </Button>
                 {project && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void perform(async () => {
+                    const current = await journalRequest<JournalState>("/api/state");
+                    const manuscript = current.projects.find((item) => item.project_id === project.project_id);
+                    if (!manuscript) throw new Error(t(($) => $.researchTools.docx.recovery.projectMissing));
+                    setSnapshot(current);
+                    useDocxWorkspaceStore.getState().open({
+                      appProjectId: projectId, project: manuscript, world, onSaved: () => load(linkedId, world?.version_id),
+                    });
+                  })}>
+                    {t(($) => $.researchTools.docx.open)}
+                  </Button>
+                )}
+                {project && (
                   <Button
                     size="sm"
                     variant="ghost"
@@ -395,6 +404,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 <span>{text.journalVersion}</span>
                 <select
                   className={selectClass}
+                  data-testid="journal-world-select"
                   value={world?.version_id ?? ""}
                   disabled={busy}
                   onChange={(event) => void perform(() => chooseWorld(event.target.value))}
@@ -419,6 +429,9 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 }}
               >
                 {text.importJournal}
+              </Button>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => { setError(null); setForm("template"); }}>
+                <FileUp className="mr-1 size-3.5" />{text.importTemplate}
               </Button>
               {world && (
                 <>
@@ -488,6 +501,9 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
               )}
             </section>
             {world && (
+              <JournalTemplatePanel world={world} project={project} check={visibleCheck} />
+            )}
+            {world && (
               <JournalResearchPanel
                 projectId={projectId}
                 world={world}
@@ -503,13 +519,12 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
               <Button
                 size="sm"
                 disabled={
-                  busy || !project?.binding || !bindingCurrent || project.binding.world_version_id !== world?.version_id
+                  busy || !project || !world || (!world.template && (!project.binding || !bindingCurrent || project.binding.world_version_id !== world.version_id))
                 }
                 onClick={() =>
                   void perform(async () => {
-                    await journalRequest<JournalCheck>("/api/check", {
-                      project_id: project?.project_id,
-                    });
+                    if (project && world?.template) await checkJournalTemplate(project, world.version_id);
+                    else await journalRequest<JournalCheck>("/api/check", { project_id: project?.project_id });
                     await load(linkedId, world?.version_id);
                   })
                 }
@@ -592,8 +607,8 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                       className="w-full rounded-md border border-sidebar-border px-3 py-2 text-left text-xs transition-colors hover:bg-accent disabled:opacity-50"
                     >
                       <span className="flex items-center justify-between gap-2">
-                        <strong>{text.properties[item.property as keyof typeof text.properties]}</strong>
-                        <span>{formatGeometry(item.expected, item.unit)}</span>
+                        <strong>{text.properties[item.property as keyof typeof text.properties] ?? text.template.snapshot}</strong>
+                        <span>{item.label ?? formatGeometry(item.expected, item.unit)}</span>
                       </span>
                       <span className="mt-1 flex flex-wrap justify-between gap-1 text-muted-foreground">
                         <span>{text.bases[item.basis_status]}</span>
@@ -667,7 +682,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
               const manuscript = imported as JournalProject;
               await linkJournalProject(projectId, manuscript.project_id);
               await load(manuscript.project_id, world?.version_id);
-            } else if (form === "world") await load(linkedId, (imported as JournalWorld).version_id);
+            } else if (form === "world" || form === "template") await load(linkedId, (imported as JournalWorld).version_id);
             else await load(linkedId, world?.version_id);
             setForm(null);
           })
@@ -758,7 +773,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   </p>
                 </section>
               )}
-              <details className="rounded-md border p-3 text-sm">
+              {rule.unit !== "effective_format" && <details className="rounded-md border p-3 text-sm">
                 <summary>{text.reviseRequirement}</summary>
                 <p className="my-2 text-xs text-muted-foreground">{text.reviseHelp}</p>
                 <form
@@ -766,9 +781,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   onSubmit={(event) => {
                     event.preventDefault();
                     void perform(async () => {
-                      const expected = Math.round(
-                        Number(revisionValue) * journalUnitScale(rule.unit),
-                      );
+                      const expected = parseJournalInput(revisionValue, rule.unit);
                       const revised = await journalRequest<JournalWorld>("/api/revise", {
                         version_id: world.version_id,
                         rule_id: rule.rule_id,
@@ -782,14 +795,14 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 >
                   <label htmlFor={`${detailId}-expected`} className="block space-y-1">
                     <span>
-                      {text.expected} ({rule.unit === "count" ? text.unitCount : rule.unit === "twips" ? "mm" : "pt"})
+                      {text.expected}{rule.unit === "font_family" ? "" : ` (${rule.unit === "count" ? text.unitCount : rule.unit === "twips" ? "mm" : "pt"})`}
                     </span>
                     <Input
                       id={`${detailId}-expected`}
-                      type="number"
+                      type={rule.unit === "font_family" ? "text" : "number"}
                       required
-                      min={rule.property.includes("margin") ? 0 : rule.unit === "count" ? 1 : 0.01}
-                      step={rule.unit === "count" ? 1 : "any"}
+                      min={rule.unit === "font_family" ? undefined : rule.property.includes("margin") ? 0 : rule.unit === "count" ? 1 : 0.01}
+                      step={rule.unit === "font_family" ? undefined : rule.unit === "count" ? 1 : "any"}
                       value={revisionValue}
                       disabled={busy}
                       onChange={(event) => setRevisionValue(event.target.value)}
@@ -809,7 +822,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                     {text.saveRevision}
                   </Button>
                 </form>
-              </details>
+              </details>}
               {result && visibleCheck && (
                 <>
                   <h3 className="text-sm font-semibold">{text.manuscriptEvidence}</h3>
@@ -1151,7 +1164,7 @@ function JournalImportDialog({
   onClose,
   onSubmit,
 }: {
-  mode: "manuscript" | "update" | "world" | null;
+  mode: "manuscript" | "update" | "world" | "template" | null;
   project: JournalProject | null;
   world: JournalWorld | null;
   busy: boolean;
@@ -1169,8 +1182,9 @@ function JournalImportDialog({
   const [stage, setStage] = useState("initial_submission");
   const [language, setLanguage] = useState("en");
   const [reason, setReason] = useState("");
+  const isJournal = mode === "world" || mode === "template";
   useEffect(() => {
-    setName(mode === "world" ? (world?.journal_name ?? "") : mode === "update" ? (project?.name ?? "") : "");
+    setName(mode === "world" || mode === "template" ? (world?.journal_name ?? "") : mode === "update" ? (project?.name ?? "") : "");
     setJournalId(world?.journal_id ?? "");
     setFiles([]);
     setReason("");
@@ -1179,7 +1193,7 @@ function JournalImportDialog({
     setLanguage(world?.scope.language ?? "en");
   }, [mode, project?.name, world]);
   const title =
-    mode === "world" ? text.importJournal : mode === "update" ? text.updateManuscript : text.importManuscript;
+    mode === "template" ? text.importTemplate : mode === "world" ? text.importJournal : mode === "update" ? text.updateManuscript : text.importManuscript;
   return (
     <Dialog
       open={mode !== null}
@@ -1190,14 +1204,24 @@ function JournalImportDialog({
       <DialogContent closeDisabled={busy} className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{mode === "world" ? text.importJournalHelp : text.captureHelp}</DialogDescription>
+          <DialogDescription>{mode === "template" ? text.templateHelp : mode === "world" ? text.importJournalHelp : text.captureHelp}</DialogDescription>
         </DialogHeader>
         <form
           className="space-y-3"
           onSubmit={(event) => {
             event.preventDefault();
             onSubmit(async () => {
-              if (mode === "world")
+              if (mode === "template") return importJournalTemplate(files[0].file, {
+                journal_id: journalId, journal_name: name, article_type: articleType, stage, language,
+              });
+              if (mode === "world") {
+                const templates = files.filter(({ kind }) => kind === "template_docx");
+                if (templates.length > 1) throw new Error(text.template.oneTemplate);
+                if (templates[0]) return importJournalTemplate(templates[0].file, {
+                  journal_id: journalId, journal_name: name, article_type: articleType, stage, language,
+                }, await Promise.all(files.filter((item) => item !== templates[0]).map(async ({ file, kind }) => ({
+                  ...(await capturedJournalFile(file)), kind,
+                }))));
                 return journalRequest<JournalWorld>("/api/worlds", {
                   journal_id: journalId,
                   journal_name: name,
@@ -1216,6 +1240,7 @@ function JournalImportDialog({
                     })),
                   ),
                 });
+              }
               const file = files[0].file;
               const captured = await capturedJournalFile(file);
               if (mode === "update")
@@ -1252,7 +1277,7 @@ function JournalImportDialog({
               />
             </label>
           )}
-          {mode === "world" && (
+          {isJournal && (
             <>
               <label htmlFor={`${formId}-journal`} className="block space-y-1 text-sm">
                 <span>{text.journalId}</span>
@@ -1320,7 +1345,7 @@ function JournalImportDialog({
               aria-label={text.files}
               type="file"
               disabled={busy}
-              accept={mode === "world" ? ".txt,.docx,.pdf,.json" : ".docx"}
+              accept={mode === "template" ? ".doc,.docx" : mode === "world" ? ".txt,.doc,.docx,.pdf,.json" : ".docx"}
               multiple={mode === "world"}
               className="w-full text-xs file:mr-2 file:rounded-md file:border file:bg-background file:px-2 file:py-1.5 file:text-foreground"
               onChange={(event) => {
@@ -1328,6 +1353,8 @@ function JournalImportDialog({
                   file,
                   kind: file.name.endsWith(".pdf")
                     ? "guide_pdf"
+                    : file.name.endsWith(".doc")
+                      ? "template_docx"
                     : file.name.endsWith(".docx")
                       ? "guide_docx"
                       : file.name.endsWith(".json")

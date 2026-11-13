@@ -2,46 +2,46 @@
   {
     "id": "lato",
     "label": "Lato",
-    "family": "Lato",
+    "families": ["Lato"],
     "description": "A warm humanist sans-serif used by many modern resume and CV templates.",
     "approx_bytes": 2680000,
     "license": { "spdx": "OFL-1.1", "author": "Łukasz Dziedzic", "url": "https://fonts.google.com/specimen/Lato" },
     "files": [
-      { "name": "Lato-Regular.ttf", "url": "https://mirrors.oleafly.com/fonts/lato/Lato-Regular.ttf" },
-      { "name": "Lato-Bold.ttf", "url": "https://mirrors.oleafly.com/fonts/lato/Lato-Bold.ttf" },
-      { "name": "Lato-Italic.ttf", "url": "https://mirrors.oleafly.com/fonts/lato/Lato-Italic.ttf" },
-      { "name": "Lato-BoldItalic.ttf", "url": "https://mirrors.oleafly.com/fonts/lato/Lato-BoldItalic.ttf" },
-      { "name": "OFL.txt", "url": "https://mirrors.oleafly.com/fonts/lato/OFL.txt" }
+      { "name": "Lato-Regular.ttf", "url": "https://mirrors.oleafly.com/fonts/lato/Lato-Regular.ttf", "sha256": "d636e4683231f931eda222d588e944d082bfd3bdba02f928bee461c0f185b251" },
+      { "name": "Lato-Bold.ttf", "url": "https://mirrors.oleafly.com/fonts/lato/Lato-Bold.ttf", "sha256": "8a0aace75d33794eece4b28187bfc1df0bbd2888b5d8a56e01788c8d65d16be1" },
+      { "name": "Lato-Italic.ttf", "url": "https://mirrors.oleafly.com/fonts/lato/Lato-Italic.ttf", "sha256": "e399c44efe1387100531d26c7e4800c5d12251b890d6654a3098c7c679cb1786" },
+      { "name": "Lato-BoldItalic.ttf", "url": "https://mirrors.oleafly.com/fonts/lato/Lato-BoldItalic.ttf", "sha256": "62c1b7f0d2e74b45960154c3520efc337b553db0961bfdc950d5618334596cc8" },
+      { "name": "OFL.txt", "url": "https://mirrors.oleafly.com/fonts/lato/OFL.txt", "sha256": "74ba064d03f1f1c4a952da936c3eb71866c34404916734de3cae73b34357e59e" }
     ]
   },
   {
     "id": "ptsans",
     "label": "PT Sans",
-    "family": "PT Sans",
+    "families": ["PT Sans"],
     "description": "A clean, neutral sans-serif that reads well on screen and in print.",
     "approx_bytes": 800000,
     "license": { "spdx": "OFL-1.1", "author": "ParaType", "url": "https://fonts.google.com/specimen/PT+Sans" },
     "files": [
-      { "name": "PTSans-Regular.ttf", "url": "https://mirrors.oleafly.com/fonts/ptsans/PT_Sans-Web-Regular.ttf" },
-      { "name": "PTSans-Bold.ttf", "url": "https://mirrors.oleafly.com/fonts/ptsans/PT_Sans-Web-Bold.ttf" },
-      { "name": "PTSans-Italic.ttf", "url": "https://mirrors.oleafly.com/fonts/ptsans/PT_Sans-Web-Italic.ttf" },
-      { "name": "PTSans-BoldItalic.ttf", "url": "https://mirrors.oleafly.com/fonts/ptsans/PT_Sans-Web-BoldItalic.ttf" },
-      { "name": "OFL.txt", "url": "https://mirrors.oleafly.com/fonts/ptsans/OFL.txt" }
+      { "name": "PTSans-Regular.ttf", "url": "https://mirrors.oleafly.com/fonts/ptsans/PT_Sans-Web-Regular.ttf", "sha256": "9cc831490532009bae2b3ce0d39c62adfc889060beb421593bfd9d2396d0f10a" },
+      { "name": "PTSans-Bold.ttf", "url": "https://mirrors.oleafly.com/fonts/ptsans/PT_Sans-Web-Bold.ttf", "sha256": "3128bd5ecf01816e59a23d54c57a7a6b14615b07db53ff277c77376010265b05" },
+      { "name": "PTSans-Italic.ttf", "url": "https://mirrors.oleafly.com/fonts/ptsans/PT_Sans-Web-Italic.ttf", "sha256": "5a90fe2d0cd798700935240580bdcc12c0ffc9102c0c7163b3418e13bc21debd" },
+      { "name": "PTSans-BoldItalic.ttf", "url": "https://mirrors.oleafly.com/fonts/ptsans/PT_Sans-Web-BoldItalic.ttf", "sha256": "81ac221cdd02bccfa679c74adb122478e9d092e65a722e31ca11469961483785" },
+      { "name": "OFL.txt", "url": "https://mirrors.oleafly.com/fonts/ptsans/OFL.txt", "sha256": "2758cf7a872827f39661cf8cc24188113c030447aefb5ca7145993650076ca8c" }
     ]
   },
   {
     "id": "ptserif",
     "label": "PT Serif",
-    "family": "PT Serif",
+    "families": ["PT Serif"],
     "description": "A refined transitional serif, a good match for academic and executive documents.",
     "approx_bytes": 900000,
     "license": { "spdx": "OFL-1.1", "author": "ParaType", "url": "https://fonts.google.com/specimen/PT+Serif" },
     "files": [
-      { "name": "PTSerif-Regular.ttf", "url": "https://mirrors.oleafly.com/fonts/ptserif/PT_Serif-Web-Regular.ttf" },
-      { "name": "PTSerif-Bold.ttf", "url": "https://mirrors.oleafly.com/fonts/ptserif/PT_Serif-Web-Bold.ttf" },
-      { "name": "PTSerif-Italic.ttf", "url": "https://mirrors.oleafly.com/fonts/ptserif/PT_Serif-Web-Italic.ttf" },
-      { "name": "PTSerif-BoldItalic.ttf", "url": "https://mirrors.oleafly.com/fonts/ptserif/PT_Serif-Web-BoldItalic.ttf" },
-      { "name": "OFL.txt", "url": "https://mirrors.oleafly.com/fonts/ptserif/OFL.txt" }
+      { "name": "PTSerif-Regular.ttf", "url": "https://mirrors.oleafly.com/fonts/ptserif/PT_Serif-Web-Regular.ttf", "sha256": "a4951fade06ff8f09b7673aa81ffb65a8cd409e24d3289a6dc670bc4dda2557a" },
+      { "name": "PTSerif-Bold.ttf", "url": "https://mirrors.oleafly.com/fonts/ptserif/PT_Serif-Web-Bold.ttf", "sha256": "038ba7336bd7ea14f12ad155bed51a4345cac5153275d521dec3ba04021c526e" },
+      { "name": "PTSerif-Italic.ttf", "url": "https://mirrors.oleafly.com/fonts/ptserif/PT_Serif-Web-Italic.ttf", "sha256": "f57e95ff9dc85691a3b2e193f2028db36f6663939a46c0fc4f286d618b80b7ce" },
+      { "name": "PTSerif-BoldItalic.ttf", "url": "https://mirrors.oleafly.com/fonts/ptserif/PT_Serif-Web-BoldItalic.ttf", "sha256": "f003788ba08981eb0988b3557a6f224a53dab49c20e283e8b74d5af3c466f8be" },
+      { "name": "OFL.txt", "url": "https://mirrors.oleafly.com/fonts/ptserif/OFL.txt", "sha256": "ddf311c28ddf5a5ad9747649837346b67bed9d356789c3072bb27dbce49e514d" }
     ]
   },
   {
@@ -420,6 +420,158 @@
       { "name": "LICENSE-FontAwesome6Free.txt", "url": "https://mirrors.oleafly.com/fonts/typst-icons/LICENSE-FontAwesome6Free.txt", "sha256": "9b914eae88817d63b576eab5aafde7068c7a1abae125d7cdfb034f1da43a9afc" },
       { "name": "LICENSE-FontAwesome6Brands.txt", "url": "https://mirrors.oleafly.com/fonts/typst-icons/LICENSE-FontAwesome6Brands.txt", "sha256": "9b914eae88817d63b576eab5aafde7068c7a1abae125d7cdfb034f1da43a9afc" },
       { "name": "LICENSE-NotoColorEmoji.txt", "url": "https://mirrors.oleafly.com/fonts/typst-icons/LICENSE-NotoColorEmoji.txt", "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2" }
+    ]
+  },
+  {
+    "id": "microsoft-simsun",
+    "label": "SimSun / 宋体",
+    "description": "Exact SimSun 5.04i from Microsoft's Office 15.11.1 preview update package. The shared package is a 736800648-byte Office download; extraction uses the Fontist-pinned checksum.",
+    "approx_bytes": 736800648,
+    "license": {
+      "spdx": "LicenseRef-Microsoft-OfficeMac",
+      "author": "Microsoft Corporation and The Monotype Corporation",
+      "url": "https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/office_preview.yml"
+    },
+    "families": ["SimSun", "宋体"],
+    "package": {
+      "id": "microsoft-office-mac-15-11-1",
+      "name": "office-preview.pkg",
+      "url": "https://download.microsoft.com/download/8/1/3/8136bf31-4c2e-4b5f-bee9-117ab004ab35/microsoft_excel_15.11.1_updater.pkg",
+      "sha256": "34024135a047ca0ef3b1ab499ab7a5584b313b9eb8954c1dd38712dc6c8a04ec",
+      "size": 736800648,
+      "member_format": "tar",
+      "steps": [{ "format": "7z", "member": "Microsoft_Excel.pkg/Payload" }]
+    },
+    "files": [
+      {
+        "name": "SimSun.ttf",
+        "sha256": "e72e26043ece0a899366f93e3fd48ca0aa9f285f9e81e3573f076813bb96d0ff",
+        "family": "SimSun",
+        "postscript": "SimSun",
+        "version": "Version 5.04i",
+        "weight": 400,
+        "style": "normal",
+        "member": "./Microsoft Excel.app/Contents/Resources/Fonts/SimSun.ttf"
+      }
+    ]
+  },
+  {
+    "id": "microsoft-simhei",
+    "label": "SimHei / 黑体",
+    "description": "Exact SimHei 5.03i from Microsoft's Office 15.11.1 preview update package. The shared package is a 736800648-byte Office download; extraction uses the Fontist-pinned checksum.",
+    "approx_bytes": 736800648,
+    "license": {
+      "spdx": "LicenseRef-Microsoft-OfficeMac",
+      "author": "Microsoft Corporation and The Monotype Corporation",
+      "url": "https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/office_preview.yml"
+    },
+    "families": ["SimHei", "黑体"],
+    "package": {
+      "id": "microsoft-office-mac-15-11-1",
+      "name": "office-preview.pkg",
+      "url": "https://download.microsoft.com/download/8/1/3/8136bf31-4c2e-4b5f-bee9-117ab004ab35/microsoft_excel_15.11.1_updater.pkg",
+      "sha256": "34024135a047ca0ef3b1ab499ab7a5584b313b9eb8954c1dd38712dc6c8a04ec",
+      "size": 736800648,
+      "member_format": "tar",
+      "steps": [{ "format": "7z", "member": "Microsoft_Excel.pkg/Payload" }]
+    },
+    "files": [
+      {
+        "name": "SimHei.ttf",
+        "sha256": "ef70e6bba293c9d30bdeb0dba2dd6019cceacbfddab3fb0c550ff14d9127c813",
+        "family": "SimHei",
+        "postscript": "SimHei",
+        "version": "Version 5.03i",
+        "weight": 400,
+        "style": "normal",
+        "member": "./Microsoft Excel.app/Contents/Resources/Fonts/SimHei.ttf"
+      }
+    ]
+  },
+  {
+    "id": "microsoft-kaiti",
+    "label": "KaiTi / 楷体",
+    "description": "Exact KaiTi 5.01i from Microsoft's Office 15.11.1 preview update package. The shared package is a 736800648-byte Office download; extraction uses the Fontist-pinned checksum.",
+    "approx_bytes": 736800648,
+    "license": {
+      "spdx": "LicenseRef-Microsoft-OfficeMac",
+      "author": "Microsoft Corporation and The Monotype Corporation",
+      "url": "https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/office_preview.yml"
+    },
+    "families": ["KaiTi", "楷体"],
+    "package": {
+      "id": "microsoft-office-mac-15-11-1",
+      "name": "office-preview.pkg",
+      "url": "https://download.microsoft.com/download/8/1/3/8136bf31-4c2e-4b5f-bee9-117ab004ab35/microsoft_excel_15.11.1_updater.pkg",
+      "sha256": "34024135a047ca0ef3b1ab499ab7a5584b313b9eb8954c1dd38712dc6c8a04ec",
+      "size": 736800648,
+      "member_format": "tar",
+      "steps": [{ "format": "7z", "member": "Microsoft_Excel.pkg/Payload" }]
+    },
+    "files": [
+      {
+        "name": "Kaiti.ttf",
+        "sha256": "483c7cdec7874dcc6c39d278c367c512a1b909b34d2776fd72c2a941fc3cfd2e",
+        "family": "KaiTi",
+        "postscript": "KaiTi",
+        "version": "Version 5.01i",
+        "weight": 400,
+        "style": "normal",
+        "member": "./Microsoft Excel.app/Contents/Resources/Fonts/Kaiti.ttf"
+      }
+    ]
+  },
+  {
+    "id": "microsoft-dengxian",
+    "label": "DengXian / 等线",
+    "description": "Exact DengXian Regular, Bold and Light 1.14 from Microsoft's Office East Asian font setup package, using the Fontist-pinned 30664304-byte download and checksum.",
+    "approx_bytes": 30664304,
+    "license": {
+      "spdx": "LicenseRef-Microsoft-EastAsian-Pack",
+      "author": "Beijing Founder Electronics Co., Ltd.",
+      "url": "https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/dengxian.yml"
+    },
+    "families": ["DengXian", "等线"],
+    "package": {
+      "id": "microsoft-dengxian-east-asian-pack",
+      "name": "eadengfontpack.exe",
+      "url": "https://download.microsoft.com/download/4/0/9/4094ABA6-1A50-4FFD-A8CC-846BD66573F0/eadengfontpack.exe",
+      "sha256": "08ca36c8ac6be452523ffe38d82a7d60f227aea61ac9fda27a0a9ecdb5078aed",
+      "size": 30664304,
+      "member_format": "7z",
+      "steps": [{ "format": "7z", "member": "eadengfontpack.msi" }]
+    },
+    "files": [
+      {
+        "name": "DengXian-Regular.ttf",
+        "sha256": "a3057626822c986aff0d2c9ec3b90a1a64180f29cbbb5708116e0489ac3355f9",
+        "family": "DengXian",
+        "postscript": "DengXian-Regular",
+        "version": "Version 1.14",
+        "weight": 400,
+        "style": "normal",
+        "member": "DENG.TTF"
+      },
+      {
+        "name": "DengXian-Bold.ttf",
+        "sha256": "67c6835218a991c0b3dc5ae9a04500f20dd9fe48f73f447cb5e6b1ce17f45c75",
+        "family": "DengXian",
+        "postscript": "DengXian-Bold",
+        "version": "Version 1.14",
+        "weight": 700,
+        "style": "normal",
+        "member": "DENGB.TTF"
+      },
+      {
+        "name": "DengXian-Light.ttf",
+        "sha256": "fc1cfb6ff7b8126aeaacfb0d55e0fdd29cc8a2bee9c312554f5d3953feace08b",
+        "family": "DengXian",
+        "postscript": "DengXian-Light",
+        "version": "Version 1.14",
+        "weight": 300,
+        "style": "normal",
+        "member": "DENGL.TTF"
+      }
     ]
   }
 ]

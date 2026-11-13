@@ -12,6 +12,7 @@ import pymupdf
 from tests.journals.test_analysis import template_bytes
 from tests.journals.test_components import component
 from tests.workbench.test_server import _request, _world_payload
+from tests.workbench.test_template_service import setup_comparison
 from tests.workbench.test_workspace import bundle_upload, import_project, selection, upload
 
 
@@ -42,6 +43,26 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
 
     capture("session", "GET", "/api/session")
     world = capture("world", "POST", "/api/worlds", _world_payload())
+    font_payload = _world_payload()
+    font_payload["sources"] = [
+        {
+            "name": "font-guide.txt",
+            "kind": "guide_text",
+            **upload(b"Body text must use PT Serif font."),
+        }
+    ]
+    font_world = capture("font_world", "POST", "/api/worlds", font_payload)
+    capture(
+        "font_revision",
+        "POST",
+        "/api/revise",
+        {
+            "version_id": font_world["version_id"],
+            "rule_id": font_world["rules"][0]["rule_id"],
+            "expected": "Times New Roman",
+            "reason": "Reviewed the applicable guide version",
+        },
+    )
     capture("review", "GET", f"/api/review?version_id={world['version_id']}")
     fixture = (
         Path(__file__).parents[1] / "fixtures/docx/normal/s1-figures-tables/s1-figures-tables.docx"
@@ -84,6 +105,18 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
         "/api/projects",
         {"name": "待核对论文", "filename": "稿件.docx", **upload(source)},
     )
+    font_binding = capture(
+        "font_binding",
+        "POST",
+        "/api/bind",
+        {
+            "project_id": project["project_id"],
+            "world_version_id": font_world["version_id"],
+            "expected_binding_id": None,
+        },
+    )
+    font_check = capture("font_check", "POST", "/api/check", {"project_id": project["project_id"]})
+    assert font_check["rule_results"][0]["verdict"] == "not_checked"
     capture(
         "binding",
         "POST",
@@ -91,7 +124,7 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
         {
             "project_id": project["project_id"],
             "world_version_id": world["version_id"],
-            "expected_binding_id": None,
+            "expected_binding_id": font_binding["binding_id"],
         },
     )
     capture("check", "POST", "/api/check", {"project_id": project["project_id"]})
@@ -160,6 +193,18 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
     capture("pending_bundle", "POST", "/api/render-bundle", pending)
     empty_project = import_project(running_server, template_bytes())
     capture("empty_read", "POST", "/api/read", selection(empty_project, object_type="math"))
+    _, template_world, template_project, template_request = setup_comparison(running_server)
+    capture("template_review", "GET", f"/api/review?version_id={template_world['version_id']}")
+    status, template_check = _request(
+        running_server,
+        "POST",
+        "/api/template-check",
+        template_request,
+        running_server.session_token,
+    )
+    assert status == 200, template_check
+    capture("template_check", "GET", f"/api/check?check_id={template_check['check_id']}")
+    capture("template_history", "GET", f"/api/history?project_id={template_project['project_id']}")
     test_script = Path(__file__).with_name("web-response-contracts.test.mjs")
     response_file = tmp_path / "browser-responses.json"
     response_file.write_text(json.dumps(responses), encoding="utf-8")

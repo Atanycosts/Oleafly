@@ -12,7 +12,7 @@ from research_file_workbench.common.json_io import JsonObject, load_json_object
 from research_file_workbench.docx import DocxReadResult, read_docx
 from research_file_workbench.projects.models import ProjectStoreError
 from research_file_workbench.projects.render_validation import (
-    BUNDLE_VERSION,
+    HISTORICAL_PAGE_BUNDLE_VERSION,
     validate_render_bundle,
 )
 
@@ -139,7 +139,7 @@ def test_reviewed_fixture_bundle_preserves_bound_metadata_without_mutating_input
 
     bundle = _validate(figures_bundle)
 
-    assert bundle["version"] == BUNDLE_VERSION
+    assert bundle["version"] == HISTORICAL_PAGE_BUNDLE_VERSION
     assert bundle["source_sha256"] == figures_bundle.result.source_sha256
     assert bundle["pdf_sha256"] == sha256_bytes(figures_bundle.pdf_bytes)
     assert bundle["page_count"] == 3
@@ -158,7 +158,7 @@ def test_unannotated_bundle_remains_pending_without_fabricated_page_mapping(
 ) -> None:
     bundle = _validate(figures_bundle, reviewed=False)
 
-    assert bundle["version"] == BUNDLE_VERSION
+    assert bundle["version"] == HISTORICAL_PAGE_BUNDLE_VERSION
     assert bundle["source_sha256"] == figures_bundle.result.source_sha256
     assert bundle["page_count"] == 3
     assert bundle["mapping"] is None

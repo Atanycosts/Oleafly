@@ -4,6 +4,37 @@ Oleafly loads one backend-owned engine descriptor when a project opens. The fron
 
 There are five engines: LaTeX through Tectonic or latexmk, Typst, Markdown through Pandoc, and Quarto and Calepin for documents that run code. The table below covers the first three. [Quarto and Calepin](#quarto-and-calepin) has a table of its own.
 
+DOCX uses conversion import/export, retained Workbench manuscript analysis and an embedded
+working-copy editor opened from **Journal checks → Edit DOCX working copy**. The editor provides
+live pages, manual editing, one streamed paragraph suggestion, undo/redo and actual DOCX export.
+Saving creates a retained Workbench baseline, and journal checks run against that saved version.
+This surface is separate from the five project engines. See the
+[session contract](agent/architecture.md#docx-实时工作表面),
+[component choice](agent/reuse.md#docx-编辑与实时工作机制) and
+[verified scope](agent/status.md#docx-任务活动与保存归属2026-11-12).
+Saved-version PDF rendering is now connected through the Journal checks sidebar: after a baseline
+is saved, Oleafly can discover or explicitly select a local LibreOffice `soffice`, convert the
+retained bytes headlessly, register a derived PDF bundle and open that exact bundle in the PDF
+viewer. The panel marks the preview against its baseline and keeps the previous record visible
+while a newer conversion is running or fails. Unsaved bytes have an application-private recovery
+checkpoint with explicit restore, download and discard. Single tasks and task groups can be bound
+before execution to read the live session, capture a target and retain a proposed replacement;
+user decisions and exact saved versions link back to the original task execution. Task tools do
+not apply or save the document. External Word/WPS automatic synchronization is not implemented.
+WPS remains an optional external editor/render source. Neither the embedded editor nor retained WPS process evidence establishes general Word
+layout fidelity. Real English and Chinese manuscript runs preserved package structure through
+the controlled edit/save/reopen path, but substitute fonts, fixed measurement warnings and an
+independent LibreOffice first-page two-column difference leave visual fidelity unproven.
+Packaged substitute fonts may paginate differently.
+
+DOCX UI localization currently maintains new product keys in Chinese and English. Complete
+coverage and validation for other application languages are outside this round's product scope;
+those locales fall back to English and are not pending DOCX deliverables. The upstream editor
+toolbar is English, while the application workbar has Chinese and English copy. The verified
+DOCX browser flow and packaged native recovery acceptance ran on macOS. Their exact inputs and
+boundaries are recorded in the verified scope above. Windows native validation is outside this
+round's scope.
+
 | Capability | LaTeX / Tectonic | Typst | Markdown / Pandoc |
 |---|---|---|---|
 | Main source | `.tex`, `.ltx`, `.latex` | `.typ` | `.md`, `.markdown` |

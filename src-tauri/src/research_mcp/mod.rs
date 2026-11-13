@@ -84,8 +84,18 @@ async fn start_inner(
             Vec::new()
         }
     };
-    let application =
-        crate::journal_workbench::tools::application_tools(app, project_id.clone(), task.clone());
+    let journal = crate::journal_workbench::tools::application_tools(
+        app.clone(),
+        project_id.clone(),
+        task.clone(),
+    );
+    let application: Arc<dyn ApplicationTools> = match &task {
+        Some(task) => Arc::new(TaskApplicationTools {
+            journal,
+            docx: crate::research_tasks::docx::application_tools(app, task.clone()),
+        }),
+        None => journal,
+    };
     oleafly_research::mcp::serve(McpStart {
         project_id,
         root,
@@ -99,6 +109,31 @@ async fn start_inner(
         task,
     })
     .await
+}
+
+struct TaskApplicationTools {
+    journal: Arc<dyn ApplicationTools>,
+    docx: Arc<dyn ApplicationTools>,
+}
+
+impl ApplicationTools for TaskApplicationTools {
+    fn definitions(&self) -> Vec<oleafly_research::mcp::protocol::ToolMeta> {
+        let mut definitions = self.journal.definitions();
+        definitions.extend(self.docx.definitions());
+        definitions
+    }
+
+    fn call(
+        &self,
+        name: String,
+        args: Value,
+    ) -> oleafly_research::scheduler::TaskRuntimeFuture<Value> {
+        if self.docx.definitions().iter().any(|tool| tool.name == name) {
+            self.docx.call(name, args)
+        } else {
+            self.journal.call(name, args)
+        }
+    }
 }
 
 fn services(

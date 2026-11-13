@@ -30,6 +30,7 @@ import { usePersistentExpansion } from "./expansion-state";
 import { ToolPicture } from "./ToolPicture";
 import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
+import { RetainedPaperPreview } from "./RetainedPaperPreview";
 
 const PREVIEW_LIMIT = 4_000;
 
@@ -293,8 +294,14 @@ export function ResearchToolCard({
           {preview && (
             <pre data-select-all-scope className="max-h-80 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-muted/60 px-2.5 py-2 font-mono text-[0.625rem] text-muted-foreground">{preview}</pre>
           )}
+          {view.paperWindow && <div className="space-y-1 break-all text-[0.625rem] text-muted-foreground">
+            <p>{t(($) => $.ai.paperReader.byteRange, { start: view.paperWindow.offset, end: view.paperWindow.endOffset })}</p>
+            <p>{t(($) => $.ai.paperReader.textHash, { hash: view.paperWindow.textSha256 })}</p>
+            <p>{view.paperWindow.nextOffset === null ? t(($) => $.ai.paperReader.readEnd) : t(($) => $.ai.paperReader.readNext, { offset: view.paperWindow.nextOffset })}</p>
+          </div>}
           {artifactPreview && artifactPreviewBody(artifactPreview)}
           {artifactError && <p className="py-1 text-[0.625rem] text-destructive">{t(($) => $.ai.toolCard.previewFailed)}</p>}
+          {view.retainedPaper && <RetainedPaperPreview {...view.retainedPaper} />}
           {toolCardActions({
             view,
             actions,

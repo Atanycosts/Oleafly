@@ -4,22 +4,32 @@ import importlib
 import json
 import sqlite3
 import struct
+import subprocess
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
+import pymupdf
 import pytest
 
 from research_file_workbench.common.filesystem import snapshot_directory
-from research_file_workbench.common.hashing import sha256_bytes, sha256_file
+from research_file_workbench.common.hashing import sha256_bytes, sha256_file, sha256_text
+from research_file_workbench.common.json_io import encode_json_object
 from research_file_workbench.docx.query import ReadQuery, ReadQueryError
+from research_file_workbench.docx.report import READER_VERSION
 from research_file_workbench.projects.cli import main
 from research_file_workbench.projects.models import ProjectStoreError
 from research_file_workbench.projects.render_service import (
+    RenderConversionError,
+    RendererUnavailableError,
     load_render_mapping,
     read_render_artifact,
     register_render_bundle,
+    render_libreoffice_baseline,
 )
+from research_file_workbench.projects.render_validation import BUNDLE_VERSION
 from research_file_workbench.projects.service import (
     create_project,
     import_document,
@@ -116,6 +126,295 @@ def register(fixture, *, reviewed=True):
         actor_id="operator-test",
         confirmation_reason="Register the fixture evidence version",
     )
+
+
+def test_libreoffice_render_retains_readable_pdf_without_fabricating_page_mapping(
+    rendered_project, tmp_path
+):
+    project, _, source, _, baseline = rendered_project
+    fixture_pdf = (
+        ROOT / "reports/phase0/fixtures/s1-figures-tables/s1-figures-tables.pdf"
+    ).read_bytes()
+    executable = tmp_path / "LibreOffice"
+    executable.write_bytes(b"fake LibreOffice executable")
+    executable.chmod(0o755)
+    profile = tmp_path / "libreoffice-profile"
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
+        assert timeout == 120
+        calls.append(command)
+        if command[1:] == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, b"LibreOffice 25.2\n", b"")
+        output_root = Path(command[command.index("--outdir") + 1])
+        (output_root / "baseline.pdf").write_bytes(fixture_pdf)
+        return subprocess.CompletedProcess(
+            command, 0, b"convert /baseline.docx -> /baseline.pdf", b""
+        )
+
+    same_source = source.with_name("same-source.docx")
+    same_source.write_bytes(source.read_bytes())
+    source.unlink()
+    record = render_libreoffice_baseline(
+        project,
+        baseline_id=baseline,
+        executable=executable,
+        profile=profile,
+        actor_id="operator-test",
+        confirmation_reason="Render the saved baseline",
+        surface="browser",
+        runner=runner,
+    )
+
+    manifest = record["manifest"]
+    assert manifest["version"] == BUNDLE_VERSION
+    assert manifest["evidence_kind"] == "derived_pdf"
+    assert manifest["mapping"] is None
+    assert manifest["mapping_status"] == "pending_independent_review"
+    assert manifest["pages"] == []
+    assert manifest["render_record"]["renderer_engine"] == "LibreOffice"
+    assert manifest["render_record"]["renderer_identity_status"] == "executable_hash_verified"
+    assert manifest["render_record"]["libreoffice_profile_parent"] == profile.resolve().as_posix()
+    assert Path(manifest["render_record"]["libreoffice_profile"]).parent == profile.resolve()
+    assert len(calls) == 2
+    assert calls[0][1:] == ["--version"]
+    assert "--headless" in calls[1]
+    assert (
+        read_render_artifact(
+            project,
+            baseline_id=baseline,
+            bundle_id=record["bundle_id"],
+            role="pdf",
+        )
+        == fixture_pdf
+    )
+    store = open_project(project)
+    assert store.list_render_bundles() == []
+    assert store.list_derived_renders(baseline) == [record]
+    derived = next(
+        item
+        for item in store.list_evidence(baseline, reader_version=manifest["reader_version"])
+        if item["evidence_version"] == record["bundle_id"]
+    )
+    assert derived["kind"] == "derived_render"
+    assert derived["scope"] == {"object_type": "derived_render"}
+    assert derived["verification_status"] == "NOT_REVIEWED"
+    assert list(project.glob("var/libreoffice-render-*")) == []
+    changed = import_document(
+        project,
+        same_source,
+        source_sha256=sha256_file(same_source),
+        request_id="request-rebaseline-render",
+        expected_baseline_id=baseline,
+        actor_id="operator-test",
+        confirmation_reason="Confirm a separate same-source baseline",
+    )
+    historical = next(
+        item
+        for item in store.list_evidence(baseline, reader_version=manifest["reader_version"])
+        if item["evidence_version"] == record["bundle_id"]
+    )
+    assert changed["result_baseline_id"] != baseline
+    assert historical["applicability_to_current_baseline"] == "STALE"
+    assert historical["stale_reasons"] == ["baseline_binding_changed"]
+    assert list(profile.glob("profile-*")) == []
+
+
+def test_libreoffice_render_stages_fonts_and_persists_matching_pdf_font_names(
+    rendered_project, tmp_path
+):
+    project, _, _, _, baseline = rendered_project
+    fixture_pdf = ROOT / f"reports/phase0/fixtures/{SAMPLE}/{SAMPLE}.pdf"
+    executable = tmp_path / "LibreOffice"
+    executable.write_bytes(b"fake LibreOffice executable")
+    executable.chmod(0o755)
+    font_root = tmp_path / "font-cache"
+    font_root.mkdir()
+    font_bytes = b"controlled-font-cache-bytes"
+    font = font_root / "Controlled-Regular.ttf"
+    font.write_bytes(font_bytes)
+    font_digest = sha256_bytes(font_bytes)
+    (font_root / "source.json").write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "name": font.name,
+                        "sha256": font_digest,
+                        "family": "Controlled Serif",
+                        "postscript": "ControlledSerif-Regular",
+                        "version": "Version 1.2.3",
+                        "weight": 400,
+                        "style": "normal",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    private_profile_seen = False
+
+    def runner(command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
+        nonlocal private_profile_seen
+        assert timeout == 120
+        if command[1:] == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, b"LibreOffice 25.2\n", b"")
+        profile_uri = next(
+            argument.removeprefix("-env:UserInstallation=")
+            for argument in command
+            if argument.startswith("-env:UserInstallation=")
+        )
+        private_profile = Path(unquote(urlparse(profile_uri).path))
+        staged_font = private_profile / "user/fonts" / f"{font_digest}.ttf"
+        assert staged_font.read_bytes() == font_bytes
+        private_profile_seen = True
+        output_root = Path(command[command.index("--outdir") + 1])
+        (output_root / "baseline.pdf").write_bytes(fixture_pdf.read_bytes())
+        return subprocess.CompletedProcess(command, 0, b"converted", b"")
+
+    record = render_libreoffice_baseline(
+        project,
+        baseline_id=baseline,
+        executable=executable,
+        profile=tmp_path / "profile",
+        actor_id="operator-test",
+        confirmation_reason="Render with application font cache",
+        surface="browser",
+        runner=runner,
+        font_dirs=(font_root,),
+    )
+
+    assert private_profile_seen is True
+    persisted = open_project(project).list_derived_renders(baseline)
+    assert persisted == [record]
+    render_record = persisted[0]["manifest"]["render_record"]
+    assert render_record["supplied_fonts"] == [
+        {
+            "path": font.as_posix(),
+            "sha256": font_digest,
+            "family": "Controlled Serif",
+            "postscript": "ControlledSerif-Regular",
+            "version": "Version 1.2.3",
+            "weight": 400,
+            "style": "normal",
+        }
+    ]
+    assert render_record["font_cache_sha256"] == sha256_text(font_digest)
+    with pymupdf.open(fixture_pdf) as pdf:
+        actual_font_names = sorted(
+            {font_info[3] for page in pdf for font_info in page.get_fonts(full=True)}
+        )
+    assert render_record["pdf_font_names"] == actual_font_names
+    font.write_bytes(b"replacement-font-cache-bytes")
+    store = open_project(project)
+    persisted_again = store.list_derived_renders(baseline)
+    assert (
+        persisted_again[0]["manifest"]["render_record"]["font_cache_sha256"]
+        == (render_record["font_cache_sha256"])
+    )
+    historical_manifest = deepcopy(record["manifest"])
+    historical_render_record = historical_manifest["render_record"]
+    historical_render_record.pop("font_cache_sha256")
+    historical_render_bytes = encode_json_object(historical_render_record).encode("utf-8")
+    historical_render_sha256 = sha256_bytes(historical_render_bytes)
+    artifact_refs = historical_manifest["artifacts"]
+    pdf_ref = next(item for item in artifact_refs if item["role"] == "pdf")
+    render_record_ref = next(item for item in artifact_refs if item["role"] == "render_record")
+    render_record_ref["sha256"] = historical_render_sha256
+    render_record_ref["version_id"] = f"artifact-version-{historical_render_sha256}"
+    historical = store.save_render_bundle(
+        baseline_id=baseline,
+        manifest=historical_manifest,
+        blobs={
+            pdf_ref["version_id"]: store.read_artifact(pdf_ref["version_id"]),
+            render_record_ref["version_id"]: historical_render_bytes,
+        },
+        actor_id="operator-test",
+        confirmation_reason="Retain a historical derived record without font identity",
+    )
+    assert (
+        "font_cache_sha256"
+        not in store.get_render_bundle(baseline, historical["bundle_id"])["manifest"][
+            "render_record"
+        ]
+    )
+
+
+def test_missing_libreoffice_is_a_typed_capability_failure(rendered_project, tmp_path):
+    project, _, _, _, baseline = rendered_project
+    before = open_project(project).list_evidence(baseline, reader_version=READER_VERSION)
+
+    with pytest.raises(RendererUnavailableError) as unavailable:
+        render_libreoffice_baseline(
+            project,
+            baseline_id=baseline,
+            executable=tmp_path / "missing-soffice",
+            profile=tmp_path / "profile",
+            actor_id="operator-test",
+            confirmation_reason="Render with missing capability",
+            surface="browser",
+        )
+
+    assert unavailable.value.code == "renderer_unavailable"
+    assert open_project(project).list_evidence(baseline, reader_version=READER_VERSION) == before
+
+
+def test_libreoffice_failure_never_registers_a_partial_render(rendered_project, tmp_path):
+    project, _, _, _, baseline = rendered_project
+    executable = tmp_path / "LibreOffice"
+    executable.write_bytes(b"fake LibreOffice executable")
+    executable.chmod(0o755)
+
+    def runner(command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
+        if command[1:] == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, b"LibreOffice 25.2\n", b"")
+        return subprocess.CompletedProcess(command, 7, b"", b"conversion failed")
+
+    with pytest.raises(RenderConversionError) as failed:
+        render_libreoffice_baseline(
+            project,
+            baseline_id=baseline,
+            executable=executable,
+            profile=tmp_path / "profile",
+            actor_id="operator-test",
+            confirmation_reason="Render a failing conversion",
+            surface="browser",
+            runner=runner,
+        )
+
+    assert failed.value.code == "render_failed"
+    assert open_project(project).list_render_bundles() == []
+    assert open_project(project).list_derived_renders(baseline) == []
+
+
+def test_unreadable_pdf_is_a_conversion_failure_without_registration(rendered_project, tmp_path):
+    project, _, _, _, baseline = rendered_project
+    executable = tmp_path / "LibreOffice"
+    executable.write_bytes(b"fake LibreOffice executable")
+    executable.chmod(0o755)
+
+    def runner(command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
+        if command[1:] == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, b"LibreOffice 25.2\n", b"")
+        output_root = Path(command[command.index("--outdir") + 1])
+        (output_root / "baseline.pdf").write_bytes(b"%PDF-1.7\nnot a readable PDF")
+        return subprocess.CompletedProcess(command, 0, b"converted", b"")
+
+    with pytest.raises(RenderConversionError) as failed:
+        render_libreoffice_baseline(
+            project,
+            baseline_id=baseline,
+            executable=executable,
+            profile=tmp_path / "profile",
+            actor_id="operator-test",
+            confirmation_reason="Render unreadable output",
+            surface="browser",
+            runner=runner,
+        )
+
+    assert failed.value.code == "render_failed"
+    assert str(failed.value) == "LibreOffice output is not a readable PDF."
+    assert open_project(project).list_derived_renders(baseline) == []
 
 
 def test_bundle_persists_pdf_png_annotations_and_reads_after_inputs_deleted(rendered_project):

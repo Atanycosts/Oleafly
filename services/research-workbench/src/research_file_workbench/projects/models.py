@@ -14,6 +14,10 @@ class ProjectStoreError(ValueError):
 class BaselineConflictError(ProjectStoreError):
     """Raised when a read attempts to commit against a displaced current baseline."""
 
+    def __init__(self, message: str, *, result: JsonObject | None = None) -> None:
+        super().__init__(message)
+        self.result = result
+
 
 def require_record_text(value: object, label: str) -> str:
     """Validate a required textual field at a persistent project-record boundary."""

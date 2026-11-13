@@ -1,6 +1,6 @@
 # S1 implementation and acceptance status
 
-Status date: 2026-11-09
+Status date: 2026-11-14
 
 This document records the Workbench-domain slice only. Current cross-system entry points are
 the [Oleafly integration guide](../../../docs/research-workbench-integration.md),
@@ -15,6 +15,11 @@ shell. The old root retains only existing `var/` data and a migration pointer; d
 paths and manuscript records were not rewritten. Use `pnpm workbench:setup` from
 the Oleafly root and this service's `.venv` for development.
 
+On 2026-11-12 the local `.venv` was rebuilt from Homebrew Python 3.12. The normal
+`pnpm workbench:setup` entry and `uv pip check` passed; 167 focused reader, render,
+validation, server and workspace tests passed with one existing skip and the existing
+PyMuPDF/SWIG warnings. This environment check did not rerun Office or alter author inputs.
+
 Consolidation verification passed Ruff format (213 Python files), Ruff lint, mypy
 (118 source files), and the complete Python suite (1034 passed, 33 existing platform
 skips, five PyMuPDF/SWIG warnings). The original synthetic fixture bytes are retained;
@@ -28,10 +33,168 @@ Phase 0 validation still fails for the nine missing
 author inputs and fixed WPS environment. Earlier dated results below retain their
 original scope and paths.
 
+The 2026-11-13 fixed-save recovery increment preserves a manuscript update's exact
+persisted refusal result across the HTTP boundary. Baseline conflicts remain HTTP 409;
+rejected input and idempotency conflicts remain HTTP 400, with the existing error text
+and recorded request identity, digest, status and null result baseline. An idempotency
+conflict can reference another request's successful baseline, which is not a saved
+result for the submitted bytes. Ordinary read/binding conflicts keep their existing
+sanitized errors. The recovery increment used `journal-http-1.8.0`, synchronized
+with the browser and native application connection check. Application checkpoint
+and task-attribution behavior is owned by the linked Agent status and architecture.
+
+For this change, Ruff format (212 Python files), Ruff lint, mypy (118 source files)
+and the full Python suite passed (1050 passed, 33 existing platform skips, five
+PyMuPDF/SWIG warnings). Real HTTP regressions exercise all three persisted refusals
+and replay against the retained ledger. Phase 0 still exits 1 with
+`CONTRACT_INVALID` / `PHASE0_INCOMPLETE` for the missing registered source identities
+and pinned Windows WPS environment; those historical requirements and evidence were
+not rewritten. This does not block the separately scoped macOS DOCX workflow.
+
+The 2026-11-13 exact-font correction retains body-font family requirements through the
+existing guide/component, evidence, decision and immutable world flow. Exact English/Chinese
+body-font instructions can be recognized deterministically. Model research still returns
+candidates for applicability review. Manuscript font declarations alone do not establish
+journal requirements. The machine-readable contract above owns the current method and
+transport versions. New checks require reanalysis under the current analyzer; retained older
+worlds/checks remain readable without re-executing an older method. Font rules return
+`not_checked`: the geometry checker neither audits declared run fonts nor certifies downloaded
+fonts or rendered glyphs. Exact font acquisition and live editor refresh belong to the
+[application status](../../../docs/agent/status.md#docx-准确字体获取2026-11-13), not this service.
+
+Document structure and journal rules have different coverage. The current
+[reader](../src/research_file_workbench/docx/reader.py) extracts package parts and
+relationships, text, tables, images, OMML and fields, sections, references, styles and
+numbering. Its [report](../src/research_file_workbench/docx/report.py) explicitly remains
+partial. Style observations follow `basedOn` for a few properties; they do not compute
+every paragraph/run's effective format through document defaults, theme, table,
+paragraph and character styles and direct formatting. Section body-size/spacing
+observations are dominant explicit declarations, not a resolved body-role model.
+The [journal property vocabulary](../src/research_file_workbench/journals/models.py)
+and [checker](../src/research_file_workbench/journals/checker.py) own the supported
+comparisons; retaining XML and editing with the full document engine does not expand
+those historical checks. Template observations are not publisher-authenticated rules.
+The 2026-11-14 [selected-template route](#selected-word-template-comparison-2026-11-14)
+now connects the installed engine's public style cascade to retained paragraph/run
+facts and role-specific comparison. This supersedes the format-analysis limitation
+of the 2026-11-13 font/frame increment; the Python reader does not recompute that cascade.
+
+The current private-font render gates passed Ruff format (213 Python files), Ruff lint,
+mypy (118 source files), and the full suite (1084 passed, 33 existing platform skips, five
+PyMuPDF/SWIG warnings). `node --check` passed for `app.js`, and all 18 contract JSON files parsed.
+Regressions cover exact family/source retention, multi-font and
+script-scoped guidance remaining gaps, real family names containing Latin/English/CJK,
+component decisions, unchecked font verdicts, CLI/browser string values, launcher path-list
+delivery, private profile font staging, persisted render metadata and receipt symlink refusal.
+Phase 0 still exits 1 with `CONTRACT_INVALID` / `PHASE0_INCOMPLETE` for the previously recorded
+missing source identities and pinned Windows WPS environment; it does not provide new macOS
+rendering evidence.
+
 Scope decision (2026-11-07): the operator excludes a complete journal submission
 workflow and comprehensive submission acceptance from the product scope. They are
 not pending deliverables. Journal-requirement research, source review, versioned
 rules and supported manuscript checks remain in scope.
+
+The 2026-11-11 DOCX working-copy increment exposes exact retained source bytes for an explicit
+baseline through `GET /api/manuscript-source`. It verifies the source hash, returns a display
+filename and bytes, and neither reads an author path nor records a structured read receipt.
+The Oleafly frontend now edits and paginates that managed copy, streams one paragraph proposal,
+exports actual DOCX bytes and reuses the existing baseline/check services. The frontend invokes the
+renderer after a saved baseline is available through the native bridge, and the service records the
+resulting PDF as a derived render. The service does not own the live editing session. Current contracts remain in
+[`world-contract.json`](../contracts/journals/world-contract.json).
+
+The same date adds the backend foundation for post-save rendering. `POST /api/render-baseline`
+requires an exact retained baseline, an absolute LibreOffice executable and an explicit reason.
+The service selects its own profile parent below the Workbench library's `var/libreoffice-profile`
+and creates a private temporary profile for each conversion; HTTP callers cannot select a profile
+path. The native application supplies its download and exact-resolved font-cache roots through
+`OLEAFLY_FONT_DIRS`; HTTP and MCP callers do not choose font directories. Each render stages
+current TTF/OTF bytes into that private profile's `user/fonts` directory, deduplicates identical
+bytes by SHA-256, verifies available source receipts and refuses reparse-point roots, files and
+receipts. It identifies the executable as LibreOffice, reads only the baseline artifact into a
+disposable project-local directory, runs headless PDF conversion, and checks the output page count
+before committing the PDF and render record through the existing project transaction. The manifest
+records the LibreOffice version, executable hash/path, private profile path, source/PDF identities
+and render times as `derived_render` evidence under the method in the
+[render contract](../contracts/s1/render-bundle.json). Its `supplied_fonts` records the cache bytes copied by hash;
+`pdf_font_names` records names actually observed in the PDF. They are separate observations and
+do not establish that the PDF embedded the same complete bytes or version used by the live editor.
+The derived-render response also identifies the current font-cache content set, while each render
+retains the identity of the bytes actually supplied to it. Comparing those identities after a
+service restart prevents a PDF rendered against an older cache from being presented as current.
+Older records without that identity remain readable and are not treated as current-cache matches.
+The current method also invalidates earlier records that predate native system-font staging.
+The application retains exact resolved system faces and waits for font resolution before
+requesting a saved PDF. This gives the isolated renderer the same supplied Latin font bytes;
+PDF font names and embedded subset versions remain separate observations.
+`GET /api/derived-renders` lists those records for an explicit project baseline without mixing
+them into historical page bundles. The renderer deliberately keeps page images and page mapping
+absent and does not add the PDF to the interactive historical page-bundle list. A missing or
+non-LibreOffice capability returns `renderer_unavailable`; no WPS or other renderer is tried. The
+saved-version panel supplies the explicit renderer path and invokes this route automatically after
+a saved baseline. Focused fake-runner coverage verifies retained-source conversion, private font
+staging, PDF font-name persistence, PDF registration, listing, capability failure, unreadable
+output and HTTP routing. The derived bundle contract is
+[`s1-render-bundle-1.2.0`](../contracts/s1/render-bundle.json); only the pre-existing page-bundle
+`1.1.0` remains readable as historical evidence. The cache identity is a response fact and adds no
+HTTP request path fields; the current HTTP contract is `journal-http-1.10.0`.
+
+The earlier Chinese macOS native run `run-XJihrW` passed extraction of four exact families
+from two official Microsoft packages, same-session font use, unchanged-DOCX saving and PDF
+generation using SimSun 5.04i and SimHei 5.03i. Earlier isolated E2E-packaged macOS runs `run-ilC23E` (Chinese)
+and `run-oknADL` (English) passed the cache-identity and actual-edit/save increment:
+normal reopen reused a completed compatible render without another conversion, then one supported
+Agent-host text edit was saved through the UI to a new baseline and regenerated as a PDF matching
+that saved source hash. The PDFs had 26/10 pages and actual SimSun 5.04i subsets; the Chinese
+PDF also used SimHei 5.03i. Both saved DOCX packages preserved parts, media, relationship semantics and
+protected nodes, with one intended text change and unchanged author hashes. The runner restored
+E2E WebKit storage and stopped its app/Workbench processes. Evidence remains local and ignored
+under `.private/docx-font-layout/` at the repository root. These deterministic edits do not validate
+model quality. Microsoft archives were reused from verified complete cache, while PT Serif was
+downloaded over the network. These runs predate exact system-font staging and the editor's
+multi-column frame correction. Current native results and the remaining LibreOffice
+title-frame and formula-font limits are owned by the linked application status.
+KaiTi and DengXian were supplied but were not observed as fonts actually used by these PDFs.
+Cross-engine visual equivalence remains unverified.
+
+Current observation IDs still bind the exact source hash, reader method and locator. A synthetic
+ZIP-comment-only update retained all package parts and text while changing all 32 catalog IDs;
+the existing baseline transaction retained both versions, rejected a stale expected baseline,
+and recovered the old read exactly. These are snapshot evidence identities, not live editor
+anchors. Four focused baseline/conflict/staleness/replay regressions passed. The cross-system
+[current verified slice](../../../docs/agent/status.md#docx-工作副本首个闭环2026-11-11),
+[session contract](../../../docs/agent/architecture.md#docx-实时工作表面)
+and [component choices](../../../docs/agent/reuse.md#docx-编辑与实时工作机制) own the cross-system integration;
+baseline semantics remain unchanged, while the reader method version below records the added VML observation.
+
+The migrated real English and Chinese manuscripts were then run through the production React
+editor and the real Workbench browser harness after the large-document session readiness fix.
+Both first reads returned an active session without a user-edit workaround; no-change exports
+preserved all package parts, media, relationship semantics and protected nodes, while each
+edited export changed only its intended paragraph. Mixed-format, field, OMML and image
+paragraph replacements were refused with `unsupported-target` and no revision change.
+This verifies the controlled structure round trip, not Word/WPS visual fidelity: the two
+documents at that stage reported substitute-font/fixed-measurer warnings, and the independent LibreOffice
+render of the English manuscript has a first-page two-column title difference.
+
+The reader now reports selected VML `w:pict/v:imagedata` as an explicit `vml_picture` unsupported
+record under `s1-readonly-reader-1.5.0`, retaining its relationship and resource locator;
+VML geometry and page placement remain outside the reader's interpretation.
+
+The source-byte increment passed the 58 focused workspace/server/architecture tests with one
+existing macOS loopback-alias skip and five PyMuPDF/SWIG warnings. Scoped Python format/lint and
+mypy across 118 source files passed. The actual browser workflow also used the real Python
+baseline/bind/check endpoints and reopened the saved version. Its Tauri transport and token
+provider were scripted; native-app and real-model DOCX editing remain unverified. Current
+cross-system results and local-only evidence are recorded in the linked Agent status.
+
+Scope decision (2026-11-11): new DOCX UI keys are maintained in Chinese and English only.
+Complete coverage and validation for other application languages are outside this round's
+product scope and are not pending Workbench deliverables. Chinese and English catalog checks
+passed for the affected frontend. The verified DOCX browser flow ran on macOS. This round does
+not perform native Windows validation, so that validation is outside its scope rather than a
+pending check; the native app and real-model DOCX editing remain unverified.
 
 S1 is unreleased and partial: manuscript analysis is read-only, while project and journal
 management expose local writes. Before consolidation, the complete Workbench gate run on 2026-11-07
@@ -211,7 +374,8 @@ its normal interface. Compiler output (about 43 GB), the
 old preview bundle, temporary logs and seven disposable Oleafly projects were
 removed; that initial slice retained the complete workflow demonstration. The
 following increment adds a second project using the retained real manuscript.
-Captured DOCX editing and computed layout remain future product work. A complete
+At that historical stage captured DOCX editing and computed layout remained future product work;
+the current increment is described at the top of this document. A complete
 journal submission workflow and comprehensive submission acceptance are excluded
 by the scope decision above.
 
@@ -346,7 +510,7 @@ implementation below `workbench/web/`.
   selection, source-bound pagination, and exact response receipts. Catalog access does not count
   as content read. Inputs and outputs stay within the recorded application and author boundaries.
 - Repeated fields within one paragraph have distinct source occurrence numbers. Current reader method
-  `s1-readonly-reader-1.4.0` locates each paragraph in its part's source bytes and invalidates
+  `s1-readonly-reader-1.5.0` locates each paragraph in its part's source bytes and invalidates
   earlier object IDs and query cursors; page queries refuse
   mappings whose originating structure report uses another reader version.
 - The single-DOCX project slice retains immutable source bytes, baselines, source-observation
@@ -371,8 +535,9 @@ implementation below `workbench/web/`.
 - The journal-world slice now provides a local versioned source analyzer, SQLite library, explicit
   DOCX project binding, page-geometry checking, rule correction history, dispositions and a static
   browser workbench. It is an implemented local slice, not full S2A rule processing: PDF guide
-  semantics, complete paragraph/run formatting, remote authentication and full journal acceptance
-  remain outside its declared scope.
+  semantics, remote authentication and full journal acceptance remain outside its declared scope.
+  Effective paragraph/run format comparison for explicitly selected Word templates is implemented
+  by the separate core-snapshot route [below](#selected-word-template-comparison-2026-11-14).
 - The journal HTTP, browser and service now share one upload contract: display name, original DOCX
   filename and captured bytes. Static browser files are included in the wheel and captured at server
   startup; a served asset identity does not silently change when local source files are edited.
@@ -481,7 +646,7 @@ portability and a supported macOS delivery/verification path remain separate pla
   dispositions, read with receipts, and preview retained PDF pages. Retained refusals (baseline
   compare-and-swap, idempotency reuse, unreadable input) surface as typed reasons on every
   surface, and bindings, checks and dispositions record which local surface drove them, per
-  `s1-project-storage-1.3.0`. Two capabilities stay operator-only on purpose: author decisions
+  `s1-project-storage-1.4.0`. Two capabilities stay operator-only on purpose: author decisions
   refuse agent proposals by design, and render-bundle registration records independent human
   evidence through the CLI or browser. The MCP layer holds no business rule; its declared
   boundary, versions and limits are in `contracts/s1/mcp-surface.json`. The local MCP write
@@ -503,8 +668,9 @@ portability and a supported macOS delivery/verification path remain separate pla
   it needs its own versioned change.
 - Automatic inference of verified page coordinates, complete computed style semantics, and
   semantic interpretation of complex embedded objects are not current reader capabilities.
-- Manuscript editing, S2A journal template and rule-pack processing, and S2B proposal preflight
-  with approved DOCX text replacement remain later-stage work.
+- Selected Word templates now use the core-snapshot comparison route described below. General
+  rule-pack processing and S2B proposal preflight retain their later-stage scope. Oleafly owns
+  live manuscript editing; its current implementation and evidence belong to the linked Agent status.
 - Microsoft Word compatibility and general renderer portability are not established by the
   retained Windows and Mac WPS chains. The frozen Windows environment uses a pinned executable;
   its missing Baskerville font and English-baseline substitution limitation remain historical
@@ -543,3 +709,48 @@ See [page evidence](s1-page-evidence.md). The render persistence and verificatio
 retained as local historical evidence under
 `.private/workspace-consolidation-20261109/workbench-original-source/reports/s1/`, outside the
 public clean checkout.
+
+## Selected Word template comparison (2026-11-14)
+
+The selected-template route now retains original upload bytes (including legacy `.doc`), normalized
+DOCX and conversion provenance in the existing source/world library. Explicit selection makes the
+template immediately usable as the comparison basis. It does not require confirming each font or
+size and does not turn a template difference into a publisher-authenticated violation.
+
+The application captures source-bound effective facts with its pinned DOCX core. Workbench verifies
+package part hashes and retains the baseline snapshot through existing artifact/evidence storage.
+Object comparison uses semantic kind/role, heading level and caption context, excluding identity,
+example text, raw formatting declarations and unused script font slots. Variable template formats
+remain uncertain. Results retain exact source/method versions and object evidence; request replay
+is idempotent and a changed binding is a conflict. Full package parts, XML nodes and relationships
+are available through bounded read-only queries. Snapshot objects and saved findings support
+pagination; finding filters apply before pagination. Findings are stored once as a content-addressed
+artifact, with summary/selectors and an initial page in the check. Core observations carry their
+own method versions so subsequent manuscript saves preserve historical evidence and mark its
+source applicability accurately. Wire fields and current methods are maintained in
+[the journal contract](../contracts/journals/world-contract.json), under `template_comparison`.
+
+This extends the journal business model; the historical geometry analyzer remains readable and
+continues to serve its existing guide checks. Python does not recompute the core's style cascade.
+Backend contract/component checks exercise retained bytes and HTTP, while actual application,
+legacy conversion, native Agent editing and Office rendering are separate integration evidence.
+
+The final module gate passed on 2026-11-14: Ruff formatting (223 files), lint, mypy (124 source
+files), and pytest (1140 passed, 33 skipped; five existing PyMuPDF/SWIG deprecation warnings).
+It covers exact package queries, active-script font requirements, object comparison, filtered
+finding and snapshot pagination, explicit binding conflicts, save-after-check and historical replay,
+and method-specific evidence applicability. The application-owned real-document browser acceptance
+also passed for the retained IJAM template plus English and Chinese manuscripts, with complete
+finding-page traversal and unchanged author hashes. Its raw report is local-only at
+`.private/journal-template-acceptance/real-bqD6BA/report.json` under the repository root. Native
+application acceptance is tracked in the linked Agent status.
+
+Explicit semantic regions refine section, paragraph, run and table profiles using core section
+membership and content roles. Front matter, body, references and appendix regions can be compared
+without pairing by section order, XML path, object ID or the formatting value under test. Mixed or
+unknown regions retain common-property comparison and variable values remain `cannot_determine`.
+Missing semantic/region profiles also produce an explicit uncertain object with its reason.
+Table, row and cell profiles compare stable common formatting within a region, without arbitrary
+table-to-table alignment or treating example dimensions as requirements. Core unsupported constructs
+and unknown/mixed role-region counts remain aggregated coverage gaps. Complete package retention
+does not imply that every OOXML construct already has an effective-format comparison interpretation.

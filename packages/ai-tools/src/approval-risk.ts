@@ -10,6 +10,10 @@ export type ApprovalRuleDecision = "allow" | "deny";
 export const DEFAULT_APPROVAL_MODE: ApprovalMode = "approve-for-me";
 
 const READ_TOOLS = new Set([
+  "list_docx_documents",
+  "read_docx_document",
+  "read_docx_format",
+  "capture_docx_target",
   "list_research_roots",
   "list_research_root_files",
   "read_research_root_file",
@@ -43,6 +47,11 @@ const READ_TOOLS = new Set([
 ]);
 
 const WRITE_TOOLS = new Set([
+  "suggest_docx_change",
+  "apply_docx_suggestion",
+  "apply_docx_format",
+  "save_docx_document",
+  "check_docx_template",
   "write_file",
   "replace_in_file",
   "create_file",
@@ -57,11 +66,16 @@ const WRITE_TOOLS = new Set([
 
 const NETWORK_TOOLS = new Set([
   "literature_search",
+  "read_paper",
   "verify_citation",
   "list_overleaf_projects",
 ]);
 
 const READ_ONLY_TOOLS = new Set([
+  "list_docx_documents",
+  "read_docx_document",
+  "read_docx_format",
+  "capture_docx_target",
   "list_research_roots",
   "list_research_root_files",
   "read_research_root_file",
@@ -82,6 +96,7 @@ const READ_ONLY_TOOLS = new Set([
   "show_location",
   "list_agents",
   "literature_search",
+  "read_paper",
   "verify_citation",
   "list_overleaf_projects",
   "research_task_status",

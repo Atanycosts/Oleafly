@@ -1,4 +1,18 @@
 {
+  "paperReader": {
+    "byteRange": "文本字节 {{start}} 至 {{end}}",
+    "textHash": "文本 SHA-256：{{hash}}",
+    "readEnd": "已读到提取文本末尾。",
+    "readNext": "使用 offset {{offset}} 和留存 PDF 引用继续读取。",
+    "label": "阅读论文",
+    "openPdf": "打开留存 PDF",
+    "title": "留存的论文 PDF",
+    "description": "本次读取所用的原始 PDF。",
+    "hash": "PDF SHA-256：{{hash}}",
+    "pages": "已读第 {{start}} 至 {{end}} 页，共 {{total}} 页",
+    "loading": "正在加载留存 PDF…",
+    "catalog": "读取带页码的论文原文，并回看留存 PDF。"
+  },
   "runtime": {
     "ariaLabel": "助手运行时",
     "builtIn": "Oleafly 代理",
@@ -326,6 +340,11 @@
       "renameFile": "重命名或移动文件、文件夹。",
       "deleteFile": "删除文件或文件夹。",
       "listFiles": "列出项目中的所有文件和文件夹。",
+      "listDocxDocuments": "列出打开的 DOCX 工作副本及其活动版本和保存版本。",
+      "readDocxDocument": "读取当前段落，包括尚未保存的 DOCX 编辑。",
+      "captureDocxTarget": "捕获段落及其当前结构，作为修改目标。",
+      "suggestDocxChange": "将段落建议流式显示到 DOCX 工作副本。",
+      "applyDocxSuggestion": "将仍然有效的 DOCX 建议应用为一次可撤销编辑。",
       "searchProject": "搜索项目文本，返回文件和行号匹配结果。",
       "projectMap": "读取文档大纲：章节、标签、引用键、宏、输入文件以及未解析的内容。",
       "showLocation": "在编辑器中打开文件的指定行，并将 PDF 预览定位到该处。",

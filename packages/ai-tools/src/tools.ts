@@ -122,6 +122,175 @@ export interface AiToolsHost {
   listNotes(): { id: string; content: string }[];
 }
 
+export interface DocxDocumentState {
+  sessionId: string;
+  baselineId: string;
+  sessionRevision: number;
+  savedRevision: number;
+  dirty: boolean;
+}
+
+export interface DocxFormatDocumentState extends DocxDocumentState {
+  filename: string;
+}
+
+export interface DocxActivityDocument extends DocxDocumentState {
+  sourceSha256: string;
+  appProjectId: string;
+  workbenchProjectId: string;
+  title: string;
+  filename: string;
+}
+
+export interface DocxParagraphView {
+  paragraphRef: string;
+  text: string;
+  paraId?: string;
+}
+
+export interface DocxDocumentRead {
+  document: DocxActivityDocument;
+  paragraphs: DocxParagraphView[];
+}
+
+export interface DocxTargetView extends DocxDocumentState {
+  filename: string;
+  targetId: string;
+  paragraphRef: string;
+  text: string;
+  revision: number;
+  paraId?: string;
+  structure?: string;
+}
+
+export interface DocxSuggestion {
+  target: DocxTargetView;
+  proposed: string;
+}
+
+export interface DocxSuggestionResult extends DocxSuggestion {
+  document: DocxDocumentState;
+}
+
+export interface DocxSuggestionApplyResult {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  changed: boolean;
+  document: DocxDocumentState;
+}
+
+export type DocxAlignment = "Mixed" | "Unknown" | "Left" | "Centered" | "Right" | "Justified";
+export type DocxReadingOrder = "LeftToRight" | "RightToLeft";
+
+export interface DocxFontFormatRead {
+  bold: boolean | null; italic: boolean | null; underline: string | null; strikeThrough: boolean | null;
+  highlightColor: string | null; subscript: boolean | null; superscript: boolean | null;
+  name: string | null; size: number | null; color: string | null;
+}
+export interface DocxFontFormatWrite {
+  bold?: boolean; italic?: boolean; underline?: string; strikeThrough?: boolean; highlightColor?: string | null;
+  subscript?: boolean; superscript?: boolean; name?: string; nameEastAsia?: string; size?: number; color?: string;
+}
+export interface DocxParagraphFormatRead {
+  alignment: DocxAlignment; style: string | null; firstLineIndent: number | null;
+  leftIndent: number | null; rightIndent: number | null; lineSpacing: number | null;
+  spaceBefore: number | null; spaceAfter: number | null; widowControl: boolean | null;
+  readingOrder: DocxReadingOrder;
+}
+export interface DocxParagraphFormatWrite {
+  alignment?: DocxAlignment; style?: string; firstLineIndent?: number; leftIndent?: number;
+  rightIndent?: number; lineSpacing?: number; spaceBefore?: number; spaceAfter?: number;
+  widowControl?: boolean; readingOrder?: DocxReadingOrder;
+}
+export interface DocxParagraphFormatting {
+  paragraphRef: string; text: string; revision: number; paraId?: string;
+  font: DocxFontFormatRead; paragraph: DocxParagraphFormatRead;
+}
+export interface DocxFormatMutation { font?: DocxFontFormatWrite; paragraph?: DocxParagraphFormatWrite }
+
+export interface DocxFormatReadQuery {
+  kind?: "objects" | "nodes"; paragraphRef?: string; part?: string; path?: number[];
+  namespaceUri?: string; localName?: string;
+  attribute?: { namespaceUri?: string; localName: string; value?: string };
+  offset?: number; limit?: number;
+}
+export type DocxFormatRecord = { [key: string]: unknown };
+export interface DocxFormatReadResult {
+  document: DocxFormatDocumentState; sourceSha256: string; revision: number;
+  paragraph?: DocxParagraphFormatting; objects?: DocxFormatRecord[];
+  nodes?: DocxFormatRecord[]; total?: number; nextOffset: number | null;
+}
+export interface DocxSaveResult {
+  baselineId: string; revision: number; sourceSha256: string; document: DocxDocumentState;
+  formatStatus?: "recorded" | "failed" | "not_requested";
+  formatError?: string;
+}
+export interface DocxTemplateCheckResult { template: string; check: Record<string, unknown> }
+
+/** Runtime-owned task facts. UI state must not be used to invent these values. */
+export interface DocxAgentAttribution {
+  taskId?: string;
+  workId?: string;
+  memberId?: string;
+  executionId?: string;
+}
+
+export interface DocxOperationContext {
+  attribution?: DocxAgentAttribution;
+  signal?: AbortSignal;
+  onToken?: (full: string) => void;
+}
+
+export interface DocxSuggestionRequest {
+  sessionId?: string;
+  paragraphRef: string;
+  instruction: string;
+  expectedRevision?: number;
+}
+
+export interface DocxSuggestionApplyRequest {
+  targetId: string;
+  expectedRevision: number;
+  text: string;
+}
+
+export interface DocxToolsHost {
+  listDocuments(): Promise<DocxActivityDocument[]>;
+  readDocument(sessionId?: string): Promise<DocxDocumentRead>;
+  captureTarget(sessionId: string | undefined, paragraphRef: string): Promise<DocxTargetView>;
+  inspectTarget(targetId: string): Promise<DocxTargetView>;
+  suggestChange(
+    input: DocxSuggestionRequest,
+    context?: DocxOperationContext,
+  ): Promise<DocxSuggestionResult>;
+  applySuggestion(
+    input: DocxSuggestionApplyRequest,
+    context?: DocxOperationContext,
+  ): Promise<DocxSuggestionApplyResult>;
+  readFormat?(
+    sessionId: string | undefined,
+    query: DocxFormatReadQuery,
+  ): Promise<DocxFormatReadResult>;
+  formatParagraph?(
+    sessionId: string | undefined,
+    paragraphRef: string,
+    expectedRevision: number,
+    format: DocxFormatMutation,
+    context?: DocxOperationContext,
+  ): Promise<DocxSuggestionApplyResult>;
+  saveDocument?(
+    sessionId: string | undefined,
+    expectedRevision: number,
+    context?: DocxOperationContext,
+  ): Promise<DocxSaveResult>;
+  checkTemplate?(
+    sessionId: string | undefined,
+    template: string,
+    context?: DocxOperationContext,
+  ): Promise<DocxTemplateCheckResult>;
+}
+
 type RawSchema = {
   type: "object";
   properties: Record<string, unknown>;
@@ -148,12 +317,91 @@ export interface ToolApprovalRequest {
 
 export type ConfirmFn = (req: ToolApprovalRequest) => Promise<boolean>;
 
+export interface DocxToolsOptions {
+  attribution?: DocxAgentAttribution;
+  confirm?: ConfirmFn;
+  mutationAllowed?: () => boolean;
+  signal?: AbortSignal;
+  onToken?: (full: string) => void;
+}
+
 export interface ExecAuthorization {
   approvalToken: string;
   runId: string;
 }
 
 const MAX_MUTATION_BYTES = 16 * 1024 * 1024;
+
+const DOCX_FONT_SCHEMA = {
+  type: "object", required: [], additionalProperties: false,
+  properties: {
+    bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "string" },
+    strikeThrough: { type: "boolean" }, highlightColor: { type: ["string", "null"] },
+    subscript: { type: "boolean" }, superscript: { type: "boolean" },
+    name: { type: "string", description: "Latin font family." },
+    nameEastAsia: { type: "string", minLength: 1, description: "Exact East Asian font family, for example SimSun." },
+    size: { type: "number", description: "Points." },
+    color: { type: "string", description: "#RRGGBB." },
+  },
+} as const;
+
+const DOCX_PARAGRAPH_FORMAT_SCHEMA = {
+  type: "object", required: [], additionalProperties: false,
+  properties: {
+    alignment: { enum: ["Left", "Centered", "Right", "Justified"] },
+    style: { type: "string", description: "An existing style name." },
+    firstLineIndent: { type: "number" }, leftIndent: { type: "number" },
+    rightIndent: { type: "number" }, lineSpacing: { type: "number" },
+    spaceBefore: { type: "number" }, spaceAfter: { type: "number" },
+    widowControl: { type: "boolean" }, readingOrder: { enum: ["LeftToRight", "RightToLeft"] },
+  },
+} as const;
+
+const DOCX_SESSION_SCHEMA = {
+  type: "string",
+  description: "Session ID from list_docx_documents. Omit for the active session.",
+} as const;
+
+function docxFormatQuery(value: unknown): DocxFormatReadQuery {
+  const query = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  if (query.offset !== undefined && (!Number.isInteger(query.offset) || Number(query.offset) < 0))
+    throw new Error("A DOCX format offset must be a non-negative integer.");
+  if (query.limit !== undefined && (!Number.isInteger(query.limit) || Number(query.limit) < 1 || Number(query.limit) > 50))
+    throw new Error("Read one to fifty DOCX format objects per window.");
+  if (query.path !== undefined && (!Array.isArray(query.path) || query.path.some((index) => !Number.isInteger(index) || index < 0)))
+    throw new Error("A DOCX node path must contain non-negative integer child indices.");
+  const attribute = query.attribute && typeof query.attribute === "object"
+    ? query.attribute as Record<string, unknown>
+    : {};
+  return {
+    ...(query.kind === "objects" || query.kind === "nodes" ? { kind: query.kind } : {}),
+    ...(typeof query.paragraph_ref === "string" ? { paragraphRef: query.paragraph_ref } : {}),
+    ...(typeof query.part === "string" ? { part: query.part } : {}),
+    ...(Array.isArray(query.path)
+      ? { path: query.path.filter((item): item is number => Number.isInteger(item)) }
+      : {}),
+    ...(typeof query.namespace_uri === "string" ? { namespaceUri: query.namespace_uri } : {}),
+    ...(typeof query.local_name === "string" ? { localName: query.local_name } : {}),
+    ...(typeof attribute.local_name === "string"
+      ? {
+          attribute: {
+            localName: attribute.local_name,
+            ...(typeof attribute.namespace_uri === "string"
+              ? { namespaceUri: attribute.namespace_uri }
+              : {}),
+            ...(typeof attribute.value === "string" ? { value: attribute.value } : {}),
+          },
+        }
+      : {}),
+    ...(typeof query.offset === "number" ? { offset: query.offset } : {}),
+    ...(typeof query.limit === "number" ? { limit: query.limit } : {}),
+  };
+}
+
+function docxRevision(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
 const MAX_REPLACEMENTS = 100_000;
 const textEncoder = new TextEncoder();
 
@@ -1178,6 +1426,403 @@ export function createOleaflyTools(
   }
 
   return tools;
+}
+
+export function createDocxTools(
+  host: DocxToolsHost,
+  opts?: DocxToolsOptions,
+) {
+  const context: DocxOperationContext | undefined =
+    opts?.attribution || opts?.signal || opts?.onToken
+      ? {
+          ...(opts.attribution
+            ? { attribution: Object.freeze({ ...opts.attribution }) }
+            : {}),
+          ...(opts.signal ? { signal: opts.signal } : {}),
+          ...(opts.onToken ? { onToken: opts.onToken } : {}),
+        }
+      : undefined;
+  const mutationAllowed = () => opts?.mutationAllowed?.() ?? true;
+  const cancelled = () => ({
+    error: "The external request was cancelled before mutation.",
+  });
+  const unavailableOrError = (error: unknown) => {
+    const message = String(error).replace(/^Error: /, "");
+    return message.includes("unavailable")
+      ? { unavailable: true as const, error: message }
+      : { error: String(error) };
+  };
+  const stringField = (input: Record<string, unknown>, name: string): string =>
+    typeof input[name] === "string" ? input[name] : "";
+  const optionalString = (input: Record<string, unknown>, name: string): string | undefined => {
+    const value = stringField(input, name);
+    return value || undefined;
+  };
+
+  return {
+    list_docx_documents: {
+      description:
+        "List active Oleafly DOCX working copies. Session revision, saved revision, dirty state and the Workbench baseline are distinct.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async () => {
+        try {
+          return { documents: await host.listDocuments() };
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    read_docx_document: {
+      description:
+        "Read the current paragraphs from an active DOCX working copy. This reads the live session, which may be newer than its saved Workbench baseline.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: DOCX_SESSION_SCHEMA,
+        },
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        try {
+          return await host.readDocument(optionalString(input, "session_id"));
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    capture_docx_target: {
+      description:
+        "Capture one paragraph from an active DOCX session as a stable suggestion target. The returned target ID is scoped to this app session.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: DOCX_SESSION_SCHEMA,
+          paragraph_ref: {
+            type: "string",
+            description: "Paragraph reference returned by read_docx_document.",
+          },
+        },
+        required: ["paragraph_ref"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        try {
+          return await host.captureTarget(
+            optionalString(input, "session_id"),
+            stringField(input, "paragraph_ref"),
+          );
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    suggest_docx_change: {
+      description:
+        "Generate a whole-paragraph replacement for an active DOCX target without changing the document. The returned target must be applied with apply_docx_suggestion.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: {
+            type: "string",
+            description: "Session ID from list_docx_documents. Omit for the active session.",
+          },
+          paragraph_ref: {
+            type: "string",
+            description: "Paragraph reference returned by read_docx_document.",
+          },
+          instruction: {
+            type: "string",
+            description: "The requested prose change.",
+          },
+          expected_revision: {
+            type: "number",
+            description: "Optional paragraph revision returned by capture_docx_target.",
+          },
+        },
+        required: ["paragraph_ref", "instruction"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!mutationAllowed()) return cancelled();
+        try {
+          return await host.suggestChange(
+            {
+              ...(optionalString(input, "session_id")
+                ? { sessionId: optionalString(input, "session_id") }
+                : {}),
+              paragraphRef: stringField(input, "paragraph_ref"),
+              instruction: stringField(input, "instruction"),
+              ...(typeof input.expected_revision === "number"
+                ? { expectedRevision: input.expected_revision }
+                : {}),
+            },
+            context,
+          );
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    apply_docx_suggestion: {
+      description:
+        "Apply one whole-paragraph suggestion to the live DOCX session. This does not save a Workbench baseline. It refuses stale targets and paragraphs with complex inline structure.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          target_id: {
+            type: "string",
+            description: "Target ID returned by capture_docx_target or suggest_docx_change.",
+          },
+          expected_revision: {
+            type: "number",
+            description: "Target paragraph revision that the suggestion was based on.",
+          },
+          text: {
+            type: "string",
+            description: "The complete replacement text for the paragraph.",
+          },
+        },
+        required: ["target_id", "expected_revision", "text"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!mutationAllowed()) return cancelled();
+        try {
+          const targetId = stringField(input, "target_id");
+          const text = stringField(input, "text");
+          const before = await host.inspectTarget(targetId);
+          if (
+            opts?.confirm &&
+            !(await opts.confirm({
+              tool: "apply_docx_suggestion",
+              summary: `Apply a DOCX suggestion to ${before.filename} at ${before.paragraphRef}`,
+              path: `${before.filename}#${before.paragraphRef}`,
+              diff: {
+                path: `${before.filename}#${before.paragraphRef}`,
+                oldText: before.text,
+                newText: text,
+              },
+            }))
+          ) {
+            return {
+              message: "The user declined this change.",
+              declined: true as const,
+              status: "declined" as const,
+              tool: "apply_docx_suggestion",
+            };
+          }
+          if (!mutationAllowed()) return cancelled();
+          await host.inspectTarget(targetId);
+          return await host.applySuggestion(
+            {
+              targetId,
+              expectedRevision: Number(input.expected_revision),
+              text,
+            },
+            context,
+          );
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    read_docx_format: {
+      description:
+        "Read effective live DOCX formatting and direct paragraph formatting. Use paragraph_ref for one paragraph, kind objects for a paged document query, or kind nodes for structural XML facts. Returns the current session revision and exact export hash.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: {
+            type: "string",
+            description: "Session ID from list_docx_documents. Omit for the active session.",
+          },
+          query: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              kind: { type: "string", enum: ["objects", "nodes"] },
+              paragraph_ref: { type: "string" }, part: { type: "string" },
+              path: { type: "array", items: { type: "integer", minimum: 0 } },
+              namespace_uri: { type: "string" }, local_name: { type: "string" },
+              attribute: { type: "object", additionalProperties: false, required: ["local_name"], properties: {
+                namespace_uri: { type: "string" }, local_name: { type: "string" }, value: { type: "string" },
+              } },
+              offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 50 },
+            },
+          },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.readFormat) {
+          return { unavailable: true, error: "Live DOCX format reading is unavailable." };
+        }
+        try {
+          return await host.readFormat(
+            optionalString(input, "session_id"),
+            docxFormatQuery(input.query),
+          );
+        } catch (error) {
+          return unavailableOrError(error);
+        }
+      },
+    },
+    apply_docx_format: {
+      description:
+        "Apply direct run or paragraph formatting to one live DOCX paragraph. Supply the session revision that was read. Omitted format fields stay unchanged. A style must already exist in the document.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: {
+            type: "string",
+            description: "Session ID from list_docx_documents. Omit for the active session.",
+          },
+          paragraph_ref: {
+            type: "string",
+            description: "Paragraph reference returned by read_docx_document or read_docx_format.",
+          },
+          expected_revision: {
+            type: "number",
+            description: "Session revision read before this format change.",
+          },
+          font: DOCX_FONT_SCHEMA,
+          paragraph: DOCX_PARAGRAPH_FORMAT_SCHEMA,
+        },
+        required: ["paragraph_ref", "expected_revision"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.formatParagraph) {
+          return { unavailable: true, error: "Live DOCX formatting is unavailable." };
+        }
+        if (!mutationAllowed()) return cancelled();
+        if (context?.signal?.aborted) return cancelled();
+        const expectedRevision = docxRevision(input.expected_revision);
+        if (expectedRevision === null) {
+          return { error: "expected_revision must be the non-negative session revision that was read." };
+        }
+        const font = input.font as DocxFontFormatWrite | undefined;
+        const paragraph = input.paragraph as DocxParagraphFormatWrite | undefined;
+        const paragraphRef = stringField(input, "paragraph_ref");
+        const sessionId = optionalString(input, "session_id");
+        try {
+          if (opts?.confirm) {
+            if (!host.readFormat) {
+              return {
+                unavailable: true,
+                error: "Format approval requires live DOCX formatting reads.",
+              };
+            }
+            const before = await host.readFormat(sessionId, { paragraphRef });
+            const oldFormat = before.paragraph
+              ? { font: before.paragraph.font, paragraph: before.paragraph.paragraph }
+              : {};
+            if (!(await opts.confirm({
+              tool: "apply_docx_format",
+              summary: `Format a DOCX paragraph in ${before.document.filename} at ${paragraphRef}`,
+              path: `${before.document.filename}#${paragraphRef}`,
+              diff: {
+                path: `${before.document.filename}#${paragraphRef}`,
+                oldText: JSON.stringify(oldFormat, null, 2),
+                newText: JSON.stringify({ font, paragraph }, null, 2),
+              },
+            }))) {
+              return {
+                message: "The user declined this format change.",
+                declined: true as const,
+                status: "declined" as const,
+                tool: "apply_docx_format",
+              };
+            }
+          }
+          if (!mutationAllowed()) return cancelled();
+          if (context?.signal?.aborted) return cancelled();
+          return await host.formatParagraph(
+            sessionId,
+            paragraphRef,
+            expectedRevision,
+            { ...(font ? { font } : {}), ...(paragraph ? { paragraph } : {}) },
+            context,
+          );
+        } catch (error) {
+          return unavailableOrError(error);
+        }
+      },
+    },
+    save_docx_document: {
+      description:
+        "Save the current live DOCX through the same retained baseline path as the working-copy Save action. Supply the session revision being saved.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: DOCX_SESSION_SCHEMA,
+          expected_revision: { type: "number", description: "Live session revision to save." },
+        },
+        required: ["expected_revision"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.saveDocument) {
+          return { unavailable: true, error: "Live DOCX saving is unavailable." };
+        }
+        if (!mutationAllowed()) return cancelled();
+        if (context?.signal?.aborted) return cancelled();
+        const expectedRevision = docxRevision(input.expected_revision);
+        if (expectedRevision === null) {
+          return { error: "expected_revision must be the non-negative session revision to save." };
+        }
+        try {
+          return await host.saveDocument(
+            optionalString(input, "session_id"),
+            expectedRevision,
+            context,
+          );
+        } catch (error) {
+          return unavailableOrError(error);
+        }
+      },
+    },
+    check_docx_template: {
+      description:
+        "Run the explicit retained template or world check for the active DOCX baseline. The template argument is the world version ID and is required.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: DOCX_SESSION_SCHEMA,
+          template: { type: "string", description: "Explicit world version ID." },
+        },
+        required: ["template"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.checkTemplate) {
+          return { unavailable: true, error: "Explicit DOCX template checking is unavailable." };
+        }
+        if (!mutationAllowed()) return cancelled();
+        if (context?.signal?.aborted) return cancelled();
+        const template = stringField(input, "template").trim();
+        if (!template) {
+          return { error: "template must be an explicit world version ID." };
+        }
+        try {
+          return await host.checkTemplate(
+            optionalString(input, "session_id"),
+            template,
+            context,
+          );
+        } catch (error) {
+          return unavailableOrError(error);
+        }
+      },
+    },
+  };
 }
 
 function pngDataUrlToBase64(dataUrl: string): string {

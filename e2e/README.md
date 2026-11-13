@@ -119,6 +119,179 @@ bundle identifier, so WebKit files its storage under the process name,
 sessions keep theirs. The runner leaves that folder alone. Use a packaged
 build when a run must not see state from your dev sessions.
 
+### Native task checkpoint recovery
+
+After building the packaged macOS E2E app above, run the bounded task-group
+handoff and restart acceptance:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+node e2e/run-task-checkpoint.mjs
+```
+
+This runs `132-task-checkpoint-recovery.spec.ts` through three launches with
+scripted provider decisions and real native tools, TaskStore, scheduling and UI.
+One scenario keeps an older unreported item while a later independent checkpoint
+hands its completed review back. The other leaves a required checkpoint review
+unreported and verifies the owner stays blocked. After SIGKILL and restart, the
+retained records must match and neither scenario starts on its own; clicking
+Start handles the remaining work. A second SIGKILL/restart verifies the completed
+records without duplicate member executions. The controlled source stays unchanged.
+This establishes the scoped scheduling and persistence behavior, not model quality.
+
+The runner uses the existing E2E lock, an isolated library and backed-up E2E web
+storage. It restores the original storage and exits its owned app processes on
+completion. Local evidence remains in ignored `.private/task-checkpoint-native/run-*`.
+Run it after any DOCX native acceptance has released the same app identifier.
+
+### Native DOCX task activity
+
+After building the packaged E2E app above, run the scripted task integration:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+OLEAFLY_WORKBENCH_PYTHON="$PWD/services/research-workbench/.venv/bin/python" \
+./scripts/e2e.sh e2e/tests/128-docx-task-activity.spec.ts
+```
+
+This uses a synthetic DOCX, the real native task runtime, editor, TaskStore and
+Python Workbench. A scripted provider drives both a single task and a group
+member through discovery, bounded reading, capture, proposal and task history.
+The test checks that proposals leave the document unchanged, user acceptance
+after the task ends retains the original execution attribution, and saving links
+the actual DOCX bytes and LibreOffice PDF to the exact baseline. It also checks
+source navigation into task history, minimizing and resuming the same DOCX
+session, closed-session history and reopening without restoring an old target. This is
+application integration evidence, not a real-model editing-quality assessment.
+The runner resets only the E2E identifier's storage as described above.
+
+For a bounded real-model run against an authorized English or Chinese manuscript,
+reuse the isolated runner with a local provider URL:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+OLEAFLY_WORKBENCH_PYTHON="$PWD/services/research-workbench/.venv/bin/python" \
+OLEAFLY_REAL_DOCX="/absolute/path/manuscript.docx" \
+OLEAFLY_REAL_DOCX_SHA256="the-exact-lowercase-sha256" \
+OLEAFLY_DOCX_LIVE_URL="http://127.0.0.1:3425/v1" \
+OLEAFLY_DOCX_LIVE_MODE=single OLEAFLY_DOCX_LIVE_LANGUAGE=en \
+node e2e/run-docx-recovery.mjs
+```
+
+The live mode runs `129-docx-task-live.spec.ts` in one isolated launch. Use
+`group` and `zh` for the Chinese group-member path. The model is fixed to
+`gpt/gpt-6.1-sol` with `high` effort and a seven-minute task budget. It reads an
+actual paragraph window and proposes one language edit; automation then uses the
+existing accept/save UI, compares the actual DOCX package, opens the saved PDF and
+reopens the document. Content quality remains a separate review of the retained
+original and candidate. The transparent relay records model, effort, tool names,
+response status and usage, without retaining request bodies or credentials and
+without changing model responses. Credentials and upstream routing stay in the
+local provider. Evidence is kept under ignored `.private/docx-task-live/run-*`.
+With no live or attribution flag, the runner retains its three-launch recovery flow.
+
+### Native DOCX crash recovery
+
+After building the packaged E2E app above, run the opt-in recovery acceptance
+against one authorized DOCX at a time:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+OLEAFLY_WORKBENCH_PYTHON="$PWD/services/research-workbench/.venv/bin/python" \
+OLEAFLY_REAL_DOCX="/absolute/path/manuscript.docx" \
+OLEAFLY_REAL_DOCX_SHA256="the-exact-lowercase-sha256" \
+node e2e/run-docx-recovery.mjs
+```
+
+The macOS runner creates an isolated app library, backs up existing E2E WebKit
+storage, and reuses the new storage across three launches. It edits a captured
+copy, verifies a native checkpoint, sends SIGKILL to its own app process, downloads
+the selected checkpoint through the native granted-path writer and checks its hash,
+then restores after restart, continues editing and saves a Workbench baseline and LibreOffice
+PDF, then restarts again to check confirmed discard. The author input is read-only
+and its hash is checked before and after. `OLEAFLY_LIBREOFFICE` may select an explicit
+`soffice` executable. Run English and Chinese manuscripts separately. The test hook
+selects the save path; this does not exercise manual interaction with the OS save dialog.
+
+To exercise task attribution across process death, add
+`OLEAFLY_DOCX_ATTRIBUTION_RECOVERY=1` to the same command. This runs
+`130-docx-task-recovery.spec.ts` through three isolated launches. A scripted
+provider reads an actual manuscript paragraph and proposes an explicit acceptance
+marker. The test accepts it through the UI, waits for the exact bytes and task
+sources to reach the native checkpoint, then kills the app. On restart it restores
+those bytes in a new session and saves through the UI. After native commit has
+really saved to Workbench and written the Saved receipt, the test withholds only
+the response to React and kills the app again. The final launch replays the fixed
+request and checks the same baseline, bytes, request and single Saved receipt,
+original task/member/work attribution, package preservation and LibreOffice PDF.
+It then freezes another pending request, advances the isolated baseline through
+Workbench, confirms the original request's persisted refusal through the recovery
+UI, downloads the exact checkpoint and explicitly discards it. This last check
+does not add a Saved receipt or change the newer baseline.
+The runner requires an actual SIGKILL at each launch boundary and retains its
+lifecycle and final outcome under ignored `.private/docx-task-recovery/run-*`.
+The model decisions in this mode are scripted; it adds fault-recovery evidence,
+not a new real-model editing assessment. Run the English and Chinese inputs
+separately. Live-model, attribution-recovery and font/layout flags are mutually exclusive.
+
+### Native DOCX fonts and layout
+
+Add `OLEAFLY_DOCX_FONT_LAYOUT=1` to the isolated runner command above to run
+`131-docx-font-layout.spec.ts` in one launch. It requires installed Times New Roman
+regular, bold, italic and bold italic faces and network access to the existing PT Serif font-pack URLs. The
+isolated application cache must start without a standalone PT Serif face; a system TTC
+with that family does not satisfy the editor's current supported-source boundary.
+The test checks native font bytes/hash/metadata and observes the actual browser FontFace
+binary inputs, load state and membership in `document.fonts`. It opens the authorized
+manuscript, verifies settled shaping, truthful missing Chinese font faces, absence of
+host family substitution, no-change export and authored font/style/frame/section retention.
+It then imports a controlled guide requiring PT Serif through the real Workbench world
+service. The DOCX panel downloads the exact catalog font, rechecks actual native faces,
+and refreshes after an edit while preserving the active session, revision, dirty text and undo.
+It also minimizes the edited workspace, selects another retained journal world and resumes the
+same session with the updated font context before exercising refresh and undo.
+This controlled guide verifies the acquisition pipeline, not the author's actual journal rules.
+
+Font binaries are not copied into acceptance evidence. The save-path hook chooses the
+export path. The runner retains local evidence under ignored `.private/docx-font-layout/run-*`,
+restores E2E WebKit storage and checks the author hash before and after. No model is called.
+Missing fonts prevent full coverage. This test does not establish Office-equivalent layout,
+per-run font compliance.
+For Microsoft package acceptance, also set `OLEAFLY_FONT_SOURCE_EVIDENCE` to the ignored
+directory holding the complete, previously verified `office-preview.pkg` and
+`eadengfontpack.exe`. The runner checks their catalog hashes and seeds only the isolated
+archive cache. It leaves the font cache empty, then uses four controlled exact-family
+guidelines on the real manuscript to exercise native extraction, source receipts and
+same-session font refresh. This is archive reuse evidence, separate from the real network
+PT Serif download. Cache modification times and native progress events verify no new package
+download. Local `7zz`/`7z` and tar are required; use Homebrew `sevenzip` on this Mac.
+The test reads back the retained real-manuscript PDF, checks supplied cache hashes and actual
+PDF font names separately, and inspects the embedded SimSun subset's version record.
+It also checks that all four exact Times New Roman sources reach the render profile,
+that both manuscripts' regular/bold subsets and the English manuscript's italic subset
+retain the resolved versions.
+Formula runs declaring unavailable Cambria Math can still use LibreOffice substitutes.
+Unused-face embedding is covered by the controlled four-face probe; supplied faces
+need not be embedded when the manuscript does not use them.
+The subset hash identifies the PDF subset, not the complete cached font. It also repeats
+the structural export check after font preparation and verifies reopen reuses a completed
+render. It then applies one permitted text edit through the existing Agent host, saves a new
+baseline with the workspace button and checks the saved DOCX structure and regenerated PDF.
+For the authorized English fixture, it checks the actual editor title/author widths and
+source order, both columns clearing the frame group, and retained layout after reopen and save.
+These checks do not change LibreOffice's separate title-frame importer limitations.
+System fonts are checked before acquisition, so this acceptance requires no existing
+standalone SimSun, SimHei, KaiTi or DengXian faces. It cannot establish same-version behavior
+when a machine has another version of the same family installed.
+The earlier 2026-11-13 Noto-substitution runs are retained historical evidence and do not
+validate this exact-font policy.
+
+Font-mode results and recovery material stay in ignored `.private/docx-font-layout/run-*`.
+Normal exit and catchable failures restore the previous E2E WebKit storage. If the
+runner itself is killed or the machine stops, use that run's `runner.json` and
+`webkit-before/` to restore its recorded storage paths. This acceptance does not
+exercise a model provider, Word/WPS fidelity or Windows.
+
 ## Writing tests
 
 - Prefer `data-testid` selectors; add ids to the app rather than matching
@@ -169,3 +342,92 @@ set while the main process evaluates the config).
 | `E2E_SKIP_NETWORK=1` | Skips the font-download and template-font-pack tests |
 | `E2E_AI_TOKEN` | Runs the real AI tests: provider connect, GLM-4.6 model pick, conversation, tool call, figure generation |
 | `E2E_AI_PROVIDER` | Provider card name for the AI tests (default `Z.AI`) |
+
+## Journal template acceptance
+
+These acceptance paths use Transitional OOXML DOCX. A document in Strict OOXML
+is not supported: save it as Transitional in Word first, then use the saved
+copy. The browser tests leave the author inputs in place, retain hashes in their
+reports, and retain imported bytes in each run's isolated Workbench library.
+The native runner additionally records the original template, normalized
+template, English and Chinese input hashes in `runner.json` and checks them
+before and after cleanup.
+
+The 138 browser tests need a Vite dev server on `http://127.0.0.1:1420`. Run
+the deterministic scenario with:
+
+```bash
+OLEAFLY_BROWSER_TEST_URL="http://127.0.0.1:1420" \
+node node_modules/@playwright/test/cli.js test \
+  -c e2e/playwright.config.ts \
+  e2e/tests/138-journal-template-browser.spec.ts \
+  --grep "template DOCX drives the live editor" \
+  --retries=0
+```
+
+Its report is retained under ignored
+`.private/journal-template-acceptance/run-*/report.json`.
+
+Run the opt-in real template and English/Chinese manuscripts separately with:
+
+```bash
+OLEAFLY_BROWSER_TEST_URL="http://127.0.0.1:1420" \
+OLEAFLY_TEMPLATE_ACCEPTANCE=1 \
+OLEAFLY_TEMPLATE_FILE="/absolute/path/template.docx" \
+OLEAFLY_REAL_DOCX_EN="/absolute/path/english.docx" \
+OLEAFLY_REAL_DOCX_ZH="/absolute/path/chinese.docx" \
+node node_modules/@playwright/test/cli.js test \
+  -c e2e/playwright.config.ts \
+  e2e/tests/138-journal-template-browser.spec.ts \
+  --grep "opt-in real template and English/Chinese" \
+  --retries=0
+```
+
+The real report is retained under ignored
+`.private/journal-template-acceptance/real-*/report.json`. It records the three
+input paths and before-hashes, retained snapshot hashes, complete finding
+pagination, repeated-check identity, and finding artifact IDs. The test reads
+the inputs again at the end and fails if their hashes changed.
+
+Template comparison uses `observed_match`, `observed_difference` and
+`cannot_determine` for candidate objects measured against the explicitly
+selected template. These are observations of that template, not publisher
+authentication or normative compliance. A `violation` is only produced by the
+separate explicit guide-rule checker; an observed difference must not be
+reported as a journal violation.
+
+The 139 and 140 native acceptances run through the existing isolated DOCX
+runner. It needs the packaged e2e app and three read-only inputs; the fourth
+retained hash is the normalized template produced during the run:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+OLEAFLY_DOCX_TEMPLATE=1 \
+OLEAFLY_JOURNAL_TEMPLATE="/absolute/path/template.doc" \
+OLEAFLY_JOURNAL_TEMPLATE_SHA256="the-exact-lowercase-sha256" \
+OLEAFLY_NATIVE_DOCX_EN="/absolute/path/english.docx" \
+OLEAFLY_NATIVE_DOCX_EN_SHA256="the-exact-lowercase-sha256" \
+OLEAFLY_NATIVE_DOCX_ZH="/absolute/path/chinese.docx" \
+OLEAFLY_NATIVE_DOCX_ZH_SHA256="the-exact-lowercase-sha256" \
+node e2e/run-docx-recovery.mjs
+```
+
+This mode requires a legacy `.doc` template with a Compound File Binary
+signature. The runner normalizes it through LibreOffice, runs
+`139-journal-template-native.spec.ts` and `140-docx-format-task.spec.ts`, and retains the normalized template and
+report under ignored `.private/journal-template-native/run-*/`. It backs up and
+restores the E2E WebKit storage and owns app cleanup. The detailed report is in
+the runner's `template/run-*/report.json`; `runner.json` is the hash and
+lifecycle receipt. The task test retains `docx-format-task-report.json`, the saved
+DOCX, a screenshot and scripted provider requests in that same isolated run directory.
+
+The first test exercises real template import, both manuscripts, ordinary Agent
+format/save/check tools and a duplicate-text paragraph with separate Latin/East
+Asian font slots. The second uses a small synthetic document and scripted provider
+through the native task-group runtime for two format/save/check rounds, then closes
+and normally reopens the saved document without a recovery prompt. It checks revisions,
+both baselines and source hashes, historical check validity, findings and
+operation-intent/result/checkpoint attribution. These are application integration
+tests, without a new real-model quality claim. Set `OLEAFLY_FONT_SOURCE_EVIDENCE`
+to a local directory containing the exact catalog archives to verify package-cache
+reuse and extraction without downloading the shared Microsoft archive again.

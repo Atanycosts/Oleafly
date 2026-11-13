@@ -1,0 +1,491 @@
+diff --git a/packages/core/src/layout/paragraph-frame-exclusion.ts b/packages/core/src/layout/paragraph-frame-exclusion.ts
+index 1af8cd9..b854d21 100644
+--- a/packages/core/src/layout/paragraph-frame-exclusion.ts
++++ b/packages/core/src/layout/paragraph-frame-exclusion.ts
+@@ -62,17 +62,20 @@ export function addParagraphFrameExclusions(
+       if (!frame || groups.has(frame.groupId)) continue;
+       groups.add(frame.groupId);
+       const box = frame.box;
+-      const column = frame.columnIndex;
+-      const left = columns.columnLefts?.[column] ?? 0;
+-      const width = columns.columnWidths?.[column] ?? columns.contentWidth;
++      const affectedColumns = Array.from(
++        { length: columns.columnCount },
++        (_, column) => column
++      ).filter((column) => {
++        const left = columns.columnLefts?.[column] ?? 0;
++        const width = columns.columnWidths?.[column] ?? columns.contentWidth;
++        return box.x - frame.hSpace < left + width && box.x + box.width + frame.hSpace > left;
++      });
+       const distances = {
+         left: frame.hSpace,
+         right: frame.hSpace,
+         top: frame.vSpace,
+         bottom: frame.vSpace,
+       };
+-      const fullWidth =
+-        box.x - frame.hSpace <= left && box.x + box.width + frame.hSpace >= left + width;
+       const beside =
+         frame.wrap === 'auto' ||
+         frame.wrap === 'around' ||
+@@ -87,46 +90,52 @@ export function addParagraphFrameExclusions(
+               { x: box.x, y: box.y + box.height },
+             ]
+           : null;
+-      const zone: ExclusionZone = {
+-        sourceKind: 'frame',
+-        sourceOrder: frame.sourceOrder,
+-        drawingNodeId: `frame:${frame.groupId}`,
+-        anchorParagraphId: frame.anchorId,
+-        anchorModelStart: 0,
+-        // A page- or margin-positioned frame keeps its band when earlier text reflows.
+-        ...(frame.pageFramed ? { pageFramedBand: true } : {}),
+-        paintLayer: 'inFront',
+-        relativeHeight: 0,
+-        allowOverlap: true,
+-        columnIndex: column,
+-        y: box.y,
+-        verticalBand: {
+-          x: box.x - frame.hSpace,
+-          y: box.y - frame.vSpace,
+-          width: box.width + 2 * frame.hSpace,
+-          height: box.height + 2 * frame.vSpace,
+-        },
+-        input: {
+-          mode:
+-            !beside || fullWidth
+-              ? 'topAndBottom'
+-              : frame.wrap === 'tight'
+-                ? 'tight'
+-                : frame.wrap === 'through'
+-                  ? 'through'
+-                  : 'square',
+-          contentBounds: box,
+-          polygon,
+-          clipPolygon: null,
+-          wrapDistances: distances,
+-          effectInsets: { left: 0, right: 0, top: 0, bottom: 0 },
+-          textSide: 'bothSides',
+-          contentLeft: left,
+-          contentRight: left + width,
+-        },
+-      };
+-      zones ??= [...(existing.get(pageIndex) ?? [])];
+-      zones.push(zone);
++      for (const column of affectedColumns) {
++        const left = columns.columnLefts?.[column] ?? 0;
++        const width = columns.columnWidths?.[column] ?? columns.contentWidth;
++        const fullWidth =
++          box.x - frame.hSpace <= left && box.x + box.width + frame.hSpace >= left + width;
++        const zone: ExclusionZone = {
++          sourceKind: 'frame',
++          sourceOrder: frame.sourceOrder,
++          drawingNodeId: `frame:${frame.groupId}${columns.columnCount > 1 ? `:column:${column}` : ''}`,
++          anchorParagraphId: frame.anchorId,
++          anchorModelStart: 0,
++          // A page- or margin-positioned frame keeps its band when earlier text reflows.
++          ...(frame.pageFramed ? { pageFramedBand: true } : {}),
++          paintLayer: 'inFront',
++          relativeHeight: 0,
++          allowOverlap: true,
++          columnIndex: column,
++          y: box.y,
++          verticalBand: {
++            x: box.x - frame.hSpace,
++            y: box.y - frame.vSpace,
++            width: box.width + 2 * frame.hSpace,
++            height: box.height + 2 * frame.vSpace,
++          },
++          input: {
++            mode:
++              !beside || fullWidth
++                ? 'topAndBottom'
++                : frame.wrap === 'tight'
++                  ? 'tight'
++                  : frame.wrap === 'through'
++                    ? 'through'
++                    : 'square',
++            contentBounds: box,
++            polygon,
++            clipPolygon: null,
++            wrapDistances: distances,
++            effectInsets: { left: 0, right: 0, top: 0, bottom: 0 },
++            textSide: 'bothSides',
++            contentLeft: left,
++            contentRight: left + width,
++          },
++        };
++        zones ??= [...(existing.get(pageIndex) ?? [])];
++        zones.push(zone);
++      }
+     }
+     if (zones) {
+       result ??= new Map(existing);
+diff --git a/packages/core/src/layout/paragraph-frame-flow.ts b/packages/core/src/layout/paragraph-frame-flow.ts
+index 944875c..2a90136 100644
+--- a/packages/core/src/layout/paragraph-frame-flow.ts
++++ b/packages/core/src/layout/paragraph-frame-flow.ts
+@@ -5,6 +5,7 @@ import { framedTokenJoin } from './layout-cache.ts';
+ import {
+   paragraphFrameOrigin,
+   positionParagraphFrame,
++  translateParagraphFragment,
+   type ParagraphFrame,
+   type ParagraphFrameOrigins,
+ } from './paragraph-frame.ts';
+@@ -201,7 +202,8 @@ export class ParagraphFrameFlow {
+     anchorId: string,
+     columnIndex: number,
+     anchorLines: readonly LineRecord[] = [],
+-    onPageParityRead?: () => void
++    onPageParityRead?: () => void,
++    stackTextFrames = false
+   ): ParagraphFragmentRecord[] {
+     if (!this.pending) return [];
+     const pending = new Array<PendingParagraphFrame>(this.pending.length);
+@@ -258,6 +260,7 @@ export class ParagraphFrameFlow {
+       }
+     }
+     const groups = new Map<string, { x: number; y: number; width: number; height: number }>();
++    let textOffset = 0;
+     for (const [groupId, group] of localGroups) {
+       group.height =
+         group.frame.heightRule === 'exact'
+@@ -265,8 +268,16 @@ export class ParagraphFrameFlow {
+           : group.frame.heightRule === 'atLeast'
+             ? Math.max(group.contentHeight, group.frame.height ?? 0)
+             : group.contentHeight;
+-      const origin = paragraphFrameOrigin(group.frame, origins, group);
++      const stacked = stackTextFrames && group.frame.verticalAnchor === 'text';
++      const origin = paragraphFrameOrigin(
++        group.frame,
++        stacked
++          ? { ...origins, text: { ...origins.text, y: origins.text.y + textOffset } }
++          : origins,
++        group
++      );
+       groups.set(groupId, { ...origin, width: group.width, height: group.height });
++      if (stacked) textOffset = origin.y - origins.text.y + group.height;
+     }
+     const positioned = locals.map(({ item, fragment: source }) => {
+       const group = localGroups.get(item.groupId)!;
+@@ -278,7 +289,10 @@ export class ParagraphFrameFlow {
+           local.alignment === 'right' ? extra : local.alignment === 'center' ? extra / 2 : 0;
+         local = shiftFragmentX(local, dx, local.box.width + extra);
+       }
+-      const fragment = positionParagraphFrame(local, item.frame, origins, group);
++      const origin = groups.get(item.groupId)!;
++      const fragment = stackTextFrames
++        ? { ...translateParagraphFragment(local, origin.x, origin.y), outOfFlow: true as const }
++        : positionParagraphFrame(local, item.frame, origins, group);
+       return { item, fragment };
+     });
+     this.pending = undefined;
+diff --git a/packages/core/src/layout/prepared-block-memo.ts b/packages/core/src/layout/prepared-block-memo.ts
+index c9fb9b5..3b51b83 100644
+--- a/packages/core/src/layout/prepared-block-memo.ts
++++ b/packages/core/src/layout/prepared-block-memo.ts
+@@ -9,7 +9,7 @@ import {
+ 
+ export interface PreparedBlockMemo {
+   readonly contentWidth: number;
+-  readonly frameEnabled: boolean;
++  readonly framePolicy: string;
+   /**
+    * Whether the section that follows opens a new page, so a bare section mark drops its borders
+    * and shading. A mark before a continuous section keeps them; the section type can change
+diff --git a/packages/core/src/layout/section-preparation.ts b/packages/core/src/layout/section-preparation.ts
+index 0c2c2ac..c53d970 100644
+--- a/packages/core/src/layout/section-preparation.ts
++++ b/packages/core/src/layout/section-preparation.ts
+@@ -54,6 +54,5 @@ export function sameSectionParagraphOrder<
+ 
+ /** Column layout and wrap probes decide whether an authored paragraph frame participates. */
+ export function framePolicy(columns: number, disabled?: ReadonlySet<string>): string {
+-  if (columns !== 1) return 'columns';
+-  return disabled?.size ? JSON.stringify([...disabled].sort()) : 'body';
++  return `${columns}:${disabled?.size ? JSON.stringify([...disabled].sort()) : 'body'}`;
+ }
+diff --git a/packages/core/src/layout/semantic-layout.ts b/packages/core/src/layout/semantic-layout.ts
+index 2d8a64a..1486397 100644
+--- a/packages/core/src/layout/semantic-layout.ts
++++ b/packages/core/src/layout/semantic-layout.ts
+@@ -729,6 +729,10 @@ function* layoutBlocksPass(
+       )
+     : undefined;
+   const marksPageBreak = options.sectionMarkCollapses !== true;
++  const framePolicy =
++    sectionPrep.framePolicy(columns.count, options.disabledParagraphFrameIds) +
++    `|${columns.lefts.join(',')}|${columns.widths.join(',')}` +
++    `|${options.paragraphLineUnitPt ?? '-'}|${options.sectionMarkCollapses === true ? 'c' : 'p'}`;
+   const prepareBlock = (block: OoxmlElement, availableWidth: number): PreparedBlock => {
+     // The RAW token, compared by the memo below so a table's kilobyte aggregate keeps its
+     // identity fast path; the context joins only when a key is actually built. `||`, not
+@@ -786,8 +790,7 @@ function* layoutBlocksPass(
+     if (
+       memo &&
+       memo.contentWidth === availableWidth &&
+-      memo.frameEnabled ===
+-        (columns.count === 1 && !options.disabledParagraphFrameIds?.has(block.id)) &&
++      memo.framePolicy === framePolicy &&
+       memo.marksPageBreak === marksPageBreak &&
+       memo.producer === producer &&
+       memo.drawingToken === paragraphDrawingToken &&
+@@ -828,16 +831,25 @@ function* layoutBlocksPass(
+         false,
+         options.paragraphLineUnitPt
+       );
++      const candidateFrame = !options.disabledParagraphFrameIds?.has(block.id)
++        ? resolveParagraphFrame(
++            block,
++            preparedParagraph,
++            measurer,
++            styleCascade,
++            options.inlineDrawingLayout,
++            options.compatibilityMode
++          )
++        : undefined;
+       const frame =
+-        columns.count === 1 && !options.disabledParagraphFrameIds?.has(block.id)
+-          ? resolveParagraphFrame(
+-              block,
+-              preparedParagraph,
+-              measurer,
+-              styleCascade,
+-              options.inlineDrawingLayout,
+-              options.compatibilityMode
+-            )
++        columns.count === 1 ||
++        (candidateFrame &&
++          !candidateFrame.autoWidth &&
++          !candidateFrame.dropCapLines &&
++          candidateFrame.horizontalAnchor !== 'text' &&
++          ['none', 'notBeside'].includes(candidateFrame.wrap) &&
++          columns.widths.every((width) => candidateFrame.width > width))
++          ? candidateFrame
+           : undefined;
+       if (frame)
+         preparedParagraph = resolveParagraphLayoutInputs(
+@@ -912,7 +924,7 @@ function* layoutBlocksPass(
+     }
+     preparedBlocks.set(block, {
+       contentWidth: availableWidth,
+-      frameEnabled: columns.count === 1 && !options.disabledParagraphFrameIds?.has(block.id),
++      framePolicy,
+       marksPageBreak,
+       producer,
+       drawingToken: paragraphDrawingToken,
+@@ -944,9 +956,6 @@ function* layoutBlocksPass(
+       ? null
+       : (options.projectionEpoch ?? '');
+   // A bare section mark's borders depend on the next section's break (`marksPageBreak`).
+-  const framePolicy =
+-    sectionPrep.framePolicy(columns.count, options.disabledParagraphFrameIds) +
+-    `|${options.paragraphLineUnitPt ?? '-'}|${options.sectionMarkCollapses === true ? 'c' : 'p'}`;
+   const prepassMemo = session?.prepass as SectionPrepass | null | undefined;
+   const prepassInputs = {
+     framePolicy,
+@@ -1253,7 +1262,8 @@ function* layoutBlocksPass(
+       anchorId,
+       flowColumnIndex,
+       anchorLines,
+-      markPageParityRead
++      markPageParityRead,
++      columns.count > 1
+     ))
+       pageFragments.push(fragment);
+   };
+diff --git a/packages/core/src/layout/__tests__/paragraph-frame-columns.test.ts b/packages/core/src/layout/__tests__/paragraph-frame-columns.test.ts
+new file mode 100644
+index 0000000..d23ed03
+--- /dev/null
++++ b/packages/core/src/layout/__tests__/paragraph-frame-columns.test.ts
+@@ -0,0 +1,188 @@
++import { expect, test } from 'bun:test';
++import {
++  openHeadlessDocument,
++  readOoxmlPart,
++  writeOoxmlPackage,
++  type OoxmlElement,
++  type OoxmlPart,
++} from '../../store/index.ts';
++import { zipSync, strToU8 } from 'fflate';
++import {
++  createFixedMeasurer,
++  createLayoutSession,
++  layoutSemanticDocument,
++} from '../semantic-layout.ts';
++import { addParagraphFrameExclusions } from '../paragraph-frame-exclusion.ts';
++import type { ParagraphFragmentRecord } from '../semantic-records.ts';
++import { buildStyleCascadeTable } from '../style-cascade.ts';
++
++const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
++const paragraph = (text: string, props = '') =>
++  `<w:p><w:pPr><w:spacing w:line="400" w:lineRule="exact" w:after="0"/>${props}</w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
++const frame = (width: number, extra = '') =>
++  `<w:framePr w:w="${width}" w:hAnchor="page" w:xAlign="center" w:vAnchor="text" w:y="1" w:wrap="notBeside" w:vSpace="100" ${extra}/>`;
++function document(title = 'Full width title', columns = 2, gap = 400) {
++  const parsed = readOoxmlPart(
++    `<w:document xmlns:w="${W}"><w:body>${paragraph(title, frame(10000))}${paragraph('First author', frame(9600))}${paragraph('Second author', frame(9600))}${paragraph('word '.repeat(600))}<w:sectPr><w:cols w:num="${columns}" w:space="${gap}"/></w:sectPr></w:body></w:document>`,
++    { name: '/word/document.xml', contentType: 'app/xml' }
++  );
++  if (!parsed.ok) throw new Error(parsed.reason);
++  return parsed.part;
++}
++function unequalColumns(first: number, gap: number, second: number) {
++  const parsed = readOoxmlPart(
++    `<w:document xmlns:w="${W}"><w:body>${paragraph('300pt frame', frame(6000))}${paragraph('body '.repeat(100))}<w:sectPr><w:cols w:num="2" w:equalWidth="0"><w:col w:w="${first}" w:space="${gap}"/><w:col w:w="${second}"/></w:cols></w:sectPr></w:body></w:document>`,
++    { name: '/word/document.xml', contentType: 'app/xml' }
++  );
++  if (!parsed.ok) throw new Error(parsed.reason);
++  return parsed.part;
++}
++function replaceSection(part: OoxmlPart, replacement: OoxmlPart): OoxmlPart {
++  const body = part.root.children.find((node) => node.localName === 'body') as OoxmlElement;
++  const replacementBody = replacement.root.children.find(
++    (node) => node.localName === 'body'
++  ) as OoxmlElement;
++  const section = body.children.find((node) => node.localName === 'sectPr');
++  const replacementSection = replacementBody.children.find((node) => node.localName === 'sectPr')!;
++  return {
++    ...part,
++    root: {
++      ...part.root,
++      children: part.root.children.map((node) =>
++        node === body
++          ? {
++              ...body,
++              children: body.children.map((child) =>
++                child === section ? replacementSection : child
++              ),
++            }
++          : node
++      ),
++    },
++  };
++}
++const geometry = { width: 600, height: 400, margin: { top: 30, bottom: 30, left: 30, right: 30 } };
++const measurer = createFixedMeasurer(5, 20);
++const paragraphs = (page: ReturnType<typeof layoutSemanticDocument>['pages'][number]) =>
++  page.fragments.filter((p): p is ParagraphFragmentRecord => p.kind === 'paragraph');
++const framedParagraphs = (layout: ReturnType<typeof layoutSemanticDocument>) =>
++  layout.pages.flatMap(paragraphs).filter((paragraph) => paragraph.positionedFrame);
++
++test('different adjacent full-width text frames stack in source order and exclude both columns', () => {
++  const layout = layoutSemanticDocument(document(), 0, { geometry, measurer });
++  const page = layout.pages[0]!;
++  const [title, first, second] = paragraphs(page).filter((p) => p.positionedFrame);
++  expect(title!.positionedFrame!.box).toMatchObject({ x: 20, width: 500 });
++  expect(first!.positionedFrame!.box.width).toBe(480);
++  expect(first!.positionedFrame!.groupId).not.toBe(title!.positionedFrame!.groupId);
++  expect(second!.positionedFrame!.groupId).toBe(first!.positionedFrame!.groupId);
++  expect(first!.box.y).toBeGreaterThanOrEqual(title!.box.y + title!.box.height);
++  expect(second!.box.y).toBeGreaterThanOrEqual(first!.box.y + first!.box.height);
++  const bottom = first!.positionedFrame!.box.y + first!.positionedFrame!.box.height + 5;
++  const body = paragraphs(page)
++    .filter((p) => !p.outOfFlow)
++    .flatMap((p) => p.lines);
++  expect(body.some((line) => line.box.x < 260)).toBe(true);
++  expect(body.some((line) => line.box.x >= 280)).toBe(true);
++  expect(body.every((line) => line.box.y >= bottom - 0.001)).toBe(true);
++  const zones = addParagraphFrameExclusions([page], new Map(), {
++    columnCount: 2,
++    columnGapPt: 20,
++    contentWidth: 540,
++    columnLefts: [0, 280],
++    columnWidths: [260, 260],
++  }).get(0)!;
++  expect(zones.map((zone) => zone.columnIndex)).toEqual([0, 1, 0, 1]);
++  expect(new Set(zones.map((zone) => zone.drawingNodeId)).size).toBe(4);
++});
++
++test('unsupported narrow and text-anchored horizontal frames stay ordinary in columns', () => {
++  const parsed = readOoxmlPart(
++    `<w:document xmlns:w="${W}"><w:body>${paragraph('Narrow', frame(1000))}${paragraph('Text anchor', '<w:framePr w:w="10000" w:hAnchor="text" w:wrap="notBeside"/>')}${paragraph('Side wrap', frame(10000).replace('notBeside', 'around'))}${paragraph('Body')}<w:sectPr><w:cols w:num="2"/></w:sectPr></w:body></w:document>`,
++    { name: '/word/document.xml', contentType: 'app/xml' }
++  );
++  if (!parsed.ok) throw new Error(parsed.reason);
++  const layout = layoutSemanticDocument(parsed.part, 0, { geometry, measurer });
++  expect(layout.pages.flatMap(paragraphs).some((p) => p.positionedFrame)).toBe(false);
++});
++
++test('column widths, gaps and frame edits settle identically with and without retained layout', () => {
++  const session = createLayoutSession();
++  for (const [index, source] of [
++    document(),
++    document('An edited full width title'),
++    document('An edited full width title', 2, 800),
++    document('An edited full width title', 3, 200),
++    document('An edited full width title', 1),
++  ].entries()) {
++    const options = { geometry, measurer, session };
++    const warm = layoutSemanticDocument(source, index, options);
++    const cold = layoutSemanticDocument(structuredClone(source), index, { geometry, measurer });
++    expect(warm.pages).toEqual(cold.pages);
++  }
++});
++
++test('an unequal-column resize re-admits a frame without replacing retained paragraph nodes', () => {
++  const initial = unequalColumns(4000, 400, 6400);
++  const replacement = unequalColumns(4000, 1600, 5200);
++  const changed = replaceSection(initial, replacement);
++  const initialBody = initial.root.children.find((node) => node.localName === 'body')!;
++  const changedBody = changed.root.children.find((node) => node.localName === 'body')!;
++  if (!('children' in initialBody) || !('children' in changedBody)) throw new Error('body');
++  expect(changedBody.children[0]).toBe(initialBody.children[0]);
++
++  const session = createLayoutSession();
++  const options = { geometry, measurer, session };
++  expect(framedParagraphs(layoutSemanticDocument(initial, 0, options))).toHaveLength(0);
++
++  // Both sections are 540pt wide. The unchanged 200pt first column makes width 300 fail
++  // against 320pt, then pass when only the second column shrinks to 260pt.
++  const warm = layoutSemanticDocument(changed, 1, options);
++  const cold = layoutSemanticDocument(structuredClone(changed), 1, { geometry, measurer });
++  expect(framedParagraphs(warm)).toHaveLength(1);
++  expect(framedParagraphs(warm)[0]!.positionedFrame!.box).toMatchObject({ width: 300 });
++  expect(framedParagraphs(warm)[0]!.outOfFlow).toBe(true);
++  expect(warm.pages).toEqual(cold.pages);
++});
++
++test('style-inherited title and author frames keep authored widths across save and reopen', () => {
++  const bytes = zipSync({
++    '[Content_Types].xml': strToU8(
++      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>'
++    ),
++    '_rels/.rels': strToU8(
++      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'
++    ),
++    'word/_rels/document.xml.rels': strToU8(
++      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="styles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'
++    ),
++    'word/document.xml': strToU8(
++      `<w:document xmlns:w="${W}"><w:body>${paragraph('Inherited title', '<w:pStyle w:val="Title"/>')}${paragraph('Inherited author', '<w:pStyle w:val="Authors"/>')}${paragraph('body '.repeat(150))}<w:sectPr><w:cols w:num="2" w:space="400"/></w:sectPr></w:body></w:document>`
++    ),
++    'word/styles.xml': strToU8(
++      `<w:styles xmlns:w="${W}"><w:style w:type="paragraph" w:styleId="Title"><w:pPr>${frame(10000)}</w:pPr></w:style><w:style w:type="paragraph" w:styleId="Authors"><w:pPr>${frame(9600)}</w:pPr></w:style></w:styles>`
++    ),
++  });
++  const opened = openHeadlessDocument(bytes);
++  if (!opened.ok) throw new Error(opened.reason);
++  const render = (view: typeof opened.view) =>
++    layoutSemanticDocument(view.part(), 0, {
++      geometry,
++      measurer,
++      styleCascade: buildStyleCascadeTable(
++        view.stylesRoot(),
++        view.documentThemeFonts(),
++        view.settingsRoot()
++      ),
++    });
++  const before = render(opened.view);
++  const reopened = openHeadlessDocument(writeOoxmlPackage(opened.view.currentPackage()));
++  if (!reopened.ok) throw new Error(reopened.reason);
++  const widths = (layout: typeof before) =>
++    layout.pages
++      .flatMap(paragraphs)
++      .filter((p) => p.positionedFrame)
++      .map((p) => p.positionedFrame!.box.width);
++  expect(widths(before)).toEqual([500, 480]);
++  expect(widths(render(reopened.view))).toEqual([500, 480]);
++});

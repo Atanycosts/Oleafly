@@ -18,6 +18,39 @@ def test_init_creates_library_and_reports_resolved_root(tmp_path, capsys):
     assert not (root / "projects").exists()
 
 
+def test_cli_preserves_a_numeric_font_name_as_text(tmp_path, capsys):
+    from research_file_workbench.journals.models import SourceInput
+    from research_file_workbench.workbench.service import WorkbenchService
+
+    library = tmp_path / "library"
+    service = WorkbenchService.create(library)
+    world = service.import_world(
+        "journal-test",
+        "Test",
+        [SourceInput("font-guide", "guide_text", b"Body text must use PT Serif font.")],
+    )
+    rule_id = world["rules"][0]["rule_id"]
+    assert (
+        cli.main(
+            [
+                "--library-root",
+                str(library),
+                "revise",
+                "--version-id",
+                world["version_id"],
+                "--rule-id",
+                rule_id,
+                "--expected",
+                "123",
+                "--reason",
+                "Confirmed exact family name",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["rules"][0]["expected"] == "123"
+
+
 def test_serve_rejects_protected_root_after_initialization(monkeypatch, tmp_path, capsys):
     called = False
 

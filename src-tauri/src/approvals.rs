@@ -53,6 +53,15 @@ impl ApprovalsFile {
 static APPROVALS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 const KNOWN_TOOLS: &[&str] = &[
+    "list_docx_documents",
+    "read_docx_document",
+    "read_docx_format",
+    "apply_docx_format",
+    "save_docx_document",
+    "check_docx_template",
+    "capture_docx_target",
+    "suggest_docx_change",
+    "apply_docx_suggestion",
     "close_agent",
     "compile",
     "create_file",
@@ -83,6 +92,7 @@ const KNOWN_TOOLS: &[&str] = &[
     "project_library_search",
     "project_map",
     "read_file",
+    "read_paper",
     "read_research_root_file",
     "read_skill_file",
     "remember_note",

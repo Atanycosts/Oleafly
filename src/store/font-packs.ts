@@ -12,32 +12,47 @@ interface FontPacksState {
   install: (id: string) => Promise<boolean>;
 }
 
-export const useFontPacksStore = create<FontPacksState>((set, get) => ({
+export const useFontPacksStore = create<FontPacksState>((set, get) => {
+  let loading: Promise<void> | null = null;
+  let installation: { id: string; promise: Promise<boolean> } | null = null;
+  return {
   packs: [],
   status: "idle",
   installing: null,
-  load: async () => {
-    if (get().status === "loading") return;
+  load: () => {
+    if (loading) return loading;
     set({ status: "loading" });
-    try {
-      set({ packs: await listFontComponents(), status: "ready" });
-    } catch (error) {
-      void logError("list font packs", error);
-      set({ status: "error" });
-    }
+    loading = (async () => {
+      try {
+        set({ packs: await listFontComponents(), status: "ready" });
+      } catch (error) {
+        void logError("list font packs", error);
+        set({ status: "error" });
+      } finally { loading = null; }
+    })();
+    return loading;
   },
-  install: async (id) => {
-    if (get().installing) return false;
+  install: (id) => {
+    if (installation) {
+      return installation.id === id ? installation.promise : installation.promise.then(() => get().install(id));
+    }
     set({ installing: id });
-    try {
-      await installFontComponent(id);
-      set({ packs: await listFontComponents(), status: "ready" });
-      return true;
-    } catch (error) {
-      void logError("install font pack", error);
-      return false;
-    } finally {
-      set({ installing: null });
-    }
+    const promise = (async () => {
+      try {
+        await installFontComponent(id);
+        await loading;
+        set({ packs: await listFontComponents(), status: "ready" });
+        return true;
+      } catch (error) {
+        void logError("install font pack", error);
+        return false;
+      } finally {
+        installation = null;
+        set({ installing: null });
+      }
+    })();
+    installation = { id, promise };
+    return promise;
   },
-}));
+  };
+});

@@ -2508,6 +2508,7 @@ USER_CUSTOM_INSTRUCTIONS`
       createOpts: {
         confirm,
         onImage: collectRunImage,
+        signal: ac.signal,
         runId: () => activeRunRequestIdRef.current,
         researchScope: { projectId: runProjectId, runtimeId: "builtin", agentId: provider, modelId: model, delegation },
       },
