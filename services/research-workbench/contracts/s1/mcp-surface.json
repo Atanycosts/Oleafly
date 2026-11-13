@@ -43,7 +43,7 @@
     "source_page"
   ],
   "method_versions": {
-    "http": "journal-http-1.9.0",
+    "http": "journal-http-1.10.0",
     "reader": "s1-readonly-reader-1.5.0",
     "report": "1.0.0",
     "query": "s1-read-query-1.7.0",

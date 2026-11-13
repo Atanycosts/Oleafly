@@ -421,5 +421,157 @@
       { "name": "LICENSE-FontAwesome6Brands.txt", "url": "https://mirrors.oleafly.com/fonts/typst-icons/LICENSE-FontAwesome6Brands.txt", "sha256": "9b914eae88817d63b576eab5aafde7068c7a1abae125d7cdfb034f1da43a9afc" },
       { "name": "LICENSE-NotoColorEmoji.txt", "url": "https://mirrors.oleafly.com/fonts/typst-icons/LICENSE-NotoColorEmoji.txt", "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2" }
     ]
+  },
+  {
+    "id": "microsoft-simsun",
+    "label": "SimSun / 宋体",
+    "description": "Exact SimSun 5.04i from Microsoft's Office 15.11.1 preview update package. The shared package is a 736800648-byte Office download; extraction uses the Fontist-pinned checksum.",
+    "approx_bytes": 736800648,
+    "license": {
+      "spdx": "LicenseRef-Microsoft-OfficeMac",
+      "author": "Microsoft Corporation and The Monotype Corporation",
+      "url": "https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/office_preview.yml"
+    },
+    "families": ["SimSun", "宋体"],
+    "package": {
+      "id": "microsoft-office-mac-15-11-1",
+      "name": "office-preview.pkg",
+      "url": "https://download.microsoft.com/download/8/1/3/8136bf31-4c2e-4b5f-bee9-117ab004ab35/microsoft_excel_15.11.1_updater.pkg",
+      "sha256": "34024135a047ca0ef3b1ab499ab7a5584b313b9eb8954c1dd38712dc6c8a04ec",
+      "size": 736800648,
+      "member_format": "tar",
+      "steps": [{ "format": "7z", "member": "Microsoft_Excel.pkg/Payload" }]
+    },
+    "files": [
+      {
+        "name": "SimSun.ttf",
+        "sha256": "e72e26043ece0a899366f93e3fd48ca0aa9f285f9e81e3573f076813bb96d0ff",
+        "family": "SimSun",
+        "postscript": "SimSun",
+        "version": "Version 5.04i",
+        "weight": 400,
+        "style": "normal",
+        "member": "./Microsoft Excel.app/Contents/Resources/Fonts/SimSun.ttf"
+      }
+    ]
+  },
+  {
+    "id": "microsoft-simhei",
+    "label": "SimHei / 黑体",
+    "description": "Exact SimHei 5.03i from Microsoft's Office 15.11.1 preview update package. The shared package is a 736800648-byte Office download; extraction uses the Fontist-pinned checksum.",
+    "approx_bytes": 736800648,
+    "license": {
+      "spdx": "LicenseRef-Microsoft-OfficeMac",
+      "author": "Microsoft Corporation and The Monotype Corporation",
+      "url": "https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/office_preview.yml"
+    },
+    "families": ["SimHei", "黑体"],
+    "package": {
+      "id": "microsoft-office-mac-15-11-1",
+      "name": "office-preview.pkg",
+      "url": "https://download.microsoft.com/download/8/1/3/8136bf31-4c2e-4b5f-bee9-117ab004ab35/microsoft_excel_15.11.1_updater.pkg",
+      "sha256": "34024135a047ca0ef3b1ab499ab7a5584b313b9eb8954c1dd38712dc6c8a04ec",
+      "size": 736800648,
+      "member_format": "tar",
+      "steps": [{ "format": "7z", "member": "Microsoft_Excel.pkg/Payload" }]
+    },
+    "files": [
+      {
+        "name": "SimHei.ttf",
+        "sha256": "ef70e6bba293c9d30bdeb0dba2dd6019cceacbfddab3fb0c550ff14d9127c813",
+        "family": "SimHei",
+        "postscript": "SimHei",
+        "version": "Version 5.03i",
+        "weight": 400,
+        "style": "normal",
+        "member": "./Microsoft Excel.app/Contents/Resources/Fonts/SimHei.ttf"
+      }
+    ]
+  },
+  {
+    "id": "microsoft-kaiti",
+    "label": "KaiTi / 楷体",
+    "description": "Exact KaiTi 5.01i from Microsoft's Office 15.11.1 preview update package. The shared package is a 736800648-byte Office download; extraction uses the Fontist-pinned checksum.",
+    "approx_bytes": 736800648,
+    "license": {
+      "spdx": "LicenseRef-Microsoft-OfficeMac",
+      "author": "Microsoft Corporation and The Monotype Corporation",
+      "url": "https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/office_preview.yml"
+    },
+    "families": ["KaiTi", "楷体"],
+    "package": {
+      "id": "microsoft-office-mac-15-11-1",
+      "name": "office-preview.pkg",
+      "url": "https://download.microsoft.com/download/8/1/3/8136bf31-4c2e-4b5f-bee9-117ab004ab35/microsoft_excel_15.11.1_updater.pkg",
+      "sha256": "34024135a047ca0ef3b1ab499ab7a5584b313b9eb8954c1dd38712dc6c8a04ec",
+      "size": 736800648,
+      "member_format": "tar",
+      "steps": [{ "format": "7z", "member": "Microsoft_Excel.pkg/Payload" }]
+    },
+    "files": [
+      {
+        "name": "Kaiti.ttf",
+        "sha256": "483c7cdec7874dcc6c39d278c367c512a1b909b34d2776fd72c2a941fc3cfd2e",
+        "family": "KaiTi",
+        "postscript": "KaiTi",
+        "version": "Version 5.01i",
+        "weight": 400,
+        "style": "normal",
+        "member": "./Microsoft Excel.app/Contents/Resources/Fonts/Kaiti.ttf"
+      }
+    ]
+  },
+  {
+    "id": "microsoft-dengxian",
+    "label": "DengXian / 等线",
+    "description": "Exact DengXian Regular, Bold and Light 1.14 from Microsoft's Office East Asian font setup package, using the Fontist-pinned 30664304-byte download and checksum.",
+    "approx_bytes": 30664304,
+    "license": {
+      "spdx": "LicenseRef-Microsoft-EastAsian-Pack",
+      "author": "Beijing Founder Electronics Co., Ltd.",
+      "url": "https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/dengxian.yml"
+    },
+    "families": ["DengXian", "等线"],
+    "package": {
+      "id": "microsoft-dengxian-east-asian-pack",
+      "name": "eadengfontpack.exe",
+      "url": "https://download.microsoft.com/download/4/0/9/4094ABA6-1A50-4FFD-A8CC-846BD66573F0/eadengfontpack.exe",
+      "sha256": "08ca36c8ac6be452523ffe38d82a7d60f227aea61ac9fda27a0a9ecdb5078aed",
+      "size": 30664304,
+      "member_format": "7z",
+      "steps": [{ "format": "7z", "member": "eadengfontpack.msi" }]
+    },
+    "files": [
+      {
+        "name": "DengXian-Regular.ttf",
+        "sha256": "a3057626822c986aff0d2c9ec3b90a1a64180f29cbbb5708116e0489ac3355f9",
+        "family": "DengXian",
+        "postscript": "DengXian-Regular",
+        "version": "Version 1.14",
+        "weight": 400,
+        "style": "normal",
+        "member": "DENG.TTF"
+      },
+      {
+        "name": "DengXian-Bold.ttf",
+        "sha256": "67c6835218a991c0b3dc5ae9a04500f20dd9fe48f73f447cb5e6b1ce17f45c75",
+        "family": "DengXian",
+        "postscript": "DengXian-Bold",
+        "version": "Version 1.14",
+        "weight": 700,
+        "style": "normal",
+        "member": "DENGB.TTF"
+      },
+      {
+        "name": "DengXian-Light.ttf",
+        "sha256": "fc1cfb6ff7b8126aeaacfb0d55e0fdd29cc8a2bee9c312554f5d3953feace08b",
+        "family": "DengXian",
+        "postscript": "DengXian-Light",
+        "version": "Version 1.14",
+        "weight": 300,
+        "style": "normal",
+        "member": "DENGL.TTF"
+      }
+    ]
   }
 ]

@@ -34,6 +34,8 @@ const mocks = vi.hoisted(() => ({
   editorSave: vi.fn(),
   editorMounted: vi.fn(),
   editorUnmounted: vi.fn(),
+  renderFonts: vi.fn(),
+  findRenderer: vi.fn(),
   applySuggestion: vi.fn(),
   registerAgentSession: vi.fn(),
   updateAgentSession: vi.fn(),
@@ -108,7 +110,7 @@ vi.mock("@/lib/docx-recovery", () => ({
   listDocxRecovery: mocks.listRecovery,
 }));
 vi.mock("@/lib/journal-workbench", () => ({ journalRequest: mocks.journalRequest }));
-vi.mock("@/lib/docx-render", () => ({ findDocxRenderer: async () => null }));
+vi.mock("@/lib/docx-render", () => ({ findDocxRenderer: mocks.findRenderer, ensureDocxRender: mocks.renderFonts }));
 
 import DocxWorkspaceDialog, { DocxWorkspaceHost } from "./DocxWorkspaceDialog";
 
@@ -240,6 +242,7 @@ async function startGeneration(instruction = "Improve this") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.findRenderer.mockResolvedValue(null);
   mocks.editor.measurement = { measurer: "fixed", resolving: false, producer: undefined };
   useDocxWorkspaceStore.setState({ request: null, context: null, minimized: false, recoveryOpen: false });
   mocks.settleActivity.mockResolvedValue({});
@@ -319,6 +322,25 @@ it("refreshes fonts in the existing edited session without changing its dirty st
   expect(mocks.editorDocument).toBe(bytes);
   expect(harness.text("first")).toBe("Unsaved edit");
   expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+});
+
+it("regenerates the saved PDF after refreshing fonts without saving or remounting the edited document", async () => {
+  mocks.findRenderer.mockResolvedValue("/opt/soffice");
+  mocks.renderFonts.mockResolvedValue({
+    bundle_id: "render-initial", baseline_id: INITIAL_BASELINE,
+    manifest: { page_count: 1, render_record: { renderer_version: "LibreOffice 26.8" } },
+  });
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  await renderReady(harness);
+  await waitFor(() => expect(mocks.renderFonts).toHaveBeenCalledWith(PROJECT.project_id, INITIAL_BASELINE, "/opt/soffice", false));
+  const bytes = mocks.editorDocument;
+  act(() => harness.edit("first", "Unsaved edit"));
+  fireEvent.click(screen.getByTestId("docx-font-refresh"));
+  await waitFor(() => expect(mocks.renderFonts).toHaveBeenCalledWith(PROJECT.project_id, INITIAL_BASELINE, "/opt/soffice", true));
+  expect(mocks.editorDocument).toBe(bytes);
+  expect(mocks.createSession).toHaveBeenCalledOnce();
+  expect(mocks.saveBaseline).not.toHaveBeenCalled();
+  expect(harness.text("first")).toBe("Unsaved edit");
 });
 
 describe("DocxWorkspaceDialog editing lifecycle", () => {

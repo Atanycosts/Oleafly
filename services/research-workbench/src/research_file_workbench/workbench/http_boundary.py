@@ -22,7 +22,7 @@ from research_file_workbench.common.json_io import (
 
 MAX_REQUEST_BYTES = 96 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 30
-HTTP_CONTRACT_VERSION = "journal-http-1.9.0"
+HTTP_CONTRACT_VERSION = "journal-http-1.10.0"
 STATIC_ROOT = Path(__file__).with_name("web")
 STATIC_CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",

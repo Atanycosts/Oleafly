@@ -93,6 +93,36 @@ Equivalent individual gates remain documented in `AGENTS.md`. An environment-bou
 failure must remain distinct from a deterministic unit-test failure. Do not call a release portable
 until author-input paths, rendering environments and fonts have been independently verified there.
 
+### DOCX font and render integration
+
+Native font setup on this Mac requires the Homebrew `sevenzip` package and `tar`; both are
+installed. The native application is the sole production source of `OLEAFLY_FONT_DIRS`, passing
+its existing font-cache roots as a `os.pathsep`-separated launch value. HTTP and MCP callers do
+not choose font directories.
+
+Every LibreOffice render uses its own temporary profile and stages the current TTF/OTF cache bytes
+into `profile/user/fonts`, deduplicating by SHA-256 and verifying available source receipts.
+`supplied_fonts` records those supplied bytes and hashes; `pdf_font_names` records the names
+observed in the resulting PDF. These are different evidence and neither establishes complete
+font embedding, the version selected in the live editor or visual equivalence. The current
+derived-render response also reports the current cache-content identity, while each render retains
+the identity actually supplied to it. Clients compare those identities after service restart so a
+PDF from an older cache is not reused as current; a historical render without that identity is not
+a current-cache match. The current response contract is `journal-http-1.10.0`. The render HTTP
+request adds no profile, font-directory or cache-identity path fields; the service owns the profile
+location and derives the identity from the configured native cache roots. See
+[`contracts/s1/render-bundle.json`](../../contracts/s1/render-bundle.json) for the authoritative
+method and boundary.
+
+The local LibreOffice 26.8.2.2 profile/font probe succeeded. On 2026-11-13 the final isolated
+macOS app also passed real Chinese/English manuscript acceptance in `run-ilC23E` / `run-oknADL`
+under the repository's ignored `.private/docx-font-layout/` directory. Those runs separately
+verify exact cached-package extraction, same-session font use, compatible-render reopen, actual
+edit/save and regenerated source-matching PDFs; they do not follow from the probe or portable
+suite alone. Microsoft archives were preverified cache inputs, PT Serif used real network
+downloads, and Word/WPS visual equivalence remains unverified. See the owning
+[application status](../../../../docs/agent/status.md#docx-准确字体获取2026-11-13) for full scope.
+
 ## Oleafly application and MCP connection
 
 Since 2026-11-09 this service lives in `services/research-workbench/` within the Oleafly

@@ -2625,7 +2625,7 @@
       "refresh": "Render or retry",
       "open": "Open PDF",
       "current": "PDF matches the saved working copy",
-      "stale": "PDF shows an earlier saved version of the current content",
+      "stale": "PDF needs a refresh for the current saved version and fonts",
       "pages": "pages",
       "loading": "Loading retained PDF…",
       "help": "LibreOffice renders retained DOCX bytes. Unsaved edits stay in the editor. This preview does not establish Word/WPS fidelity or source-to-page mapping."

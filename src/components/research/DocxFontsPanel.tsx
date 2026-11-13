@@ -47,10 +47,8 @@ export function DocxFontsPanel({ world, status, ready, onRefresh }: {
         if (catalog.status !== "ready") { update("failed"); continue; }
         const pack = catalog.packs.find((item) => item.families?.some((name) => familyKey(name) === familyKey(family)));
         if (!pack) { update("noSource"); continue; }
-        if (!pack.installed) {
-          update("downloading");
-          if (!await catalog.install(pack.id)) { update("failed"); continue; }
-        }
+        update("downloading");
+        if (!await catalog.install(pack.id)) { update("failed"); continue; }
         if (!active) return;
         await refreshRef.current();
         update(await hasExactDocxFont(family) ? "available" : "stillMissing");
@@ -78,6 +76,7 @@ export function DocxFontsPanel({ world, status, ready, onRefresh }: {
     {rules.length === 0 && <p className="text-muted-foreground">{text.noRequirements}</p>}
     {rules.map((rule) => <div key={rule.rule_id} className="space-y-1" data-testid="docx-journal-font" data-basis={rule.basis_status}>
       <p>{String(rule.expected)} · {rule.basis_status === "confirmed" ? text.confirmed : text.unconfirmed}</p>
+      {useFontPacksStore.getState().packs.filter((pack) => pack.families?.some((family) => familyKey(family) === familyKey(String(rule.expected)))).map((pack) => <p key={pack.id} className="text-muted-foreground">{pack.description}{pack.license?.url && <> · <a href={pack.license.url} target="_blank" rel="noreferrer" className="underline">{pack.license.spdx}</a></>}</p>)}
       {rule.basis_status === "confirmed" && (inScope(rule) ? <p data-testid="docx-font-acquisition" data-state={acquisition[String(rule.expected)] ?? "checking"}>{text[acquisition[String(rule.expected)] ?? "checking"]}</p> : <p>{text.outsideScope}</p>)}
       {rule.evidence.map((evidence) => <p key={`${evidence.source_id}:${evidence.locator}`} className="text-muted-foreground">{evidence.source_id} · {evidence.locator} · {evidence.quote}</p>)}
     </div>)}
@@ -86,6 +85,7 @@ export function DocxFontsPanel({ world, status, ready, onRefresh }: {
     <p className="text-muted-foreground">{text.probeScope}</p>
     {!status.probed ? <p>{text.notProbed}</p> : status.missing.length > 0 ? <p className="break-words" data-testid="docx-font-missing">{status.missing.map((face) => `${face.family} (${face.weight}, ${face.style})`).join(", ")}</p> : <p>{text.noneMissing}</p>}
     {status.aliases.length > 0 && <p data-testid="docx-font-aliases">{text.aliases}: {status.aliases.map((item) => `${item.from} → ${item.to}`).join(", ")}</p>}
+    {status.loaded && <ul className="break-all text-muted-foreground" data-testid="docx-font-versions">{[...new Map(status.loaded.map((face) => [face.sha256, face])).values()].map((face) => <li key={face.sha256}>{`${face.family} · ${face.version ?? "—"} · SHA-256 ${face.sha256}`}</li>)}</ul>}
     {error && <p role="alert" className="text-destructive">{error}</p>}
     <Button size="sm" variant="outline" disabled={busy || !ready} onClick={() => void refresh()} data-testid="docx-font-refresh">{text.refresh}</Button>
   </section>;

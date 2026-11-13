@@ -4,7 +4,7 @@
     "world_schema": "journal-world-1.1.0",
     "analyzer": "journal-world-analyzer-1.5.0",
     "checker": "journal-geometry-checker-1.2.0",
-    "http": "journal-http-1.9.0"
+    "http": "journal-http-1.10.0"
   },
   "scope": "local_page_geometry_slice",
   "workflow": [
@@ -138,7 +138,7 @@
     "Disposition actions are note or defer and retain the original check verdict."
   ],
   "http": {
-    "contract_version": "journal-http-1.9.0",
+    "contract_version": "journal-http-1.10.0",
     "transport": "same_origin_json_on_ipv4_loopback_only",
     "session": {
       "route": "GET /api/session",
@@ -189,6 +189,7 @@
         "response_fields": [
           "project_id",
           "baseline_id",
+          "font_cache_sha256",
           "derived_renders"
         ]
       },
@@ -410,6 +411,7 @@
       "request_id": "A stable per-submission kebab-case identity for recoverable baseline updates. Replay returns the same saved outcome.",
       "libreoffice_executable": "Absolute path to the explicitly selected LibreOffice executable. Missing or non-LibreOffice capabilities return code renderer_unavailable with no fallback.",
       "libreoffice_profile": "Not accepted over HTTP. The service creates a private temporary profile below its selected library var/libreoffice-profile directory for every render.",
+      "font_cache_sha256": "GET /api/derived-renders reports the identity of the current font cache; a render record retains the identity of the bytes supplied to that render.",
       "render_record/page_index/pdf/document_annotation/page_evidence": "Each supplied upload contains only content_base64. Annotation and page evidence are both null or both supplied. Uploaded historical paths are never opened.",
       "pages": "Captured page PNG bytes with explicit unique positive page_number, validated against the original index and physical PDF."
     },

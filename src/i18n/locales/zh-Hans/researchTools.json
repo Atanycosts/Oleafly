@@ -2591,7 +2591,7 @@
       "refresh": "渲染或重试",
       "open": "打开 PDF",
       "current": "PDF 对应当前已保存工作副本",
-      "stale": "PDF 对应当前内容的较早保存版本",
+      "stale": "PDF 需要按当前保存版本和字体重新生成",
       "pages": "页",
       "loading": "正在读取留存 PDF…",
       "help": "LibreOffice 只渲染留存的 DOCX 字节，未保存编辑仍在编辑器内。此预览不证明 Word/WPS 排版保真，也不提供正文到页面的映射。"

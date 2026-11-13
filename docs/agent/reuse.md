@@ -157,6 +157,51 @@ SuperDoc 的 [2.29.0 发布元数据](https://registry.npmjs.org/superdoc/2.29.0
 Oleafly 当前在 Workbench 内按每次转换创建临时 profile，检查输出页数并登记 derived PDF；它属于保存后的渲染链，不能替代交互编辑内核。
 WPS 的既有导出可继续作为外部引擎来源，新的转换结果须按实际引擎登记，不能套用历史 WPS 过程证明。
 
+## 准确中文字体来源（2026-11-13）
+
+已核对 Oleafly 上游固定提交
+[`9d525d1`](https://github.com/Oleafly/Oleafly/tree/9d525d151ce951449033b4d2f5a0cb7019c29123)。
+其[字体目录](https://github.com/Oleafly/Oleafly/blob/9d525d151ce951449033b4d2f5a0cb7019c29123/src-tauri/resources/font-packs.json)
+提供 Noto、Fandol、LXGW 等开源中文字体，没有 SimSun、SimHei、KaiTi 或 DengXian 原字体包。
+[下载服务](https://github.com/Oleafly/Oleafly/blob/9d525d151ce951449033b4d2f5a0cb7019c29123/src-tauri/src/assets.rs)
+已有摘要、分阶段下载和第二来源机制；第二来源是同一文件的备用 URL，不是准确字体的新来源。
+EigenPal 已安装的 2.36.0 发布源码和调查时 main
+[`845bd85`](https://github.com/eigenpal/docx-editor/tree/845bd85f8c0a27c299ec4c4bb9ca6bf81cdc15b9)
+在相关表中一致：其 [CJK 包](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/fonts-cjk/src/families.ts)
+把上述家族缺失时的请求交给 Noto Sans CJK JP，源码明确说明字形、换行和页数可能变化。
+这些上游机制不能直接满足本项目的准确字体策略。
+
+GitHub 的可复用入口是 Fontist 的固定配方和官方包提取流程，已下载实际包核对以下路径。
+调查已进入应用接入：宋体、黑体和楷体选用下表 HTTPS Office 包，等线选用独立 HTTPS 包。
+沿原下载／缓存机制增加指定成员提取，准确家族规则触发获取后在同一编辑会话刷新；
+应用缓存也供给保存后的 LibreOffice 私有 profile。实际原生验收范围由[当前状态](status.md#docx-准确字体获取2026-11-13)拥有。
+
+| 来源与固定配方 | 实际取得的字体 | 本轮核验与边界 |
+| --- | --- | --- |
+| [Fontist DengXian](https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/dengxian.yml) 指向 Microsoft HTTPS `eadengfontpack.exe` | DengXian Regular／Bold／Light 1.14，三个静态独立 TTF | 实际下载 30,664,304 bytes，SHA-256 与配方一致，7zz 解 EXE→MSI→字体；已读实际 family、PostScript name、版本及输出 SHA-256。 |
+| [Fontist Office Preview](https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/office_preview.yml) 指向 Microsoft Excel for Mac 15.11.1 更新包；实测使用同地址 HTTPS | SimSun 5.04i、SimHei 5.03i、KaiTi 5.01i；DengXian Regular／Light 1.11、Bold 1.05（Mac） | 完整包 736,800,648 bytes，SHA-256 与配方一致；7zz／系统 tar 从 Payload 提出六个静态 TTF，实际族名与版本吻合。首次下载超时，续传后才通过完整摘要。该包字体较旧，不能当成当前 Windows 字体版本。 |
+| [BatUtil 26100 Hans 清单](https://github.com/abbodi1406/BatUtil/blob/9421f53a75b432b25fd96fde422fd70886b476c4/W10MUI/OnDemand/26100-OnDemand.txt#L1470) 指向 Microsoft CDN 的简中补充字体 CAB | DengXian 1.21、SimHei 5.04、KaiTi 5.02、FangSong 5.02，均为静态独立 TTF；不含标准 SimSun | 实际下载 43,883,622 bytes，SHA-1 对上固定清单；解包、准确族名、版本和输出 SHA-256 已核对。清单仅 HTTP，两个 HTTPS 主机均发生证书名不匹配；未验证 CAB 签名，不能宣称已验证官方签名或 HTTPS 传输。 |
+
+[`kugland/nix-ttf-ms-win11-auto`](https://github.com/kugland/nix-ttf-ms-win11-auto/blob/9e298e2aab68c1bfc22a039012b29595f04b4ac9/pkgs/ttf-ms-win11-auto-zh_cn.json)
+提供固定 Windows 11 官方介质、`install.wim/Windows/Fonts/simsun.ttc` 和 Nix 产物摘要，适合作为较新 SimSun 的来源对照；
+本轮没有下载大 ISO 或运行 Nix。其 [Hans 配方](https://github.com/kugland/nix-ttf-ms-win11-auto/blob/9e298e2aab68c1bfc22a039012b29595f04b4ac9/pkgs/ttf-ms-win11-fod-auto-hans.json)
+也来自官方介质，不能把整包递归摘要当成单字体文件的 SHA-256。
+Fontist 的 [Windows Hans 配方](https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/windows/chinese_simplified_supplemental_fonts.yml)
+本身只是 Windows capability 安装／导入声明，不是跨平台 CAB 下载器。
+其 [SimSun-18030 配方](https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/simsun_18030.yml)
+产生另一家族，不能用于满足标准 SimSun。第三方直接提交字体二进制的镜像没有优于官方包的来源证据。
+
+Fontist [ArchiveResource](https://github.com/fontist/fontist/blob/8065f1939a89926856cf5eb216e087c4f348cc97/lib/fontist/resources/archive_resource.rb)
+委托 Excavate 递归解包；[TTC 提取入口](https://github.com/fontist/fontist/blob/8065f1939a89926856cf5eb216e087c4f348cc97/lib/fontist/font_installer.rb#L212)
+只在显式指定集合索引时调用 [Fontisan](https://github.com/fontist/fontist/blob/8065f1939a89926856cf5eb216e087c4f348cc97/lib/fontist/font_operations/extract.rb)。
+已借用配方和成员选择规则，沿已有下载／缓存服务加入按包提取，没有引入 Ruby、Nix 或另一套字体服务。
+本机解包工具由 Homebrew `sevenzip` 26.06 和既有 tar 提供；当前 macOS 私用接法依赖这些本机工具，未随应用打包。
+缺少 7-Zip 会在下载前报出可操作的安装错误。大包完整校验后可复用，字体缓存保留来源回执；
+中断下载暂不续传，卸载解出的字体仍保留共享整包供下次使用。
+字体来源可取得与是否可直接被应用载入是两个问题：当前产品仍只提供静态独立 TTF／OTF，TTC 提取未实现。
+同一家族的不同版本也可能改变度量；接入应保留包摘要、成员路径、实际字体版本和提取后摘要，实际渲染另行验收。
+Microsoft 包附带各自的 Office／Windows 使用条款，Fontist 的开源许可不改变字体包的条款。
+
 ## 证据范围
 
 隔离探针验证了部分源码函数、协议和失败语义，使用合成输入；它们不能代替产品集成、
@@ -172,3 +217,5 @@ WPS 的既有导出可继续作为外部引擎来源，新的转换结果须按�
 `.private/agent-documentation-history/agent-evidence-and-reuse-20261109.md`
 保留更完整的调查、其他框架对照及原始证据定位。这些本地材料不随干净 checkout 提供。
 后续研究在对应选择发生变化时更新本页，不为每轮调查新增综合报告。
+准确中文字体的本机隔离输入及核验结果位于 `.private/docx-layout-investigation/exact-font-research/`，
+`font-inspection.json` 记录各输出的实际元数据和 SHA-256；该目录不随干净 checkout 提供，也未进入作者输入目录。

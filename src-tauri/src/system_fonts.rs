@@ -205,6 +205,7 @@ pub struct SystemFontFace {
     face_index: u32,
     sha256: String,
     content_base64: String,
+    version: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -234,7 +235,7 @@ fn validate_font_requests(requests: &[SystemFontRequest]) -> Result<(), String> 
     Ok(())
 }
 
-fn standalone_static_font(data: &[u8], index: u32) -> bool {
+pub(crate) fn standalone_static_font(data: &[u8], index: u32) -> bool {
     if index != 0
         || !matches!(data.get(..4), Some(b"\0\x01\0\0" | b"OTTO" | b"true"))
         || data.len() > MAX_FONT_FACE_BYTES
@@ -245,6 +246,13 @@ fn standalone_static_font(data: &[u8], index: u32) -> bool {
         font.data_for_tag(skrifa::raw::types::Tag::new(b"fvar"))
             .is_none()
     })
+}
+
+pub(crate) fn font_version(data: &[u8], index: u32) -> Option<String> {
+    let font = FontRef::from_index(data, index).ok()?;
+    font.localized_strings(skrifa::string::StringId::VERSION_STRING)
+        .english_or_first()
+        .map(|name| name.to_string())
 }
 
 fn resolve_font_faces(
@@ -283,11 +291,12 @@ fn resolve_font_faces(
                         index,
                         format!("{:x}", Sha256::digest(data)),
                         STANDARD.encode(data),
+                        font_version(data, index),
                     )))
                 })
                 .transpose()? // A missing/unreadable source is reported with other missing faces.
                 .flatten();
-            if let Some((face_index, sha256, content_base64)) = encoded {
+            if let Some((face_index, sha256, content_base64, version)) = encoded {
                 resolved = Some(SystemFontFace {
                     requested: requested.clone(),
                     family: family.clone(),
@@ -297,6 +306,7 @@ fn resolve_font_faces(
                     face_index,
                     sha256,
                     content_base64,
+                    version,
                 });
                 break;
             }

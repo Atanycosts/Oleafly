@@ -63,6 +63,11 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         .arg(library_root)
         .env_remove("PYTHONPATH")
         .env_remove("PYTHONHOME")
+        .env(
+            "OLEAFLY_FONT_DIRS",
+            std::env::join_paths(crate::assets::font_cache_roots()?)
+                .map_err(|error| error.to_string())?,
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -101,7 +106,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         .json()
         .await
         .map_err(|error| error.to_string())?;
-    if session["contract_version"] != "journal-http-1.9.0" {
+    if session["contract_version"] != "journal-http-1.10.0" {
         return Err("This Workbench HTTP version is not supported.".into());
     }
     let token = session["token"]

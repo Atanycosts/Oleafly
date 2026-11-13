@@ -231,11 +231,28 @@ Font binaries are not copied into acceptance evidence. The save-path hook choose
 export path. The runner retains local evidence under ignored `.private/docx-font-layout/run-*`,
 restores E2E WebKit storage and checks the author hash before and after. No model is called.
 Missing fonts prevent full coverage. This test does not establish Office-equivalent layout,
-per-run font compliance or font availability in the independent LibreOffice renderer.
+per-run font compliance.
+For Microsoft package acceptance, also set `OLEAFLY_FONT_SOURCE_EVIDENCE` to the ignored
+directory holding the complete, previously verified `office-preview.pkg` and
+`eadengfontpack.exe`. The runner checks their catalog hashes and seeds only the isolated
+archive cache. It leaves the font cache empty, then uses four controlled exact-family
+guidelines on the real manuscript to exercise native extraction, source receipts and
+same-session font refresh. This is archive reuse evidence, separate from the real network
+PT Serif download. Cache modification times and native progress events verify no new package
+download. Local `7zz`/`7z` and tar are required; use Homebrew `sevenzip` on this Mac.
+The test reads back the retained real-manuscript PDF, checks supplied cache hashes and actual
+PDF font names separately, and inspects the embedded SimSun subset's version record.
+The subset hash identifies the PDF subset, not the complete cached font. It also repeats
+the structural export check after font preparation and verifies reopen reuses a completed
+render. It then applies one permitted text edit through the existing Agent host, saves a new
+baseline with the workspace button and checks the saved DOCX structure and regenerated PDF.
+System fonts are checked before acquisition, so this acceptance requires no existing
+standalone SimSun, SimHei, KaiTi or DengXian faces. It cannot establish same-version behavior
+when a machine has another version of the same family installed.
 The earlier 2026-11-13 Noto-substitution runs are retained historical evidence and do not
 validate this exact-font policy.
 
-Results and recovery material stay in ignored `.private/docx-recovery-native/run-*`.
+Font-mode results and recovery material stay in ignored `.private/docx-font-layout/run-*`.
 Normal exit and catchable failures restore the previous E2E WebKit storage. If the
 runner itself is killed or the machine stops, use that run's `runner.json` and
 `webkit-before/` to restore its recorded storage paths. This acceptance does not

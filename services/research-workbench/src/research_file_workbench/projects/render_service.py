@@ -1,12 +1,15 @@
 """Register captured page evidence and query its immutable project-held versions."""
 
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
+
+import pymupdf
 
 from research_file_workbench.common.clock import utc_now_iso
 from research_file_workbench.common.filesystem import (
@@ -63,6 +66,7 @@ def render_libreoffice_baseline(
     confirmation_reason: str,
     surface: str,
     runner: CommandRunner | None = None,
+    font_dirs: tuple[Path, ...] = (),
 ) -> JsonObject:
     """Convert one retained baseline with an explicit executable and profile parent.
 
@@ -130,6 +134,8 @@ def render_libreoffice_baseline(
         output_path = output_root / "baseline.pdf"
         with TemporaryDirectory(prefix="profile-", dir=profile) as profile_directory:
             render_profile = Path(profile_directory)
+            supplied_fonts = _stage_fonts(font_dirs, render_profile / "user" / "fonts")
+            font_cache_sha256 = _font_set_sha256(supplied_fonts)
             command = [
                 executable.as_posix(),
                 f"-env:UserInstallation={render_profile.resolve().as_uri()}",
@@ -165,6 +171,8 @@ def render_libreoffice_baseline(
                 page_count = read_pdf_page_count(output_path)
             except PdfInspectionError as exc:
                 raise RenderConversionError("LibreOffice output is not a readable PDF.") from exc
+            with pymupdf.open(output_path) as pdf:  # type: ignore[no-untyped-call]
+                pdf_fonts = sorted({font[3] for page in pdf for font in page.get_fonts(full=True)})
 
     completed_at = utc_now_iso()
     duration_ms = round((time.monotonic() - started) * 1000)
@@ -195,6 +203,9 @@ def render_libreoffice_baseline(
         "completed_at": completed_at,
         "duration_ms": duration_ms,
         "process_return_code": conversion_result.returncode,
+        "supplied_fonts": supplied_fonts,
+        "font_cache_sha256": font_cache_sha256,
+        "pdf_font_names": pdf_fonts,
     }
     render_record_bytes = encode_json_object(render_record).encode("utf-8")
     artifact_refs = [
@@ -238,6 +249,60 @@ def render_libreoffice_baseline(
         actor_id=actor_id,
         confirmation_reason=confirmation_reason,
     )
+
+
+def font_cache_identity(font_dirs: tuple[Path, ...]) -> str:
+    """Hash the current unique font-byte set without staging or rendering it."""
+    return _font_set_sha256(_stage_fonts(font_dirs, None))
+
+
+def _font_set_sha256(fonts: list[JsonObject]) -> str:
+    return sha256_text("\n".join(sorted({cast(str, font["sha256"]) for font in fonts})))
+
+
+def _stage_fonts(font_dirs: tuple[Path, ...], destination: Path | None) -> list[JsonObject]:
+    supplied: list[JsonObject] = []
+    seen: set[str] = set()
+    for root in font_dirs:
+        if not root.is_absolute():
+            raise RendererUnavailableError("Application font cache paths must be absolute.")
+        if not root.exists():
+            continue
+        require_no_reparse_points(root)
+        for path in sorted(root.rglob("*")):
+            if path.suffix.casefold() not in {".ttf", ".otf"} or not path.is_file():
+                continue
+            require_no_reparse_points(path)
+            digest = sha256_file(path)
+            if digest in seen:
+                continue
+            if destination is not None:
+                destination.mkdir(parents=True, exist_ok=True)
+                copied = destination / f"{digest}{path.suffix.lower()}"
+                shutil.copyfile(path, copied)
+                if sha256_file(copied) != digest:
+                    raise RenderConversionError(
+                        "Application font changed while preparing the render."
+                    )
+            metadata: JsonObject = {}
+            receipt = path.parent / "source.json"
+            if receipt.is_file():
+                require_no_reparse_points(receipt)
+                source = decode_json_object(receipt.read_bytes())
+                for raw in cast(list[JsonObject], source["files"]):
+                    if raw.get("name") == path.name:
+                        if raw.get("sha256") != digest:
+                            raise RenderConversionError(
+                                "Cached font differs from its source receipt."
+                            )
+                        metadata = {
+                            key: raw[key]
+                            for key in ("family", "postscript", "version", "weight", "style")
+                        }
+                        break
+            supplied.append({"path": path.as_posix(), "sha256": digest, **metadata})
+            seen.add(digest)
+    return supplied
 
 
 def register_render_bundle(

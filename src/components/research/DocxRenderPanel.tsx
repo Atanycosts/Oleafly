@@ -9,10 +9,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ensureDocxRender, findDocxRenderer, loadDocxPdf, type DocxRender } from "@/lib/docx-render";
 import { pickOpenPaths } from "@/lib/tauri";
 
-export function DocxRenderPanel({ projectId, baselineId, dirty }: {
+export function DocxRenderPanel({ projectId, baselineId, dirty, fontRevision = 0 }: {
   projectId: string;
   baselineId: string;
   dirty: boolean;
+  fontRevision?: number;
 }) {
   const { t } = useTranslation("researchTools");
   const text = t(($) => $.researchTools.docx.render, { returnObjects: true });
@@ -20,6 +21,7 @@ export function DocxRenderPanel({ projectId, baselineId, dirty }: {
   const [auto, setAuto] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [shown, setShown] = useState<DocxRender | null>(null);
+  const [refreshRevision, setRefreshRevision] = useState(0);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     let active = true;
@@ -29,11 +31,13 @@ export function DocxRenderPanel({ projectId, baselineId, dirty }: {
     return () => { active = false; };
   }, []);
   const render = useQuery({
-    queryKey: ["docx-render", projectId, baselineId, executable],
-    queryFn: () => ensureDocxRender(projectId, baselineId, executable),
+    queryKey: ["docx-render", projectId, baselineId, executable, fontRevision, refreshRevision],
+    queryFn: () => ensureDocxRender(projectId, baselineId, executable, fontRevision > 0 || refreshRevision > 0),
     enabled: auto && executable !== "",
     retry: false,
     staleTime: Infinity,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
   });
   useEffect(() => { if (render.data) setShown(render.data); }, [render.data]);
   const pdf = useQuery({
@@ -47,7 +51,7 @@ export function DocxRenderPanel({ projectId, baselineId, dirty }: {
     staleTime: Infinity,
     gcTime: 0,
   });
-  const stale = shown !== null && (shown.baseline_id !== baselineId || dirty);
+  const stale = shown !== null && (shown.baseline_id !== baselineId || dirty || render.data !== shown || render.isFetching || render.isError);
   return <section className="space-y-2 rounded border p-3 text-xs" aria-label={text.title}>
     <div className="flex items-center justify-between gap-2">
       <strong>{text.title}</strong>
@@ -66,7 +70,10 @@ export function DocxRenderPanel({ projectId, baselineId, dirty }: {
     {!executable && <p className="text-muted-foreground">{text.unavailable}</p>}
     {(notice || render.error) && <p role="alert" className="break-words text-destructive">{notice ?? String(render.error)}</p>}
     <div className="flex flex-wrap gap-2">
-      <Button size="sm" variant="outline" disabled={!executable || render.isFetching} onClick={() => { void render.refetch(); }}><RefreshCw className="mr-1 size-3" />{text.refresh}</Button>
+      <Button size="sm" variant="outline" disabled={!executable || render.isFetching} onClick={() => {
+        setAuto(true);
+        setRefreshRevision((revision) => revision + 1);
+      }}><RefreshCw className="mr-1 size-3" />{text.refresh}</Button>
       <Button size="sm" variant="outline" disabled={!shown} onClick={() => setOpen(true)}><FileText className="mr-1 size-3" />{text.open}</Button>
     </div>
     {shown && <>

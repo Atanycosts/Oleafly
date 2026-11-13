@@ -6,6 +6,8 @@ use tauri::{AppHandle, Manager};
 use crate::paths;
 use crate::templates::TemplateManifest;
 
+mod packages;
+
 #[derive(Deserialize, Serialize, Clone, Default)]
 pub struct AssetLicense {
     #[serde(default)]
@@ -16,12 +18,25 @@ pub struct AssetLicense {
     pub url: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, Default)]
 pub struct AssetFile {
     pub name: String,
+    #[serde(default)]
     pub url: String,
     #[serde(default)]
     pub sha256: Option<String>,
+    #[serde(default)]
+    pub member: Option<String>,
+    #[serde(default)]
+    pub family: Option<String>,
+    #[serde(default)]
+    pub postscript: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub weight: Option<u16>,
+    #[serde(default)]
+    pub style: Option<crate::system_fonts::SystemFontStyle>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -39,6 +54,8 @@ pub struct FontPack {
     pub typst: bool,
     #[serde(default)]
     pub families: Vec<String>,
+    #[serde(default)]
+    pub package: Option<packages::FontPackage>,
 }
 
 #[derive(Serialize)]
@@ -150,7 +167,18 @@ fn pack_installed(pack: &FontPack) -> bool {
         Ok(d) => d,
         Err(_) => return false,
     };
-    !pack.files.is_empty() && pack.files.iter().all(|f| dir.join(&f.name).is_file())
+    pack.package
+        .as_ref()
+        .is_none_or(|package| packages::receipt_matches(pack, package, &dir))
+        && !pack.files.is_empty()
+        && pack.files.iter().all(|f| {
+            let path = dir.join(&f.name);
+            if pack.package.is_some() {
+                packages::verify_font(&path, f).is_ok()
+            } else {
+                path.is_file()
+            }
+        })
 }
 
 pub fn fonts_ready(app: &AppHandle, font_ids: &[String]) -> bool {
@@ -170,87 +198,127 @@ pub fn fonts_ready(app: &AppHandle, font_ids: &[String]) -> bool {
 }
 
 async fn download_pack(app: &AppHandle, pack: &FontPack) -> Result<(), String> {
-    use futures_util::StreamExt;
-    use tauri::Emitter;
-    use tokio::io::AsyncWriteExt as _;
-
+    static INSTALL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _installation = INSTALL.lock().await;
+    if let Some(package) = &pack.package {
+        return packages::install(app, pack, package, &pack_dir(pack)?).await;
+    }
     let dir = pack_dir(pack)?;
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| e.to_string())?;
-    let total = pack.files.len();
-    for (i, f) in pack.files.iter().enumerate() {
-        if !is_simple_filename(&f.name) {
-            return Err(format!("illegal asset filename: {}", f.name));
+    for (i, file) in pack.files.iter().enumerate() {
+        if !is_simple_filename(&file.name) {
+            return Err(format!("illegal asset filename: {}", file.name));
         }
-        let dest = dir.join(&f.name);
-        if dest.is_file() {
-            continue;
-        }
-        let tmp = dir.join(format!("{}.part", f.name));
-        let resp = reqwest::get(&f.url)
-            .await
-            .map_err(|e| format!("download failed: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("download failed: {e}"))?;
-        let file_total = resp.content_length();
-        let mut out = tokio::fs::File::create(&tmp)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut stream = resp.bytes_stream();
-        let mut received: u64 = 0;
-        let mut digest = Sha256::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("download interrupted: {e}"))?;
-            received += chunk.len() as u64;
-            digest.update(&chunk);
-            out.write_all(&chunk).await.map_err(|e| e.to_string())?;
-            let _ = app.emit(
-                "asset-progress",
-                AssetProgress {
-                    component: pack.id.clone(),
-                    label: pack.label.clone(),
-                    file: f.name.clone(),
-                    index: i + 1,
-                    total,
-                    received,
-                    file_total,
-                },
-            );
-        }
-        out.flush().await.map_err(|e| e.to_string())?;
-        drop(out);
-        if !checksum_matches(f.sha256.as_deref(), &digest.finalize()) {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            return Err(format!("download of {} did not match its checksum", f.name));
-        }
-        tokio::fs::rename(&tmp, &dest)
-            .await
-            .map_err(|e| e.to_string())?;
+        download_file(
+            app,
+            pack,
+            file,
+            &dir.join(&file.name),
+            i + 1,
+            pack.files.len(),
+        )
+        .await?;
     }
+    Ok(())
+}
+
+async fn download_file(
+    app: &AppHandle,
+    pack: &FontPack,
+    file: &AssetFile,
+    dest: &Path,
+    index: usize,
+    total: usize,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+    use tokio::io::AsyncWriteExt as _;
+
+    if packages::matches_checksum(dest, file.sha256.as_deref()) {
+        return Ok(());
+    }
+    tokio::fs::create_dir_all(dest.parent().ok_or("Missing font cache directory")?)
+        .await
+        .map_err(|e| e.to_string())?;
+    let tmp = dest.with_extension("part");
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .read_timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let resp = client
+        .get(&file.url)
+        .send()
+        .await
+        .map_err(|e| format!("download failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("download failed: {e}"))?;
+    let file_total = resp.content_length();
+    let mut out = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut stream = resp.bytes_stream();
+    let mut received: u64 = 0;
+    let mut digest = Sha256::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("download interrupted: {e}"))?;
+        received += chunk.len() as u64;
+        digest.update(&chunk);
+        out.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        let _ = app.emit(
+            "asset-progress",
+            AssetProgress {
+                component: pack.id.clone(),
+                label: pack.label.clone(),
+                file: file.name.clone(),
+                index,
+                total,
+                received,
+                file_total,
+            },
+        );
+    }
+    out.flush().await.map_err(|e| e.to_string())?;
+    drop(out);
+    if !checksum_matches(file.sha256.as_deref(), &digest.finalize()) {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(format!(
+            "download of {} did not match its checksum",
+            file.name
+        ));
+    }
+    tokio::fs::rename(&tmp, &dest)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub(crate) use oleafly_downloads::template_packs::checksum_matches;
 
 #[tauri::command]
-pub fn list_font_components(app: AppHandle) -> Result<Vec<ComponentInfo>, String> {
-    Ok(catalog(&app)?
-        .into_iter()
-        .map(|p| {
-            let installed = pack_installed(&p);
-            ComponentInfo {
-                kind: if p.typst { "typst-font" } else { "font" }.to_string(),
-                id: p.id,
-                label: p.label,
-                description: p.description,
-                approx_bytes: p.approx_bytes,
-                license: p.license,
-                installed,
-                families: p.families,
-            }
-        })
-        .collect())
+pub async fn list_font_components(app: AppHandle) -> Result<Vec<ComponentInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(catalog(&app)?
+            .into_iter()
+            .map(|p| {
+                let installed = pack_installed(&p);
+                ComponentInfo {
+                    kind: if p.typst { "typst-font" } else { "font" }.to_string(),
+                    id: p.id,
+                    label: p.label,
+                    description: p.description,
+                    approx_bytes: p.approx_bytes,
+                    license: p.license,
+                    installed,
+                    families: p.families,
+                }
+            })
+            .collect())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -359,7 +427,13 @@ mod tests {
             assert!(!p.files.is_empty());
             for f in &p.files {
                 assert!(is_simple_filename(&f.name), "safe filename: {}", f.name);
-                assert!(f.url.starts_with("https://"), "https url: {}", f.url);
+                if p.package.is_none() {
+                    assert!(f.url.starts_with("https://"), "https url: {}", f.url);
+                } else {
+                    assert!(f.member.is_some(), "package member: {}", f.name);
+                    assert!(f.family.is_some() && f.postscript.is_some());
+                    assert!(f.weight.is_some() && f.style.is_some() && f.version.is_some());
+                }
             }
         }
     }
@@ -393,6 +467,7 @@ mod tests {
             files: vec![],
             typst,
             families: vec![],
+            package: None,
         };
         let typst_dir = pack_dir(&pack(true)).unwrap();
         assert_eq!(

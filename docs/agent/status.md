@@ -353,7 +353,7 @@ SWC 压缩破坏 JSON 内 LaTeX 转义及语言包体积膨胀；前述失败已
 生产浏览器流程验证了修正后的运行结果。
 
 真实论文验收仍不证明 Word/WPS 往返排版保真：首版英文和中文界面分别出现替代字体/固定度量告警，独立 LibreOffice 渲染还发现英文首页双栏标题布局差异。
-字体字节接入和该布局差异的定位由下文[字体与首页布局](#docx-字体与首页布局2026-11-13)接续，不把首版告警当作当前全部状态。
+字体字节接入和该布局差异的定位由下文[准确字体获取](#docx-准确字体获取2026-11-13)及其历史布局记录接续，不把首版告警当作当前全部状态。
 Workbench reader 已将英文 VML 图片从静默漏报改为 `vml_picture` unsupported 观察（reader 版本 `s1-readonly-reader-1.5.0`）；VML 绘制语义和页面位置仍未解释。
 首版接入只支持一项内联建议，当时工具已在普通 Agent/MCP 的应用业务层可用，尚无 TaskStore task/work/member/execution 归属；后续已由下节任务活动接入补齐。
 latest recovery checkpoint 已接入应用私有目录：保存 DOCX 字节、稳定工作副本 key、原始 baseline/source hash、会话 revision、更新时间和内容 hash，使用现有原子写入；保存失败、hash 不匹配或清除失败都会保留快照。启动候选选择、明确恢复/下载/丢弃、界面与 Agent 的未保存状态重建及恢复后保存已在 2026-11-12 补齐，原生验收范围见下文。外部 Word/WPS 同步、跨版本页映射、真实论文的 Word/WPS
@@ -510,12 +510,65 @@ Windows 和其他语言仍明确不在范围内。恢复规则和边界见[架�
 同文档最小化后切换期刊并恢复时，独立上下文会更新到所选 world，保留原编辑器及保存后回调；
 其他文档的请求不会改写当前文档上下文。
 
-当前应用缓存字体只接入编辑器，尚未接入独立 LibreOffice 字体环境；真实稿缺失字体仍须取得对应实际字体。
-目前目录没有宋体／黑体／楷体／等线等真实稿缺失字体的准确来源，不能宣称任意字体都已自动获取；
-缺失时内核仍可绘制临时预览，缺失列表明确保留，不能据此称为准确字体或期刊合规。
-原有首页多栏 frame 问题独立保留；中英文范围和 Windows 排除决定保持不变。
+产品目录已接入准确 SimSun／SimHei／KaiTi 和 DengXian，沿既有应用下载服务复用
+[Fontist 固定配方及 Microsoft HTTPS 来源](reuse.md#准确中文字体来源2026-11-13)。
+Office for Mac 整包提供前三族，独立 East Asian 包提供等线常规／粗体／细体；
+整包与提取成员均校验 SHA-256，静态字体核对实际族名、PostScript 名、字重、style 和来源版本，
+并保留来源回执。当前为 SimSun 5.04i、SimHei 5.03i、KaiTi 5.01i、DengXian 1.14，
+版本用于如实记录来源，不把只指定家族的期刊要求升级为指定版本。
+本机前提是 Homebrew `sevenzip` 和既有 tar；没有随应用打包解包器。缺工具在下载前报错，
+约 737 MB 的 Office 整包只需完整缓存一次，供其他字体和项目复用；中断下载暂不续传，
+卸载字体后保留共享整包。缺失或不适用的 face 继续明确列出，常规 face 可用不代表完整族或稿件合规。
 
-最终 macOS 原生 `131-docx-font-layout` 在真实英文、中文输入分别通过（32.3／27.0 秒）。
+应用字体缓存已接入独立 LibreOffice：原生启动器提供缓存根，每次转换读取当前缓存、按摘要去重、
+复制到私有 `profile/user/fonts` 并校验已有回执。渲染分别记录供给字体摘要、当前缓存集合身份及
+PDF 实际字体名，供给摘要不冒充 PDF 完整嵌入字节。字体刷新或显式 PDF 刷新产生新转换；
+普通重开只复用相同缓存内容及方法的最新渲染，在途同环境请求合并，失败保留旧 PDF 并标旧。
+跨重开的缓存判断及新 HTTP 响应由[渲染合同](../../services/research-workbench/contracts/s1/render-bundle.json)拥有。
+编辑器与 LibreOffice 的系统字体选择仍可能不同；PDF 实际出现 LiberationSerif 等拉丁替代，
+准确中文家族和可加载字体不能证明全篇准确排版。原有首页多栏 frame 问题独立保留。
+中英文范围和 Windows 排除决定保持不变。
+
+Windows 26100 Hans CAB 的本机研究保持独立：实际解出较新 SimHei／KaiTi／DengXian／FangSong，
+整包 SHA-1 对上固定清单，但仅 HTTP、HTTPS 证书名不匹配且未验 CAB 签名，因此未接入自动目录。
+较新 Windows 标准 SimSun 的 TTC 来源已定位，TTC 提取仍未实现。
+
+包提取真实回归已验证上述六个 face 的字节／元数据，并拒绝错族声明。
+早期 macOS 中文原生扩展 `131` 在 `.private/docx-font-layout/run-XJihrW/` 通过：
+空字体缓存以四种受控准确族规则触发产品提取，内核实际载入 SimSun 的匹配 hash，
+同一 session／revision 和作者字体声明保留；整包来自此前已完整校验的官方归档，未新增网络下载。
+重复检查无包进度事件、整包修改时间不变；字体准备前后导出的 DOCX 字节一致。
+真实稿 PDF 为 26 页，实际嵌入子集读回 SimSun 5.04i 和 SimHei 5.03i；
+KaiTi／DengXian 的供给不代表该 PDF 使用了它们，拉丁字体仍有替代。
+该早期运行不覆盖随后新增的跨会话缓存身份判断与实际编辑／保存验收，由下述最终运行接续。
+指南 ID 格式和选择器等待时序的失败探针保留在 `run-S4tUJf/`、`run-nujxXH/`，未改写为通过。
+
+最终隔离 macOS 原生包在真实中文和英文稿上分别通过 `131`（3.5／3.6 分钟），
+证据为本机忽略目录 `.private/docx-font-layout/run-ilC23E/`（中文）与 `run-oknADL/`（英文）。
+两次均从两个完整校验的官方归档缓存提取四个准确家族，保存来源回执、版本和摘要，
+内核实际载入匹配 hash 的 SimSun，保持同一 session／revision；字体准备后的导出保留包结构和作者格式。
+正常重开复用已完成的同环境 PDF，未增加转换记录；之后通过既有 Agent host 做一次受支持的文本编辑，
+由界面保存新 baseline 并重新生成对应精确 source hash 的 PDF。两份保存包均无部件增减、媒体变化、
+关系语义变化或受保护节点损失，段落数仍为 533／515，各只有一处预期文本变化。
+中文／英文 PDF 分别为 26／10 页，实际子集均读回 SimSun 5.04i，中文另读回 SimHei 5.03i；
+保存标记在两份 PDF 首页可提取；主控可视复核两份首页，中文未见明显乱码或正文截断，
+英文仍复现标题占左栏的既有 frame 问题。未验全篇视觉保真。
+KaiTi／DengXian 只证明准确提取与供给，不宣称 PDF 实际使用；拉丁字体仍有 LiberationSerif 替代。
+Microsoft 部分验证完整归档复用和实际提取，没有重新下载整包；PT Serif 部分则分别经过真实网络下载，
+同会话刷新、切换 world、保留 dirty 文本及撤销均通过。两份作者原稿 hash 前后不变，
+原 E2E WebKit 存储恢复，测试拥有的应用及 Workbench 均退出。该确定性编辑没有新增真实模型质量结论。
+列表读取和实际字体 staging 之间的缓存变更仍可能引起同环境重复转换，但记录保留实际供给身份，
+不把旧缓存 PDF 复用为当前结果；该窄并发窗口尚未做原子合并。
+
+本轮最终源码定向验证通过：前端 6 文件 85 项，原生 assets 9 项和 system_fonts 18 项，
+另有真实 Microsoft 归档六个 face 的显式提取探针通过；两个依赖本机材料的测试在常规运行中跳过。
+Rust 局部格式及应用库 Clippy、含 `131` 的 TypeScript、前端局部 lint、中英文目录／类型及 DOCX notices 通过。
+Workbench 完整 Python 门禁及仍失败的历史 Phase 0 见 [S1 状态](../../services/research-workbench/docs/s1-progress.md)。
+最终普通生产构建及性能预算通过：入口 JavaScript 4,822,689 bytes，总 JavaScript 27,847,573 bytes，
+开发钩子计数 0，DOCX 内核仍按需加载；既有大 chunk 与原生 debug unwind 警告保留。
+未更新正式安装版，未扩大平台或语言范围。
+
+此前准确字体首版 macOS 原生 `131-docx-font-layout` 在真实英文、中文输入分别通过（32.3／27.0 秒）。
 两份均验证准确 Times New Roman 原字节、内核实际 FontFace hash／加载及正文采用，无宿主跨族映射；
 缺失的中文字体如实列出。无改动导出均无部件增减、媒体／关系变化、受保护节点损失或正文变化，
 段落保持 515／533，styles、fontTable、sectPr、framePr、rFonts 属性保留；英文仍有下节记录的序列化差异。
@@ -530,7 +583,7 @@ E2E WebKit 存储已恢复，测试拥有的应用与 Workbench 进程已退出�
 11 个前端定向文件 157 项通过；原生 system_fonts 18 项、assets 6 项及显式本机 face/hash 探针 1 项通过，
 Rust 格式／库 Clippy、前端局部 lint、含 E2E 的 TypeScript、中英文目录／类型、DOCX notices 和相对文档链接通过。
 Workbench 完整 Python 门禁及历史 Phase 0 失败见 [S1 状态](../../services/research-workbench/docs/s1-progress.md)。
-最终普通生产构建及性能预算通过：入口 JavaScript 4,822,687 bytes，总 JavaScript 27,846,337 bytes，
+该首版普通生产构建及性能预算通过：入口 JavaScript 4,822,687 bytes，总 JavaScript 27,846,337 bytes，
 开发钩子计数 0，DOCX 内核仍按需加载；既有大 chunk 和原生 debug unwind 警告保留。
 未运行新的真实模型、全仓前端／Rust 测试、Windows、其他语言或 Word/WPS 视觉等价验收，未更新正式安装版。
 

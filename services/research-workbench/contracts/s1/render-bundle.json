@@ -14,6 +14,7 @@
   ],
   "derived_render": {
     "evidence_kind": "derived_pdf",
+    "report_version": "libreoffice-headless-1.1.0",
     "scope": "derived_render",
     "renderer": "explicit LibreOffice executable in headless mode",
     "inputs": [
@@ -22,6 +23,7 @@
       "reason"
     ],
     "profile_policy": "The service selects its own var/libreoffice-profile parent below the Workbench library and creates a private temporary profile for every render. HTTP callers cannot select a profile path.",
+    "font_policy": "The native application supplies its existing font-cache roots through OLEAFLY_FONT_DIRS at service launch. Each render copies current TTF/OTF bytes into its private profile/user/fonts directory, deduplicates by SHA-256 and verifies available source receipts. HTTP callers cannot select font directories. font_cache_sha256 is SHA-256 of the sorted unique font-byte SHA-256 values joined with newlines; the empty set hashes the empty string. A derived-renders response reports the current cache identity while each render record retains the identity actually supplied to that render.",
     "listing": {
       "route": "GET /api/derived-renders",
       "query_fields": [
@@ -31,6 +33,7 @@
       "response_fields": [
         "project_id",
         "baseline_id",
+        "font_cache_sha256",
         "derived_renders"
       ],
       "record_fields": [
@@ -99,7 +102,10 @@
       "started_at",
       "completed_at",
       "duration_ms",
-      "process_return_code"
+      "process_return_code",
+      "supplied_fonts",
+      "font_cache_sha256",
+      "pdf_font_names"
     ],
     "artifact_fields": [
       "role",
@@ -167,6 +173,8 @@
     "Historical page registration does not run Word/WPS or re-attest a historical renderer process.",
     "The derived renderer accepts only the explicitly selected LibreOffice capability; it does not silently fall back to WPS, Word or another engine.",
     "LibreOffice availability and executable identity do not establish Word, WPS, publisher or visual fidelity.",
+    "supplied_fonts identifies bytes supplied to the private profile; pdf_font_names identifies actual PDF font names. Neither establishes that the PDF embedded the same complete font bytes or the same version selected by the live editor.",
+    "A historical derived render may omit font_cache_sha256. Such a record remains readable and must not be treated as matching the current font-cache identity.",
     "Derived PDF rendering does not create or infer page mappings.",
     "Hashes identify captured bytes; they do not prove PNG raster provenance or visual correctness.",
     "Reviewer labels preserve operator-supplied provenance without authenticating a person.",

@@ -19,6 +19,7 @@ const python = process.env.OLEAFLY_WORKBENCH_PYTHON ?? resolve("services/researc
 const liveTask = Boolean(process.env.OLEAFLY_DOCX_LIVE_URL);
 const attributionRecovery = process.env.OLEAFLY_DOCX_ATTRIBUTION_RECOVERY === "1";
 const fontLayout = process.env.OLEAFLY_DOCX_FONT_LAYOUT === "1";
+const fontPackages = fontLayout ? process.env.OLEAFLY_FONT_SOURCE_EVIDENCE : undefined;
 if ([liveTask, attributionRecovery, fontLayout].filter(Boolean).length > 1) throw new Error("Choose one isolated DOCX acceptance mode.");
 const liveUpstream = liveTask ? new URL(process.env.OLEAFLY_DOCX_LIVE_URL) : undefined;
 if (liveUpstream && (liveUpstream.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(liveUpstream.hostname)
@@ -274,6 +275,19 @@ try {
   await writeFile(join(lock, "owner"), `${process.pid}\n`);
   await mkdir(data);
   await writeFile(join(data, "config.json"), JSON.stringify({ ui_locale: "en", checkpoints_enabled: false }));
+  if (fontPackages) {
+    const catalog = JSON.parse(await readFile(resolve("src-tauri/resources/font-packs.json"), "utf8"));
+    const packages = [...new Map(catalog.filter(pack => pack.package).map(pack => [pack.package.id, pack.package])).values()];
+    const cache = join(data, "assets", "font-packages");
+    await mkdir(cache, { recursive: true });
+    for (const pack of packages) {
+      const original = join(resolve(fontPackages), pack.name);
+      const bytes = await readFile(original);
+      if (bytes.length !== pack.size || sha256(bytes) !== pack.sha256) throw new Error(`Retained font package differs from the catalog: ${pack.name}`);
+      await cp(original, join(cache, `${pack.sha256}-${pack.name}`), { errorOnExist: true, force: false });
+    }
+    await writeFile(join(run, "font-package-seed.json"), JSON.stringify({ source: resolve(fontPackages), packages, scope: "Verified complete official packages seeded in the isolated archive cache; extracted fonts remain absent. This run tests native package reuse and extraction, not a new network download." }, null, 2));
+  }
   if (liveTask) environment.OLEAFLY_DOCX_LIVE_URL = await startLiveRelay();
   for (const [index, original] of webStores.entries()) {
     const entry = { original, backup: join(run, "webkit-before", String(index)), after: join(run, "webkit-after", String(index)), existed: await exists(original), backedUp: false, restored: false };

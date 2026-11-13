@@ -199,6 +199,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const alive = useRef(true);
   const [fontMeasurement, setFontMeasurement] = useState<FontMeasurementState>({ measurer: "fixed", resolving: true });
   const [fontStatus, setFontStatus] = useState<DocxFontStatus>({ probed: false, missing: [], aliases: [] });
+  const [fontRevision, setFontRevision] = useState(0);
   const createFontResolver = () => createDocxFontResolver({
     onError: (cause) => { if (alive.current) setError(`${text.fontError}: ${String(cause)}`); },
     onStatus: (value) => { if (alive.current) setFontStatus(value); },
@@ -207,7 +208,10 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const fonts = useFonts(localFontResolver);
   async function refreshFonts() {
     const editor = editorInstance.current;
-    if (editor) await editor.setFonts(createFontResolver());
+    if (editor) {
+      await editor.setFonts(createFontResolver());
+      if (alive.current) setFontRevision((value) => value + 1);
+    }
   }
   const busySave = useRef(false);
   const discardingRef = useRef(false);
@@ -833,7 +837,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
               {suggestion.phase === "applied" && <p className="flex items-center gap-1"><Undo2 className="size-3" />{text.undoHelp}</p>}
             </section>}
             <p className="text-[11px] text-muted-foreground">{text.previewHelp}</p>
-            <DocxRenderPanel projectId={project.project_id} baselineId={baselineId} dirty={dirty} />
+            <DocxRenderPanel projectId={project.project_id} baselineId={baselineId} dirty={dirty} fontRevision={fontRevision} />
           </aside>
         </div>
       </DialogContent>

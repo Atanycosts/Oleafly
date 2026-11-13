@@ -5,7 +5,13 @@ import type { JournalWorld } from "@/lib/journal-workbench";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 
 const mocks = vi.hoisted(() => ({ exact: vi.fn(), load: vi.fn(), install: vi.fn(), catalog: {
-  status: "ready", packs: [] as { id: string; families: string[]; installed: boolean }[],
+  status: "ready", packs: [] as {
+    id: string;
+    families: string[];
+    installed: boolean;
+    description?: string;
+    license?: { spdx: string; author: string; url: string } | null;
+  }[],
 } }));
 vi.mock("@/lib/docx-fonts", () => ({ hasExactDocxFont: mocks.exact }));
 vi.mock("@/store/font-packs", () => ({ useFontPacksStore: { getState: () => ({ ...mocks.catalog, load: mocks.load, install: mocks.install }) } }));
@@ -56,6 +62,36 @@ it("reports no source when the catalog contains only a different family", async 
   expect(mocks.install).not.toHaveBeenCalled();
 });
 
+it("matches a localized catalog family and does not install it when the cached face is available", async () => {
+  const description = "Exact SimSun from the Microsoft Office font package.";
+  mocks.catalog.packs = [{ id: "microsoft-simsun", families: ["SimSun", "宋体"], installed: false, description }];
+  mocks.exact.mockResolvedValue(true);
+  render(<DocxFontsPanel ready world={world("confirmed", "宋体")} status={{ probed: true, missing: [], aliases: [] }} onRefresh={vi.fn()} />);
+  await waitFor(() => expect(screen.getByTestId("docx-font-acquisition")).toHaveAttribute("data-state", "available"));
+  expect(mocks.install).not.toHaveBeenCalled();
+  expect(screen.getByTestId("docx-journal-font")).toHaveTextContent(description);
+});
+
+it("shows loaded face identity and the matching catalog description and license", async () => {
+  const hash = "a".repeat(64);
+  const description = "Exact SimSun from the Microsoft Office font package.";
+  const licenseUrl = "https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/office_preview.yml";
+  mocks.catalog.packs = [{
+    id: "microsoft-simsun",
+    families: ["SimSun", "宋体"],
+    installed: true,
+    description,
+    license: { spdx: "LicenseRef-Microsoft-OfficeMac", author: "Microsoft Corporation", url: licenseUrl },
+  }];
+  mocks.exact.mockResolvedValue(true);
+  render(<DocxFontsPanel ready world={world("confirmed", "SimSun")} status={{ probed: true, missing: [], aliases: [],
+    loaded: [{ family: "SimSun", version: "Version 5.04i", sha256: hash }] }} onRefresh={vi.fn()} />);
+  await waitFor(() => expect(screen.getByTestId("docx-font-acquisition")).toHaveAttribute("data-state", "available"));
+  expect(screen.getByTestId("docx-font-versions")).toHaveTextContent(`SimSun · Version 5.04i · SHA-256 ${hash}`);
+  expect(screen.getByTestId("docx-journal-font")).toHaveTextContent(description);
+  expect(screen.getByRole("link", { name: "LicenseRef-Microsoft-OfficeMac" })).toHaveAttribute("href", licenseUrl);
+});
+
 it("does not claim availability after a failed download", async () => {
   mocks.catalog.packs = [{ id: "exact", families: ["Exact Serif"], installed: false }];
   mocks.install.mockResolvedValue(false);
@@ -65,11 +101,11 @@ it("does not claim availability after a failed download", async () => {
   expect(refresh).not.toHaveBeenCalled();
 });
 
-it("does not equate an installed pack with an available exact font", async () => {
+it("rechecks and repairs an installed pack when the exact face is unavailable", async () => {
   mocks.catalog.packs = [{ id: "exact", families: ["Exact Serif"], installed: true }];
   render(<DocxFontsPanel ready world={world()} status={status} onRefresh={vi.fn(async () => {})} />);
   await waitFor(() => expect(screen.getByTestId("docx-font-acquisition")).toHaveAttribute("data-state", "stillMissing"));
-  expect(mocks.install).not.toHaveBeenCalled();
+  expect(mocks.install).toHaveBeenCalledExactlyOnceWith("exact");
 });
 
 it("refreshes manually installed fonts without a journal rule", async () => {

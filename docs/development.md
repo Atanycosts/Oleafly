@@ -161,11 +161,25 @@ through the existing world/review/version contract. The DOCX panel automatically
 an exact catalog family through the existing font-pack service and refreshes fonts with
 public `setFonts()` without reopening the document. A missing catalog source, failed
 download or unreadable face remains visible. Font availability does not establish
-manuscript compliance. Application caches are not automatically supplied to the independent
-LibreOffice process. Native download/font/round-trip acceptance uses the isolated runner
+manuscript compliance. Oleafly passes the application font-cache roots to Workbench,
+which copies current TTF/OTF bytes into each conversion's private `profile/user/fonts` directory.
+An editor font refresh also regenerates the saved PDF; explicit PDF refresh forces conversion,
+while an ordinary reopen recovers the latest compatible retained render. Native download/font/round-trip acceptance uses the isolated runner
 in [E2E](../e2e/README.md#native-docx-fonts-and-layout). Do not install substitute fonts
 as an acceptance prerequisite. Existing Noto installations remain valid when that exact
 family is requested.
+The exact Microsoft SimSun, SimHei and KaiTi sources reuse the Fontist-pinned Office for Mac
+15.11.1 package. DengXian uses Microsoft's standalone East Asian package. Package extraction
+requires `7zz` or `7z` and `tar`; on this Mac use `brew install sevenzip` and the existing tar.
+The application checks for 7-Zip before downloading a package. These are local setup prerequisites,
+not bundled tools. The shared Office archive is approximately 737 MB and remains cached for
+other faces and projects. Interrupted downloads currently restart from the beginning.
+For optional static PDF inspection use Homebrew Poppler (`brew install poppler`).
+Downloaded archives and extracted faces are SHA-256 checked; package fonts also verify actual
+family, PostScript name, weight, style and recorded version. This verifies the catalog source,
+without adding a version requirement to a journal rule that only names a family. Source receipts
+and the editor show actual versions/hashes. The render record distinguishes supplied cache bytes
+from actual PDF font names; same-family versions selected by system and LibreOffice may differ.
 DOCX work maintains new UI keys in the Chinese and English catalogs. Complete
 other-language coverage and validation are outside this round's scope. The current
 verified DOCX browser flow is macOS-only; Windows native validation is out of scope
@@ -552,12 +566,11 @@ Local delegated development follows one controller and at most two responsibilit
 chats, with four active agents globally including the controller and delegation
 depth at most two. Give each assignment its goal, necessary inputs, owned files,
 acceptance criteria and prohibited actions. Keep concurrent writes disjoint.
-Complex implementation and review use the Xiaobai `gpt/gpt-6.1-sol` endpoint at
-`high`, with `xhigh` or `max` for difficult architecture decisions. Mechanical
-changes and routine verification use `auto/deepseek-v4.1-flash` at `low`; this
-endpoint does not advertise `none`. `auto/glm-5.3-flash` at `low` may be used
-for bounded extraction and review tasks. `dwai/gpt-6.1-sol` and WorkBuddy remain
-available when assigned. Do not use Doubao or Trae for this project.
+The Sol controller handles complex implementation and final review at `high`,
+with `xhigh` or `max` for difficult architecture decisions. Current subagent
+assignments use `auto/deepseek-v4.1-flash` at `low`; this endpoint does not
+advertise `none`. Keep each delegated task bounded by its owned files and
+acceptance criteria. Do not use Doubao or Trae for this project.
 These are development delegation settings,
 not the application's model catalog or the user's task runtime defaults.
 

@@ -15,7 +15,7 @@ from zipfile import ZipFile
 import pymupdf
 import pytest
 
-from research_file_workbench.common.hashing import sha256_file
+from research_file_workbench.common.hashing import sha256_file, sha256_text
 from research_file_workbench.journals.store import WorldStoreError
 from research_file_workbench.projects.models import BaselineConflictError
 from research_file_workbench.projects.render_service import register_render_bytes
@@ -259,7 +259,7 @@ def test_source_page_preview_serves_pdf_and_refuses_invalid_targets(running_serv
 def test_http_user_flow_uses_display_name_and_actual_filename(running_server):
     _, session = _request(running_server, "GET", "/api/session")
     token = session["token"]
-    assert session["contract_version"] == "journal-http-1.9.0"
+    assert session["contract_version"] == "journal-http-1.10.0"
     assert len(session["asset_version"]) == 64
     status, world = _request(running_server, "POST", "/api/worlds", _world_payload(), token)
     assert status == 200
@@ -753,6 +753,12 @@ def test_http_libreoffice_render_registers_pdf_after_explicit_baseline(
     executable = tmp_path / "soffice"
     executable.write_bytes(b"fake LibreOffice")
     executable.chmod(0o755)
+    font_root = tmp_path / "font-cache"
+    font_root.mkdir()
+    font = font_root / "Controlled-Regular.ttf"
+    font.write_bytes(b"controlled-font-cache-bytes")
+    font_identity = sha256_text(sha256_file(font))
+    running_server.service.font_dirs = (font_root,)
 
     def runner(command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
         if command[1:] == ["--version"]:
@@ -782,6 +788,7 @@ def test_http_libreoffice_render_registers_pdf_after_explicit_baseline(
     assert status == 200, rendered
     assert rendered["manifest"]["evidence_kind"] == "derived_pdf"
     assert rendered["manifest"]["mapping"] is None
+    assert rendered["manifest"]["render_record"]["font_cache_sha256"] == font_identity
     assert (
         Path(rendered["manifest"]["render_record"]["libreoffice_profile"]).parent
         == running_server.service.root / "var" / "libreoffice-profile"
@@ -796,8 +803,19 @@ def test_http_libreoffice_render_registers_pdf_after_explicit_baseline(
     assert listed == {
         "project_id": project["project_id"],
         "baseline_id": project["baseline_id"],
+        "font_cache_sha256": font_identity,
         "derived_renders": [rendered],
     }
+    font.write_bytes(b"replacement-font-cache-bytes")
+    status, listed_after_change = _request(
+        running_server,
+        "GET",
+        f"/api/derived-renders?project_id={project['project_id']}"
+        f"&baseline_id={project['baseline_id']}",
+    )
+    assert status == 200
+    assert listed_after_change["font_cache_sha256"] != font_identity
+    assert listed_after_change["derived_renders"] == [rendered]
     status, content_type, body = _binary_request(
         running_server,
         f"/api/render?project_id={project['project_id']}"

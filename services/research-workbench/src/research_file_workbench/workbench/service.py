@@ -48,16 +48,19 @@ class ManuscriptUpdateRefused(ValueError):
 class WorkbenchService:
     """Coordinate owned library data while keeping original client files read-only."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, font_dirs: tuple[Path, ...] = ()) -> None:
         self.store = WorldStore(root)
         self.store.validate_library()
         self.root = root.resolve()
+        self.font_dirs = font_dirs
 
     @classmethod
-    def create(cls, root: Path, *, protected_roots: tuple[Path, ...] = ()) -> "WorkbenchService":
+    def create(
+        cls, root: Path, *, protected_roots: tuple[Path, ...] = (), font_dirs: tuple[Path, ...] = ()
+    ) -> "WorkbenchService":
         """Initialize explicitly selected storage outside protected author workspaces."""
         WorldStore.create(root, protected_roots=protected_roots)
-        return cls(root)
+        return cls(root, font_dirs=font_dirs)
 
     def import_world(
         self,
@@ -297,10 +300,13 @@ class WorkbenchService:
             actor_id="local-operator",
             confirmation_reason=f"Rendered from the {surface} surface: {reason}",
             surface=surface,
+            font_dirs=self.font_dirs,
         )
 
     def derived_renders(self, project_id: str, baseline_id: str) -> JsonObject:
         """List derived PDF registrations for one explicit retained baseline."""
+        from research_file_workbench.projects.render_service import font_cache_identity
+
         path = self.project_root(project_id)
         if not path.is_dir():
             raise ValueError("论文不在当前工作台库中。")
@@ -309,6 +315,7 @@ class WorkbenchService:
         return {
             "project_id": project_id,
             "baseline_id": baseline_id,
+            "font_cache_sha256": font_cache_identity(self.font_dirs),
             "derived_renders": project.list_derived_renders(baseline_id),
         }
 

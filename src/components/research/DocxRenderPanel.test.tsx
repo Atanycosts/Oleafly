@@ -12,18 +12,23 @@ vi.mock("@/lib/tauri", () => ({ pickOpenPaths: vi.fn() }));
 import { DocxRenderPanel } from "./DocxRenderPanel";
 
 const text = en.docx.render;
-const record = (baseline = "baseline-1"): DocxRender => ({
-  bundle_id: `render-${baseline}`, baseline_id: baseline, registered_at: "2026-11-11T00:00:00Z",
+const record = (baseline = "baseline-1", bundleId = `render-${baseline}`): DocxRender => ({
+  bundle_id: bundleId, baseline_id: baseline, registered_at: "2026-11-11T00:00:00Z",
   manifest: {
     source_sha256: "source", pdf_sha256: "pdf", page_count: 3,
-    render_record: { renderer_engine: "LibreOffice", renderer_version: "26.8", renderer_path: "/opt/soffice" },
+    render_record: {
+      report_version: "libreoffice-headless-1.1.0",
+      renderer_engine: "LibreOffice",
+      renderer_version: "26.8",
+      renderer_path: "/opt/soffice",
+    },
   },
 });
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = (baseline = "baseline-1", dirty = false) => <QueryClientProvider client={client}><DocxRenderPanel projectId="paper" baselineId={baseline} dirty={dirty} /></QueryClientProvider>;
+  const view = (baseline = "baseline-1", dirty = false, fontRevision = 0) => <QueryClientProvider client={client}><DocxRenderPanel projectId="paper" baselineId={baseline} dirty={dirty} fontRevision={fontRevision} /></QueryClientProvider>;
   const rendered = render(view());
-  return { ...rendered, update: (baseline: string, dirty: boolean) => rendered.rerender(view(baseline, dirty)) };
+  return { ...rendered, update: (baseline: string, dirty: boolean, fontRevision = 0) => rendered.rerender(view(baseline, dirty, fontRevision)) };
 }
 beforeEach(() => {
   vi.resetAllMocks();
@@ -38,12 +43,25 @@ describe("saved DOCX render panel", () => {
     let finish!: (result: DocxRender) => void;
     mocks.ensure.mockReturnValueOnce(new Promise<DocxRender>((resolve) => { finish = resolve; }));
     panel.update("baseline-2", false);
-    await waitFor(() => expect(mocks.ensure).toHaveBeenCalledWith("paper", "baseline-2", "/opt/soffice"));
+    await waitFor(() => expect(mocks.ensure).toHaveBeenCalledWith("paper", "baseline-2", "/opt/soffice", false));
     expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.stale);
     await act(async () => finish(record("baseline-2")));
     await waitFor(() => expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.current));
     panel.update("baseline-2", true);
     expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.stale);
+  });
+  it("forces a replacement render when the font revision changes", async () => {
+    const panel = mount();
+    await waitFor(() => expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.current));
+    let finish!: (result: DocxRender) => void;
+    mocks.ensure.mockReturnValueOnce(new Promise<DocxRender>((resolve) => { finish = resolve; }));
+
+    panel.update("baseline-1", false, 1);
+
+    await waitFor(() => expect(mocks.ensure).toHaveBeenCalledWith("paper", "baseline-1", "/opt/soffice", true));
+    expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.stale);
+    await act(async () => finish(record("baseline-1", "render-after-font-refresh")));
+    await waitFor(() => expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.current));
   });
   it("retains the old preview after failure and retries the explicit new version", async () => {
     const panel = mount();
@@ -51,11 +69,13 @@ describe("saved DOCX render panel", () => {
     mocks.ensure.mockRejectedValueOnce(new Error("Conversion failed"));
     panel.update("baseline-2", false);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Conversion failed"));
+    expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.stale);
     fireEvent.click(screen.getByRole("button", { name: text.open }));
     await waitFor(() => expect(screen.getByTestId("render-pdf")).toHaveTextContent("render-baseline-1"));
     expect(mocks.pdf).toHaveBeenCalledWith("paper", record());
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("button", { name: text.refresh }));
+    await waitFor(() => expect(mocks.ensure).toHaveBeenLastCalledWith("paper", "baseline-2", "/opt/soffice", true));
     await waitFor(() => expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.current));
   });
   it("reports missing capability without starting a conversion", async () => {

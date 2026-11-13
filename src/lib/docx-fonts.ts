@@ -12,6 +12,7 @@ interface SystemFontFace {
   faceIndex: number;
   sha256: string;
   contentBase64: string;
+  version?: string | null;
 }
 
 interface SystemFontResolution {
@@ -28,6 +29,7 @@ export interface DocxFontStatus {
   probed: boolean;
   missing: FontFaceRequest[];
   aliases: DocxFontAlias[];
+  loaded?: { family: string; version: string | null; sha256: string }[];
 }
 
 export const docxFontFaceKey = (face: FontFaceRequest) => JSON.stringify([face.family.trim().toLowerCase(), face.weight, face.style]);
@@ -48,6 +50,7 @@ export function createDocxFontResolver(options: {
 }) {
   const missing = new Map<string, FontFaceRequest>();
   const aliases = new Map<string, DocxFontAlias>();
+  const loaded = new Map<string, { family: string; version: string | null; sha256: string }>();
   return defineFontResolver(async (request) => {
     try {
       const covered = new Set(request.resolvedFaces?.map(docxFontFaceKey));
@@ -73,6 +76,7 @@ export function createDocxFontResolver(options: {
         if (!exactAxes(face) || face.style === "oblique") continue;
         const actual: FontFaceRequest = { family: face.family, weight: face.weight, style: face.style };
         const key = docxFontFaceKey(actual);
+        loaded.set(key, { family: face.family, version: face.version ?? null, sha256: face.sha256 });
         if (!covered.has(key) && !sources.has(key)) {
           sources.set(key, { request: actual, id: `system:${face.postscriptName}:${face.sha256}:${face.faceIndex}`,
             bytes: base64ToBytes(face.contentBase64), hash: `sha256:${face.sha256}`, faceIndex: face.faceIndex });
@@ -84,7 +88,7 @@ export function createDocxFontResolver(options: {
           aliases.set(requestedKey, { from: face.requested.family, to: actual.family });
         }
       }
-      options.onStatus({ probed: true, missing: [...missing.values()], aliases: [...new Map([...aliases.values()].map((item) => [item.from, item])).values()] });
+      options.onStatus({ probed: true, missing: [...missing.values()], aliases: [...new Map([...aliases.values()].map((item) => [item.from, item])).values()], loaded: [...loaded.values()] });
       return { sources: [...sources.values()], substitutions };
     } catch (cause) {
       if (!request.signal?.aborted) options.onError(cause);
