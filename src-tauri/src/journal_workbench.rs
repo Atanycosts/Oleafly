@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 #[derive(Default)]
 pub struct JournalWorkbenchState(
-    Mutex<Option<Session>>,
+    pub(crate) Mutex<Option<Session>>,
     std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 );
 
@@ -101,7 +101,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         .json()
         .await
         .map_err(|error| error.to_string())?;
-    if session["contract_version"] != "journal-http-1.7.0" {
+    if session["contract_version"] != "journal-http-1.8.0" {
         return Err("This Workbench HTTP version is not supported.".into());
     }
     let token = session["token"]
@@ -117,7 +117,20 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
     })
 }
 
-async fn request(session: &Session, path: &str, payload: Option<Value>) -> Result<Value, String> {
+pub(crate) async fn request(
+    session: &Session,
+    path: &str,
+    payload: Option<Value>,
+) -> Result<Value, String> {
+    let (status, body) = request_response(session, path, payload).await?;
+    response_body(status, body)
+}
+
+async fn request_response(
+    session: &Session,
+    path: &str,
+    payload: Option<Value>,
+) -> Result<(reqwest::StatusCode, Value), String> {
     if !path.starts_with("/api/") {
         return Err("Choose a Workbench API operation.".into());
     }
@@ -139,6 +152,10 @@ async fn request(session: &Session, path: &str, payload: Option<Value>) -> Resul
         .map_err(|error| format!("Workbench request failed: {error}"))?;
     let status = response.status();
     let body: Value = response.json().await.map_err(|error| error.to_string())?;
+    Ok((status, body))
+}
+
+fn response_body(status: reqwest::StatusCode, body: Value) -> Result<Value, String> {
     if !status.is_success() {
         return Err(body["error"]
             .as_str()
@@ -146,6 +163,93 @@ async fn request(session: &Session, path: &str, payload: Option<Value>) -> Resul
             .to_string());
     }
     Ok(body)
+}
+
+pub(crate) async fn request_docx_baseline(
+    session: &Session,
+    payload: Value,
+) -> Result<Value, String> {
+    let request_id = payload["request_id"]
+        .as_str()
+        .ok_or("The fixed DOCX save needs a request ID.")?
+        .to_string();
+    let (status, body) = request_response(session, "/api/baseline", Some(payload)).await?;
+    docx_baseline_response(status, body, &request_id)
+}
+
+fn docx_baseline_response(
+    status: reqwest::StatusCode,
+    body: Value,
+    request_id: &str,
+) -> Result<Value, String> {
+    if matches!(
+        status,
+        reqwest::StatusCode::CONFLICT | reqwest::StatusCode::BAD_REQUEST
+    ) && body["request_id"] == request_id
+        && matches!(
+            body["status"].as_str(),
+            Some("BASELINE_CONFLICT" | "REJECTED" | "IDEMPOTENCY_CONFLICT")
+        )
+        && body.get("result_baseline_id") == Some(&Value::Null)
+    {
+        return Ok(body);
+    }
+    response_body(status, body)
+}
+
+#[cfg(test)]
+mod docx_baseline_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn known_refusals_preserve_structured_http_error_bodies_only_for_matching_request() {
+        for (http, status) in [
+            (reqwest::StatusCode::CONFLICT, "BASELINE_CONFLICT"),
+            (reqwest::StatusCode::BAD_REQUEST, "REJECTED"),
+            (reqwest::StatusCode::BAD_REQUEST, "IDEMPOTENCY_CONFLICT"),
+        ] {
+            let body = json!({"request_id":"fixed", "status":status,
+                "result_baseline_id":null, "error":"retained refusal"});
+            assert_eq!(
+                docx_baseline_response(http, body.clone(), "fixed").unwrap(),
+                body
+            );
+            assert!(response_body(http, body.clone()).is_err());
+            assert!(docx_baseline_response(http, body.clone(), "other").is_err());
+            let mut unknown = body.clone();
+            unknown["status"] = "UNKNOWN".into();
+            assert!(docx_baseline_response(http, unknown, "fixed").is_err());
+            let mut applied = body.clone();
+            applied["result_baseline_id"] = "baseline".into();
+            assert!(docx_baseline_response(http, applied, "fixed").is_err());
+            let mut missing = body.clone();
+            missing
+                .as_object_mut()
+                .unwrap()
+                .remove("result_baseline_id");
+            assert!(docx_baseline_response(http, missing, "fixed").is_err());
+            assert!(docx_baseline_response(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                body,
+                "fixed"
+            )
+            .is_err());
+        }
+        // Older or unstructured service errors cannot confirm a retained refusal.
+        assert!(docx_baseline_response(
+            reqwest::StatusCode::CONFLICT,
+            json!({"error":"论文版本已变化，请重新读取当前状态。"}),
+            "fixed"
+        )
+        .is_err());
+        assert!(docx_baseline_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            json!({"error":"REJECTED：该文档未能读取，请检查源文件。"}),
+            "fixed"
+        )
+        .is_err());
+    }
 }
 
 pub(crate) async fn retained_docx_source_hash(

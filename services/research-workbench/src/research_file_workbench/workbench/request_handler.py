@@ -131,10 +131,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json_error(HTTPStatus.FORBIDDEN, str(exc))
         except BindingConflictError as exc:
             self._json_error(HTTPStatus.CONFLICT, str(exc))
-        except BaselineConflictError:
-            self._json_error(HTTPStatus.CONFLICT, "论文版本已变化，请重新读取当前状态。")
+        except BaselineConflictError as exc:
+            self._json_error(
+                HTTPStatus.CONFLICT, "论文版本已变化，请重新读取当前状态。", result=exc.result
+            )
         except ManuscriptUpdateRefused as exc:
-            self._json_error(HTTPStatus.BAD_REQUEST, str(exc))
+            self._json_error(HTTPStatus.BAD_REQUEST, str(exc), result=exc.result)
         except RendererUnavailableError as exc:
             self._json_error(HTTPStatus.SERVICE_UNAVAILABLE, str(exc), code=exc.code)
         except RenderConversionError as exc:
@@ -433,8 +435,11 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         *,
         allow: str | None = None,
         code: str | None = None,
+        result: dict[str, object] | None = None,
     ) -> None:
         payload: dict[str, object] = {"error": message}
+        if result is not None:
+            payload.update(result)
         if code is not None:
             payload["code"] = code
         self._send(

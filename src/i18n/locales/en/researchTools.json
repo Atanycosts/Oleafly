@@ -2523,6 +2523,7 @@
         "applied": "Applied",
         "rejected": "Rejected",
         "withdrawn": "Withdrawn",
+        "recovered": "Recovered accepted changes",
         "saved": "Saved manuscript version"
       }
     },
@@ -2545,6 +2546,8 @@
       "discard": "Discard recovery copy",
       "discardTitle": "Discard this recovery copy?",
       "discardHelp": "This removes the selected unsaved checkpoint. Retained manuscript versions are kept. Download the recovery copy first if you want to keep its changes.",
+      "pendingSaveHelp": "Use Restore working copy to confirm this save and its task records before discarding. You can still download this copy.",
+      "saveRefused": "This save was not committed. The working copy and fixed request are kept. You can download or discard this copy.",
       "refresh": "Refresh recovery list",
       "empty": "No recoverable DOCX copies remain.",
       "unreadable": "Some checkpoints could not be read. Their files have been kept. Other copies can still be restored.",
@@ -2554,6 +2557,7 @@
       "sourceChanged": "The retained source does not match this checkpoint. Download the recovery copy from the recovery list.",
       "restored": "Restored unsaved changes from {{time}} (previous session r{{revision}}). This editing session has its own revision and undo history.",
       "conflict": "The manuscript has a newer saved version. This recovery copy stays on its original baseline. Download it to compare or import. Saving over the newer version is disabled.",
+      "savedHistorical": "The save and task records are confirmed, but the manuscript now has a newer version. This recovery copy is kept for download and comparison.",
       "clearFailed": "The manuscript was saved, but its recovery checkpoint could not be cleared. It remains available in the recovery list."
     },
     "download": "Download DOCX copy",
@@ -2580,6 +2584,7 @@
     "withdrawnHelp": "The target changed or generation was stopped. Your current text is preserved. Request a new suggestion to continue.",
     "undoHelp": "Use the document toolbar to undo this edit.",
     "previewHelp": "Pages reflect the active editing session. Packaged substitute fonts may differ from Word or WPS. Saved versions have a separate LibreOffice PDF preview.",
+    "pendingSaveHelp": "Confirm this save before discarding later edits. Return to the workspace and choose Retry this save. You can still download a DOCX copy.",
     "closeTitle": "Close this working copy?",
     "closeHelp": "This copy has unsaved changes or an unfinished operation. Save the manuscript version or download a DOCX copy before closing.",
     "keepEditing": "Keep editing",

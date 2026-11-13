@@ -19,14 +19,21 @@ import {
 } from "@/lib/docx-agent-host";
 import {
   clearDocxRecovery,
+  discardDocxRecovery,
   docxContentSha256,
+  commitDocxRecovery,
+  recoveryPendingSave,
+  resumeDocxRecovery,
   listDocxRecovery,
   readDocxRecovery,
   saveDocxRecovery,
   type DocxRecoveryMetadata,
   type DocxRecoverySnapshot,
+  type DocxRecoveryTaskState,
+  type DocxRecoveryApplied,
+  type DocxRecoveryReceipt,
 } from "@/lib/docx-recovery";
-import { loadDocxSource, prepareDocxSave, saveDocxBaseline, type DocxSave, type DocxSource } from "@/lib/docx-workbench";
+import { loadDocxSource, prepareDocxSave, type DocxSave, type DocxSource } from "@/lib/docx-workbench";
 import { journalRequest, type JournalCheck, type JournalProject, type JournalState, type JournalWorld } from "@/lib/journal-workbench";
 import { registerProjectLeaveGuard } from "@/lib/project-leave-guards";
 import { registerEditorMutationOwner } from "@/lib/editor-mutation-lease";
@@ -142,11 +149,19 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const suggestionRef = useRef<Suggestion | null>(null);
   const [taskReady, setTaskReady] = useState(false);
-  const appliedTasks = useRef(new Map<string, Suggestion>());
-  const saveProposals = useRef<string[]>([]);
+  const appliedTasks = useRef(new Map<string, DocxRecoveryApplied & { suggestion?: Suggestion }>());
+  const [recoveredActivities, setRecoveredActivities] = useState<DocxActivity[]>([]);
+  const recoveredProposalIds = useRef(new Set<string>());
+  const recoveredBytes = useRef(initialRecovery.current?.bytes);
+  const [resuming, setResuming] = useState(false);
+  const recoveryReady = useRef(!initialRecovery.current?.taskState);
+  const retryResume = useRef<() => void>(() => {});
+  const pendingCheckpoint = useRef<(DocxRecoverySnapshot & { taskState: DocxRecoveryTaskState }) | null>(null);
+  const checkpointCurrent = useRef<() => Promise<void>>(async () => {});
+  const receiptCheckpoint = useRef<{ metadata: DocxRecoveryMetadata; document: DocxDocumentIdentity } | null>(null);
   const fixedSavePending = useRef(false);
-  const deferredWithdrawals = useRef<{ proposalId: string; document: DocxDocumentIdentity; outcome: DocxProposalOutcome }[]>([]);
-  const receipts = useRef<{ proposalId: string; document: DocxDocumentIdentity; outcome: DocxProposalOutcome }[]>([]);
+  const deferredWithdrawals = useRef<DocxRecoveryReceipt[]>([]);
+  const receipts = useRef<DocxRecoveryReceipt[]>([]);
   const [pendingReceipts, setPendingReceipts] = useState(0);
   const receiptWriting = useRef(false);
   const receiptFailure = useRef<string | null>(null);
@@ -157,6 +172,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const [savedRevision, setSavedRevision] = useState(recovery ? -1 : 0);
   const [saving, setSaving] = useState(false);
   const [pendingSave, setPendingSave] = useState<DocxSave | null>(null);
+  const [refusedSave, setRefusedSave] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [check, setCheck] = useState<JournalCheck | null>(null);
   const [closePrompt, setClosePrompt] = useState(false);
@@ -180,6 +196,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const dirty = revision !== savedRevision;
   const recoveryConflict = !!recovery && project.baseline_id !== recovery.baseBaselineId;
   const streaming = suggestion?.phase === "streaming";
+  const saveRefused = !!pendingCheckpoint.current && refusedSave === `${pendingCheckpoint.current.recoveryKey}:${pendingCheckpoint.current.contentSha256}`;
 
   useEffect(() => {
     const unfinished = dirty || streaming || suggestion?.phase === "reviewing" || !!pendingSave || saving || checking || pendingReceipts > 0;
@@ -208,7 +225,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   }, [appProjectId, dirty, streaming, pendingSave, saving, checking, text.closeHelp, onClose, pendingReceipts, suggestion?.phase]);
 
   const flushReceipts = useCallback(async () => {
-    if (receiptWriting.current) return;
+    if (receiptWriting.current || fixedSavePending.current) return;
     receiptWriting.current = true;
     try {
       while (receipts.current.length) {
@@ -216,8 +233,25 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         await settleDocxTaskActivity(appProjectId, initialProject.current.project_id,
           receipt.proposalId, receipt.document, receipt.outcome);
         receipts.current.shift();
-        if (alive.current) setPendingReceipts(receipts.current.length);
+        if (alive.current && receipts.current.length) setPendingReceipts(receipts.current.length);
       }
+      const checkpoint = receiptCheckpoint.current;
+      if (checkpoint) {
+        const cleanup = recoveryQueueRef.current.then(async () => {
+          const current = identityRef.current();
+          if (receiptCheckpoint.current !== checkpoint || fixedSavePending.current || busySave.current ||
+            receipts.current.length || deferredWithdrawals.current.length || appliedTasks.current.size ||
+            current.sessionId !== checkpoint.document.sessionId ||
+            current.sessionRevision !== checkpoint.document.sessionRevision ||
+            current.sessionRevision !== current.savedRevision ||
+            current.baselineId !== checkpoint.document.baselineId ||
+            current.sourceSha256 !== checkpoint.document.sourceSha256) return;
+          if (await discardDocxRecovery(checkpoint.metadata)) receiptCheckpoint.current = null;
+        });
+        recoveryQueueRef.current = cleanup.then(() => undefined, () => undefined);
+        await cleanup;
+      }
+      if (alive.current) setPendingReceipts(receipts.current.length);
       if (alive.current && receiptFailure.current) {
         const previousError = receiptFailure.current;
         setError((current) => current === previousError ? null : current);
@@ -236,7 +270,9 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     }
     receipts.current.push({ proposalId, document, outcome });
     setPendingReceipts(receipts.current.length);
-    if (!busySave.current) void flushReceipts();
+    if (!busySave.current && !fixedSavePending.current) {
+      void checkpointCurrent.current().then(flushReceipts).catch((cause) => { if (alive.current) setError(String(cause)); });
+    }
   }, [flushReceipts]);
 
   const updateSuggestion = useCallback((next: Suggestion | null) => {
@@ -264,46 +300,56 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     };
   }, [appProjectId, sessionId]);
 
+  const taskStateAtExport = useCallback((): DocxRecoveryTaskState => ({
+    document: { ...identityRef.current() },
+    applied: [...appliedTasks.current.values()].map(({ proposalId, document }) => ({ proposalId, document: { ...document } })),
+    receipts: receipts.current.map((receipt) => ({ ...receipt, document: { ...receipt.document } })),
+  }), []);
+
   const queueRecoveryWrite = useCallback((
-    source: DocxSource,
-    baseBaselineId: string,
-    exportRevision: number,
-    bytes: ArrayBuffer,
+    source: DocxSource, baseBaselineId: string, exportRevision: number, bytes: ArrayBuffer,
+    taskState: DocxRecoveryTaskState,
   ): Promise<DocxRecoveryMetadata> => {
-    const write = recoveryQueueRef.current.then(() =>
-      saveDocxRecovery({
-        appProjectId,
-        workbenchProjectId: source.project_id,
-        baseBaselineId,
-        sourceSha256: source.source_sha256,
-      }, exportRevision, bytes),
-    );
+    const write = recoveryQueueRef.current.then(() => saveDocxRecovery({
+      appProjectId, workbenchProjectId: source.project_id, baseBaselineId,
+      sourceSha256: source.source_sha256,
+    }, exportRevision, bytes, taskState));
     recoveryQueueRef.current = write.then(() => undefined, () => undefined);
     return write;
   }, [appProjectId]);
 
-  useEffect(() => {
-    if (!source || !dirty || saving || checking || discarding) return;
+  const checkpoint = useCallback(() => {
     const epoch = recoveryEpoch.current;
+    const write = recoveryQueueRef.current.then(async () => {
+      const editor = editorRef.current;
+      const session = sessionRef.current;
+      if (!editor || !session || !source || !alive.current || discardingRef.current ||
+        fixedSavePending.current || !recoveryReady.current || epoch !== recoveryEpoch.current) return;
+      const exporting = recoveredBytes.current
+        ? Promise.resolve(new Uint8Array(recoveredBytes.current).buffer) : editor.save();
+      const exportRevision = session.revision();
+      const taskState = taskStateAtExport();
+      const bytes = await exporting;
+      if (bytes && alive.current && !discardingRef.current && epoch === recoveryEpoch.current) {
+        const metadata = await saveDocxRecovery({ appProjectId, workbenchProjectId: taskState.document.workbenchProjectId,
+          baseBaselineId: taskState.document.baselineId, sourceSha256: taskState.document.sourceSha256 }, exportRevision, bytes, taskState);
+        receiptCheckpoint.current = { metadata, document: taskState.document };
+      }
+    });
+    recoveryQueueRef.current = write.then(() => undefined, () => undefined);
+    return write;
+  }, [appProjectId, source, taskStateAtExport]);
+  checkpointCurrent.current = checkpoint;
+
+  useEffect(() => {
+    if (!source || !dirty || saving || checking || discarding || pendingSave || resuming) return;
+    const scheduledRevision = revision;
     const timer = window.setTimeout(() => {
-      // Queue the export itself, so a slow old export cannot overwrite a newer
-      // checkpoint or recreate an old baseline key after a successful save.
-      const write = recoveryQueueRef.current.then(async () => {
-        const editor = editorRef.current;
-        const session = sessionRef.current;
-        if (!editor || !session || !alive.current || discardingRef.current || epoch !== recoveryEpoch.current || session.revision() !== revision) return;
-        const exporting = editor.save();
-        const exportRevision = session.revision();
-        const bytes = await exporting;
-        if (bytes && alive.current && !discardingRef.current && epoch === recoveryEpoch.current) {
-          await saveDocxRecovery({ appProjectId, workbenchProjectId: source.project_id, baseBaselineId: baselineId, sourceSha256: source.source_sha256 }, exportRevision, bytes);
-        }
-      });
-      recoveryQueueRef.current = write.then(() => undefined, () => undefined);
-      void write.catch((cause) => { if (alive.current) setError(String(cause)); });
+      if (sessionRef.current?.revision() !== scheduledRevision) return;
+      void checkpoint().catch((cause) => { if (alive.current) setError(String(cause)); });
     }, RECOVERY_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [appProjectId, baselineId, checking, dirty, discarding, revision, saving, source]);
+  }, [checking, checkpoint, dirty, discarding, pendingSave, resuming, revision, saving, source]);
 
   const ready = useCallback((editor: DocxEditorInstance) => {
     unsubscribeRef.current?.();
@@ -341,8 +387,41 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         if (alive.current) updateSuggestion({ target, proposed, phase: "applied" });
       },
     });
-    setTaskReady(true);
+    const snapshot = initialRecovery.current;
+    if (snapshot?.taskState) {
+      const initialRevision = session.revision();
+      const resumeDocument = { ...identityRef.current() };
+      retryResume.current = () => {
+      setResuming(true);
+      void resumeDocxRecovery(snapshot, resumeDocument).then((activities) => {
+        if (!alive.current) return;
+        setRecoveredActivities(activities);
+        for (const activity of activities) {
+          if (!activity.proposalId) continue;
+          if (session.revision() === initialRevision) {
+            appliedTasks.current.set(activity.proposalId, { proposalId: activity.proposalId, document: activity.document });
+            recoveredProposalIds.current.add(activity.proposalId);
+          } else recordOutcome(activity.proposalId, { kind: "withdrawn" });
+        }
+        recoveryReady.current = true;
+        setTaskReady(true);
+      }).catch((cause) => { if (alive.current) setError(String(cause)); })
+        .finally(() => { if (alive.current) setResuming(false); });
+      };
+      retryResume.current();
+    } else setTaskReady(true);
+    let previousRevision = session.revision();
     const refresh = () => {
+      const changed = session.revision() !== previousRevision;
+      previousRevision = session.revision();
+      if (changed) {
+        recoveredBytes.current = undefined;
+        for (const id of recoveredProposalIds.current) {
+          appliedTasks.current.delete(id);
+          recordOutcome(id, { kind: "withdrawn" });
+        }
+        recoveredProposalIds.current.clear();
+      }
       const current = session.listParagraphs();
       setParagraphs(current);
       setRevision(session.revision());
@@ -364,7 +443,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         updateSuggestion({ ...pending, phase: "withdrawn" });
       }
       for (const [id, applied] of appliedTasks.current) {
-        if (!session.isSuggestionApplied(applied.target, applied.proposed)) {
+        if (applied.suggestion && !session.isSuggestionApplied(applied.suggestion.target, applied.suggestion.proposed)) {
           appliedTasks.current.delete(id);
           recordOutcome(id, { kind: "withdrawn" });
         }
@@ -447,7 +526,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       setError(result.message);
       if (pending.activity) recordOutcome(pending.activity.id, { kind: "withdrawn" });
     } else if (pending.activity) {
-      appliedTasks.current.set(pending.activity.id, pending);
+      appliedTasks.current.set(pending.activity.id, { proposalId: pending.activity.id, document: identityRef.current(), suggestion: pending });
       recordOutcome(pending.activity.id, { kind: "applied" });
     }
   }
@@ -464,7 +543,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   async function save() {
     const session = sessionRef.current;
     const editor = editorRef.current;
-    if (!source || !session || !editor || busySave.current || checking || recoveryConflict) return;
+    if (!source || !session || !editor || busySave.current || checking || recoveryConflict || resuming || !taskReady || saveRefused) return;
     busySave.current = true;
     recoveryEpoch.current += 1;
     setSaving(true);
@@ -472,50 +551,70 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     try {
       await recoveryQueueRef.current;
       let request = pendingSave;
-      if (!request) {
-        const exporting = editor.save();
+      let snapshot = pendingCheckpoint.current;
+      if (!request || !snapshot) {
+        const exporting = recoveredBytes.current
+          ? Promise.resolve(new Uint8Array(recoveredBytes.current).buffer) : editor.save();
         const exportRevision = session.revision();
-        saveProposals.current = [...appliedTasks.current].filter(([, value]) =>
-          session.isSuggestionApplied(value.target, value.proposed)).map(([id]) => id);
+        const taskState = taskStateAtExport();
         const bytes = await exporting;
         if (!bytes) throw new Error(text.notReady);
-        await queueRecoveryWrite(source, baselineId, exportRevision, bytes);
         request = prepareDocxSave({ ...source, baseline_id: baselineId }, exportRevision, bytes);
+        taskState.pendingSave = recoveryPendingSave(request);
+        snapshot = { appProjectId, workbenchProjectId: source.project_id, baseBaselineId: baselineId,
+          sourceSha256: source.source_sha256, revision: exportRevision, bytes: new Uint8Array(bytes), taskState,
+          recoveryKey: "", contentSha256: "", updatedAt: "" };
+        pendingCheckpoint.current = snapshot;
         fixedSavePending.current = true;
         setPendingSave(request);
       }
-      const result = await saveDocxBaseline(request);
-      if (!alive.current) return;
       const committedBytes = base64ToBytes(request.content_base64);
-      const sourceSha256 = await docxContentSha256(committedBytes);
+      if (!snapshot.recoveryKey) {
+        try {
+          const metadata = await queueRecoveryWrite(source, request.expected_baseline_id, request.revision,
+            new Uint8Array(committedBytes).buffer, snapshot.taskState);
+          snapshot = { ...snapshot, ...metadata };
+          pendingCheckpoint.current = snapshot;
+        } catch (cause) {
+          // Native save writes the checkpoint before replaying its task receipts.
+          // A receipt failure can leave the fixed request durably stored already.
+          const stored = await readDocxRecovery(snapshot);
+          if (stored?.taskState?.pendingSave?.requestId === request.request_id &&
+            stored.contentSha256 === await docxContentSha256(committedBytes)) {
+            pendingCheckpoint.current = { ...stored, taskState: stored.taskState };
+          }
+          throw cause;
+        }
+      }
+      const result = await commitDocxRecovery(snapshot);
+      if (!alive.current) return;
+      if ("refusal" in result) {
+        setRefusedSave(`${snapshot.recoveryKey}:${snapshot.contentSha256}`);
+        setError(`${text.recovery.saveRefused} (${result.refusal})`);
+        return;
+      }
+      const sourceSha256 = result.sourceSha256;
       setBaselineId(result.baselineId);
       setSource({ ...source, baseline_id: result.baselineId, source_sha256: sourceSha256 });
       setSavedRevision(result.revision);
-      updateDocxAgentSession(sessionId, {
-        baselineId: result.baselineId,
-        savedRevision: result.revision,
-        sourceSha256,
-      });
-      const savedDocument: DocxDocumentIdentity = { sessionId, appProjectId, workbenchProjectId: source.project_id,
-        baselineId: result.baselineId, sourceSha256, sessionRevision: request.revision, savedRevision: result.revision };
-      for (const proposalId of saveProposals.current) {
-        recordOutcome(proposalId, { kind: "saved", requestId: request.request_id, contentSha256: sourceSha256 }, savedDocument);
-      }
-      saveProposals.current = [];
+      identityRef.current = () => ({ sessionId, appProjectId, workbenchProjectId: source.project_id,
+        baselineId: result.baselineId, sourceSha256, sessionRevision: session.revision(), savedRevision: result.revision });
+      updateDocxAgentSession(sessionId, { baselineId: result.baselineId, savedRevision: result.revision, sourceSha256 });
+      // Native commit settles the frozen receipts and appends Saved before answering.
+      const frozenReceipts = snapshot.taskState?.receipts ?? [];
+      receipts.current = receipts.current.filter((receipt) => !frozenReceipts.some((frozen) =>
+        frozen.proposalId === receipt.proposalId && frozen.outcome.kind === receipt.outcome.kind &&
+        frozen.document.sessionId === receipt.document.sessionId && frozen.document.sessionRevision === receipt.document.sessionRevision));
+      pendingCheckpoint.current = null;
       fixedSavePending.current = false;
       setPendingSave(null);
+      recoveredBytes.current = undefined;
       setCheck(null);
       try {
-        const cleared = await clearDocxRecovery({
-          appProjectId,
-          workbenchProjectId: source.project_id,
-          baseBaselineId: request.expected_baseline_id,
-          sourceSha256: source.source_sha256,
-        }, committedBytes);
+        const cleared = await clearDocxRecovery({ appProjectId, workbenchProjectId: source.project_id,
+          baseBaselineId: request.expected_baseline_id, sourceSha256: source.source_sha256 }, committedBytes);
         if (!cleared) throw new Error(text.recovery.clearFailed);
-      } catch (cause) {
-        if (alive.current) setError(String(cause));
-      }
+      } catch (cause) { if (alive.current) setError(String(cause)); }
       try { await onSaved(); }
       catch (cause) { if (alive.current) setError(`${text.refreshFailed}: ${String(cause)}`); }
     } catch (cause) {
@@ -527,7 +626,9 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         deferredWithdrawals.current = [];
       }
       if (alive.current) { setSaving(false); setPendingReceipts(receipts.current.length); }
-      void flushReceipts();
+      if (!fixedSavePending.current && receipts.current.length) {
+        void checkpointCurrent.current().then(flushReceipts).catch((cause) => { if (alive.current) setError(String(cause)); });
+      }
     }
   }
 
@@ -564,14 +665,14 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   }
 
   function close() {
-    if (saving || checking || pendingReceipts > 0) return;
+    if (saving || checking || (pendingReceipts > 0 && !fixedSavePending.current)) return;
     if (!source && !sessionRef.current) { onClose(); return; }
     if (dirty || streaming || suggestionRef.current?.phase === "reviewing" || pendingSave) setClosePrompt(true);
     else onClose();
   }
 
   async function discard() {
-    if (!source || discardingRef.current) return;
+    if (!source || discardingRef.current || (fixedSavePending.current && !saveRefused)) return;
     discardingRef.current = true;
     recoveryEpoch.current += 1;
     setDiscarding(true);
@@ -595,15 +696,16 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
           receipt.document, receipt.outcome);
         deferredWithdrawals.current.shift();
       }
+      const current = identityRef.current();
       const identity = {
         appProjectId,
         workbenchProjectId: source.project_id,
-        baseBaselineId: baselineId,
-        sourceSha256: source.source_sha256,
+        baseBaselineId: current.baselineId,
+        sourceSha256: current.sourceSha256,
       };
-      const snapshot = await readDocxRecovery(identity);
+      const snapshot = saveRefused ? pendingCheckpoint.current : await readDocxRecovery(identity);
       if (snapshot) {
-        const cleared = await clearDocxRecovery(identity, snapshot.bytes);
+        const cleared = saveRefused ? await discardDocxRecovery(snapshot) : await clearDocxRecovery(identity, snapshot.bytes);
         if (!cleared) throw new Error("The DOCX recovery snapshot changed before it could be discarded.");
       }
       onClose();
@@ -640,7 +742,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
             handoffToAssistant(`Read the active Oleafly DOCX working copy using read_docx_document with session_id ${sessionId}.\n${instruction.trim() || "Review the current manuscript and explain useful next changes."}\nUse the live DOCX tools for paragraph edits and respect the current approval policy. The saved Workbench baseline can be older than the live session.`, { autoSend: false });
             onMinimize();
           }}>{text.askAgent}</Button>}
-          <Button size="sm" variant="outline" disabled={!source || saving || checking || recoveryConflict || (!dirty && !pendingSave)} onClick={() => void save()}>
+          <Button size="sm" variant="outline" disabled={!source || saving || checking || recoveryConflict || resuming || !taskReady || saveRefused || (!dirty && !pendingSave)} onClick={() => void save()}>
             {saving ? <LoaderCircle className="mr-1 size-3.5 animate-spin" /> : <Save className="mr-1 size-3.5" />}
             {pendingSave ? text.retrySave : text.save}
           </Button>
@@ -665,10 +767,14 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
             ><SessionBridge onReady={ready} /><SuggestionOverlay suggestion={suggestion} accept={accept} stop={stop} /></DocxEditor> : <p className="p-6 text-sm">{text.loading}</p>}
           </div>
           <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto" aria-label={text.work}>
+            {recovery?.taskState && !taskReady && <Button size="sm" variant="outline" disabled={resuming} onClick={() => retryResume.current()}>{text.recovery.restore}</Button>}
+            {recoveredActivities.map((activity) => <div key={activity.id} className="rounded border p-2 text-xs" data-testid="docx-recovered-source">
+              <p>{text.taskActivity.events.recovered}</p><DocxActivitySource activity={activity} />
+            </div>)}
             <DocxTaskActivity projectId={appProjectId} workbenchProjectId={project.project_id} sessionId={taskReady ? sessionId : null} />
             {pendingReceipts > 0 && <div className="space-y-1 text-xs" role="status">
               <p>{text.taskActivity.pending}</p>
-              <Button size="sm" variant="outline" onClick={() => void flushReceipts()}>{text.taskActivity.retry}</Button>
+              <Button size="sm" variant="outline" onClick={() => void checkpointCurrent.current().then(flushReceipts).catch((cause) => setError(String(cause)))}>{text.taskActivity.retry}</Button>
             </div>}
             <label className="space-y-1 text-xs">
               <span className="font-medium">{text.target}</span>
@@ -705,8 +811,8 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       </DialogContent>
     </Dialog>
     <Dialog open={closePrompt} onOpenChange={setClosePrompt}>
-      <DialogContent><DialogHeader><DialogTitle>{text.closeTitle}</DialogTitle><DialogDescription>{text.closeHelp}</DialogDescription></DialogHeader>
-        <div className="flex justify-end gap-2"><Button variant="outline" disabled={discarding} onClick={() => setClosePrompt(false)}>{text.keepEditing}</Button><Button variant="destructive" disabled={discarding || pendingReceipts > 0} onClick={() => void discard()}>{text.discard}</Button></div>
+      <DialogContent><DialogHeader><DialogTitle>{text.closeTitle}</DialogTitle><DialogDescription>{pendingSave && !saveRefused ? text.pendingSaveHelp : text.closeHelp}</DialogDescription></DialogHeader>
+        <div className="flex justify-end gap-2"><Button variant="outline" disabled={discarding} onClick={() => setClosePrompt(false)}>{text.keepEditing}</Button><Button variant="destructive" disabled={discarding || (!saveRefused && (!!pendingSave || pendingReceipts > 0))} onClick={() => void discard()}>{text.discard}</Button></div>
       </DialogContent>
     </Dialog>
   </>;

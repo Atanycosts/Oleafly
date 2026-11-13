@@ -24,6 +24,7 @@ export type DocxRuntimeEvent =
   | { kind: "proposed"; target: DocxActivityTarget; proposed: string };
 export type DocxProposalOutcome =
   | { kind: "applied" | "rejected" | "withdrawn" }
+  | { kind: "recovered"; recoveryKey: string; contentSha256: string; fromDocument: DocxDocumentIdentity }
   | { kind: "saved"; requestId: string; contentSha256: string };
 export interface DocxActivity {
   id: string; origin: DocxActivityOrigin; document: DocxDocumentIdentity;

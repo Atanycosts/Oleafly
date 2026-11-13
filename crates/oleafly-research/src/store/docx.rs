@@ -365,10 +365,7 @@ impl TaskStore {
             .map_err(store_error)?;
         let proposal = proposal_on(&tx, project_id, workbench_project_id, proposal_id)?
             .ok_or("The DOCX proposal is not retained in this project and manuscript.")?;
-        if document.session_id != proposal.document.session_id
-            || document.workbench_project_id != proposal.document.workbench_project_id
-            || document.session_revision < proposal.document.session_revision
-        {
+        if document.workbench_project_id != proposal.document.workbench_project_id {
             return Err("The DOCX result does not belong to this proposal's working copy.".into());
         }
         let previous = tx.prepare(&format!(
@@ -376,17 +373,43 @@ impl TaskStore {
              AND e.task_id=?1 AND json_extract(e.event_json,'$.observation.activity.proposalId')=?2 ORDER BY e.rowid"
         )).and_then(|mut statement| statement.query_map(params![proposal.origin.task_id, proposal_id], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()).map_err(store_error)?
             .into_iter().map(|encoded| decode_activity(&encoded)).collect::<Result<Vec<_>, _>>()?;
+        let recovered = previous.iter().find(|receipt| {
+            receipt.document.session_id == document.session_id
+                && matches!(
+                    receipt.event,
+                    DocxActivityEvent::Outcome {
+                        outcome: DocxProposalOutcome::Recovered { .. }
+                    }
+                )
+        });
+        if !matches!(outcome, DocxProposalOutcome::Recovered { .. }) {
+            let base = recovered.map_or(&proposal.document, |receipt| &receipt.document);
+            if document.session_id != base.session_id
+                || document.session_revision < base.session_revision
+            {
+                return Err("The DOCX result has no matching session or recovery edge.".into());
+            }
+            if recovered.is_some()
+                && matches!(
+                    outcome,
+                    DocxProposalOutcome::Applied | DocxProposalOutcome::Rejected
+                )
+            {
+                return Err("A recovered proposal cannot be applied again.".into());
+            }
+        }
         // Exact duplicate acknowledgements are idempotent. A conflicting result
         // cannot use the same applied/rejected/withdrawn kind or save request ID.
         for receipt in &previous {
             if let DocxActivityEvent::Outcome { outcome: existing } = &receipt.event {
-                let same_key = match (existing, &outcome) {
-                    (
-                        DocxProposalOutcome::Saved { request_id: a, .. },
-                        DocxProposalOutcome::Saved { request_id: b, .. },
-                    ) => a == b,
-                    _ => std::mem::discriminant(existing) == std::mem::discriminant(&outcome),
-                };
+                let same_key = receipt.document.session_id == document.session_id
+                    && match (existing, &outcome) {
+                        (
+                            DocxProposalOutcome::Saved { request_id: a, .. },
+                            DocxProposalOutcome::Saved { request_id: b, .. },
+                        ) => a == b,
+                        _ => std::mem::discriminant(existing) == std::mem::discriminant(&outcome),
+                    };
                 if same_key {
                     if existing == &outcome && receipt.document == document {
                         return Ok(receipt.clone());
@@ -399,22 +422,85 @@ impl TaskStore {
             }
         }
         let applied = previous.iter().find(|receipt| {
-            matches!(
-                receipt.event,
-                DocxActivityEvent::Outcome {
-                    outcome: DocxProposalOutcome::Applied
-                }
-            )
+            receipt.document.session_id == document.session_id
+                && matches!(
+                    receipt.event,
+                    DocxActivityEvent::Outcome {
+                        outcome: DocxProposalOutcome::Applied
+                            | DocxProposalOutcome::Recovered { .. }
+                    }
+                )
         });
         let closed = previous.iter().any(|receipt| {
-            matches!(
-                receipt.event,
-                DocxActivityEvent::Outcome {
-                    outcome: DocxProposalOutcome::Rejected | DocxProposalOutcome::Withdrawn
-                }
-            )
+            receipt.document.session_id == document.session_id
+                && matches!(
+                    receipt.event,
+                    DocxActivityEvent::Outcome {
+                        outcome: DocxProposalOutcome::Rejected | DocxProposalOutcome::Withdrawn
+                    }
+                )
         });
         match &outcome {
+            DocxProposalOutcome::Recovered {
+                recovery_key,
+                content_sha256,
+                from_document,
+            } => {
+                sha256(recovery_key)?;
+                sha256(content_sha256)?;
+                document_scope(project_id, from_document)?;
+                if document.session_id == from_document.session_id
+                    || document.saved_revision != -1
+                    || document.baseline_id != from_document.baseline_id
+                    || document.source_sha256 != from_document.source_sha256
+                    || from_document.workbench_project_id != workbench_project_id
+                {
+                    return Err(
+                        "The recovered DOCX must use a new unsaved session on the retained source."
+                            .into(),
+                    );
+                }
+                let source = previous
+                    .iter()
+                    .find(|receipt| {
+                        receipt.document.session_id == from_document.session_id
+                            && receipt.document.session_revision <= from_document.session_revision
+                            && matches!(
+                                receipt.event,
+                                DocxActivityEvent::Outcome {
+                                    outcome: DocxProposalOutcome::Applied
+                                        | DocxProposalOutcome::Recovered { .. }
+                                }
+                            )
+                    })
+                    .ok_or(
+                        "The recovery has no retained applied source in its original session.",
+                    )?;
+                let withdrawn = previous.iter().any(|receipt| {
+                    receipt.document.session_id == from_document.session_id
+                        && receipt.document.session_revision <= from_document.session_revision
+                        && matches!(
+                            receipt.event,
+                            DocxActivityEvent::Outcome {
+                                outcome: DocxProposalOutcome::Withdrawn
+                                    | DocxProposalOutcome::Rejected
+                            }
+                        )
+                });
+                if withdrawn
+                    || (matches!(
+                        source.event,
+                        DocxActivityEvent::Outcome {
+                            outcome: DocxProposalOutcome::Recovered { .. }
+                        }
+                    ) && source.document.session_revision != from_document.session_revision)
+                {
+                    return Err(
+                        "The recovered source was edited or withdrawn before this checkpoint."
+                            .into(),
+                    );
+                }
+            }
             DocxProposalOutcome::Saved {
                 request_id,
                 content_sha256,
@@ -424,6 +510,10 @@ impl TaskStore {
                 let applied =
                     applied.ok_or("Only an applied DOCX proposal can have a save receipt.")?;
                 if closed
+                    || recovered.is_some_and(|receipt| matches!(&receipt.event,
+                        DocxActivityEvent::Outcome { outcome: DocxProposalOutcome::Recovered { content_sha256: hash, .. } } if hash != content_sha256))
+                    || (recovered.is_some()
+                        && document.saved_revision != applied.document.session_revision as i64)
                     || document.saved_revision < applied.document.session_revision as i64
                     || document.source_sha256 != *content_sha256
                     || document.baseline_id == applied.document.baseline_id
@@ -476,6 +566,52 @@ impl TaskStore {
         insert_on(&tx, &activity)?;
         tx.commit().map_err(store_error)?;
         Ok(activity)
+    }
+
+    /// Validate a checkpoint's exact accepted/recovered source without inferring
+    /// authorship from text. The native recovery store owns the byte association.
+    pub fn docx_applied_source(
+        &self,
+        project_id: &str,
+        workbench_project_id: &str,
+        proposal_id: &str,
+        document: &DocxDocumentIdentity,
+    ) -> Result<DocxActivity, String> {
+        document_scope(project_id, document)?;
+        let connection = self.open()?;
+        let proposal = proposal_on(&connection, project_id, workbench_project_id, proposal_id)?
+            .ok_or("The checkpoint proposal is not retained in this manuscript.")?;
+        let rows = connection
+            .prepare(&format!(
+            "SELECT e.event_json FROM research_task_events e WHERE {DOCX_FILTER} AND e.task_id=?1
+             AND json_extract(e.event_json,'$.observation.activity.proposalId')=?2 ORDER BY e.rowid"
+        ))
+            .and_then(|mut query| {
+                query
+                    .query_map(params![proposal.origin.task_id, proposal_id], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(store_error)?;
+        for encoded in rows {
+            let receipt = decode_activity(&encoded)?;
+            if receipt.document == *document
+                && matches!(
+                    receipt.event,
+                    DocxActivityEvent::Outcome {
+                        outcome: DocxProposalOutcome::Applied
+                            | DocxProposalOutcome::Recovered { .. }
+                    }
+                )
+            {
+                return Ok(receipt);
+            }
+        }
+        Err(
+            "The checkpoint source does not match an exact retained application or recovery."
+                .into(),
+        )
     }
 
     pub fn docx_proposal(
@@ -1317,6 +1453,100 @@ mod tests {
             .docx_task_activities("paper", &task.id, 0, 50)
             .unwrap();
         assert_eq!(history.activities.last().unwrap().activity, applied);
+    }
+
+    #[test]
+    fn docx_recovery_uses_explicit_session_edges_and_local_revisions() {
+        let (_directory, store, task) = running();
+        let proposed = propose(&store, &task);
+        let mut accepted = document();
+        accepted.session_revision = 6;
+        outcome(
+            &store,
+            &proposed,
+            accepted.clone(),
+            DocxProposalOutcome::Applied,
+        )
+        .unwrap();
+        let mut restored = document();
+        restored.session_id = "recovered-1".into();
+        restored.session_revision = 0;
+        restored.saved_revision = -1;
+        assert!(outcome(
+            &store,
+            &proposed,
+            restored.clone(),
+            DocxProposalOutcome::Withdrawn
+        )
+        .is_err());
+        let edge = DocxProposalOutcome::Recovered {
+            recovery_key: "d".repeat(64),
+            content_sha256: "e".repeat(64),
+            from_document: Box::new(accepted.clone()),
+        };
+        let recovered = outcome(&store, &proposed, restored.clone(), edge.clone()).unwrap();
+        assert_eq!(recovered.origin, proposed.origin);
+        assert_eq!(
+            outcome(&store, &proposed, restored.clone(), edge.clone()).unwrap(),
+            recovered
+        );
+        assert_eq!(
+            store
+                .docx_applied_source("paper", "manuscript", &proposed.id, &restored)
+                .unwrap(),
+            recovered
+        );
+        let mut another = restored.clone();
+        another.session_id = "recovered-2".into();
+        assert!(outcome(&store, &proposed, another, edge.clone()).is_ok());
+        let mut conflict = edge;
+        if let DocxProposalOutcome::Recovered { content_sha256, .. } = &mut conflict {
+            *content_sha256 = "f".repeat(64);
+        }
+        assert!(outcome(&store, &proposed, restored.clone(), conflict).is_err());
+        let mut saved = restored.clone();
+        saved.saved_revision = 0;
+        saved.baseline_id = "baseline-restored".into();
+        saved.source_sha256 = "e".repeat(64);
+        let save = DocxProposalOutcome::Saved {
+            request_id: "restored-save".into(),
+            content_sha256: "e".repeat(64),
+        };
+        assert!(outcome(&store, &proposed, saved.clone(), save.clone()).is_ok());
+        saved.session_revision = 1;
+        saved.saved_revision = 1;
+        assert!(outcome(
+            &store,
+            &proposed,
+            saved,
+            DocxProposalOutcome::Saved {
+                request_id: "edited-save".into(),
+                content_sha256: "e".repeat(64)
+            }
+        )
+        .is_err());
+        let mut edited = restored.clone();
+        edited.session_revision = 1;
+        outcome(
+            &store,
+            &proposed,
+            edited.clone(),
+            DocxProposalOutcome::Withdrawn,
+        )
+        .unwrap();
+        let mut third = restored;
+        third.session_id = "recovered-3".into();
+        assert!(outcome(
+            &store,
+            &proposed,
+            third,
+            DocxProposalOutcome::Recovered {
+                recovery_key: "a".repeat(64),
+                content_sha256: "b".repeat(64),
+                from_document: Box::new(edited),
+            }
+        )
+        .is_err());
     }
 
     #[test]

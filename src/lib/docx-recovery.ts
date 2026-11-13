@@ -1,5 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import { base64ToBytes, bytesToBase64 } from "@/lib/base64";
+import type { DocxActivity, DocxDocumentIdentity, DocxProposalOutcome } from "@/lib/docx-task-activity";
+import type { DocxSave } from "@/lib/docx-workbench";
+
+export interface DocxRecoveryApplied {
+  proposalId: string;
+  document: DocxDocumentIdentity;
+}
+
+export interface DocxRecoveryReceipt extends DocxRecoveryApplied {
+  outcome: DocxProposalOutcome;
+}
+
+export interface DocxRecoveryTaskState {
+  document: DocxDocumentIdentity;
+  applied: DocxRecoveryApplied[];
+  receipts: DocxRecoveryReceipt[];
+  pendingSave?: {
+    projectId: string; expectedBaselineId: string; filename: string;
+    reason: string; requestId: string; revision: number;
+  };
+}
+
+export function recoveryPendingSave(save: DocxSave): NonNullable<DocxRecoveryTaskState["pendingSave"]> {
+  return { projectId: save.project_id, expectedBaselineId: save.expected_baseline_id,
+    filename: save.filename, reason: save.reason, requestId: save.request_id, revision: save.revision };
+}
 
 export interface DocxRecoveryIdentity {
   appProjectId: string;
@@ -13,6 +39,7 @@ export interface DocxRecoveryMetadata extends DocxRecoveryIdentity {
   revision: number;
   updatedAt: string;
   contentSha256: string;
+  taskState?: DocxRecoveryTaskState;
 }
 
 export interface DocxRecoverySnapshot extends DocxRecoveryMetadata {
@@ -33,6 +60,7 @@ interface SaveRequest extends DocxRecoveryIdentity {
   revision: number;
   updatedAt: string;
   contentBase64: string;
+  taskState?: DocxRecoveryTaskState;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -63,6 +91,7 @@ export async function saveDocxRecovery(
   identity: DocxRecoveryIdentity,
   revision: number,
   bytes: ArrayBuffer,
+  taskState?: DocxRecoveryTaskState,
 ): Promise<DocxRecoveryMetadata> {
   const content = new Uint8Array(bytes);
   const request: SaveRequest = {
@@ -71,8 +100,27 @@ export async function saveDocxRecovery(
     revision,
     updatedAt: new Date().toISOString(),
     contentBase64: bytesToBase64(content),
+    ...(taskState ? { taskState } : {}),
   };
   return invoke<DocxRecoveryMetadata>("docx_recovery_save", { request });
+}
+
+export type DocxRecoveryRefusal = "BASELINE_CONFLICT" | "REJECTED" | "IDEMPOTENCY_CONFLICT";
+export type DocxRecoveryCommitResult =
+  | { baselineId: string; sourceSha256: string; revision: number }
+  | { refusal: DocxRecoveryRefusal };
+
+export function commitDocxRecovery(snapshot: Pick<DocxRecoveryMetadata, "recoveryKey" | "contentSha256">) {
+  return invoke<DocxRecoveryCommitResult>("docx_recovery_commit", {
+    request: { recoveryKey: snapshot.recoveryKey, contentSha256: snapshot.contentSha256 },
+  });
+}
+
+export function resumeDocxRecovery(snapshot: Pick<DocxRecoveryMetadata, "recoveryKey" | "contentSha256">,
+  document: DocxDocumentIdentity) {
+  return invoke<DocxActivity[]>("docx_recovery_resume", {
+    request: { recoveryKey: snapshot.recoveryKey, contentSha256: snapshot.contentSha256 }, document,
+  });
 }
 
 export async function readDocxRecovery(identity: DocxRecoveryIdentity): Promise<DocxRecoverySnapshot | null> {

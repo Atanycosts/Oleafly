@@ -1,6 +1,6 @@
 # S1 implementation and acceptance status
 
-Status date: 2026-11-12
+Status date: 2026-11-13
 
 This document records the Workbench-domain slice only. Current cross-system entry points are
 the [Oleafly integration guide](../../../docs/research-workbench-integration.md),
@@ -32,6 +32,24 @@ also passed 68 focused Phase 0, architecture and launcher tests. Actual historic
 Phase 0 validation still fails for the nine missing
 author inputs and fixed WPS environment. Earlier dated results below retain their
 original scope and paths.
+
+The 2026-11-13 fixed-save recovery increment preserves a manuscript update's exact
+persisted refusal result across the HTTP boundary. Baseline conflicts remain HTTP 409;
+rejected input and idempotency conflicts remain HTTP 400, with the existing error text
+and recorded request identity, digest, status and null result baseline. An idempotency
+conflict can reference another request's successful baseline, which is not a saved
+result for the submitted bytes. Ordinary read/binding conflicts keep their existing
+sanitized errors. The owning HTTP contract is now `journal-http-1.8.0`, synchronized
+with the browser and native application connection check. Application checkpoint
+and task-attribution behavior is owned by the linked Agent status and architecture.
+
+For this change, Ruff format (212 Python files), Ruff lint, mypy (118 source files)
+and the full Python suite passed (1050 passed, 33 existing platform skips, five
+PyMuPDF/SWIG warnings). Real HTTP regressions exercise all three persisted refusals
+and replay against the retained ledger. Phase 0 still exits 1 with
+`CONTRACT_INVALID` / `PHASE0_INCOMPLETE` for the missing registered source identities
+and pinned Windows WPS environment; those historical requirements and evidence were
+not rewritten. This does not block the separately scoped macOS DOCX workflow.
 
 Scope decision (2026-11-07): the operator excludes a complete journal submission
 workflow and comprehensive submission acceptance from the product scope. They are
@@ -65,7 +83,7 @@ this route automatically after a saved baseline. Focused fake-runner coverage ve
 conversion, PDF registration, listing, capability failure,
 unreadable output and HTTP routing. The derived bundle contract is
 `s1-render-bundle-1.2.0`; only the pre-existing page-bundle `1.1.0` remains readable as
-historical evidence. The HTTP contract is `journal-http-1.7.0`.
+historical evidence. The current HTTP contract is linked above.
 
 Current observation IDs still bind the exact source hash, reader method and locator. A synthetic
 ZIP-comment-only update retained all package parts and text while changing all 32 catalog IDs;

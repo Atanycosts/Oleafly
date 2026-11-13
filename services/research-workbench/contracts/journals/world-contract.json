@@ -4,7 +4,7 @@
     "world_schema": "journal-world-1.1.0",
     "analyzer": "journal-world-analyzer-1.4.0",
     "checker": "journal-geometry-checker-1.1.0",
-    "http": "journal-http-1.7.0"
+    "http": "journal-http-1.8.0"
   },
   "scope": "local_page_geometry_slice",
   "workflow": [
@@ -134,7 +134,7 @@
     "Disposition actions are note or defer and retain the original check verdict."
   ],
   "http": {
-    "contract_version": "journal-http-1.7.0",
+    "contract_version": "journal-http-1.8.0",
     "transport": "same_origin_json_on_ipv4_loopback_only",
     "session": {
       "route": "GET /api/session",
@@ -350,6 +350,7 @@
       {
         "method": "POST",
         "path": "/api/baseline",
+        "refusal_response": "Persisted BASELINE_CONFLICT returns HTTP 409; REJECTED and IDEMPOTENCY_CONFLICT return HTTP 400. Each preserves error plus the exact recorded request_id, request_digest, status and null result_baseline_id. An idempotency conflict may name a different original_result_baseline_id; it is not a saved result for the submitted digest. Unrecorded errors carry no confirmed refusal result.",
         "body_fields": [
           "project_id",
           "expected_baseline_id",

@@ -167,6 +167,18 @@ copy through the native save dialog. Discard requires confirmation and the selec
 hash. Recovery covers the latest completed checkpoint, with a fresh revision/undo history.
 The macOS [native recovery acceptance](../e2e/README.md#native-docx-crash-recovery)
 uses isolated app and WebKit data, actual process death, retained DOCX bytes and LibreOffice.
+Checkpoints also retain explicit task sources and a fixed pending save when present.
+Native commit replays the exact bytes and request before the frontend clears the copy;
+resume records a new session's explicit recovery edge. An unchanged recovered copy saves
+its original bytes. Its first subsequent edit withdraws recovered save attribution;
+undo or matching text does not reacquire it. A structured, persisted refusal permits explicit
+discard without a Saved receipt; transport, hash and receipt errors retain the fixed request.
+While that request is unresolved, later edits stay in memory and do not replace its checkpoint.
+The opt-in task-attribution recovery mode
+in the same runner exercises both acceptance-before-save death and a committed save
+whose response never reaches the frontend, plus a stale request's confirmed refusal and discard.
+The owning wire contract is
+[`docx_recovery.rs`](../src-tauri/src/docx_recovery.rs).
 
 ## Documentation and artifacts
 

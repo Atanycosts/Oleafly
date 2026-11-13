@@ -163,7 +163,7 @@ original and candidate. The transparent relay records model, effort, tool names,
 response status and usage, without retaining request bodies or credentials and
 without changing model responses. Credentials and upstream routing stay in the
 local provider. Evidence is kept under ignored `.private/docx-task-live/run-*`.
-With no `OLEAFLY_DOCX_LIVE_URL`, the runner retains its three-launch recovery flow.
+With no live or attribution flag, the runner retains its three-launch recovery flow.
 
 ### Native DOCX crash recovery
 
@@ -187,6 +187,27 @@ PDF, then restarts again to check confirmed discard. The author input is read-on
 and its hash is checked before and after. `OLEAFLY_LIBREOFFICE` may select an explicit
 `soffice` executable. Run English and Chinese manuscripts separately. The test hook
 selects the save path; this does not exercise manual interaction with the OS save dialog.
+
+To exercise task attribution across process death, add
+`OLEAFLY_DOCX_ATTRIBUTION_RECOVERY=1` to the same command. This runs
+`130-docx-task-recovery.spec.ts` through three isolated launches. A scripted
+provider reads an actual manuscript paragraph and proposes an explicit acceptance
+marker. The test accepts it through the UI, waits for the exact bytes and task
+sources to reach the native checkpoint, then kills the app. On restart it restores
+those bytes in a new session and saves through the UI. After native commit has
+really saved to Workbench and written the Saved receipt, the test withholds only
+the response to React and kills the app again. The final launch replays the fixed
+request and checks the same baseline, bytes, request and single Saved receipt,
+original task/member/work attribution, package preservation and LibreOffice PDF.
+It then freezes another pending request, advances the isolated baseline through
+Workbench, confirms the original request's persisted refusal through the recovery
+UI, downloads the exact checkpoint and explicitly discards it. This last check
+does not add a Saved receipt or change the newer baseline.
+The runner requires an actual SIGKILL at each launch boundary and retains its
+lifecycle and final outcome under ignored `.private/docx-task-recovery/run-*`.
+The model decisions in this mode are scripted; it adds fault-recovery evidence,
+not a new real-model editing assessment. Run the English and Chinese inputs
+separately. Live-model and attribution-recovery flags are mutually exclusive.
 
 Results and recovery material stay in ignored `.private/docx-recovery-native/run-*`.
 Normal exit and catchable failures restore the previous E2E WebKit storage. If the

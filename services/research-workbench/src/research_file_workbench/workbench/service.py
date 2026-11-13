@@ -40,6 +40,10 @@ from research_file_workbench.workbench.project_facade import (
 class ManuscriptUpdateRefused(ValueError):
     """Raised when a retained refusal record answers a manuscript update attempt."""
 
+    def __init__(self, message: str, *, result: JsonObject) -> None:
+        super().__init__(message)
+        self.result = result
+
 
 class WorkbenchService:
     """Coordinate owned library data while keeping original client files read-only."""
@@ -359,8 +363,8 @@ class WorkbenchService:
     ) -> JsonObject:
         """Retain an explicitly confirmed source update and leave old checks historical.
 
-        Retained refusal records answer as typed refusals, so every surface reports the
-        compare-and-swap, idempotency or unreadable-input reason instead of a status payload.
+        Retained refusal records answer as typed refusals with their exact saved result,
+        so callers can distinguish a confirmed refusal from an unknown transport outcome.
         """
         _surface(surface)
         if not reason.strip():
@@ -379,18 +383,22 @@ class WorkbenchService:
         if status == "BASELINE_CONFLICT":
             raise BaselineConflictError(
                 "BASELINE_CONFLICT：论文版本已变化，当前基线是 "
-                f"{result.get('previous_baseline_id')}，请刷新后重试。"
+                f"{result.get('previous_baseline_id')}，请刷新后重试。",
+                result=result,
             )
         if status == "IDEMPOTENCY_CONFLICT":
             raise ManuscriptUpdateRefused(
-                "IDEMPOTENCY_CONFLICT：同一 request_id 已用于不同内容，请改用新的请求标识。"
+                "IDEMPOTENCY_CONFLICT：同一 request_id 已用于不同内容，请改用新的请求标识。",
+                result=result,
             )
         if status == "REJECTED":
             detail = result.get("rejection_reason")
             if not isinstance(detail, str) or not detail:
                 detail = "该文档未能读取，请检查源文件。"
-            raise ManuscriptUpdateRefused(f"REJECTED：{detail}")
-        raise ManuscriptUpdateRefused(f"{status}：稿件更新未应用，请检查保留的请求记录。")
+            raise ManuscriptUpdateRefused(f"REJECTED：{detail}", result=result)
+        raise ManuscriptUpdateRefused(
+            f"{status}：稿件更新未应用，请检查保留的请求记录。", result=result
+        )
 
     def render_artifact(
         self,

@@ -17,6 +17,8 @@ const expectedHash = process.env.OLEAFLY_REAL_DOCX_SHA256;
 const renderer = process.env.OLEAFLY_LIBREOFFICE ?? "/Applications/LibreOffice.app/Contents/MacOS/soffice";
 const python = process.env.OLEAFLY_WORKBENCH_PYTHON ?? resolve("services/research-workbench/.venv/bin/python");
 const liveTask = Boolean(process.env.OLEAFLY_DOCX_LIVE_URL);
+const attributionRecovery = process.env.OLEAFLY_DOCX_ATTRIBUTION_RECOVERY === "1";
+if (liveTask && attributionRecovery) throw new Error("Choose live task acceptance or attribution recovery for one isolated run.");
 const liveUpstream = liveTask ? new URL(process.env.OLEAFLY_DOCX_LIVE_URL) : undefined;
 if (liveUpstream && (liveUpstream.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(liveUpstream.hostname)
     || liveUpstream.username || liveUpstream.password || liveUpstream.search || liveUpstream.hash)) {
@@ -43,7 +45,7 @@ const bundledIdentifier = execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print 
 if (bundledIdentifier !== identifier) throw new Error(`Refusing app identifier ${bundledIdentifier}. Build with src-tauri/tauri.e2e.conf.json.`);
 if (sha256(await readFile(author)) !== expectedHash) throw new Error("Author input SHA-256 does not match the supplied exact hash.");
 
-const parent = resolve(liveTask ? ".private/docx-task-live" : ".private/docx-recovery-native");
+const parent = resolve(liveTask ? ".private/docx-task-live" : attributionRecovery ? ".private/docx-task-recovery" : ".private/docx-recovery-native");
 await mkdir(parent, { recursive: true });
 const run = await mkdtemp(join(parent, "run-"));
 const data = join(run, "data");
@@ -142,8 +144,11 @@ async function record() {
   await writeFile(join(run, "runner.json"), JSON.stringify({ outcome, failure, author, expectedHash, binary, data, socket, lifecycle, webStorage: moves }, null, 2));
 }
 
-async function stopApp(signal) {
-  if (!app || app.exitCode !== null || app.signalCode !== null) return;
+async function stopApp(signal, required = false) {
+  if (!app || app.exitCode !== null || app.signalCode !== null) {
+    if (required) throw new Error(`The app exited before the required ${signal} fault injection.`);
+    return;
+  }
   const owned = app;
   const stopped = new Promise((accept) => owned.once("exit", (code, receivedSignal) => accept({ code, signal: receivedSignal })));
   // Workbench inherits stderr and exits when the app's owner pipe closes.
@@ -237,7 +242,7 @@ async function runStage(stage) {
   await startApp(stage);
   console.log(`docx-recovery: ${stage}, owned app PID ${app.pid}`);
   const log = createWriteStream(join(run, `${stage}-playwright.log`));
-  const specification = liveTask ? "e2e/tests/129-docx-task-live.spec.ts" : "e2e/tests/127-docx-recovery.spec.ts";
+  const specification = liveTask ? "e2e/tests/129-docx-task-live.spec.ts" : attributionRecovery ? "e2e/tests/130-docx-task-recovery.spec.ts" : "e2e/tests/127-docx-recovery.spec.ts";
   const filter = liveTask ? [] : ["--grep", `${stage} native`];
   playwright = spawn("pnpm", ["exec", "playwright", "test", "-c", "e2e/playwright.config.ts", specification, ...filter, "--retries=0", "--output", join(run, stage)], {
     cwd: repository, env: { ...environment, OLEAFLY_DOCX_RECOVERY_STAGE: stage }, stdio: ["ignore", "pipe", "pipe"],
@@ -253,7 +258,7 @@ async function runStage(stage) {
   log.end();
   playwright = undefined;
   if (code !== 0) throw new Error(`${stage} failed with Playwright exit ${code}.`);
-  await stopApp("SIGKILL");
+  await stopApp("SIGKILL", true);
   await record();
 }
 
@@ -276,7 +281,7 @@ try {
     if (entry.existed) { await move(original, entry.backup); entry.backedUp = true; await record(); }
   }
   console.log(`docx-recovery: retained acceptance data ${run}`);
-  for (const stage of liveTask ? ["live-task"] : ["prepare", "restore", "discard"]) await runStage(stage);
+  for (const stage of liveTask ? ["live-task"] : attributionRecovery ? ["prepare", "restore-save", "reconcile"] : ["prepare", "restore", "discard"]) await runStage(stage);
   if (liveTask && !wire.some(request => request.model === "gpt/gpt-6.1-sol" && request.reasoningEffort === "high" && request.status === 200 && request.finishedAt && /(^|\/)gpt-6\.1-sol$/.test(request.returnedModel ?? ""))) {
     throw new Error("The transparent relay did not verify a completed Sol/high request and a matching returned model label.");
   }

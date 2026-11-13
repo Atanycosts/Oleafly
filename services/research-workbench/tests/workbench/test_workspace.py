@@ -137,6 +137,47 @@ def test_baseline_update_is_idempotent_and_preserves_history(running_server):
     assert len(store.list_baselines()) == 2
 
 
+@pytest.mark.parametrize("refusal", ["BASELINE_CONFLICT", "IDEMPOTENCY_CONFLICT", "REJECTED"])
+def test_baseline_refusal_preserves_exact_request_result_over_http(running_server, refusal):
+    project = import_project(running_server)
+    token = running_server.session_token
+    submitted = {
+        "project_id": project["project_id"],
+        "expected_baseline_id": project["baseline_id"],
+        "filename": "revision.docx",
+        "reason": "Keep the confirmed source revision",
+        "request_id": "already-applied",
+        **upload(template_bytes()),
+    }
+    http, applied = _request(running_server, "POST", "/api/baseline", submitted, token)
+    assert http == 200 and applied["status"] == "APPLIED"
+    refused = {**submitted, "request_id": "confirmed-refusal"}
+    if refusal == "IDEMPOTENCY_CONFLICT":
+        refused.update(request_id=submitted["request_id"], **upload(b"different bytes"))
+    elif refusal == "REJECTED":
+        refused.update(expected_baseline_id=applied["result_baseline_id"], **upload(b"not a DOCX"))
+    for _attempt in range(2):
+        http, result = _request(running_server, "POST", "/api/baseline", refused, token)
+        assert http == (409 if refusal == "BASELINE_CONFLICT" else 400)
+        assert result["status"] == refusal
+        assert result["request_id"] == refused["request_id"]
+        assert len(result["request_digest"]) == 64
+        assert result["result_baseline_id"] is None
+        assert result["error"]
+        store = open_project(running_server.service.project_root(project["project_id"]))
+        retained = store.get_request("local-operator", refused["request_id"])
+        if refusal == "IDEMPOTENCY_CONFLICT":
+            assert result["original_result_baseline_id"] == applied["result_baseline_id"]
+            assert result["request_digest"] != retained["result"]["request_digest"]
+            assert result["request_digest"] == retained["conflict_attempts"][-1]["request_digest"]
+        else:
+            assert {key: value for key, value in result.items() if key != "error"} == retained[
+                "result"
+            ]
+        assert len(store.list_baselines()) == 2
+        assert store.info()["current_baseline_id"] == applied["result_baseline_id"]
+
+
 def test_manuscript_source_returns_exact_current_and_historical_retained_bytes(running_server):
     original = template_bytes()
     revised = template_bytes(((11906, 16838, 1440, 2),))

@@ -80,6 +80,11 @@ pub enum DocxProposalOutcome {
     Applied,
     Rejected,
     Withdrawn,
+    Recovered {
+        recovery_key: String,
+        content_sha256: String,
+        from_document: Box<DocxDocumentIdentity>,
+    },
     Saved {
         request_id: String,
         content_sha256: String,

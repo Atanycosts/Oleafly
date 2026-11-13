@@ -541,6 +541,8 @@ pub fn run() {
             docx_recovery::docx_recovery_read,
             docx_recovery::docx_recovery_list,
             docx_recovery::docx_recovery_clear,
+            docx_recovery::docx_recovery_commit,
+            docx_recovery::docx_recovery_resume,
             ad_hoc_conversion::convert_ad_hoc,
             typst_render::render_typst_snippet,
             typst_query::typst_document_insights,

@@ -442,6 +442,9 @@ pub async fn research_docx_activity_settle(
     document: DocxDocumentIdentity,
     outcome: DocxProposalOutcome,
 ) -> Result<DocxActivity, String> {
+    if matches!(outcome, DocxProposalOutcome::Recovered { .. }) {
+        return Err("Recover task sources through the verified DOCX checkpoint.".into());
+    }
     if let DocxProposalOutcome::Saved {
         ref content_sha256, ..
     } = outcome

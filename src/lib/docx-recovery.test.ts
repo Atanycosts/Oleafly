@@ -123,3 +123,22 @@ describe("DOCX recovery transport", () => {
     });
   });
 });
+
+it("stores task attribution and a fixed save with the exact checkpoint bytes", async () => {
+  const { commitDocxRecovery, resumeDocxRecovery, recoveryPendingSave } = await import("./docx-recovery");
+  const document = { sessionId: "original", appProjectId: IDENTITY.appProjectId, workbenchProjectId: IDENTITY.workbenchProjectId,
+    baselineId: IDENTITY.baseBaselineId, sourceSha256: IDENTITY.sourceSha256, sessionRevision: 4, savedRevision: 0 };
+  const taskState = { document, applied: [{ proposalId: "proposal", document }],
+    receipts: [{ proposalId: "proposal", document, outcome: { kind: "applied" as const } }],
+    pendingSave: recoveryPendingSave({ project_id: IDENTITY.workbenchProjectId, expected_baseline_id: IDENTITY.baseBaselineId,
+      filename: "paper.docx", reason: "User save", request_id: "fixed", revision: 4, content_base64: "UEsDBA==" }) };
+  transport.invoke.mockResolvedValue(METADATA);
+  await saveDocxRecovery(IDENTITY, 4, Uint8Array.from([80, 75, 3, 4]).buffer, taskState);
+  expect(transport.invoke).toHaveBeenLastCalledWith("docx_recovery_save", { request: expect.objectContaining({ contentBase64: "UEsDBA==", taskState }) });
+  transport.invoke.mockResolvedValue({ ...METADATA, bytesBase64: "UEsDBA==", taskState });
+  expect((await readDocxRecovery(IDENTITY))?.taskState).toEqual(taskState);
+  await commitDocxRecovery(METADATA);
+  expect(transport.invoke).toHaveBeenLastCalledWith("docx_recovery_commit", { request: { recoveryKey: METADATA.recoveryKey, contentSha256: METADATA.contentSha256 } });
+  await resumeDocxRecovery(METADATA, { ...document, sessionId: "new", sessionRevision: 0, savedRevision: -1 });
+  expect(transport.invoke).toHaveBeenLastCalledWith("docx_recovery_resume", { request: { recoveryKey: METADATA.recoveryKey, contentSha256: METADATA.contentSha256 }, document: { ...document, sessionId: "new", sessionRevision: 0, savedRevision: -1 } });
+});
