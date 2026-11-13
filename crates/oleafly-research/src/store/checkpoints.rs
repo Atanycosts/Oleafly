@@ -102,7 +102,8 @@ fn unfinished_colleagues_on(
             work.member_id != owner
                 && !paused.contains(&work.member_id)
                 && !upstream.contains(&work.id)
-                && matches!(work.status, WorkStatus::Pending | WorkStatus::Waiting)
+                && (work.status == WorkStatus::Pending
+                    || (work.status == WorkStatus::Waiting && !work.waits.is_empty()))
         })
         .map(|work| work.id)
         .collect())

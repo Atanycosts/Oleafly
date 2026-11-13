@@ -119,6 +119,31 @@ bundle identifier, so WebKit files its storage under the process name,
 sessions keep theirs. The runner leaves that folder alone. Use a packaged
 build when a run must not see state from your dev sessions.
 
+### Native task checkpoint recovery
+
+After building the packaged macOS E2E app above, run the bounded task-group
+handoff and restart acceptance:
+
+```bash
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+node e2e/run-task-checkpoint.mjs
+```
+
+This runs `132-task-checkpoint-recovery.spec.ts` through three launches with
+scripted provider decisions and real native tools, TaskStore, scheduling and UI.
+One scenario keeps an older unreported item while a later independent checkpoint
+hands its completed review back. The other leaves a required checkpoint review
+unreported and verifies the owner stays blocked. After SIGKILL and restart, the
+retained records must match and neither scenario starts on its own; clicking
+Start handles the remaining work. A second SIGKILL/restart verifies the completed
+records without duplicate member executions. The controlled source stays unchanged.
+This establishes the scoped scheduling and persistence behavior, not model quality.
+
+The runner uses the existing E2E lock, an isolated library and backed-up E2E web
+storage. It restores the original storage and exits its owned app processes on
+completion. Local evidence remains in ignored `.private/task-checkpoint-native/run-*`.
+Run it after any DOCX native acceptance has released the same app identifier.
+
 ### Native DOCX task activity
 
 After building the packaged E2E app above, run the scripted task integration:

@@ -244,6 +244,21 @@ checkpoint 遗漏逐项摘要与引用，以及界面重复把等待请求当成
 benchmark。实现继续扩展现有 TaskStore 与应用服务，没有新增框架、数据库表或依赖。
 正式安装版与 Windows 服务未更新。
 
+2026-11-13 补查发现：另一成员早先遗漏且没有请求依赖的 waiting 事项，会被后来的独立 checkpoint
+冻结，导致本次同事核查完成后原工作仍无法接回。[回归](../../crates/oleafly-research/src/store/checkpoints_tests.rs)
+先复现了该阻塞，随后修正冻结条件。重开 TaskStore 后，独立核查的结果可交回原成员，旧遗漏项的状态、
+摘要和引用均保持不变；本次冻结的核查若后来被遗漏，仍阻止接回。65 项协作/store（含 12 项 checkpoint）
+及 12 项群调度回归通过，ResearchTask 全目标 Clippy、格式与受影响文档链接检查通过。
+随后在最终隔离 macOS 原生包上通过两个相反场景：旧遗漏项保留为 waiting，新的独立核查完成后仍可交回原成员；
+本次冻结的核查若遗漏，原成员继续 checkpointed，任务保留为未启动 queued。SIGKILL 后重启，两者的工作、
+摘要、引用及执行记录一致且没有自动调用；通过界面显式 Start 才处理剩余工作。再次 SIGKILL／重启后，
+完成结果与执行次数保持一致，没有重复处理；只读 SQLite 回读与原生 API 的工作和结果相符。
+新增[三阶段用例](../../e2e/tests/132-task-checkpoint-recovery.spec.ts)的 prepare、resume、verify 均通过，
+当前 12 项 checkpoint 和 12 项群调度回归复跑通过。测试决策由脚本驱动，没有新真实模型或研究质量结论。
+原始依据保留于本机忽略目录 `.private/task-checkpoint-native/run-IhU2E2/`；较早 `run-9Etg2e/`
+因新增脚本未等待侧栏挂载而失败，修正后重跑通过，失败依据仍保留。两次运行均退出测试拥有的应用并恢复原 E2E
+WebKit 存储；正式安装版未更新。复跑方式见 [E2E 说明](../../e2e/README.md#native-task-checkpoint-recovery)。
+
 ### 普通聊天与任务共用论文阅读（2026-11-10）
 
 普通聊天新增 `read_paper`，复用任务已有的 paper 服务、缓存、文件访问和 PDF.js 文本桥，
