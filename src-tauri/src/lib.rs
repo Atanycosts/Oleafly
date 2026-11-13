@@ -1030,6 +1030,7 @@ pub fn run() {
             typst_options::typst_project_fonts,
             typst_options::typst_glyph_coverage,
             system_fonts::list_system_fonts,
+            system_fonts::resolve_system_font_faces,
             typst_export::export_typst_document,
             typst_packages::typst_universe_index,
             typst_packages::typst_package_settings,

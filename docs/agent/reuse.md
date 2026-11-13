@@ -67,6 +67,8 @@ DOCX 任务活动接入继续复用 EigenPal 活动会话、现有 TaskBridge/Ap
 以 ONLYOFFICE、Collabora 作为完整 Office 内核对照。真实浏览器已验证即时页面、键盘输入、
 一项流式建议、一次接受/撤销/重做及实际 DOCX 保存；英文和中文真实论文还完成了首屏 session、复杂对象拒绝、
 编辑保存与重开往返。字体替代、固定度量和跨引擎分页差异仍使真实论文排版保真未获证明。
+2026-11-13 的字体增量继续复用该内核公开 FontResolver、应用已有 fontdb/skrifa 和本机字体，
+没有安装第二套编辑服务；Vite 开发预打包的相对字体 URL 已修正。运行与验收范围由当前状态页维护。
 接入与扩展合同见[架构](architecture.md#docx-实时工作表面)，
 当前运行结果见[状态页](status.md#docx-工作副本首个闭环2026-11-11)。
 
@@ -98,6 +100,18 @@ HarfBuzz 初始化的 top-level await 复用 `vite-plugin-top-level-await@1.6.0`
 编辑内核按需加载；包体积与启动图检查仍执行。上游 core/react/fonts 的许可和字体归因由
 [`scripts/sync-docx-notices.mjs`](../../scripts/sync-docx-notices.mjs)从安装包原文同步至应用资源，
 `--check` 核对一致性。
+
+当前 npm `core@2.36.0` 发布元数据的 gitHead 是
+[`86869eedede5b793c910be804db6280b036b0b50`](https://github.com/eigenpal/docx-editor/tree/86869eedede5b793c910be804db6280b036b0b50)；
+上表 `6eb82e…` 保留最初选型调查输入，不代替这个发布包的源码身份。
+字体组合复用公开 `defineFontResolver`／`useFonts`；实际族、字重、style 和 hash 对应本机字节，
+显式 CJK 替代不冒充宋体／黑体原字体。接口与限制见[架构](architecture.md#当前接入范围2026-11-11)。
+同一发布源码的 [`semantic-layout.ts`](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/core/src/layout/semantic-layout.ts#L831)
+只在单栏节启用段落 frame；
+[`section-preparation.test.ts`](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/core/src/layout/__tests__/section-preparation.test.ts#L128)
+明确断言双栏 frame 缺失。英文原稿首页在双栏节内用 468 pt 页锚定标题框，
+因此当前内核把它按普通栏宽排版。已有排除区域绑定一个 columnIndex，不能只删除单栏条件就声称支持跨栏避让。
+这不是 DOCX 导出丢失样式的证据；本轮未修改作者 XML 或维护内核补丁。
 
 ONLYOFFICE 的 [plugin bridge](https://github.com/ONLYOFFICE/sdkjs/blob/9d2138866d929be32f1d107e8b5bfae36156e097/common/plugins/plugin_base_api.js)
 注明：online coediting 的 callCommand/Document Builder 限于创建并 InsertContent，桌面本地文件不受同一限制。

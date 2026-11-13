@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { DocxEditor, type DocxEditorRef, useDocxEditor, useEditorState, useScopedChromeAnchor } from "@docx-editor.dev/react";
+import { DocxEditor, type DocxEditorRef, useDocxEditor, useEditorState, useFonts, useScopedChromeAnchor } from "@docx-editor.dev/react";
 import { packagedFonts } from "@docx-editor.dev/fonts";
-import type { DocxEditorInstance } from "@docx-editor.dev/core/editor";
+import type { DocxEditorInstance, FontMeasurementState } from "@docx-editor.dev/core/editor";
 import { Check, Download, LoaderCircle, Minimize2, Save, Sparkles, Square, Undo2, X } from "lucide-react";
 import "@docx-editor.dev/core/styles/editor.css";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { runInlineCompletion } from "@/lib/ai-inline";
 import { base64ToBytes } from "@/lib/base64";
 import { downloadDocxCopy } from "@/lib/docx-download";
+import { createDocxFontResolver, type DocxFontSubstitution } from "@/lib/docx-fonts";
 import { createDocxSession, type DocxParagraph, type DocxSession, type DocxTarget } from "@/lib/docx-session";
 import {
   registerDocxAgentSession,
@@ -43,7 +44,8 @@ import { settleDocxTaskActivity, type DocxActivity, type DocxDocumentIdentity, t
 import { DocxActivitySource, DocxTaskActivity } from "./DocxTaskActivity";
 import { DocxRenderPanel } from "./DocxRenderPanel";
 
-const fonts = packagedFonts();
+const packagedFontResolver = packagedFonts();
+const fontShaping = Object.freeze({ maxFontBytes: 64 * 1024 * 1024 });
 const RECOVERY_DEBOUNCE_MS = 1500;
 
 interface Props {
@@ -92,15 +94,21 @@ export function DocxWorkspaceHost() {
   </> : null;
 }
 
-function SessionBridge({ onReady }: { onReady(editor: DocxEditorInstance): void }) {
+function SessionBridge({ onReady, onMeasurement }: { onReady(editor: DocxEditorInstance): void; onMeasurement(value: FontMeasurementState): void }) {
   const editor = useDocxEditor();
   const readyState = useEditorState((snapshot) => ({
     isLoading: snapshot.isLoading,
     isOpening: snapshot.isOpening ?? false,
     parseError: snapshot.parseError,
     pageTotal: snapshot.page.total,
+    measurement: editor?.fontMeasurement(),
   }));
   const readyEditor = useRef<DocxEditorInstance | null>(null);
+
+  const { measurer, resolving, producer } = readyState.measurement ?? { measurer: "fixed" as const, resolving: true, producer: undefined };
+  useEffect(() => {
+    onMeasurement({ measurer, resolving, producer });
+  }, [onMeasurement, measurer, resolving, producer]);
 
   useEffect(() => {
     if (!editor) {
@@ -185,6 +193,15 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const stopRef = useRef<AbortController | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const alive = useRef(true);
+  const [fontMeasurement, setFontMeasurement] = useState<FontMeasurementState>({ measurer: "fixed", resolving: true });
+  const [fontSubstitutions, setFontSubstitutions] = useState<DocxFontSubstitution[]>([]);
+  const [localFontResolver] = useState(() => createDocxFontResolver({
+    onError: (cause) => { if (alive.current) setError(`${text.fontError}: ${String(cause)}`); },
+    onSubstitutions: (substitutions) => {
+      if (alive.current) setFontSubstitutions((current) => [...new Map([...current, ...substitutions].map((item) => [item.from, item])).values()]);
+    },
+  }));
+  const fonts = useFonts(localFontResolver, packagedFontResolver);
   const busySave = useRef(false);
   const discardingRef = useRef(false);
   const interactionRoot = useRef<HTMLDivElement>(null);
@@ -753,18 +770,20 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
           {check && <span>{text.checked}: {check.validity} · {check.baseline_id}</span>}
         </div>
         {source && <p className="truncate text-[10px] text-muted-foreground" title={baselineId}>{text.baseline}: {baselineId}</p>}
+        {source && <p className="text-xs text-muted-foreground" data-testid="docx-font-state" data-measurer={fontMeasurement.measurer} data-resolving={fontMeasurement.resolving} data-producer={fontMeasurement.producer}>{fontMeasurement.resolving ? text.fontsResolving : fontMeasurement.measurer === "shaped" ? text.fontsShaped : text.fontsFixed}</p>}
+        {fontSubstitutions.length > 0 && <p className="text-xs text-muted-foreground" data-testid="docx-font-substitutions">{text.fontsSubstituted}: {fontSubstitutions.map((item) => `${item.from} → ${item.to}`).join(", ")}</p>}
         {recovery && <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.docx.recovery.restored, { time: new Date(recovery.updatedAt).toLocaleString(), revision: recovery.revision })}</p>}
         {recoveryConflict && <p role="alert" className="rounded border border-amber-500/40 p-2 text-xs">{text.recovery.conflict}</p>}
         {error && <p role="alert" className="break-words rounded border border-destructive/30 p-2 text-xs text-destructive">{error}</p>}
         <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_18rem] gap-3 max-md:grid-cols-1">
           <div className="min-h-0 overflow-hidden rounded border bg-muted/20" data-testid="docx-editor-surface">
             {source ? <DocxEditor
-              ref={editorRef} document={source.bytes} fonts={fonts} mode="edit" locale={editorLocale.current}
+              ref={editorRef} document={source.bytes} fonts={fonts} fontShaping={fontShaping} mode="edit" locale={editorLocale.current}
               title={source.filename} author="Oleafly User"
               onSave={() => void save()} menu={false} colorMode="system"
               className="h-full"
               onFontError={(cause) => setError(`${text.fontError}: ${cause.message}`)}
-            ><SessionBridge onReady={ready} /><SuggestionOverlay suggestion={suggestion} accept={accept} stop={stop} /></DocxEditor> : <p className="p-6 text-sm">{text.loading}</p>}
+            ><SessionBridge onReady={ready} onMeasurement={setFontMeasurement} /><SuggestionOverlay suggestion={suggestion} accept={accept} stop={stop} /></DocxEditor> : <p className="p-6 text-sm">{text.loading}</p>}
           </div>
           <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto" aria-label={text.work}>
             {recovery?.taskState && !taskReady && <Button size="sm" variant="outline" disabled={resuming} onClick={() => retryResume.current()}>{text.recovery.restore}</Button>}

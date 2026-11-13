@@ -145,6 +145,22 @@ The adapter preserves distribution comments and UTF-8 catalogs, keeps the engine
 out of the startup graph, and retains the PDF polyfill import order. Verify with
 `src/lib/vite-config.test.ts`, a production build and `pnpm check:performance`.
 Large frontend builds on this Mac need `NODE_OPTIONS=--max-old-space-size=8192`.
+The font package is excluded from Vite's development dependency optimizer: its
+`import.meta.url` assets must resolve beside the installed package, rather than
+under `.vite/assets` where missing fonts can return the HTML fallback with status 200.
+The development regression verifies actual font bytes, not the response status alone.
+The editor's local-font origin reuses native `system_fonts`/fontdb and supplies
+static standalone TTF/OTF bytes through the public FontResolver. TTC, variable fonts
+and oblique faces are currently outside this origin. Installed original fonts take
+precedence over packaged substitutes. The host sets the public per-face shaping
+ceiling to 64 MiB as well as the admission ceiling; the engine's default 16 MiB
+shaping limit rejects the installed 24–26 MB Noto Serif faces.
+Missing SimSun/宋体 and SimHei/黑体 can use
+installed Noto Serif CJK SC and Noto Sans CJK SC with explicit substitution notices;
+these families are optional and are not downloaded by opening a document.
+For this Mac's serif acceptance environment, install `font-noto-serif-cjk-sc` through
+Homebrew; no font binary is added to the repository. Native font/round-trip acceptance
+uses the isolated runner documented in [E2E](../e2e/README.md#native-docx-fonts-and-layout).
 DOCX work maintains new UI keys in the Chinese and English catalogs. Complete
 other-language coverage and validation are outside this round's scope. The current
 verified DOCX browser flow is macOS-only; Windows native validation is out of scope

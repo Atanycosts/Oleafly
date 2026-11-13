@@ -352,7 +352,8 @@ Workbench 的 workspace/server/architecture 定向验证为 58 通过、1 项既
 SWC 压缩破坏 JSON 内 LaTeX 转义及语言包体积膨胀；前述失败已复现并修正，
 生产浏览器流程验证了修正后的运行结果。
 
-真实论文验收仍不证明 Word/WPS 往返排版保真：英文和中文界面分别出现替代字体/固定度量告警，独立 LibreOffice 渲染还发现英文首页双栏标题布局差异。
+真实论文验收仍不证明 Word/WPS 往返排版保真：首版英文和中文界面分别出现替代字体/固定度量告警，独立 LibreOffice 渲染还发现英文首页双栏标题布局差异。
+字体字节接入和该布局差异的定位由下文[字体与首页布局](#docx-字体与首页布局2026-11-13)接续，不把首版告警当作当前全部状态。
 Workbench reader 已将英文 VML 图片从静默漏报改为 `vml_picture` unsupported 观察（reader 版本 `s1-readonly-reader-1.5.0`）；VML 绘制语义和页面位置仍未解释。
 首版接入只支持一项内联建议，当时工具已在普通 Agent/MCP 的应用业务层可用，尚无 TaskStore task/work/member/execution 归属；后续已由下节任务活动接入补齐。
 latest recovery checkpoint 已接入应用私有目录：保存 DOCX 字节、稳定工作副本 key、原始 baseline/source hash、会话 revision、更新时间和内容 hash，使用现有原子写入；保存失败、hash 不匹配或清除失败都会保留快照。启动候选选择、明确恢复/下载/丢弃、界面与 Agent 的未保存状态重建及恢复后保存已在 2026-11-12 补齐，原生验收范围见下文。外部 Word/WPS 同步、跨版本页映射、真实论文的 Word/WPS
@@ -496,6 +497,46 @@ Workbench 完整 Python 门禁结果及历史 Phase 0 失败范围见 [S1 状态
 最终普通生产构建和性能预算通过：入口 JavaScript 4,820,244 bytes，总 JavaScript 27,848,056 bytes，开发钩子计数 0，DOCX 内核仍按需加载。
 保留既有大 chunk 和原生 debug unwind 警告。此次未运行全仓前端/Rust 测试或更新正式安装版；Office 视觉等价、外部 Word/WPS 自动同步仍未验证，
 Windows 和其他语言仍明确不在范围内。恢复规则和边界见[架构](architecture.md#docx-实时工作表面)，复跑方式见 [E2E 说明](../../e2e/README.md#native-docx-crash-recovery)。
+
+### DOCX 字体与首页布局（2026-11-13）
+
+活动编辑器现在优先通过应用既有 `system_fonts`／fontdb 取得本机静态独立字体字节，
+复用 EigenPal 公开 FontResolver 与随包字体组合。实际 family、字重、style、faceIndex 和 hash 对应原字节；
+不存在的族名不做系统泛型替换，localized alias 和近似字重用显式关系连接。
+宋体／SimSun 和黑体／SimHei 缺失时分别尝试已安装的 Noto Serif CJK SC、Noto Sans CJK SC，
+界面显示实际替代，保留内核缺失提示。当前本机源不提供 TTC、可变字体或 oblique face，楷体没有被映射成其他字体。
+本机 Noto Serif CJK SC 2.003 通过 Homebrew 安装，仓库没有新增字体文件或依赖。
+
+Vite 开发预打包曾把随包字体 URL 移到 `.vite/assets`，缺失资源返回 HTTP 200 HTML，导致固定度量；
+现已排除该字体包的预打包，回归直接核对字体响应字节。两份真实稿的开发探针均能加载随包字节。
+首次原生字体验收 `run-u6xyPP` 进一步发现 CJK 文件大于 HarfBuzz 默认 16 MiB 执行上限，报 `fontOverLimit`；
+宿主现通过公开接口把执行上限与 native 单 face 上限统一为 64 MiB，保留错误展示。
+独立终审另修复第二次替代查询失败会丢弃已成功原字体的局部失败扩大问题，相关回归通过。
+
+最终 macOS 原生 `131-docx-font-layout` 在真实英文、中文稿分别通过。独立核对 native 字节/hash/metadata，
+再观察内核实际传入浏览器 FontFace 的二进制 hash、加载成功及 `document.fonts` 成员，
+并核对实际正文 run 使用对应私有字体。两份均达到 shaped／resolving=false、无字体错误，
+英文使用本机 Times New Roman，中文正文／标题使用明确声明的 Noto Serif／Sans 替代。
+无改动导出均无部件增减、媒体或关系语义变化、受保护节点损失及正文文本变化，段落仍为 515／533；
+styles、fontTable、sectPr、framePr 和 rFonts 属性保留。英文 `document.xml` 仍有内核序列化变化：
+一个 paraId／textId 重新生成，以及无首尾空白正文的 `xml:space="preserve"` 去除；不宣称包字节或所有段落 ID 完全相同。
+关闭重开后仍使用字体字节度量且为未修改状态，作者原稿 hash 前后不变，E2E WebKit 存储恢复，测试拥有的进程已退出。
+主控查看两份首屏，中文标题、摘要字形可读；英文标题仍窄栏，不把局部页面检查扩展成全篇视觉保真。
+最终证据位于本机忽略目录 `.private/docx-font-layout/run-OK1bxl/`（英文）与 `run-Ukg5LL/`（中文）；
+此前通过运行及首次失败均保留，字体文件没有复制进验收证据。复跑入口见 [E2E 说明](../../e2e/README.md#native-docx-fonts-and-layout)。
+
+英文原稿首页声明双栏节内的 468 pt 页锚定 Title frame 和 453.6 pt Authors frame，导出后这些属性完整保留。
+固定发布源码与公开 API 单栏／双栏探针确认：当前内核只在单栏节启用段落 frame，双栏标题因而按普通栏宽排版。
+原稿独立 LibreOffice 转换与已保存稿均为 10 页，首页标题的文字、bbox、字号和字体相同；这是该渲染器对原稿的解释差异，
+没有证据表明本次导出删除标题属性。源码与修复边界见[组件复用](reuse.md#docx-编辑与实时工作机制)，
+探针、固定源码及页面对照位于本机忽略目录 `.private/docx-layout-investigation/`。
+本轮未解除内核多栏 frame 门禁、未改作者 XML、未修改 LibreOffice 的字体选择或布局路径；这些字体也不改变独立 PDF 引擎的环境。
+
+前端定向 7 文件 124 项、native system_fonts 15 项及显式本机字体探针 1 项通过；该环境探针在普通运行中按 opt-in 忽略，已单独执行通过。
+Rust 格式和库 Clippy、前端局部 lint、包含新增 E2E 的 TypeScript、中英文目录、语言类型及 DOCX notices 通过。
+最终隔离原生包、普通生产构建和性能预算通过：入口 JavaScript 4,820,463 bytes，总 JavaScript 27,851,811 bytes，开发钩子计数 0，DOCX 仍按需加载。
+保留既有大 chunk 与 debug unwind 提示；未重复全仓前端／Rust／Python 测试、未更新正式安装版。
+Windows 和其他语言仍不在本轮范围内。本轮证明实际字体接入、明确替代与上述导出保护，不证明 Word/WPS 排版等价、全篇字形覆盖或外部文档自动同步。
 
 ### DOCX 实时工作形态研究（2026-11-10，历史）
 

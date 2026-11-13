@@ -217,7 +217,7 @@ Workbench 与 TaskStore 各自提交。补接按任务绑定的库/稿件重扫�
 
 ### 当前接入范围（2026-11-11）
 
-期刊面板的“编辑 DOCX 工作副本”打开应用级受管会话，使用固定版本 EigenPal core/react 与随包字体，
+期刊面板的“编辑 DOCX 工作副本”打开应用级受管会话，使用固定版本 EigenPal core/react 与按需字体源，
 从 Workbench 显式 baseline 读取留存字节。编辑器负责即时分页、编辑、选择、导出与撤销，
 Oleafly 使用公开 automation host 捕获段落、文本、会话修订和规范结构指纹。
 工作副本独立于侧栏生命周期；作者路径没有写入口，也没有新增 DocumentEngine。
@@ -234,6 +234,20 @@ token 更新候选展示，接受时再以一次 `replaceSpan` 事务替换格�
 期刊检查只对明确保存且仍为当前的 baseline 运行，并核对返回的 baseline/world 身份。
 关闭、项目离开、刷新和原生退出沿用既有 leave guard、editor mutation owner 与 quit guard，
 未完成会话要求先保存、下载或明确丢弃。
+
+字体接入复用应用既有 `system_fonts` 和 fontdb：按文档请求的族名批量查找本机静态独立 TTF/OTF，
+返回实际字体身份、字节和 hash，再通过公开 FontResolver 优先交给内核；缺失部分继续使用随包字体。
+族名查找不采用系统泛型替换，实际别名或近似字重以显式 substitution 连接，不伪造字节 metadata。
+当前 TTC、可变字体和内核不接受的 oblique face 不进入本机字节源。
+宿主通过公开 `fontShaping.maxFontBytes` 将排版执行上限也设为 64 MiB，和字节源单 face 上限一致，
+使本机大于内核默认 16 MiB 的静态 CJK 字体可以实际参与 HarfBuzz 度量。
+本机缺少宋体／SimSun、黑体／SimHei 时，分别尝试已安装的 Noto Serif CJK SC、Noto Sans CJK SC，
+界面明确显示实际替代；缺少替代字体时仍保留内核缺失提示。楷体没有被映射成宋体或黑体。
+原生命令和边界由 [`system_fonts.rs`](../../src-tauri/src/system_fonts.rs) 拥有，
+组合策略由 [`docx-fonts.ts`](../../src/lib/docx-fonts.ts) 拥有，不从文档族名构造文件路径或网络请求。
+界面读取内核 `fontMeasurement()` 的 resolving、fixed、shaped 状态，shaped 只代表使用字体字节度量，
+不表示所有字形可用或与 Office 分页一致。字体配置不改写作者的字体、样式或分节属性。
+这组字体只影响活动编辑器；LibreOffice PDF 仍由独立渲染进程及其字体环境排版。
 
 启动时的轻量恢复入口枚举应用私有 checkpoint，不提前加载 DOCX 编辑内核或启动 Workbench。
 用户明确恢复后才连接 Workbench、核对原项目关联和原 baseline/source hash，再将快照字节打开为新的编辑会话。

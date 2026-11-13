@@ -25,7 +25,9 @@ const mocks = vi.hoisted(() => ({
   listRecovery: vi.fn(),
   contentHash: vi.fn(),
   settleActivity: vi.fn(),
+  fontOptions: null as null | { onError(cause: unknown): void; onSubstitutions(value: { from: string; to: string }[]): void },
   editorDocument: null as Uint8Array | null,
+  fontShaping: undefined as { maxFontBytes: number } | undefined,
   runInlineCompletion: vi.fn(),
   createSession: vi.fn(),
   journalRequest: vi.fn(),
@@ -39,6 +41,8 @@ const mocks = vi.hoisted(() => ({
     highlightAnchor: vi.fn(),
     clearAnchorHighlight: vi.fn(),
     on: () => () => {},
+    measurement: { measurer: "fixed" as "fixed" | "shaped", resolving: false, producer: undefined as string | undefined },
+    fontMeasurement: () => mocks.editor.measurement,
     editorSnapshot: { isLoading: false, isOpening: false, parseError: null, page: { current: 1, total: 1 } },
     snapshot: () => mocks.editor.editorSnapshot,
   },
@@ -48,16 +52,19 @@ vi.mock("@docx-editor.dev/react", async () => {
   const React = await import("react");
   return {
     useDocxEditor: () => mocks.editor,
+    useFonts: (source: unknown) => source,
     useEditorState: (selector: (snapshot: ReturnType<typeof mocks.editor.snapshot>) => unknown) => selector(mocks.editor.snapshot()),
     useScopedChromeAnchor: () => ({ ref: () => {}, style: { visibility: "hidden" } }),
     DocxEditor: React.forwardRef(function MockDocxEditor(
       props: {
         children?: React.ReactNode;
         document: Uint8Array;
+        fontShaping: { maxFontBytes: number };
       },
       ref,
     ) {
       mocks.editorDocument = props.document;
+      mocks.fontShaping = props.fontShaping;
       React.useImperativeHandle(ref, () => ({
         save: mocks.editorSave,
         getEditor: () => mocks.editor,
@@ -70,6 +77,7 @@ vi.mock("@docx-editor.dev/react", async () => {
 vi.mock("./DocxTaskActivity", () => ({ DocxTaskActivity: () => <div data-testid="task-panel" />, DocxActivitySource: ({ activity }: { activity: { origin: { taskId: string } } }) => <span>{activity.origin.taskId}</span> }));
 vi.mock("@/lib/docx-task-activity", () => ({ settleDocxTaskActivity: mocks.settleActivity }));
 vi.mock("@docx-editor.dev/fonts", () => ({ packagedFonts: () => [] }));
+vi.mock("@/lib/docx-fonts", () => ({ createDocxFontResolver: (options: NonNullable<typeof mocks.fontOptions>) => { mocks.fontOptions = options; return () => undefined; } }));
 vi.mock("@/lib/ai-inline", () => ({ runInlineCompletion: mocks.runInlineCompletion }));
 vi.mock("@/lib/docx-session", () => ({ createDocxSession: mocks.createSession }));
 vi.mock("@/lib/docx-agent-host", () => ({
@@ -226,6 +234,7 @@ async function startGeneration(instruction = "Improve this") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.editor.measurement = { measurer: "fixed", resolving: false, producer: undefined };
   useDocxWorkspaceStore.setState({ request: null, minimized: false, recoveryOpen: false });
   mocks.settleActivity.mockResolvedValue({});
   mocks.listRecovery.mockResolvedValue({ snapshots: [], failures: [] });
@@ -257,6 +266,40 @@ beforeEach(() => {
   mocks.discardRecovery.mockResolvedValue(true);
   mocks.contentHash.mockResolvedValue("d".repeat(64));
   mocks.applySuggestion.mockReturnValue({ ok: true, revision: 1, changed: true });
+});
+
+it("shows resolving, shaped and fallback font states without claiming complete coverage", async () => {
+  mocks.editor.measurement = { measurer: "fixed", resolving: true, producer: undefined };
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  await renderReady(harness);
+  expect(screen.getByTestId("docx-font-state")).toHaveTextContent(text.fontsResolving);
+  mocks.editor.measurement = { measurer: "shaped", resolving: false, producer: "font-hash-producer" };
+  act(() => harness.edit("first", "Changed"));
+  await waitFor(() => expect(screen.getByTestId("docx-font-state")).toHaveTextContent(text.fontsShaped));
+  expect(screen.getByTestId("docx-font-state")).toHaveAttribute("data-measurer", "shaped");
+  expect(screen.getByTestId("docx-font-state")).toHaveAttribute("data-producer", "font-hash-producer");
+  mocks.editor.measurement = { measurer: "fixed", resolving: false, producer: undefined };
+  act(() => harness.edit("first", "Changed again"));
+  await waitFor(() => expect(screen.getByTestId("docx-font-state")).toHaveTextContent(text.fontsFixed));
+  expect(screen.getByTestId("docx-font-state")).not.toHaveAttribute("data-producer");
+});
+
+it("keeps the 64 MiB shaping limit stable across editor updates", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  await renderReady(harness);
+  const configured = mocks.fontShaping;
+  expect(configured).toEqual({ maxFontBytes: 64 * 1024 * 1024 });
+  act(() => harness.edit("first", "Updated"));
+  expect(mocks.fontShaping).toBe(configured);
+  expect(mocks.createSession).toHaveBeenCalledOnce();
+});
+
+it("shows explicit CJK substitutions and a native font failure", async () => {
+  await renderReady(sessionHarness([paragraph("first", "Original")]));
+  act(() => mocks.fontOptions?.onSubstitutions([{ from: "宋体", to: "Noto Serif CJK SC" }]));
+  expect(screen.getByTestId("docx-font-substitutions")).toHaveTextContent("宋体 → Noto Serif CJK SC");
+  act(() => mocks.fontOptions?.onError(new Error("Native read failed")));
+  expect(screen.getByRole("alert")).toHaveTextContent(`${text.fontError}: Error: Native read failed`);
 });
 
 describe("DocxWorkspaceDialog editing lifecycle", () => {

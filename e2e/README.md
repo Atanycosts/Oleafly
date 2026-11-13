@@ -207,7 +207,25 @@ The runner requires an actual SIGKILL at each launch boundary and retains its
 lifecycle and final outcome under ignored `.private/docx-task-recovery/run-*`.
 The model decisions in this mode are scripted; it adds fault-recovery evidence,
 not a new real-model editing assessment. Run the English and Chinese inputs
-separately. Live-model and attribution-recovery flags are mutually exclusive.
+separately. Live-model, attribution-recovery and font/layout flags are mutually exclusive.
+
+### Native DOCX fonts and layout
+
+Add `OLEAFLY_DOCX_FONT_LAYOUT=1` to the isolated runner command above to run
+`131-docx-font-layout.spec.ts` in one launch. It requires installed Times New Roman
+and Noto Serif/Sans CJK SC regular/bold faces, checks actual native font bytes against
+their SHA-256 and metadata, and opens the authorized manuscript in the real editor.
+An observer forwards the original browser `FontFace` constructor while hashing its
+binary input, then checks successful loading and membership in `document.fonts`
+against the independent native hashes. It checks settled HarfBuzz measurement,
+explicit CJK substitution, no-change export,
+package/object preservation, authored font/style/frame/section properties and reopen.
+Font files are not copied into acceptance evidence. The save-path hook selects the
+export path, so manual use of the native save dialog is outside this test.
+The runner retains local evidence under ignored `.private/docx-font-layout/run-*`;
+it restores E2E WebKit storage and checks the author hash before and after.
+No model is called. This does not establish Office-equivalent layout or make the
+editor's pages equal to an independently rendered LibreOffice PDF.
 
 Results and recovery material stay in ignored `.private/docx-recovery-native/run-*`.
 Normal exit and catchable failures restore the previous E2E WebKit storage. If the

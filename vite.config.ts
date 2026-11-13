@@ -263,7 +263,9 @@ export default defineConfig(async () => ({
   ],
   optimizeDeps: {
     esbuildOptions: { supported: { "top-level-await": true } },
-    exclude: ["harper.js"],
+    // The font resolver uses import.meta.url for its packaged font bytes.
+    // Prebundling relocates that URL into .vite and serves HTML for the assets.
+    exclude: ["harper.js", "@docx-editor.dev/fonts"],
     include: [
       "pdfjs-dist/build/pdf.worker.min.mjs",
       // PdfViewer lazy-loads the official link/structure helpers. Pre-bundle

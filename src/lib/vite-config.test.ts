@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { build } from "vite";
+import { build, createServer } from "vite";
 import { describe, expect, it, vi } from "vitest";
 import { LAZY_NAMESPACES, NAMESPACES } from "@/i18n/resources";
 import {
@@ -26,6 +26,33 @@ import desktopConfig, {
   polyfillsChunk,
 } from "../../vite.config";
 import webConfig from "../../vite.web.config";
+
+it("serves packaged DOCX font bytes from their real asset URL in development", async () => {
+  const server = await createServer({
+    configFile: false,
+    ...(await (desktopConfig as unknown as () => Promise<object>)()),
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false, watch: null },
+  });
+  try {
+    expect(server.config.optimizeDeps.exclude).toContain("@docx-editor.dev/fonts");
+    await server.listen();
+    const address = server.httpServer?.address();
+    if (!address || typeof address === "string") throw new Error("Vite did not bind its HTTP server.");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const transformed = await (await fetch(`${origin}/node_modules/@docx-editor.dev/fonts/dist/index.js`)).text();
+    const chunk = transformed.match(/from\s*["']([^"']+)["']/)?.[1];
+    if (!chunk) throw new Error("The installed DOCX font package did not expose its asset chunk.");
+    const module = await (await fetch(new URL(chunk, origin))).text();
+    const font = module.match(/new URL\(["']([^"']*Carlito-Regular\.ttf)["']/)?.[1];
+    if (!font) throw new Error("Vite did not resolve the packaged font URL.");
+    const response = await fetch(new URL(font, origin));
+    expect(response.headers.get("content-type")).not.toContain("text/html");
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(
+      readFileSync(path.resolve("node_modules/@docx-editor.dev/fonts/assets/Carlito-Regular.ttf")),
+    );
+  } finally { await server.close(); }
+}, 30_000);
 
 it("loads async DOCX dependencies and preserves UTF-8, escaped LaTeX JSON and license comments", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "oleafly-async-module-"));
