@@ -14,7 +14,7 @@ const render: DocxRender = {
   manifest: {
     source_sha256: "source", pdf_sha256: "pdf", page_count: 3,
     render_record: {
-      report_version: "libreoffice-headless-1.1.0",
+      report_version: "libreoffice-headless-1.2.0",
       renderer_engine: "LibreOffice",
       renderer_version: "26.8",
       renderer_path: "/opt/soffice",
@@ -40,12 +40,12 @@ describe("DOCX saved-version PDF", () => {
     expect(await ensureDocxRender("paper", "baseline-saved", "/opt/soffice")).toBe(render);
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
-  it("does not reuse a legacy 1.0 report", async () => {
+  it.each(["libreoffice-headless-1.0.0", "libreoffice-headless-1.1.0"])("does not reuse a legacy %s report", async (reportVersion) => {
     const legacy = {
       ...render,
       manifest: {
         ...render.manifest,
-        render_record: { ...render.manifest.render_record, report_version: "libreoffice-headless-1.0.0" },
+        render_record: { ...render.manifest.render_record, report_version: reportVersion },
       },
     };
     mocks.request.mockResolvedValue({ derived_renders: [legacy], font_cache_sha256: "cache-current" });

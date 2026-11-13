@@ -837,7 +837,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
               {suggestion.phase === "applied" && <p className="flex items-center gap-1"><Undo2 className="size-3" />{text.undoHelp}</p>}
             </section>}
             <p className="text-[11px] text-muted-foreground">{text.previewHelp}</p>
-            <DocxRenderPanel projectId={project.project_id} baselineId={baselineId} dirty={dirty} fontRevision={fontRevision} />
+            <DocxRenderPanel projectId={project.project_id} baselineId={baselineId} dirty={dirty} fontRevision={fontRevision} fontsReady={editorReady && !fontMeasurement.resolving} />
           </aside>
         </div>
       </DialogContent>

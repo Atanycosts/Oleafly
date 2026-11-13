@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { journalQuery, journalRequest } from "@/lib/journal-workbench";
 
-const DOCX_RENDER_REPORT_VERSION = "libreoffice-headless-1.1.0";
+const DOCX_RENDER_REPORT_VERSION = "libreoffice-headless-1.2.0";
 
 export interface DocxRender {
   bundle_id: string;
@@ -22,7 +22,7 @@ export interface DocxRender {
         sha256: string;
         family?: string;
         postscript?: string;
-        version?: string;
+        version?: string | null;
         weight?: number;
         style?: string;
       }[];

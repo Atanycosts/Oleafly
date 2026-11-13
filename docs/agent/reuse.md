@@ -109,11 +109,19 @@ HarfBuzz 初始化的 top-level await 复用 `vite-plugin-top-level-await@1.6.0`
 现有 fontdb、skrifa 用于字体识别，不新增字体转换器；无法直接交给内核的 TTC／可变字体如实缺失。
 期刊要求和下载后的实际字体分别核对，当前边界见[架构](architecture.md#当前接入范围2026-11-11)。
 同一发布源码的 [`semantic-layout.ts`](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/core/src/layout/semantic-layout.ts#L831)
-只在单栏节启用段落 frame；
+原版只在单栏节启用段落 frame；
 [`section-preparation.test.ts`](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/core/src/layout/__tests__/section-preparation.test.ts#L128)
 明确断言双栏 frame 缺失。英文原稿首页在双栏节内用 468 pt 页锚定标题框，
-因此当前内核把它按普通栏宽排版。已有排除区域绑定一个 columnIndex，不能只删除单栏条件就声称支持跨栏避让。
-这不是 DOCX 导出丢失样式的证据；本轮未修改作者 XML 或维护内核补丁。
+原版因此把它按普通栏宽排版。Oleafly 通过现有 pnpm 补丁机制支持明确宽于各栏、
+页／页边距水平锚定、`none`／`notBeside` 环绕的固定宽 frame。沿既有排除区域为每个相交栏登记避让，
+相邻的 text-relative frame 组按源顺序堆叠，保留同属性作者段落的共享框及序列化。
+可读源码、固定版本、回归及两种发布运行格式的重建方法见[内核补丁说明](../../patches/docx-core/README.md)。
+窄框、自动宽度、文字水平锚定及侧绕框仍走原多栏行为；没有修改作者 XML。
+
+LibreOffice 26.8.2.2 的固定 [DomainMapper 源码](https://github.com/LibreOffice/core/blob/libreoffice-26.8.2.2/writerfilter/source/dmapper/DomainMapper.cxx)
+另有样式 frame 继承 TODO，导致原稿 PDF 忽略该标题框。隔离副本将 frame 物化到段落后又命中
+[tdf#164445](https://bugs.documentfoundation.org/show_bug.cgi?id=164445) 的相邻框倒序问题。
+该探针只定位上游缺陷；产品未采用 XML 物化，也没有将编辑器修复宣称为 LibreOffice PDF 版式修复。
 
 ONLYOFFICE 的 [plugin bridge](https://github.com/ONLYOFFICE/sdkjs/blob/9d2138866d929be32f1d107e8b5bfae36156e097/common/plugins/plugin_base_api.js)
 注明：online coediting 的 callCommand/Document Builder 限于创建并 InsertContent，桌面本地文件不受同一限制。

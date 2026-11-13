@@ -97,7 +97,7 @@ until author-input paths, rendering environments and fonts have been independent
 
 Native font setup on this Mac requires the Homebrew `sevenzip` package and `tar`; both are
 installed. The native application is the sole production source of `OLEAFLY_FONT_DIRS`, passing
-its existing font-cache roots as a `os.pathsep`-separated launch value. HTTP and MCP callers do
+its download and exact-resolved font-cache roots as a `os.pathsep`-separated launch value. HTTP and MCP callers do
 not choose font directories.
 
 Every LibreOffice render uses its own temporary profile and stages the current TTF/OTF cache bytes
@@ -105,6 +105,9 @@ into `profile/user/fonts`, deduplicating by SHA-256 and verifying available sour
 `supplied_fonts` records those supplied bytes and hashes; `pdf_font_names` records the names
 observed in the resulting PDF. These are different evidence and neither establishes complete
 font embedding, the version selected in the live editor or visual equivalence. The current
+application retains the exact system faces in `assets/resolved-fonts` before returning their
+bytes to the editor and waits for settled font resolution before requesting the saved PDF.
+Method compatibility excludes earlier renders that predate this supply path. The current
 derived-render response also reports the current cache-content identity, while each render retains
 the identity actually supplied to it. Clients compare those identities after service restart so a
 PDF from an older cache is not reused as current; a historical render without that identity is not

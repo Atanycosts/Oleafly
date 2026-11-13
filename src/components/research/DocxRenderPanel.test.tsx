@@ -17,7 +17,7 @@ const record = (baseline = "baseline-1", bundleId = `render-${baseline}`): DocxR
   manifest: {
     source_sha256: "source", pdf_sha256: "pdf", page_count: 3,
     render_record: {
-      report_version: "libreoffice-headless-1.1.0",
+      report_version: "libreoffice-headless-1.2.0",
       renderer_engine: "LibreOffice",
       renderer_version: "26.8",
       renderer_path: "/opt/soffice",
@@ -26,7 +26,7 @@ const record = (baseline = "baseline-1", bundleId = `render-${baseline}`): DocxR
 });
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = (baseline = "baseline-1", dirty = false, fontRevision = 0) => <QueryClientProvider client={client}><DocxRenderPanel projectId="paper" baselineId={baseline} dirty={dirty} fontRevision={fontRevision} /></QueryClientProvider>;
+  const view = (baseline = "baseline-1", dirty = false, fontRevision = 0, fontsReady = true) => <QueryClientProvider client={client}><DocxRenderPanel projectId="paper" baselineId={baseline} dirty={dirty} fontRevision={fontRevision} fontsReady={fontsReady} /></QueryClientProvider>;
   const rendered = render(view());
   return { ...rendered, update: (baseline: string, dirty: boolean, fontRevision = 0) => rendered.rerender(view(baseline, dirty, fontRevision)) };
 }
@@ -37,6 +37,16 @@ beforeEach(() => {
   mocks.pdf.mockResolvedValue(Uint8Array.from([37, 80, 68, 70]));
 });
 describe("saved DOCX render panel", () => {
+  it("waits until native font resolution has supplied its bytes before converting", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = (fontsReady: boolean) => <QueryClientProvider client={client}><DocxRenderPanel projectId="paper" baselineId="baseline-1" dirty={false} fontsReady={fontsReady} /></QueryClientProvider>;
+    const panel = render(view(false));
+    await waitFor(() => expect(mocks.find).toHaveBeenCalled());
+    expect(mocks.ensure).not.toHaveBeenCalled();
+    panel.rerender(view(true));
+    await waitFor(() => expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.current));
+    expect(mocks.ensure).toHaveBeenCalledExactlyOnceWith("paper", "baseline-1", "/opt/soffice", false);
+  });
   it("keeps the old PDF identified while rendering the next saved version and while typing", async () => {
     const panel = mount();
     await waitFor(() => expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.current));

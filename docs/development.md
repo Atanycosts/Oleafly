@@ -135,6 +135,9 @@ separate environment-bound acceptance checks.
 
 The retained DOCX working-copy editor pins `@docx-editor.dev/core`, `react` and
 `fonts` to the same version. It loads on demand from the Journal checks panel.
+The core has a scoped multi-column paragraph-frame patch. Keep its readable source,
+installed ESM/CJS patch and public-API regression together; see the
+[rebuild instructions](../patches/docx-core/README.md) before upgrading.
 After upgrading those packages, run `pnpm docx:notices` and check the generated
 upstream notices with `node scripts/sync-docx-notices.mjs --check`. Vite lowers
 HarfBuzz's async initialization through `vite-plugin-top-level-await`; its scoped
@@ -163,6 +166,10 @@ public `setFonts()` without reopening the document. A missing catalog source, fa
 download or unreadable face remains visible. Font availability does not establish
 manuscript compliance. Oleafly passes the application font-cache roots to Workbench,
 which copies current TTF/OTF bytes into each conversion's private `profile/user/fonts` directory.
+Native exact face resolution also retains those original bytes and metadata in
+`assets/resolved-fonts`, including system-only Latin fonts. Rendering waits for editor
+initialization and settled font resolution before snapshotting those caches. Multiple
+versions of the same face still require inspecting the actual PDF font evidence.
 An editor font refresh also regenerates the saved PDF; explicit PDF refresh forces conversion,
 while an ordinary reopen recovers the latest compatible retained render. Native download/font/round-trip acceptance uses the isolated runner
 in [E2E](../e2e/README.md#native-docx-fonts-and-layout). Do not install substitute fonts

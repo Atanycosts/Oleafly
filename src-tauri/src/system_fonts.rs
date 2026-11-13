@@ -319,6 +319,52 @@ fn resolve_font_faces(
     Ok(result)
 }
 
+pub(crate) fn resolved_font_cache() -> Result<std::path::PathBuf, String> {
+    Ok(crate::paths::assets_root()?.join("resolved-fonts"))
+}
+
+fn cache_resolved_fonts(faces: &[SystemFontFace], root: &std::path::Path) -> Result<(), String> {
+    for face in faces {
+        let identity = serde_json::to_vec(&(face.family.to_lowercase(), face.weight, face.style))
+            .map_err(|error| error.to_string())?;
+        let directory = root.join(format!("{:x}", Sha256::digest(identity)));
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let bytes = STANDARD
+            .decode(&face.content_base64)
+            .expect("resolved font contains native-encoded bytes");
+        let (name, previous) = if bytes.starts_with(b"OTTO") {
+            ("font.otf", "font.ttf")
+        } else {
+            ("font.ttf", "font.otf")
+        };
+        let target = directory.join(name);
+        if std::fs::read(&target).ok().as_deref() != Some(bytes.as_slice()) {
+            oleafly_core::atomic::write_atomic(&target, &bytes)
+                .map_err(|error| format!("Could not cache resolved font: {error}"))?;
+        }
+        let receipt = serde_json::to_vec(&serde_json::json!({
+            "source": "native_font_resolution",
+            "files": [{
+                "name": name,
+                "sha256": face.sha256,
+                "family": face.family,
+                "postscript": face.postscript_name,
+                "version": face.version,
+                "weight": face.weight,
+                "style": face.style,
+            }]
+        }))
+        .map_err(|error| error.to_string())?;
+        oleafly_core::atomic::write_atomic(&directory.join("source.json"), &receipt)
+            .map_err(|error| format!("Could not record resolved font: {error}"))?;
+        let previous = directory.join(previous);
+        if previous.is_file() {
+            std::fs::remove_file(previous).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn resolve_system_font_faces(
     requests: Vec<SystemFontRequest>,
@@ -328,10 +374,14 @@ pub async fn resolve_system_font_faces(
         return Ok(SystemFontResolution::default());
     }
     let cache_roots = crate::assets::font_cache_roots()?;
+    let resolved_cache = resolved_font_cache()?;
     tauri::async_runtime::spawn_blocking(move || {
         let mut database = system_database();
         load_app_font_caches(&mut database, &cache_roots);
-        resolve_font_faces(&database, requests)
+        database.load_fonts_dir(&resolved_cache);
+        let result = resolve_font_faces(&database, requests)?;
+        cache_resolved_fonts(&result.faces, &resolved_cache)?;
+        Ok(result)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -618,6 +668,43 @@ mod tests {
             assert_eq!(face.weight, actual.weight.0);
             assert_eq!(face.style, actual.style.into());
         }
+    }
+
+    #[test]
+    fn resolved_font_cache_keeps_exact_bytes_and_replaces_the_same_face() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut database = fontdb::Database::new();
+        let original = font_bytes("Resolved Serif", "ResolvedSerif-v1", 400, false, false);
+        database.load_font_data(original.clone());
+        let requests = vec![request("Resolved Serif", 400, SystemFontStyle::Normal)];
+        let result = resolve_font_faces(&database, requests.clone()).unwrap();
+        cache_resolved_fonts(&result.faces, cache.path()).unwrap();
+        let directory = std::fs::read_dir(cache.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read(directory.join("font.ttf")).unwrap(), original);
+        let mut replacement = fontdb::Database::new();
+        let updated = font_bytes("Resolved Serif", "ResolvedSerif-v2", 400, false, false);
+        replacement.load_font_data(updated.clone());
+        let result = resolve_font_faces(&replacement, requests).unwrap();
+        cache_resolved_fonts(&result.faces, cache.path()).unwrap();
+        cache_resolved_fonts(&result.faces, cache.path()).unwrap();
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        assert_eq!(std::fs::read(directory.join("font.ttf")).unwrap(), updated);
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.join("source.json")).unwrap()).unwrap();
+        assert_eq!(receipt["files"][0]["sha256"], result.faces[0].sha256);
+        assert_eq!(receipt["files"][0]["postscript"], "ResolvedSerif-v2");
+        let mut loaded = fontdb::Database::new();
+        loaded.load_fonts_dir(cache.path());
+        assert_eq!(
+            loaded.faces().next().unwrap().post_script_name,
+            "ResolvedSerif-v2"
+        );
     }
 
     fn family(name: &str, monospace: bool) -> SystemFontFamily {

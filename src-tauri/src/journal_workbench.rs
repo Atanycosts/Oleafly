@@ -56,6 +56,8 @@ fn configured_python() -> Result<String, String> {
 }
 
 async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, String> {
+    let mut font_roots = crate::assets::font_cache_roots()?.to_vec();
+    font_roots.push(crate::system_fonts::resolved_font_cache()?);
     let mut command = Command::new(python);
     command
         .args(["-u", "-m", "research_file_workbench.workbench.launcher"])
@@ -65,8 +67,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         .env_remove("PYTHONHOME")
         .env(
             "OLEAFLY_FONT_DIRS",
-            std::env::join_paths(crate::assets::font_cache_roots()?)
-                .map_err(|error| error.to_string())?,
+            std::env::join_paths(font_roots).map_err(|error| error.to_string())?,
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

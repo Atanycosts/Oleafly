@@ -9,11 +9,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ensureDocxRender, findDocxRenderer, loadDocxPdf, type DocxRender } from "@/lib/docx-render";
 import { pickOpenPaths } from "@/lib/tauri";
 
-export function DocxRenderPanel({ projectId, baselineId, dirty, fontRevision = 0 }: {
+export function DocxRenderPanel({ projectId, baselineId, dirty, fontRevision = 0, fontsReady = true }: {
   projectId: string;
   baselineId: string;
   dirty: boolean;
   fontRevision?: number;
+  fontsReady?: boolean;
 }) {
   const { t } = useTranslation("researchTools");
   const text = t(($) => $.researchTools.docx.render, { returnObjects: true });
@@ -33,7 +34,7 @@ export function DocxRenderPanel({ projectId, baselineId, dirty, fontRevision = 0
   const render = useQuery({
     queryKey: ["docx-render", projectId, baselineId, executable, fontRevision, refreshRevision],
     queryFn: () => ensureDocxRender(projectId, baselineId, executable, fontRevision > 0 || refreshRevision > 0),
-    enabled: auto && executable !== "",
+    enabled: auto && executable !== "" && fontsReady,
     retry: false,
     staleTime: Infinity,
     refetchOnMount: "always",

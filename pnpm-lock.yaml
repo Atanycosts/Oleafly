@@ -34,6 +34,7 @@ overrides:
   '@tiptap/pm': 3.29.2
 
 patchedDependencies:
+  '@docx-editor.dev/core@2.36.0': 190988e7440462cef126fffd6b2eb4bf252cc54c3d8d00772a9330a0625aee50
   '@replit/codemirror-emacs@6.1.0': 31605a6ee08dd5a1893dc5d9700a882cb5aaf1f6abdd30d7e485c1bc9db94d00
   emscripten-wasm-loader@3.0.3: 8eebb0ec457e29444d0f4c2ee9e4e45a8932e088e09b12a6a099daad3251fb65
   hunspell-asm@4.0.2: f5634e1c2ed4fdf8fe6c238d5f6d3c9006136c951a3ecfadea19ef30c7092726
@@ -89,13 +90,13 @@ importers:
         version: 6.43.6
       '@docx-editor.dev/core':
         specifier: 2.36.0
-        version: 2.36.0(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1)
+        version: 2.36.0(patch_hash=190988e7440462cef126fffd6b2eb4bf252cc54c3d8d00772a9330a0625aee50)(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1)
       '@docx-editor.dev/fonts':
         specifier: 2.36.0
         version: 2.36.0
       '@docx-editor.dev/react':
         specifier: 2.36.0
-        version: 2.36.0(@docx-editor.dev/core@2.36.0(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        version: 2.36.0(@docx-editor.dev/core@2.36.0(patch_hash=190988e7440462cef126fffd6b2eb4bf252cc54c3d8d00772a9330a0625aee50)(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@lezer/common':
         specifier: ^1.5.2
         version: 1.5.2
@@ -6502,7 +6503,7 @@ snapshots:
       react: 19.3.0
       tslib: 2.8.1
 
-  '@docx-editor.dev/core@2.36.0(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1)':
+  '@docx-editor.dev/core@2.36.0(patch_hash=190988e7440462cef126fffd6b2eb4bf252cc54c3d8d00772a9330a0625aee50)(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1)':
     dependencies:
       '@docx-editor.dev/i18n': 2.36.0
       bidi-js: 1.1.0
@@ -6525,9 +6526,9 @@ snapshots:
 
   '@docx-editor.dev/i18n@2.36.0': {}
 
-  '@docx-editor.dev/react@2.36.0(@docx-editor.dev/core@2.36.0(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
+  '@docx-editor.dev/react@2.36.0(@docx-editor.dev/core@2.36.0(patch_hash=190988e7440462cef126fffd6b2eb4bf252cc54c3d8d00772a9330a0625aee50)(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
     dependencies:
-      '@docx-editor.dev/core': 2.36.0(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1)
+      '@docx-editor.dev/core': 2.36.0(patch_hash=190988e7440462cef126fffd6b2eb4bf252cc54c3d8d00772a9330a0625aee50)(@napi-rs/canvas@1.0.9)(pdf-lib@1.17.1)
       '@docx-editor.dev/i18n': 2.36.0
       '@radix-ui/react-select': 2.3.7(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       class-variance-authority: 0.7.1

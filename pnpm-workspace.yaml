@@ -78,6 +78,7 @@ overrides:
   "@tiptap/pm": 3.29.2
 
 patchedDependencies:
+  '@docx-editor.dev/core@2.36.0': patches/@docx-editor.dev__core@2.36.0.patch
   '@replit/codemirror-emacs@6.1.0': patches/@replit__codemirror-emacs@6.1.0.patch
   emscripten-wasm-loader@3.0.3: patches/emscripten-wasm-loader@3.0.3.patch
   hunspell-asm@4.0.2: patches/hunspell-asm@4.0.2.patch

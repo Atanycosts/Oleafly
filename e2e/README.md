@@ -238,7 +238,7 @@ separately. Live-model, attribution-recovery and font/layout flags are mutually 
 
 Add `OLEAFLY_DOCX_FONT_LAYOUT=1` to the isolated runner command above to run
 `131-docx-font-layout.spec.ts` in one launch. It requires installed Times New Roman
-regular/bold faces and network access to the existing PT Serif font-pack URLs. The
+regular, bold, italic and bold italic faces and network access to the existing PT Serif font-pack URLs. The
 isolated application cache must start without a standalone PT Serif face; a system TTC
 with that family does not satisfy the editor's current supported-source boundary.
 The test checks native font bytes/hash/metadata and observes the actual browser FontFace
@@ -267,10 +267,19 @@ PT Serif download. Cache modification times and native progress events verify no
 download. Local `7zz`/`7z` and tar are required; use Homebrew `sevenzip` on this Mac.
 The test reads back the retained real-manuscript PDF, checks supplied cache hashes and actual
 PDF font names separately, and inspects the embedded SimSun subset's version record.
+It also checks that all four exact Times New Roman sources reach the render profile,
+that both manuscripts' regular/bold subsets and the English manuscript's italic subset
+retain the resolved versions.
+Formula runs declaring unavailable Cambria Math can still use LibreOffice substitutes.
+Unused-face embedding is covered by the controlled four-face probe; supplied faces
+need not be embedded when the manuscript does not use them.
 The subset hash identifies the PDF subset, not the complete cached font. It also repeats
 the structural export check after font preparation and verifies reopen reuses a completed
 render. It then applies one permitted text edit through the existing Agent host, saves a new
 baseline with the workspace button and checks the saved DOCX structure and regenerated PDF.
+For the authorized English fixture, it checks the actual editor title/author widths and
+source order, both columns clearing the frame group, and retained layout after reopen and save.
+These checks do not change LibreOffice's separate title-frame importer limitations.
 System fonts are checked before acquisition, so this acceptance requires no existing
 standalone SimSun, SimHei, KaiTi or DengXian faces. It cannot establish same-version behavior
 when a machine has another version of the same family installed.

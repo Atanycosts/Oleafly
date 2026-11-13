@@ -21,6 +21,11 @@ scripts/update-tagging-status.mjs text eol=lf
 # Applied by the skill importer on every host. Blank context lines keep a space.
 scripts/skills/patches/*.patch text eol=lf whitespace=-blank-at-eol
 
+# The compiled DOCX patch includes upstream string-literal whitespace and is
+# SHA-256 pinned by pnpm. The readable source patch has spaced blank context lines.
+patches/@docx-editor.dev__core@2.36.0.patch -text whitespace=-blank-at-eol
+patches/docx-core/*.source.patch text eol=lf whitespace=-blank-at-eol
+
 
 src-tauri/resources/templates/**/*.tex text eol=lf
 src-tauri/resources/templates/**/*.typ text eol=lf

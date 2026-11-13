@@ -16,7 +16,7 @@ from research_file_workbench.projects.models import ProjectStoreError
 BUNDLE_VERSION = "s1-render-bundle-1.2.0"
 HISTORICAL_PAGE_BUNDLE_VERSION = "s1-render-bundle-1.1.0"
 SUPPORTED_BUNDLE_VERSIONS = frozenset({BUNDLE_VERSION, HISTORICAL_PAGE_BUNDLE_VERSION})
-DERIVED_RENDER_REPORT_VERSION = "libreoffice-headless-1.1.0"
+DERIVED_RENDER_REPORT_VERSION = "libreoffice-headless-1.2.0"
 
 
 def validate_render_bundle(

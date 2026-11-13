@@ -62,6 +62,23 @@ worlds/checks remain readable without re-executing an older method. Font rules r
 fonts or rendered glyphs. Exact font acquisition and live editor refresh belong to the
 [application status](../../../docs/agent/status.md#docx-准确字体获取2026-11-13), not this service.
 
+Document structure and journal rules have different coverage. The current
+[reader](../src/research_file_workbench/docx/reader.py) extracts package parts and
+relationships, text, tables, images, OMML and fields, sections, references, styles and
+numbering. Its [report](../src/research_file_workbench/docx/report.py) explicitly remains
+partial. Style observations follow `basedOn` for a few properties; they do not compute
+every paragraph/run's effective format through document defaults, theme, table,
+paragraph and character styles and direct formatting. Section body-size/spacing
+observations are dominant explicit declarations, not a resolved body-role model.
+The [journal property vocabulary](../src/research_file_workbench/journals/models.py)
+and [checker](../src/research_file_workbench/journals/checker.py) own the supported
+comparisons; retaining XML and editing with the full document engine does not expand
+those checks. Template observations remain candidates rather than mandatory rules.
+The next format-analysis increment should reuse the installed engine's public style
+cascade for a retained source version, preserve the applicable paragraph/run and
+property provenance, and distinguish role-specific requirements from template examples.
+That derived-format/checker connection is not implemented by the font/frame correction.
+
 The current private-font render gates passed Ruff format (213 Python files), Ruff lint,
 mypy (118 source files), and the full suite (1084 passed, 33 existing platform skips, five
 PyMuPDF/SWIG warnings). `node --check` passed for `app.js`, and all 18 contract JSON files parsed.
@@ -91,7 +108,7 @@ The same date adds the backend foundation for post-save rendering. `POST /api/re
 requires an exact retained baseline, an absolute LibreOffice executable and an explicit reason.
 The service selects its own profile parent below the Workbench library's `var/libreoffice-profile`
 and creates a private temporary profile for each conversion; HTTP callers cannot select a profile
-path. The native application supplies its existing font-cache roots through
+path. The native application supplies its download and exact-resolved font-cache roots through
 `OLEAFLY_FONT_DIRS`; HTTP and MCP callers do not choose font directories. Each render stages
 current TTF/OTF bytes into that private profile's `user/fonts` directory, deduplicates identical
 bytes by SHA-256, verifies available source receipts and refuses reparse-point roots, files and
@@ -99,14 +116,18 @@ receipts. It identifies the executable as LibreOffice, reads only the baseline a
 disposable project-local directory, runs headless PDF conversion, and checks the output page count
 before committing the PDF and render record through the existing project transaction. The manifest
 records the LibreOffice version, executable hash/path, private profile path, source/PDF identities
-and render times as `derived_render` evidence under report version
-`libreoffice-headless-1.1.0`. Its `supplied_fonts` records the cache bytes copied by hash;
+and render times as `derived_render` evidence under the method in the
+[render contract](../contracts/s1/render-bundle.json). Its `supplied_fonts` records the cache bytes copied by hash;
 `pdf_font_names` records names actually observed in the PDF. They are separate observations and
 do not establish that the PDF embedded the same complete bytes or version used by the live editor.
 The derived-render response also identifies the current font-cache content set, while each render
 retains the identity of the bytes actually supplied to it. Comparing those identities after a
 service restart prevents a PDF rendered against an older cache from being presented as current.
 Older records without that identity remain readable and are not treated as current-cache matches.
+The current method also invalidates earlier records that predate native system-font staging.
+The application retains exact resolved system faces and waits for font resolution before
+requesting a saved PDF. This gives the isolated renderer the same supplied Latin font bytes;
+PDF font names and embedded subset versions remain separate observations.
 `GET /api/derived-renders` lists those records for an explicit project baseline without mixing
 them into historical page bundles. The renderer deliberately keeps page images and page mapping
 absent and does not add the PDF to the interactive historical page-bundle list. A missing or
@@ -121,8 +142,8 @@ HTTP request path fields; the current HTTP contract is `journal-http-1.10.0`.
 
 The earlier Chinese macOS native run `run-XJihrW` passed extraction of four exact families
 from two official Microsoft packages, same-session font use, unchanged-DOCX saving and PDF
-generation using SimSun 5.04i and SimHei 5.03i. Final isolated E2E-packaged macOS runs `run-ilC23E` (Chinese)
-and `run-oknADL` (English) subsequently passed the cache-identity and actual-edit/save increment:
+generation using SimSun 5.04i and SimHei 5.03i. Earlier isolated E2E-packaged macOS runs `run-ilC23E` (Chinese)
+and `run-oknADL` (English) passed the cache-identity and actual-edit/save increment:
 normal reopen reused a completed compatible render without another conversion, then one supported
 Agent-host text edit was saved through the UI to a new baseline and regenerated as a PDF matching
 that saved source hash. The PDFs had 26/10 pages and actual SimSun 5.04i subsets; the Chinese
@@ -131,9 +152,11 @@ protected nodes, with one intended text change and unchanged author hashes. The 
 E2E WebKit storage and stopped its app/Workbench processes. Evidence remains local and ignored
 under `.private/docx-font-layout/` at the repository root. These deterministic edits do not validate
 model quality. Microsoft archives were reused from verified complete cache, while PT Serif was
-downloaded over the network. Liberation Serif substitutions remain; KaiTi and DengXian were
-supplied but were not observed as fonts actually used by these PDFs. Cross-engine visual
-equivalence remains unverified.
+downloaded over the network. These runs predate exact system-font staging and the editor's
+multi-column frame correction. Current native results and the remaining LibreOffice
+title-frame and formula-font limits are owned by the linked application status.
+KaiTi and DengXian were supplied but were not observed as fonts actually used by these PDFs.
+Cross-engine visual equivalence remains unverified.
 
 Current observation IDs still bind the exact source hash, reader method and locator. A synthetic
 ZIP-comment-only update retained all package parts and text while changing all 32 catalog IDs;
