@@ -57,9 +57,10 @@ it("serves packaged DOCX font bytes from their real asset URL in development", a
 it("loads async DOCX dependencies and preserves UTF-8, escaped LaTeX JSON and license comments", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "oleafly-async-module-"));
   try {
-    writeFileSync(path.join(root, "entry.js"), 'export const load = () => import("./engine.js");');
+    writeFileSync(path.join(root, "entry.js"), 'export const load = () => import("./engine.js"); export const loadReader = () => import("./reader.js");');
     const catalog = { detail: "Use \\usepackage[english]{babel} and \\ref{source}." };
     writeFileSync(path.join(root, "engine.js"), `/*! @license DOCX fixture */\nexport const text = await Promise.resolve("中文正文");\nexport const catalog = JSON.parse(${JSON.stringify(JSON.stringify(catalog))});`);
+    writeFileSync(path.join(root, "reader.js"), 'import { text, catalog } from "./engine.js"; export const page = { text, catalog };');
     await build({
       configFile: false,
       root,
@@ -82,6 +83,7 @@ it("loads async DOCX dependencies and preserves UTF-8, escaped LaTeX JSON and li
     const engine = await entry.load();
     expect(engine.text).toBe("中文正文");
     expect(engine.catalog).toEqual(catalog);
+    expect((await entry.loadReader()).page).toEqual({ text: "中文正文", catalog });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

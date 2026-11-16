@@ -156,7 +156,20 @@ alongside esbuild, so a fresh pnpm install completes without an ignored-build er
 The adapter preserves distribution comments and UTF-8 catalogs, keeps the engine
 out of the startup graph, and retains the PDF polyfill import order. Verify with
 `src/lib/vite-config.test.ts`, a production build and `pnpm check:performance`.
-Large frontend builds on this Mac need `NODE_OPTIONS=--max-old-space-size=8192`.
+The desktop and browser builds use one Terser worker to limit peak memory.
+On macOS, builds from the same checkout queue automatically, including direct
+Vite invocations from independent agent chats. They run at reduced CPU priority
+so interactive applications get preference. Keep Rust compilation and broad
+typechecking separate from frontend builds on a 16 GB machine. The scoped
+[`vite-plugin-top-level-await` patch](../patches/vite-plugin-top-level-await@1.6.0.patch)
+retains compact dependency facts and processes chunk ASTs sequentially instead
+of retaining every chunk's AST at once. Provider/search icons import their
+rendered variants directly so unused brands and UI components never enter the
+build graph. After updating the async plugin, regenerate its pnpm patch and
+verify async dependency loading with `src/lib/vite-config.test.ts`.
+Large desktop builds still need a larger Node heap; use
+`NODE_OPTIONS=--max-old-space-size=6144 pnpm build`. This limits the JavaScript
+heap, not the build process's total memory.
 The font package is excluded from Vite's development dependency optimizer: its
 `import.meta.url` assets must resolve beside the installed package, rather than
 under `.vite/assets` where missing fonts can return the HTML fallback with status 200.

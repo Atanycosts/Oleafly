@@ -1,0 +1,90 @@
+diff --git a/dist/bundle-info.d.ts b/dist/bundle-info.d.ts
+index cd16d05c1dfc759a36a3f16a7a2b24acb1623284..bc730b44a18226878ad90d6833bb85a937f0cba9 100644
+--- a/dist/bundle-info.d.ts
++++ b/dist/bundle-info.d.ts
+@@ -6,5 +6,9 @@ export interface ModuleInfo {
+     transformNeeded: boolean;
+ }
+ export type BundleInfo = Record<string, ModuleInfo>;
+-export declare function parseBundleAsts(bundleChunks: Record<string, string>): Promise<Record<string, SWC.Module>>;
+-export declare function parseBundleInfo(bundleAsts: Record<string, SWC.Module>): Promise<BundleInfo>;
++type ChunkFacts = {
++    body: SWC.Module["body"];
++    highestPattern: import("./find").CodePattern | null;
++};
++export declare function parseBundleAsts(bundleChunks: Record<string, string>): Promise<Record<string, ChunkFacts>>;
++export declare function parseBundleInfo(bundleAsts: Record<string, ChunkFacts>): Promise<BundleInfo>;
+diff --git a/dist/bundle-info.js b/dist/bundle-info.js
+index fec6ef5417214d2b612f685790279253daf7bdf0..01c7d2540b9fc975661a7f51ba92e8b9157aac31 100644
+--- a/dist/bundle-info.js
++++ b/dist/bundle-info.js
+@@ -39,13 +39,22 @@ const SWC = __importStar(require("./swc"));
+ const find_1 = require("./find");
+ const resolve_import_1 = require("./utils/resolve-import");
+ async function parseBundleAsts(bundleChunks) {
+-    return Object.fromEntries(await Promise.all(Object.entries(bundleChunks).map(async ([filename, code]) => [
+-        filename,
+-        await SWC.parse(code, {
++    // Keep compact graph facts for all chunks, not all of their ASTs. Large
++    // application bundles otherwise retain several GB of SWC JSON objects.
++    const bundleAsts = {};
++    for (const [filename, code] of Object.entries(bundleChunks)) {
++        const ast = await SWC.parse(code, {
+             syntax: "ecmascript",
+             target: "es2022"
+-        })
+-    ])));
++        });
++        const highestPattern = (0, find_1.findHighestPattern)(ast);
++        bundleAsts[filename] = {
++            body: ast.body.filter(item => item.type === "ImportDeclaration" ||
++                (item.type === "ExportNamedDeclaration" && item.source)),
++            highestPattern
++        };
++    }
++    return bundleAsts;
+ }
+ async function parseBundleInfo(bundleAsts) {
+     const bundleInfo = Object.fromEntries(Object.keys(bundleAsts).map(moduleName => [
+@@ -79,7 +88,7 @@ async function parseBundleInfo(bundleAsts) {
+                 console.warn(`[vite-plugin-top-level-await] Non-existing module ${JSON.stringify(importedModuleName)} imported by ${JSON.stringify(moduleName)}, ignoring.`);
+             }
+         });
+-        const highestPattern = (0, find_1.findHighestPattern)(ast);
++        const highestPattern = ast.highestPattern;
+         moduleInfo.transformNeeded =
+             highestPattern === find_1.CodePattern.TopLevelAwait || highestPattern === find_1.CodePattern.DynamicImport;
+         moduleInfo.withTopLevelAwait = highestPattern === find_1.CodePattern.TopLevelAwait;
+diff --git a/dist/index.js b/dist/index.js
+index c9a0a5f8d5ea1c6619f55582a049ddb6f94113f0..f3db4f7f67026b21935075b030a9b1e4e258d45d 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -108,20 +108,24 @@ function topLevelAwait(options) {
+                 .map(([key, item]) => [key, item.code]));
+             const bundleAsts = await (0, bundle_info_1.parseBundleAsts)(bundleChunks);
+             const bundleInfo = await (0, bundle_info_1.parseBundleInfo)(bundleAsts);
+-            await Promise.all(Object.keys(bundleChunks).map(async (moduleName) => {
++            for (const moduleName of Object.keys(bundleChunks)) {
+                 if (!bundleInfo[moduleName].transformNeeded) {
+                     if (buildTarget !== "esnext") {
+                         bundle[moduleName].code = await buildRawTarget(bundleChunks[moduleName]);
+                     }
+-                    return;
++                    continue;
+                 }
+-                const newAst = (0, transform_1.transformModule)(bundleChunks[moduleName], bundleAsts[moduleName], moduleName, bundleInfo, resolvedOptions);
++                const ast = await SWC.parse(bundleChunks[moduleName], {
++                    syntax: "ecmascript",
++                    target: "es2022"
++                });
++                const newAst = (0, transform_1.transformModule)(bundleChunks[moduleName], ast, moduleName, bundleInfo, resolvedOptions);
+                 let code = SWC.printSync(newAst, { minify }).code;
+                 if (buildTarget !== "esnext") {
+                     code = await buildRawTarget(code);
+                 }
+                 bundle[moduleName].code = code;
+-            }));
++            }
+             if (isWorker && isWorkerIifeRequested) {
+                 // Get the entry chunk
+                 const chunkNames = Object.keys(bundle).filter(key => bundle[key].type === "chunk");

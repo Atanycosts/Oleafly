@@ -82,3 +82,4 @@ patchedDependencies:
   '@replit/codemirror-emacs@6.1.0': patches/@replit__codemirror-emacs@6.1.0.patch
   emscripten-wasm-loader@3.0.3: patches/emscripten-wasm-loader@3.0.3.patch
   hunspell-asm@4.0.2: patches/hunspell-asm@4.0.2.patch
+  vite-plugin-top-level-await@1.6.0: patches/vite-plugin-top-level-await@1.6.0.patch

@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import topLevelAwait from "vite-plugin-top-level-await";
-import { minify } from "terser";
+import { minify_sync } from "terser";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -18,6 +18,7 @@ import {
   assertNoTauriStyleNonceTriggers,
 } from "./scripts/production-hook-audit.mjs";
 import { tailwindPropertiesFallbackPlugin } from "./src/build/tailwind-properties-fallback";
+import { serializeMacosBuild } from "./src/build/serialize-macos-build";
 
 // Tauri expects a fixed port; if that's not available it will attempt the next one.
 const host = process.env.TAURI_DEV_HOST;
@@ -59,11 +60,13 @@ export function docxAsyncInitialization(): Plugin {
       config.build = { ...config.build, target: upstream.build.target };
       return result;
     },
-    async renderChunk(code, chunk) {
+    renderChunk(code, chunk) {
       const comments = new Set<string>();
       // SWC's async transform drops comments. Collect actual parsed comments
       // before it runs so distribution notices survive in transformed chunks.
-      await minify(code, {
+      // The synchronous API releases each AST before Rollup starts another
+      // render hook; Terser's async wrapper otherwise retains them in promises.
+      minify_sync(code, {
         module: true,
         compress: false,
         mangle: false,
@@ -82,13 +85,14 @@ export function docxAsyncInitialization(): Plugin {
     async generateBundle(options, bundle, isWrite) {
       await handler?.call(this, options, bundle, isWrite);
       // The upstream plugin lowers async modules and then reprints every chunk
-      // with esbuild. Restore our UTF-8 minification and legal-comment policy.
+      // with esbuild. Vite already compressed these chunks before this hook;
+      // restore compact UTF-8 output without repeating its compression passes.
       for (const item of Object.values(bundle)) {
         if (item.type !== "chunk") continue;
-        const result = await minify(item.code, {
+        const result = minify_sync(item.code, {
           module: true,
           ecma: 2020,
-          compress: { passes: 4 },
+          compress: false,
           format: { comments: false },
         });
         item.code = [...(notices.get(item.moduleIds.join("\n")) ?? [])].join("\n") + "\n" + result.code;
@@ -252,6 +256,7 @@ export const rejectProductionDevHooks = (): Plugin => ({
 
 export default defineConfig(async () => ({
   plugins: [
+    serializeMacosBuild(__dirname),
     react(),
     tailwindcss(),
     tailwindPropertiesFallbackPlugin(),
@@ -323,6 +328,9 @@ export default defineConfig(async () => ({
     },
     minify: "terser" as const,
     terserOptions: {
+      // Each Terser worker retains its own AST/heap. One worker keeps a large
+      // desktop build from competing with the app and browser for memory.
+      maxWorkers: 1,
       ecma: 2020 as const,
       compress: {
         passes: 4,

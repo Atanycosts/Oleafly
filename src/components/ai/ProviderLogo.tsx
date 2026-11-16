@@ -1,46 +1,41 @@
-import {
-  OpenAI,
-  Anthropic,
-  Gemini,
-  Groq,
-  OpenRouter,
-  DeepSeek,
-  Mistral,
-  Grok,
-  Ollama,
-  Perplexity,
-  ZAI,
-  Qwen,
-  Kimi,
-  Zhipu,
-  SiliconCloud,
-  Volcengine,
-} from "@lobehub/icons";
+import OpenAI from "@lobehub/icons/es/OpenAI/components/Mono";
+import Anthropic from "@lobehub/icons/es/Anthropic/components/Mono";
+import Gemini from "@lobehub/icons/es/Gemini/components/Color";
+import Groq from "@lobehub/icons/es/Groq/components/Mono";
+import OpenRouter from "@lobehub/icons/es/OpenRouter/components/Color";
+import DeepSeek from "@lobehub/icons/es/DeepSeek/components/Color";
+import Mistral from "@lobehub/icons/es/Mistral/components/Color";
+import Grok from "@lobehub/icons/es/Grok/components/Mono";
+import Ollama from "@lobehub/icons/es/Ollama/components/Mono";
+import Perplexity from "@lobehub/icons/es/Perplexity/components/Color";
+import ZAI from "@lobehub/icons/es/ZAI/components/Mono";
+import Qwen from "@lobehub/icons/es/Qwen/components/Color";
+import Kimi from "@lobehub/icons/es/Kimi/components/Mono";
+import Zhipu from "@lobehub/icons/es/Zhipu/components/Color";
+import SiliconCloud from "@lobehub/icons/es/SiliconCloud/components/Color";
+import Volcengine from "@lobehub/icons/es/Volcengine/components/Color";
 import type { IconType } from "@lobehub/icons";
 
-// Provider id -> lobe icon. Brands that ship a distinct multi-color mark use
-// their `.Color` subcomponent; brands whose official mark is already a
-// single color (OpenAI, Anthropic, Groq, Grok/xAI, Ollama) use the default
-// export directly, since those have no `.Color` member in @lobehub/icons.
-// Kimi's `.Color` draws a white K that vanishes on light themes, so it uses
-// the single-color mark too.
+// Import only the marks we render: the package barrel loads every brand and
+// its Avatar/Text variants into the build graph. Kimi uses its single-color
+// mark because its Color variant draws a white K on light themes.
 const ICONS: Record<string, IconType> = {
   openai: OpenAI,
   anthropic: Anthropic,
-  google: Gemini.Color,
+  google: Gemini,
   groq: Groq,
-  openrouter: OpenRouter.Color,
-  deepseek: DeepSeek.Color,
-  mistral: Mistral.Color,
+  openrouter: OpenRouter,
+  deepseek: DeepSeek,
+  mistral: Mistral,
   xai: Grok,
   ollama: Ollama,
-  perplexity: Perplexity.Color,
+  perplexity: Perplexity,
   zai: ZAI,
-  qwen: Qwen.Color,
+  qwen: Qwen,
   kimi: Kimi,
-  zhipu: Zhipu.Color,
-  siliconflow: SiliconCloud.Color,
-  "volcengine-ark": Volcengine.Color,
+  zhipu: Zhipu,
+  siliconflow: SiliconCloud,
+  "volcengine-ark": Volcengine,
 };
 
 const MONO_COLORS = ["#e11d48", "#0ea5e9", "#16a34a", "#a855f7", "#f59e0b", "#64748b"];
