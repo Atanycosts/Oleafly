@@ -108,6 +108,34 @@ pub fn apply_typst_fixup(path: &Path) -> Result<(), DocError> {
     Ok(())
 }
 
+fn content_loss_report(log: &str) -> Vec<String> {
+    crate::conversion::pandoc_diagnostics(log)
+        .into_iter()
+        .filter(|entry| {
+            entry.starts_with("Could not convert TeX math")
+                || entry.starts_with("Could not convert math")
+                || entry.starts_with("Skipped '")
+                    && [
+                        "\\begin{algorithm",
+                        "\\end{algorithm",
+                        "\\KwIn",
+                        "\\KwOut",
+                        "\\KwRet",
+                        "\\For",
+                        "\\While",
+                        "\\If",
+                        "\\Else",
+                        "\\Return",
+                        "\\begin{tikzpicture",
+                        "\\includegraphics",
+                    ]
+                    .iter()
+                    .any(|command| entry["Skipped '".len()..].starts_with(command))
+        })
+        .take(crate::conversion::MAX_REPORT_LINES)
+        .collect()
+}
+
 pub async fn run_export_pandoc(
     runner: &dyn ToolRunner,
     pandoc: &Path,
@@ -164,18 +192,30 @@ pub async fn run_export_pandoc(
         filter: filter.as_ref().map(ExportFilter::argument),
         bibliographies: &bibliographies,
     };
-    let args = export_args(job.format, &source, job.output, Some(&citations)).ok_or_else(|| {
-        DocError::new(
-            "export.unsupported_format",
-            format!("unsupported export format: {}", job.format),
-        )
-    })?;
+    let mut args =
+        export_args(job.format, &source, job.output, Some(&citations)).ok_or_else(|| {
+            DocError::new(
+                "export.unsupported_format",
+                format!("unsupported export format: {}", job.format),
+            )
+        })?;
+    if renders {
+        args.insert(0, "--verbose".into());
+    }
     let variables = vec![("TEXINPUTS".to_string(), texinputs)];
     let outcome = runner.run(pandoc, &args, job.root, &variables).await;
     drop(filter);
     let (log, code) = outcome.map_err(DocError::other)?;
     if code != Some(0) {
         return Err(export_failure(&log, job.root));
+    }
+    if renders {
+        let losses = content_loss_report(&log);
+        if !losses.is_empty() {
+            return Err(DocError::new("export.conversion_loss", format!(
+                "Export stopped because Pandoc could not preserve mathematical or structured content:\n{}", losses.join("\n")
+            )));
+        }
     }
     if job.format == "typst" {
         apply_typst_fixup(Path::new(job.output))?;
@@ -186,6 +226,129 @@ pub async fn run_export_pandoc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_content_losses_keep_diagnostics_and_ignore_unrelated_warnings() {
+        let log = "[WARNING] Could not deduce format from file extension\n\
+                   [WARNING] This document format requires a nonempty title element\n\
+                   [INFO] Skipped '\\centering' at source.tex line 1 column 10\n\
+                   [INFO] Skipped '\\begin{algorithm}' at source.tex line 2 column 18\n\
+                   [WARNING] Could not convert TeX math \\Unknown{x}, rendering as TeX:\n\
+                   \x20 unexpected control sequence \\Unknown\n";
+        assert_eq!(
+            content_loss_report(log),
+            vec![
+                "Skipped '\\begin{algorithm}' at line 2 column 18",
+                "Could not convert TeX math \\Unknown{x}, rendering as TeX:",
+            ]
+        );
+    }
+
+    struct ExportRunner {
+        log: String,
+    }
+
+    impl ToolRunner for ExportRunner {
+        fn run<'a>(
+            &'a self,
+            _program: &'a Path,
+            args: &'a [String],
+            _working_dir: &'a Path,
+            _variables: &'a [(String, String)],
+        ) -> crate::RunFuture<'a> {
+            assert_eq!(args.first().map(String::as_str), Some("--verbose"));
+            Box::pin(async move { Ok((self.log.clone(), Some(0))) })
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_export_process_does_not_hide_math_conversion_loss() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("main.tex"), "\\[x\\]").unwrap();
+        for (log, loss) in [
+            (
+                "[WARNING] Could not convert TeX math \\Unknown{x}, rendering as TeX:\n",
+                true,
+            ),
+            (
+                "[INFO] Skipped '\\begin{algorithm}' at source.tex line 1 column 18\n",
+                true,
+            ),
+            (
+                "[WARNING] This document format requires a nonempty title element\n",
+                false,
+            ),
+        ] {
+            let result = run_export_pandoc(
+                &ExportRunner { log: log.into() },
+                Path::new("pandoc"),
+                ExportJob {
+                    root: root.path(),
+                    build_dir: None,
+                    main_doc: "main.tex",
+                    format: "docx",
+                    output: "output.docx",
+                    staging_dir: None,
+                    temp_dir: Some(root.path()),
+                },
+            )
+            .await;
+            if loss {
+                let error = result.unwrap_err();
+                assert_eq!(error.code, "export.conversion_loss");
+                assert!(error.message.contains("Pandoc"));
+                assert!(error.message.contains(if log.contains("Unknown") {
+                    "\\Unknown{x}"
+                } else {
+                    "algorithm"
+                }));
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_export_process_checks_losses_after_the_report_limit() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("main.tex"), "\\[x\\]").unwrap();
+        let ordinary: String = (0..=crate::conversion::MAX_REPORT_LINES)
+            .map(|line| {
+                format!("[INFO] Skipped '\\centering' at source.tex line {line} column 1\n")
+            })
+            .collect();
+        for loss in [
+            "[WARNING] Could not convert TeX math \\Unknown{x}, rendering as TeX:\n",
+            "[INFO] Skipped '\\begin{algorithm}' at source.tex line 999 column 1\n",
+        ] {
+            let log = format!("{ordinary}{loss}");
+            assert!(!crate::conversion::pandoc_report(&log)
+                .iter()
+                .any(|entry| entry.contains("Unknown") || entry.contains("algorithm")));
+            let error = run_export_pandoc(
+                &ExportRunner { log },
+                Path::new("pandoc"),
+                ExportJob {
+                    root: root.path(),
+                    build_dir: None,
+                    main_doc: "main.tex",
+                    format: "docx",
+                    output: "output.docx",
+                    staging_dir: None,
+                    temp_dir: Some(root.path()),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, "export.conversion_loss");
+            assert!(error.message.contains(if loss.contains("Unknown") {
+                "\\Unknown{x}"
+            } else {
+                "algorithm"
+            }));
+            assert!(!error.message.contains("centering"));
+        }
+    }
 
     #[test]
     fn search_paths_list_the_main_folder_first() {

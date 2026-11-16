@@ -248,12 +248,19 @@ fn skipped_report(head: &str, position: Option<&str>) -> String {
 }
 
 fn push_report_entry(entry: String, entries: &mut Vec<String>) {
-    if !entry.is_empty() && !entries.contains(&entry) && entries.len() < MAX_REPORT_LINES {
+    if !entry.is_empty() && !entries.contains(&entry) {
         entries.push(entry);
     }
 }
 
 pub fn pandoc_report(log: &str) -> Vec<String> {
+    pandoc_diagnostics(log)
+        .into_iter()
+        .take(MAX_REPORT_LINES)
+        .collect()
+}
+
+pub(crate) fn pandoc_diagnostics(log: &str) -> Vec<String> {
     let mut entries: Vec<String> = Vec::new();
     let mut warning: Option<String> = None;
     let mut warning_closed = false;
@@ -1029,6 +1036,7 @@ mod tests {
             .map(|line| format!("[INFO] Skipped '\\x{line}' at source.tex line {line} column 1\n"))
             .collect();
         assert_eq!(pandoc_report(&many).len(), MAX_REPORT_LINES);
+        assert_eq!(pandoc_diagnostics(&many).len(), 400);
     }
 
     #[test]
