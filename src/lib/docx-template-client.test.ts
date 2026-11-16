@@ -5,10 +5,10 @@ import type { JournalProject } from "./journal-workbench";
 
 const api = vi.hoisted(() => ({ invoke: vi.fn(), request: vi.fn(), load: vi.fn(), open: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: api.invoke }));
-vi.mock("./journal-workbench", () => ({ journalRequest: api.request }));
+vi.mock("./journal-workbench", async (original) => ({ ...await original<typeof import("./journal-workbench")>(), journalRequest: api.request }));
 vi.mock("./docx-workbench", () => ({ loadDocxSource: api.load }));
 vi.mock("./docx-format", () => ({ openDocxFormatFacts: api.open }));
-import { checkJournalTemplate, importJournalTemplate, retainDocxFormat } from "./docx-template-client";
+import { checkJournalTemplate, importJournalTemplate, loadTemplateSource, retainDocxFormat, startTemplateWorkingCopy } from "./docx-template-client";
 
 const bytes = new Uint8Array([80, 75, 3, 4]);
 const snapshot = { source_sha256: "normalized-hash" } as DocxFormatSnapshotV1;
@@ -52,4 +52,25 @@ it("rechecks the exact saved baseline and explicit world using binding CAS", asy
     project_id: "paper", expected_baseline_id: "baseline-two", world_version_id: "world-selected",
     expected_binding_id: "binding-old", request_id: expect.stringMatching(/^template-check-/), origin: { surface: "agent" },
   });
+});
+
+it("starts a template draft from retained server bytes with a stable retry ID", async () => {
+  await startTemplateWorkingCopy("world-selected", "Draft", "start-fixed");
+  expect(api.request).toHaveBeenCalledExactlyOnceWith("/api/template-copy", {
+    world_version_id: "world-selected", name: "Draft", request_id: "start-fixed",
+  });
+  expect(api.invoke).not.toHaveBeenCalled();
+  expect(api.load).not.toHaveBeenCalled();
+});
+
+it("reads one selected retained template and rejects source hash or world substitution", async () => {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.buffer));
+  const sourceSha256 = Array.from(digest, value => value.toString(16).padStart(2, "0")).join("");
+  api.request.mockResolvedValue({ world_version_id: "world-selected", source_sha256: sourceSha256, content_base64: bytesToBase64(bytes) });
+  expect(await loadTemplateSource("world-selected")).toEqual({ worldVersionId: "world-selected", sourceSha256, bytes });
+  expect(api.request).toHaveBeenCalledWith("/api/template-source?world_version_id=world-selected");
+  api.request.mockResolvedValue({ world_version_id: "other", source_sha256: sourceSha256, content_base64: bytesToBase64(bytes) });
+  await expect(loadTemplateSource("world-selected")).rejects.toThrow("another world");
+  api.request.mockResolvedValue({ world_version_id: "world-selected", source_sha256: "0".repeat(64), content_base64: bytesToBase64(bytes) });
+  await expect(loadTemplateSource("world-selected")).rejects.toThrow("source hash");
 });

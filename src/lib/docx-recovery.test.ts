@@ -142,3 +142,20 @@ it("stores task attribution and a fixed save with the exact checkpoint bytes", a
   await resumeDocxRecovery(METADATA, { ...document, sessionId: "new", sessionRevision: 0, savedRevision: -1 });
   expect(transport.invoke).toHaveBeenLastCalledWith("docx_recovery_resume", { request: { recoveryKey: METADATA.recoveryKey, contentSha256: METADATA.contentSha256 }, document: { ...document, sessionId: "new", sessionRevision: 0, savedRevision: -1 } });
 });
+
+it("freezes the initiating save operation with the fixed request before its receipt exists", async () => {
+  const { recoveryPendingSave } = await import("./docx-recovery");
+  const document = { sessionId: "original", appProjectId: IDENTITY.appProjectId, workbenchProjectId: IDENTITY.workbenchProjectId,
+    baselineId: IDENTITY.baseBaselineId, sourceSha256: IDENTITY.sourceSha256, sessionRevision: 4, savedRevision: 0 };
+  const operation = { operationId: "save-intent", document };
+  const save = { project_id: IDENTITY.workbenchProjectId, expected_baseline_id: IDENTITY.baseBaselineId,
+    filename: "paper.docx", reason: "Agent save", request_id: "fixed", revision: 4, content_base64: "UEsDBA==" };
+  const pendingSave = recoveryPendingSave(save, operation);
+  expect(pendingSave).toEqual({ projectId: save.project_id, expectedBaselineId: save.expected_baseline_id,
+    filename: save.filename, reason: save.reason, requestId: save.request_id, revision: save.revision, operation });
+  const taskState = { document, applied: [], receipts: [], operations: [], pendingSave };
+  await saveDocxRecovery(IDENTITY, 4, Uint8Array.from([80, 75, 3, 4]).buffer, taskState);
+  expect(transport.invoke).toHaveBeenLastCalledWith("docx_recovery_save", {
+    request: expect.objectContaining({ taskState: expect.objectContaining({ pendingSave: expect.objectContaining({ operation }) }) }),
+  });
+});

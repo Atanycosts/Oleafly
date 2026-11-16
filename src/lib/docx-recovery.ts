@@ -18,6 +18,11 @@ export interface DocxRecoveryOperation {
   result: Record<string, unknown>;
 }
 
+export interface DocxRecoverySaveOperation {
+  operationId: string;
+  document: DocxDocumentIdentity;
+}
+
 export interface DocxRecoveryTaskState {
   document: DocxDocumentIdentity;
   applied: DocxRecoveryApplied[];
@@ -26,12 +31,14 @@ export interface DocxRecoveryTaskState {
   pendingSave?: {
     projectId: string; expectedBaselineId: string; filename: string;
     reason: string; requestId: string; revision: number;
+    operation?: DocxRecoverySaveOperation;
   };
 }
 
-export function recoveryPendingSave(save: DocxSave): NonNullable<DocxRecoveryTaskState["pendingSave"]> {
+export function recoveryPendingSave(save: DocxSave, operation?: DocxRecoverySaveOperation): NonNullable<DocxRecoveryTaskState["pendingSave"]> {
   return { projectId: save.project_id, expectedBaselineId: save.expected_baseline_id,
-    filename: save.filename, reason: save.reason, requestId: save.request_id, revision: save.revision };
+    filename: save.filename, reason: save.reason, requestId: save.request_id, revision: save.revision,
+    ...(operation ? { operation: { operationId: operation.operationId, document: { ...operation.document } } } : {}) };
 }
 
 export interface DocxRecoveryIdentity {

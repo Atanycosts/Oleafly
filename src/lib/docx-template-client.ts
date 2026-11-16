@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { base64ToBytes, bytesToBase64 } from "@/lib/base64";
 import { loadDocxSource } from "@/lib/docx-workbench";
-import { journalRequest, type JournalCheck, type JournalProject, type JournalScope, type JournalWorld } from "@/lib/journal-workbench";
+import { journalQuery, journalRequest, type JournalCheck, type JournalProject, type JournalScope, type JournalWorld } from "@/lib/journal-workbench";
 import type { DocxFormatSnapshotV1 } from "@/lib/docx-format-types";
 
 export interface NormalizedJournalTemplate {
@@ -32,6 +32,35 @@ export async function importJournalTemplate(
   if (snapshot.source_sha256 !== normalized.source_sha256) throw new Error("The normalized template identity changed during import.");
   return journalRequest<JournalWorld>("/api/template-world", {
     ...context, original: normalized.original, normalized: normalized.normalized, snapshot, sources,
+  });
+}
+
+export interface TemplateWorkingCopy {
+  project: JournalProject;
+  origin: { request_id: string; world_version_id: string; baseline_id: string; source_sha256: string };
+}
+
+export async function loadTemplateSource(worldVersionId: string): Promise<{
+  worldVersionId: string; sourceSha256: string; bytes: Uint8Array;
+}> {
+  const source = await journalRequest<{ world_version_id: string; source_sha256: string; content_base64: string }>(
+    journalQuery("/api/template-source", { world_version_id: worldVersionId }),
+  );
+  if (source.world_version_id !== worldVersionId) throw new Error("The template source belongs to another world version.");
+  const bytes = base64ToBytes(source.content_base64);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes).buffer));
+  const sha256 = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
+  if (sha256 !== source.source_sha256) throw new Error("The retained template bytes do not match their source hash.");
+  return { worldVersionId, sourceSha256: sha256, bytes };
+}
+
+export function startTemplateWorkingCopy(
+  worldVersionId: string,
+  name: string,
+  requestId: string,
+): Promise<TemplateWorkingCopy> {
+  return journalRequest("/api/template-copy", {
+    world_version_id: worldVersionId, name, request_id: requestId,
   });
 }
 
