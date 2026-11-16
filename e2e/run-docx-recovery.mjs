@@ -20,6 +20,9 @@ const liveTask = Boolean(process.env.OLEAFLY_DOCX_LIVE_URL);
 const attributionRecovery = process.env.OLEAFLY_DOCX_ATTRIBUTION_RECOVERY === "1";
 const fontLayout = process.env.OLEAFLY_DOCX_FONT_LAYOUT === "1";
 const templateAcceptance = process.env.OLEAFLY_DOCX_TEMPLATE === "1";
+const templateLive = process.env.OLEAFLY_WORD_TEMPLATE_LIVE === "1";
+const manuscriptLive = process.env.OLEAFLY_WORD_MANUSCRIPT_LIVE === "1";
+const interactionPerformance = process.env.OLEAFLY_WORD_INTERACTION_PERFORMANCE === "1";
 const templateInput = process.env.OLEAFLY_JOURNAL_TEMPLATE;
 const templateInputHash = process.env.OLEAFLY_JOURNAL_TEMPLATE_SHA256;
 const englishInput = process.env.OLEAFLY_NATIVE_DOCX_EN;
@@ -27,7 +30,9 @@ const englishInputHash = process.env.OLEAFLY_NATIVE_DOCX_EN_SHA256;
 const chineseInput = process.env.OLEAFLY_NATIVE_DOCX_ZH;
 const chineseInputHash = process.env.OLEAFLY_NATIVE_DOCX_ZH_SHA256;
 const fontPackages = fontLayout || templateAcceptance ? process.env.OLEAFLY_FONT_SOURCE_EVIDENCE : undefined;
-if ([liveTask, attributionRecovery, fontLayout, templateAcceptance].filter(Boolean).length > 1) throw new Error("Choose one isolated DOCX acceptance mode.");
+if (templateLive && manuscriptLive) throw new Error("Choose title repair or whole-manuscript live acceptance.");
+if ((templateLive || manuscriptLive) && (!templateAcceptance || !liveTask || attributionRecovery || fontLayout || interactionPerformance)) throw new Error("Word live acceptance needs template and live provider modes together.");
+if (!templateLive && !manuscriptLive && [liveTask, attributionRecovery, fontLayout, templateAcceptance, interactionPerformance].filter(Boolean).length > 1) throw new Error("Choose one isolated DOCX acceptance mode.");
 const liveUpstream = liveTask ? new URL(process.env.OLEAFLY_DOCX_LIVE_URL) : undefined;
 if (liveUpstream && (liveUpstream.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(liveUpstream.hostname)
     || liveUpstream.username || liveUpstream.password || liveUpstream.search || liveUpstream.hash)) {
@@ -100,7 +105,7 @@ if (templateAcceptance) {
   }
 }
 
-const parent = resolve(templateAcceptance ? ".private/journal-template-native" : fontLayout ? ".private/docx-font-layout" : liveTask ? ".private/docx-task-live" : attributionRecovery ? ".private/docx-task-recovery" : ".private/docx-recovery-native");
+const parent = resolve(manuscriptLive ? ".private/whole-manuscript" : interactionPerformance ? ".private/material-workspace/performance" : templateAcceptance ? ".private/journal-template-native" : fontLayout ? ".private/docx-font-layout" : liveTask ? ".private/docx-task-live" : attributionRecovery ? ".private/docx-task-recovery" : ".private/docx-recovery-native");
 await mkdir(parent, { recursive: true });
 const run = await mkdtemp(join(parent, "run-"));
 const data = join(run, "data");
@@ -201,7 +206,7 @@ async function record() {
   await writeFile(join(run, "runner.json"), JSON.stringify({
     outcome,
     failure,
-    mode: templateAcceptance ? "journal-template-native" : fontLayout ? "font-layout" : liveTask ? "live-task" : attributionRecovery ? "attribution-recovery" : "recovery",
+    mode: manuscriptLive ? "word-manuscript-live" : interactionPerformance ? "interaction-performance" : templateAcceptance ? "journal-template-native" : fontLayout ? "font-layout" : liveTask ? "live-task" : attributionRecovery ? "attribution-recovery" : "recovery",
     inputs: templateAcceptance
       ? [
           ...inputs,
@@ -292,6 +297,7 @@ const environment = {
   OLEAFLY_E2E_PRODUCTION: "1",
   OLEAFLY_DOCX_RECOVERY_RUN: run,
   ...(liveTask ? { OLEAFLY_DOCX_LIVE_RUN: run } : {}),
+  ...(manuscriptLive ? { OLEAFLY_WORD_MANUSCRIPT_RUN: run } : {}),
   ...(templateAcceptance ? {
     OLEAFLY_TEMPLATE_NATIVE_ACCEPTANCE: "1",
     OLEAFLY_NATIVE_TEMPLATE_DOC: resolve(templateInput),
@@ -329,8 +335,12 @@ async function runStage(stage) {
   await startApp(stage);
   console.log(`docx-recovery: ${stage}, owned app PID ${app.pid}`);
   const log = createWriteStream(join(run, `${stage}-playwright.log`));
-  const specifications = templateAcceptance
-    ? ["e2e/tests/139-journal-template-native.spec.ts", "e2e/tests/140-docx-format-task.spec.ts"]
+  const specifications = manuscriptLive
+    ? ["e2e/tests/145-word-manuscript-live.spec.ts"]
+    : interactionPerformance
+    ? ["e2e/tests/144-word-interaction-performance.spec.ts"]
+    : templateAcceptance
+    ? ["e2e/tests/139-journal-template-native.spec.ts", "e2e/tests/140-docx-format-task.spec.ts", ...(templateLive ? ["e2e/tests/141-word-template-live.spec.ts"] : []), "e2e/tests/142-word-product-entry.spec.ts"]
     : fontLayout
       ? ["e2e/tests/131-docx-font-layout.spec.ts"]
       : liveTask
@@ -338,26 +348,22 @@ async function runStage(stage) {
         : attributionRecovery
           ? ["e2e/tests/130-docx-task-recovery.spec.ts"]
           : ["e2e/tests/127-docx-recovery.spec.ts"];
-  const filter = templateAcceptance || liveTask || fontLayout ? [] : ["--grep", `${stage} native`];
-  playwright = templateAcceptance
-    ? spawn(process.execPath, [
-        "node_modules/@playwright/test/cli.js",
-        "test",
-        "-c",
-        "e2e/playwright.config.ts",
-        ...specifications,
-        ...filter,
-        "--retries=0",
-        "--output",
-        join(run, stage),
-      ], {
-        cwd: repository,
-        env: { ...environment, OLEAFLY_DOCX_RECOVERY_STAGE: stage },
-        stdio: ["ignore", "pipe", "pipe"],
-      })
-    : spawn("pnpm", ["exec", "playwright", "test", "-c", "e2e/playwright.config.ts", ...specifications, ...filter, "--retries=0", "--output", join(run, stage)], {
-        cwd: repository, env: { ...environment, OLEAFLY_DOCX_RECOVERY_STAGE: stage }, stdio: ["ignore", "pipe", "pipe"],
-      });
+  const filter = templateAcceptance || liveTask || fontLayout || interactionPerformance ? [] : ["--grep", `${stage} native`];
+  playwright = spawn(process.execPath, [
+    "node_modules/@playwright/test/cli.js",
+    "test",
+    "-c",
+    "e2e/playwright.config.ts",
+    ...specifications,
+    ...filter,
+    "--retries=0",
+    "--output",
+    join(run, stage),
+  ], {
+    cwd: repository,
+    env: { ...environment, OLEAFLY_DOCX_RECOVERY_STAGE: stage },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   playwright.stdout.pipe(process.stdout, { end: false });
   playwright.stderr.pipe(process.stderr, { end: false });
   playwright.stdout.pipe(log, { end: false });
@@ -369,7 +375,24 @@ async function runStage(stage) {
   log.end();
   playwright = undefined;
   if (code !== 0) throw new Error(`${stage} failed with Playwright exit ${code}.`);
-  if (templateAcceptance) {
+  if (manuscriptLive) {
+    const reportPath = join(run, "word-manuscript-live-report.json");
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    if (report.outcome !== "PASSED") throw new Error(`Whole-manuscript evidence report did not pass: ${reportPath}`);
+    const expected = Object.fromEntries(acceptanceInputs.map((input) => [input.role, input.expectedHash]));
+    for (const role of ["template", "english", "chinese"]) {
+      if (report.initialHashes?.[role] !== expected[role] || report.finalHashes?.[role] !== expected[role]) {
+        throw new Error(`Whole-manuscript evidence ${role} hash differs from the runner input: ${reportPath}`);
+      }
+    }
+    const normalizedPath = join(run, "word-manuscript-template-normalized.docx");
+    const normalizedHash = sha256(await readFile(normalizedPath));
+    if (report.normalizedTemplate?.sourceSha256 !== normalizedHash) {
+      throw new Error(`Whole-manuscript normalized template hash differs from its retained bytes: ${reportPath}`);
+    }
+    normalizedTemplate = { role: "normalized_template", path: normalizedPath, expectedHash: normalizedHash };
+    lifecycle.push({ action: "normalized-template-hash", sha256: normalizedHash, path: normalizedPath, at: new Date().toISOString() });
+  } else if (templateAcceptance) {
     const templateRuns = (await readdir(templateOutput, { withFileTypes: true }))
       .filter((entry) => entry.isDirectory())
       .map((entry) => join(templateOutput, entry.name))
@@ -442,7 +465,11 @@ try {
     if (entry.existed) { await move(original, entry.backup); entry.backedUp = true; await record(); }
   }
   console.log(`docx-recovery: retained acceptance data ${run}`);
-  for (const stage of templateAcceptance
+  for (const stage of manuscriptLive
+    ? ["whole-manuscript"]
+    : interactionPerformance
+    ? ["interaction-performance"]
+    : templateAcceptance
     ? ["template-native"]
     : fontLayout
       ? ["font-layout"]
@@ -451,8 +478,10 @@ try {
         : attributionRecovery
           ? ["prepare", "restore-save", "reconcile"]
           : ["prepare", "restore", "discard"]) await runStage(stage);
-  if (liveTask && !wire.some(request => request.model === "gpt/gpt-6.1-sol" && request.reasoningEffort === "high" && request.status === 200 && request.finishedAt && /(^|\/)gpt-6\.1-sol$/.test(request.returnedModel ?? ""))) {
-    throw new Error("The transparent relay did not verify a completed Sol/high request and a matching returned model label.");
+  const liveEffort = manuscriptLive ? "max" : "high";
+  const completedLiveRequests = wire.filter(request => request.model === "gpt/gpt-6.1-sol" && request.reasoningEffort === liveEffort && request.status === 200 && request.finishedAt && /(^|\/)gpt-6\.1-sol$/.test(request.returnedModel ?? ""));
+  if (liveTask && completedLiveRequests.length < (manuscriptLive ? 2 : 1)) {
+    throw new Error(`The transparent relay did not verify the required completed Sol/${liveEffort} requests and matching returned model labels.`);
   }
   await assertInputsUnchanged();
   if (normalizedTemplate) {
