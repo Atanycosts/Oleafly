@@ -511,6 +511,12 @@ impl ToolScope {
             if !self.names.contains(&name) || !lock(&self.selected).contains(&name) {
                 return Err("This tool is unavailable in research tasks.".into());
             }
+            if name == "read_docx_image" && self.provider.1.caps.images == Some(false) {
+                return Err(
+                    "The selected model reads only text and cannot inspect DOCX image pixels. Use read_docx_document for text, math and drawing metadata."
+                        .into(),
+                );
+            }
             let args: Value = serde_json::from_str(&arguments)
                 .map_err(|_| "Tool arguments must be valid JSON.".to_string())?;
             match name.as_str() {
@@ -589,7 +595,7 @@ impl ToolScope {
             }
         }
         .await;
-        if self.mcp.contains_key(&name) {
+        if self.mcp.contains_key(&name) || name == "read_docx_image" {
             match result {
                 Ok(result) => mcp_output(&result),
                 Err(error) => output(Err(error)),

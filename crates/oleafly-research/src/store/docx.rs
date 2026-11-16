@@ -51,13 +51,6 @@ fn sha256(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn known_operation(operation: &str) -> bool {
-    matches!(
-        operation,
-        "read_format" | "format" | "apply" | "save" | "check"
-    )
-}
-
 fn target(document: &DocxDocumentIdentity, target: &DocxTarget) -> Result<(), String> {
     validate_text(&target.target_id, "DOCX target", 1, 512)?;
     validate_text(&target.paragraph_ref, "DOCX paragraph", 1, 512)?;
@@ -73,7 +66,7 @@ fn target(document: &DocxDocumentIdentity, target: &DocxTarget) -> Result<(), St
 fn runtime_event(document: &DocxDocumentIdentity, event: &DocxRuntimeEvent) -> Result<(), String> {
     match event {
         DocxRuntimeEvent::OperationStarted { operation, request } => {
-            if !known_operation(operation) || !request.is_object() {
+            if !is_docx_operation(operation) || !request.is_object() {
                 return Err(
                     "Start a known DOCX application operation with its explicit request.".into(),
                 );
@@ -88,11 +81,12 @@ fn runtime_event(document: &DocxDocumentIdentity, event: &DocxRuntimeEvent) -> R
             if operation_id
                 .as_deref()
                 .is_some_and(|id| validate_text(id, "DOCX operation", 1, 512).is_err())
-                || !known_operation(operation)
+                || !is_docx_operation(operation)
                 || !request.is_object()
                 || !result.is_object()
                 || result["operation"].as_str() != Some(operation)
                 || !result["ok"].is_boolean()
+                || (operation == "read" && (operation_id.is_some() || result["ok"] != true))
             {
                 return Err(
                     "Record a known DOCX application operation with its explicit actual result."
@@ -165,7 +159,11 @@ fn operation_result(
                 "project_id",
                 "baseline_id",
                 "world_version_id",
+                "source_sha256",
+                "validity",
                 "summary",
+                "objectRead",
+                "findingsRead",
             ] {
                 if check.get(field).is_some() {
                     pointer.insert(field.into(), check[field].clone());
@@ -189,6 +187,40 @@ fn operation_result(
         "document": result["document"].clone(),
         "result": payload,
     })
+}
+
+fn saved_operation_result(
+    request: &serde_json::Value,
+    mut document: DocxDocumentIdentity,
+    mut result: serde_json::Value,
+) -> Result<(DocxDocumentIdentity, serde_json::Value), String> {
+    let saved = &result["result"];
+    let revision = saved["revision"]
+        .as_u64()
+        .filter(|revision| *revision <= document.session_revision)
+        .ok_or("The saved DOCX operation has no valid exported revision.")?;
+    if saved["baselineId"].as_str() != Some(document.baseline_id.as_str())
+        || saved["sourceSha256"].as_str() != Some(document.source_sha256.as_str())
+        || document.saved_revision != revision as i64
+        || saved["document"]["sessionId"].as_str() != Some(document.session_id.as_str())
+        || saved["document"]["baselineId"].as_str() != Some(document.baseline_id.as_str())
+        || saved["document"]["savedRevision"].as_u64() != Some(revision)
+        || result["ok"] == true && request["expected_revision"].as_u64() != Some(revision)
+    {
+        return Err(
+            "The saved DOCX operation does not match its exported revision and source.".into(),
+        );
+    }
+    document.session_revision = revision;
+    result["document"] = serde_json::to_value(&document).map_err(|error| {
+        format!("The saved DOCX operation document could not be encoded: {error}")
+    })?;
+    result["result"] = serde_json::json!({
+        "baselineId":document.baseline_id,"revision":revision,"sourceSha256":document.source_sha256,
+        "document":{"sessionId":document.session_id,"baselineId":document.baseline_id,
+            "sessionRevision":revision,"savedRevision":revision,"dirty":false},
+    });
+    Ok((document, result))
 }
 
 fn decode_activity(encoded: &str) -> Result<DocxActivity, String> {
@@ -244,16 +276,32 @@ fn proposal_on(
     ).optional().map_err(store_error)?.map(|encoded| decode_activity(&encoded)).transpose()
 }
 
+fn binding_activity_on(
+    connection: &Connection,
+    task_id: &str,
+) -> Result<Option<DocxActivity>, String> {
+    connection
+        .query_row(
+            &format!(
+                "SELECT e.event_json FROM research_task_events e WHERE {DOCX_FILTER} AND e.task_id=?1
+                 AND json_extract(e.event_json,'$.observation.activity.event.type')='runtime'
+                 AND json_extract(e.event_json,'$.observation.activity.event.event.kind')='bound'
+                 ORDER BY e.rowid DESC LIMIT 1"
+            ),
+            [task_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .map(|encoded| decode_activity(&encoded))
+        .transpose()
+}
+
 fn binding_on(
     connection: &Connection,
     task_id: &str,
 ) -> Result<Option<DocxDocumentIdentity>, String> {
-    connection.query_row(
-        &format!("SELECT e.event_json FROM research_task_events e WHERE {DOCX_FILTER} AND e.task_id=?1
-          AND json_extract(e.event_json,'$.observation.activity.event.type')='runtime'
-          AND json_extract(e.event_json,'$.observation.activity.event.event.kind')='bound' ORDER BY e.rowid LIMIT 1"),
-        [task_id], |row| row.get::<_, String>(0),
-    ).optional().map_err(store_error)?.map(|encoded| Ok(decode_activity(&encoded)?.document)).transpose()
+    Ok(binding_activity_on(connection, task_id)?.map(|activity| activity.document))
 }
 
 fn operation_intent_on(
@@ -306,6 +354,168 @@ fn operation_on(
         .map_err(store_error)?
         .map(|encoded| decode_activity(&encoded))
         .transpose()
+}
+
+fn inherited_operation_checkpoint_on(
+    connection: &Connection,
+    task_id: &str,
+    operation_id: &str,
+    from_document: &DocxDocumentIdentity,
+    content_sha256: &str,
+) -> Result<bool, String> {
+    let bindings = connection.prepare(&format!(
+        "SELECT e.rowid,e.event_json FROM research_task_events e WHERE {DOCX_FILTER} AND e.task_id=?1
+         AND json_extract(e.event_json,'$.observation.activity.event.type')='runtime'
+         AND json_extract(e.event_json,'$.observation.activity.event.event.kind')='bound'
+         ORDER BY e.rowid DESC LIMIT 2"
+    )).and_then(|mut statement| statement.query_map([task_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?.collect::<Result<Vec<_>, _>>()).map_err(store_error)?;
+    let [current, predecessor] = bindings.as_slice() else {
+        return Ok(false);
+    };
+    let bound = decode_activity(&current.1)?;
+    let previous = decode_activity(&predecessor.1)?;
+    if bound.document.session_id != from_document.session_id
+        || bound.document.app_project_id != from_document.app_project_id
+        || bound.document.workbench_project_id != from_document.workbench_project_id
+        || bound.document.baseline_id != from_document.baseline_id
+        || bound.document.source_sha256 != from_document.source_sha256
+    {
+        return Ok(false);
+    }
+    let checkpoints = connection
+        .prepare(&format!(
+            "SELECT e.event_json FROM research_task_events e WHERE {DOCX_FILTER} AND e.task_id=?1
+         AND e.rowid>?2 AND e.rowid<?3
+         AND json_extract(e.event_json,'$.observation.activity.event.type')='operationCheckpoint'
+         AND json_extract(e.event_json,'$.observation.activity.event.operationId')=?4"
+        ))
+        .and_then(|mut statement| {
+            statement
+                .query_map(
+                    params![task_id, predecessor.0, current.0, operation_id],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(store_error)?;
+    for encoded in checkpoints {
+        let activity = decode_activity(&encoded)?;
+        if matches!(&activity.event, DocxActivityEvent::OperationCheckpoint {
+            phase: DocxOperationCheckpointPhase::Recovered, content_sha256: retained_hash,
+            from_document: source, ..
+        } if retained_hash == content_sha256
+            && source.session_id == previous.document.session_id
+            && source.app_project_id == from_document.app_project_id
+            && source.workbench_project_id == from_document.workbench_project_id
+            && source.baseline_id == from_document.baseline_id
+            && source.source_sha256 == from_document.source_sha256)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn recovered_proposal_on(
+    connection: &Connection,
+    task_id: &str,
+    proposal_id: &str,
+    recovery_key: &str,
+    content_sha256: &str,
+    from_document: &DocxDocumentIdentity,
+    to_document: &DocxDocumentIdentity,
+) -> Result<bool, String> {
+    let activity_rows = connection
+        .prepare(&format!(
+            "SELECT e.event_json FROM research_task_events e WHERE {DOCX_FILTER} AND e.task_id=?1
+             AND json_extract(e.event_json,'$.observation.activity.proposalId')=?2 ORDER BY e.rowid"
+        ))
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![task_id, proposal_id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(store_error)?;
+    for encoded in activity_rows {
+        let activity = decode_activity(&encoded)?;
+        if activity.document == *to_document
+            && matches!(
+                &activity.event,
+                DocxActivityEvent::Outcome {
+                    outcome: DocxProposalOutcome::Recovered {
+                        recovery_key: retained_key,
+                        content_sha256: retained_hash,
+                        from_document: retained_from,
+                    },
+                } if retained_key == recovery_key
+                    && retained_hash == content_sha256
+                    && retained_from.as_ref() == from_document
+            )
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn recovered_operation_on(
+    connection: &Connection,
+    task_id: &str,
+    operation_id: &str,
+    recovery_key: &str,
+    content_sha256: &str,
+    from_document: &DocxDocumentIdentity,
+) -> Result<bool, String> {
+    let project = &from_document.app_project_id;
+    let manuscript = &from_document.workbench_project_id;
+    let intent = operation_intent_on(connection, project, manuscript, operation_id)?
+        .ok_or("A recovery operation has no retained intent.")?;
+    if intent.origin.task_id != task_id
+        || intent.document.app_project_id != from_document.app_project_id
+        || intent.document.workbench_project_id != from_document.workbench_project_id
+    {
+        return Err("A recovery operation belongs to another task or DOCX working session.".into());
+    }
+    let result = operation_on(connection, project, manuscript, operation_id)?
+        .ok_or("A recovery operation has no retained actual result.")?;
+    if result.origin.task_id != task_id {
+        return Err("A recovery operation result belongs to another task.".into());
+    }
+    let activity_rows = connection
+        .prepare(&format!(
+            "SELECT e.event_json FROM research_task_events e WHERE {DOCX_FILTER} AND e.task_id=?1
+             AND json_extract(e.event_json,'$.observation.activity.event.type')='operationCheckpoint'
+             AND json_extract(e.event_json,'$.observation.activity.event.operationId')=?2
+             ORDER BY e.rowid"
+        ))
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![task_id, operation_id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(store_error)?;
+    for encoded in activity_rows {
+        let activity = decode_activity(&encoded)?;
+        if matches!(
+            &activity.event,
+            DocxActivityEvent::OperationCheckpoint {
+                operation_id: retained_operation,
+                phase: DocxOperationCheckpointPhase::Recovered,
+                recovery_key: retained_key,
+                content_sha256: retained_hash,
+                from_document: retained_from,
+                ..
+            } if retained_operation == operation_id
+                && retained_key == recovery_key
+                && retained_hash == content_sha256
+                && retained_from.as_ref() == from_document
+        ) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 impl TaskStore {
@@ -374,6 +584,169 @@ impl TaskStore {
         binding_on(&connection, task_id)
     }
 
+    /// Validate a save intent against the document from which its native call
+    /// started. The intent owns attribution and remains usable after cancellation.
+    pub fn docx_save_operation_intent(
+        &self,
+        project_id: &str,
+        workbench_project_id: &str,
+        operation_id: &str,
+        start_document: &DocxDocumentIdentity,
+    ) -> Result<DocxActivity, String> {
+        validate_text(operation_id, "DOCX operation", 1, 512)?;
+        validate_text(workbench_project_id, "Workbench project", 1, 512)?;
+        document_scope(project_id, start_document)?;
+        if start_document.workbench_project_id != workbench_project_id {
+            return Err("The DOCX save start belongs to another manuscript.".into());
+        }
+        let intent = operation_intent_on(
+            &self.open()?,
+            project_id,
+            workbench_project_id,
+            operation_id,
+        )?
+        .ok_or("The DOCX save operation has no retained intent in this manuscript.")?;
+        let DocxActivityEvent::Runtime {
+            event: DocxRuntimeEvent::OperationStarted { operation, request },
+        } = &intent.event
+        else {
+            return Err("The retained DOCX save intent has an invalid event.".into());
+        };
+        if operation != "save"
+            || intent.document.session_id != start_document.session_id
+            || intent.document.app_project_id != start_document.app_project_id
+            || intent.document.workbench_project_id != start_document.workbench_project_id
+            || request
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(start_document.session_id.as_str())
+            || request
+                .get("expected_revision")
+                .and_then(serde_json::Value::as_u64)
+                != Some(start_document.session_revision)
+        {
+            return Err(
+                "The DOCX save intent does not match its original session and requested revision."
+                    .into(),
+            );
+        }
+        Ok(intent)
+    }
+
+    /// Advance only the tasks proven by an exact recovery checkpoint to its
+    /// still-unsaved session. The latest binding is the predecessor; a delayed
+    /// checkpoint for an older session cannot replace it.
+    pub fn recover_docx_task_bindings(
+        &self,
+        recovery_key: &str,
+        content_sha256: &str,
+        from_document: &DocxDocumentIdentity,
+        to_document: DocxDocumentIdentity,
+        proposal_ids: &[String],
+        operation_ids: &[String],
+    ) -> Result<(), String> {
+        sha256(recovery_key)?;
+        sha256(content_sha256)?;
+        document_scope(&from_document.app_project_id, from_document)?;
+        document_scope(&from_document.app_project_id, &to_document)?;
+        if from_document.workbench_project_id != to_document.workbench_project_id
+            || from_document.baseline_id != to_document.baseline_id
+            || from_document.source_sha256 != to_document.source_sha256
+            || from_document.session_id == to_document.session_id
+            || to_document.saved_revision != -1
+        {
+            return Err(
+                "The recovery session must be a new unsaved session of the checkpoint source."
+                    .into(),
+            );
+        }
+        let mut connection = self.open()?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let mut tasks = HashMap::<String, bool>::new();
+        for proposal_id in proposal_ids {
+            validate_text(proposal_id, "DOCX proposal", 1, 512)?;
+            let proposal = proposal_on(
+                &tx,
+                &from_document.app_project_id,
+                &from_document.workbench_project_id,
+                proposal_id,
+            )?
+            .ok_or("A recovery proposal is not retained in this manuscript.")?;
+            if proposal.document.app_project_id != from_document.app_project_id
+                || proposal.document.workbench_project_id != from_document.workbench_project_id
+            {
+                return Err("A recovery proposal belongs to another DOCX working session.".into());
+            }
+            if !recovered_proposal_on(
+                &tx,
+                &proposal.origin.task_id,
+                proposal_id,
+                recovery_key,
+                content_sha256,
+                from_document,
+                &to_document,
+            )? {
+                return Err("A recovery proposal has no exact recovered source receipt.".into());
+            }
+            tasks.insert(proposal.origin.task_id, true);
+        }
+        for operation_id in operation_ids {
+            validate_text(operation_id, "DOCX operation", 1, 512)?;
+            let intent = operation_intent_on(
+                &tx,
+                &from_document.app_project_id,
+                &from_document.workbench_project_id,
+                operation_id,
+            )?
+            .ok_or("A recovery operation is not retained in this manuscript.")?;
+            if !recovered_operation_on(
+                &tx,
+                &intent.origin.task_id,
+                operation_id,
+                recovery_key,
+                content_sha256,
+                from_document,
+            )? {
+                return Err("A recovery operation has no exact recovered checkpoint.".into());
+            }
+            tasks.insert(intent.origin.task_id, true);
+        }
+        let mut bindings = Vec::with_capacity(tasks.len());
+        for task_id in tasks.into_keys() {
+            let current = binding_activity_on(&tx, &task_id)?
+                .ok_or("A recovered task has no retained DOCX binding.")?;
+            if current.document.app_project_id != from_document.app_project_id
+                || current.document.workbench_project_id != from_document.workbench_project_id
+            {
+                return Err("A recovered task is bound to another DOCX working copy.".into());
+            }
+            if current.document == to_document {
+                continue;
+            }
+            if current.document.session_id != from_document.session_id {
+                return Err(
+                    "The recovery checkpoint is not the current task binding's session.".into(),
+                );
+            }
+            bindings.push(DocxActivity {
+                id: fresh_id("docx"),
+                origin: current.origin,
+                document: to_document.clone(),
+                proposal_id: None,
+                event: DocxActivityEvent::Runtime {
+                    event: DocxRuntimeEvent::Bound,
+                },
+                created_at: now_ms(),
+            });
+        }
+        for activity in &bindings {
+            insert_on(&tx, activity)?;
+        }
+        tx.commit().map_err(store_error)
+    }
+
     /// Record a known successful operation. The caller is the native task
     /// binding, not model arguments. Resolve membership in this same transaction.
     pub fn record_docx_activity(
@@ -386,7 +759,7 @@ impl TaskStore {
     ) -> Result<DocxActivity, String> {
         document_scope(project_id, &document)?;
         runtime_event(&document, &event)?;
-        if matches!(event, DocxRuntimeEvent::Operation { .. }) {
+        if matches!(&event, DocxRuntimeEvent::Operation { operation, .. } if operation != "read") {
             return Err("Finish DOCX application operations through their durable intent.".into());
         }
         let mut connection = self.open()?;
@@ -533,7 +906,7 @@ impl TaskStore {
         else {
             return Err("The retained DOCX intent has an invalid event.".into());
         };
-        if !known_operation(operation) || result["operation"].as_str() != Some(operation) {
+        if !is_docx_operation(operation) || result["operation"].as_str() != Some(operation) {
             return Err("The DOCX result does not match its retained operation intent.".into());
         }
         if !result["ok"].is_boolean() {
@@ -547,22 +920,34 @@ impl TaskStore {
                     .into(),
             );
         }
+        let (document, result) = if operation == "save" {
+            saved_operation_result(request, document, result)?
+        } else {
+            (document, result)
+        };
         let result = operation_result(operation, request, &result);
         if let Some(existing) = operation_on(&tx, project_id, workbench_project_id, operation_id)? {
-            let same = existing.document == document
-                && matches!(
-                    &existing.event,
-                    DocxActivityEvent::Runtime {
-                        event: DocxRuntimeEvent::Operation {
-                            operation_id: Some(existing_id),
-                            operation: existing_operation,
-                            result: existing_result,
-                            ..
-                        }
-                    } if existing_id == operation_id
-                        && existing_operation == operation
-                        && existing_result == &result
-                );
+            let DocxActivityEvent::Runtime {
+                event:
+                    DocxRuntimeEvent::Operation {
+                        operation_id: Some(existing_id),
+                        operation: existing_operation,
+                        result: existing_result,
+                        ..
+                    },
+            } = &existing.event
+            else {
+                return Err("The retained DOCX operation has an invalid result.".into());
+            };
+            let (existing_document, existing_result) = if operation == "save" {
+                saved_operation_result(request, existing.document.clone(), existing_result.clone())?
+            } else {
+                (existing.document.clone(), existing_result.clone())
+            };
+            let same = existing_document == document
+                && existing_id == operation_id
+                && existing_operation == operation
+                && existing_result == result;
             if same {
                 return Ok(existing);
             }
@@ -665,7 +1050,7 @@ impl TaskStore {
             .into_iter()
             .map(|encoded| decode_activity(&encoded))
             .collect::<Result<Vec<_>, _>>()?;
-        for existing in previous {
+        for existing in &previous {
             let DocxActivityEvent::OperationCheckpoint {
                 operation_id: existing_id,
                 phase: existing_phase,
@@ -684,13 +1069,27 @@ impl TaskStore {
                     && existing_request.as_deref() == request_id
                     && existing.document == operation.document
                 {
-                    return Ok(existing);
+                    return Ok(existing.clone());
                 }
-                if phase == DocxOperationCheckpointPhase::Recovered {
-                    return Ok(existing);
+                if phase == DocxOperationCheckpointPhase::Recovered
+                    && existing_document.as_ref() != &from_document
+                {
+                    continue;
                 }
                 return Err("This DOCX operation already has a different checkpoint fact.".into());
             }
+        }
+        if !same_session
+            && phase == DocxOperationCheckpointPhase::Recovered
+            && !inherited_operation_checkpoint_on(
+                &tx,
+                &intent.origin.task_id,
+                operation_id,
+                &from_document,
+                content_sha256,
+            )?
+        {
+            return Err("The DOCX operation has no retained recovery edge into this task session and exact bytes.".into());
         }
         let activity = DocxActivity {
             id: fresh_id("docx"),
@@ -1128,6 +1527,191 @@ mod tests {
         .is_ok());
     }
 
+    #[test]
+    fn read_operation_receipt_retains_the_complete_page_without_a_write_intent() {
+        let (_directory, store, task) = running();
+        let page = serde_json::json!({
+            "document": document(),
+            "paragraphs": [{
+                "paragraphRef": "p1",
+                "text": "Display",
+                "modelText": "Model",
+                "modelTextOffset": 0,
+                "modelTextLength": 5,
+                "atoms": [],
+                "editableRanges": [{ "start": 0, "end": 5 }]
+            }],
+            "offset": 0,
+            "nextOffset": 1,
+            "totalParagraphs": 2,
+            "next_query": {
+                "session_id": "docx-session",
+                "offset": 1,
+                "limit": 20,
+                "expected_revision": 5
+            }
+        });
+        let activity = store
+            .record_docx_activity(
+                "paper",
+                &task.id,
+                task.execution_generation,
+                document(),
+                DocxRuntimeEvent::Operation {
+                    operation_id: None,
+                    operation: "read".into(),
+                    request: serde_json::json!({"offset":0,"limit":20}),
+                    result: serde_json::json!({
+                        "operation": "read",
+                        "ok": true,
+                        "document": document(),
+                        "result": page,
+                    }),
+                },
+            )
+            .unwrap();
+        let DocxActivityEvent::Runtime {
+            event:
+                DocxRuntimeEvent::Operation {
+                    operation_id: None,
+                    operation,
+                    result,
+                    ..
+                },
+        } = activity.event
+        else {
+            panic!("read receipt changed shape");
+        };
+        assert_eq!(operation, "read");
+        assert_eq!(result["result"]["paragraphs"][0]["modelText"], "Model");
+        assert_eq!(
+            result["result"]["next_query"]["expected_revision"],
+            serde_json::json!(5)
+        );
+        assert!(
+            operation_intent_on(&store.open().unwrap(), "paper", "manuscript", &activity.id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn read_image_operation_survives_finish_and_reopen_without_pixels() {
+        let (_directory, store, task) = running();
+        let document = document();
+        let request = serde_json::json!({
+            "session_id": document.session_id,
+            "paragraph_ref": "p1",
+            "object_ref": "drawing-1",
+            "expected_revision": 5
+        });
+        let intent = start_operation(&store, &task, "read_image", request.clone());
+        let metadata = serde_json::json!({
+            "source": "live-docx",
+            "imageReadComplete": true,
+            "contentStatus": "pixels_provided",
+            "sourceSha256": document.source_sha256,
+            "objectRef": "drawing-1",
+            "revision": 5,
+            "part": "/word/document.xml",
+            "relationshipId": "rIdImage",
+            "mediaPart": "/word/media/image1.png",
+            "mimeType": "image/png",
+            "imageSha256": "b".repeat(64),
+            "width": 1,
+            "height": 1,
+            "document": document.clone(),
+        });
+        let expected = operation_envelope("read_image", document.clone(), metadata.clone());
+        let finished = store
+            .finish_docx_operation(
+                "paper",
+                "manuscript",
+                &intent.id,
+                document.clone(),
+                expected.clone(),
+            )
+            .unwrap();
+        assert_eq!(finished.document, document);
+        assert!(matches!(&finished.event, DocxActivityEvent::Runtime {
+            event: DocxRuntimeEvent::Operation {
+                operation_id: Some(id),
+                operation,
+                request: retained_request,
+                result,
+            }
+        } if id == &intent.id
+            && operation == "read_image"
+            && retained_request == &request
+            && result == &expected));
+
+        let reopened = TaskStore::new(store.root().to_path_buf()).unwrap();
+        let history = reopened
+            .docx_task_activities("paper", &task.id, 0, 50)
+            .unwrap();
+        let starts = history
+            .activities
+            .iter()
+            .filter(|entry| {
+                matches!(&entry.activity.event, DocxActivityEvent::Runtime {
+                    event: DocxRuntimeEvent::OperationStarted {
+                        operation,
+                        request: retained_request,
+                    }
+                } if operation == "read_image" && retained_request == &request)
+            })
+            .count();
+        assert_eq!(starts, 1);
+        let completed_count = history
+            .activities
+            .iter()
+            .filter(|entry| {
+                matches!(&entry.activity.event, DocxActivityEvent::Runtime {
+                    event: DocxRuntimeEvent::Operation {
+                        operation_id: Some(id),
+                        operation,
+                        ..
+                    }
+                } if id == &intent.id && operation == "read_image")
+            })
+            .count();
+        assert_eq!(completed_count, 1);
+        let completed = history
+            .activities
+            .iter()
+            .find(|entry| {
+                matches!(&entry.activity.event, DocxActivityEvent::Runtime {
+                    event: DocxRuntimeEvent::Operation {
+                        operation_id: Some(id),
+                        ..
+                    }
+                } if id == &intent.id)
+            })
+            .unwrap();
+        assert_eq!(completed.activity.document, document);
+        let DocxActivityEvent::Runtime {
+            event:
+                DocxRuntimeEvent::Operation {
+                    operation_id: Some(id),
+                    operation,
+                    result,
+                    ..
+                },
+        } = &completed.activity.event
+        else {
+            panic!("the retained read_image result changed shape");
+        };
+        assert_eq!(id, &intent.id);
+        assert_eq!(operation, "read_image");
+        assert_eq!(result["document"], serde_json::json!(document));
+        assert_eq!(result["result"], metadata);
+        assert_eq!(result["result"]["imageSha256"], "b".repeat(64));
+        assert_eq!(result["result"]["contentStatus"], "pixels_provided");
+        let history = serde_json::to_string(&history).unwrap();
+        assert!(!history.contains("base64"));
+        assert!(!history.contains("data:image"));
+    }
+
     fn fixture() -> (tempfile::TempDir, TaskStore, ResearchTask) {
         let directory = tempfile::tempdir().unwrap();
         let store = TaskStore::new(directory.path().join("tasks")).unwrap();
@@ -1269,6 +1853,206 @@ mod tests {
                 document(),
                 proposal()
             )
+            .is_err());
+    }
+
+    #[test]
+    fn docx_recovery_advances_the_binding_only_from_its_exact_predecessor() {
+        let (_directory, store, task) = running();
+        let proposed = propose(&store, &task);
+        let mut accepted = document();
+        accepted.session_revision = 6;
+        outcome(
+            &store,
+            &proposed,
+            accepted.clone(),
+            DocxProposalOutcome::Applied,
+        )
+        .unwrap();
+        accepted.session_revision = 7;
+        accepted.saved_revision = 6;
+        accepted.baseline_id = "baseline-2".into();
+        accepted.source_sha256 = "b".repeat(64);
+        outcome(
+            &store,
+            &proposed,
+            accepted.clone(),
+            DocxProposalOutcome::Saved {
+                request_id: "save-before-recovery".into(),
+                content_sha256: "b".repeat(64),
+            },
+        )
+        .unwrap();
+        let mut restored = document();
+        restored.session_id = "recovered".into();
+        restored.session_revision = 0;
+        restored.saved_revision = -1;
+        restored.baseline_id = accepted.baseline_id.clone();
+        restored.source_sha256 = accepted.source_sha256.clone();
+        let recovery_key = "d".repeat(64);
+        let content_sha256 = "e".repeat(64);
+        outcome(
+            &store,
+            &proposed,
+            restored.clone(),
+            DocxProposalOutcome::Recovered {
+                recovery_key: recovery_key.clone(),
+                content_sha256: content_sha256.clone(),
+                from_document: Box::new(accepted.clone()),
+            },
+        )
+        .unwrap();
+        let proposal_ids = vec![proposed.id.clone()];
+
+        assert_eq!(
+            store.docx_task_binding("paper", &task.id).unwrap(),
+            Some(document())
+        );
+        store
+            .recover_docx_task_bindings(
+                &recovery_key,
+                &content_sha256,
+                &accepted,
+                restored.clone(),
+                &proposal_ids,
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            store.docx_task_binding("paper", &task.id).unwrap(),
+            Some(restored.clone())
+        );
+        assert_eq!(
+            TaskStore::new(store.root().to_path_buf())
+                .unwrap()
+                .docx_task_binding("paper", &task.id)
+                .unwrap(),
+            Some(restored.clone())
+        );
+
+        assert!(store
+            .record_docx_activity(
+                "paper",
+                &task.id,
+                task.execution_generation,
+                restored.clone(),
+                proposal(),
+            )
+            .is_err());
+        let mut stale = restored.clone();
+        stale.session_id = "stale-recovery".into();
+        assert!(store
+            .recover_docx_task_bindings(
+                &recovery_key,
+                &content_sha256,
+                &accepted,
+                stale,
+                &proposal_ids,
+                &[],
+            )
+            .is_err());
+        store
+            .recover_docx_task_bindings(
+                &recovery_key,
+                &content_sha256,
+                &accepted,
+                restored.clone(),
+                &proposal_ids,
+                &[],
+            )
+            .unwrap();
+
+        let mut wrong_source = restored.clone();
+        wrong_source.session_id = "wrong-source".into();
+        wrong_source.source_sha256 = "f".repeat(64);
+        assert!(store
+            .recover_docx_task_bindings(
+                &recovery_key,
+                &content_sha256,
+                &accepted,
+                wrong_source,
+                &proposal_ids,
+                &[],
+            )
+            .is_err());
+
+        let mut saved = restored;
+        saved.baseline_id = "baseline-3".into();
+        saved.source_sha256 = content_sha256.clone();
+        saved.saved_revision = 0;
+        let receipt = outcome(
+            &store,
+            &proposed,
+            saved,
+            DocxProposalOutcome::Saved {
+                request_id: "recovered-save".into(),
+                content_sha256,
+            },
+        )
+        .unwrap();
+        assert_eq!(receipt.origin, proposed.origin);
+    }
+
+    #[test]
+    fn save_intent_uses_its_original_session_after_cancellation() {
+        let (_directory, store, task) = running();
+        let mut starting_document = document();
+        starting_document.session_revision = 4;
+        let save = store
+            .record_docx_activity(
+                "paper",
+                &task.id,
+                task.execution_generation,
+                starting_document.clone(),
+                DocxRuntimeEvent::OperationStarted {
+                    operation: "save".into(),
+                    request: serde_json::json!({
+                        "session_id":starting_document.session_id,
+                        "expected_revision":5
+                    }),
+                },
+            )
+            .unwrap();
+        let format = start_operation(
+            &store,
+            &task,
+            "format",
+            serde_json::json!({"session_id":"docx-session","expected_revision":5}),
+        );
+        store.request_cancel(&task.id).unwrap();
+        let mut current_source = document();
+        current_source.baseline_id = "baseline-saved".into();
+        current_source.source_sha256 = "b".repeat(64);
+        current_source.saved_revision = 5;
+
+        assert_eq!(
+            store
+                .docx_save_operation_intent("paper", "manuscript", &save.id, &current_source)
+                .unwrap(),
+            save
+        );
+
+        assert!(store
+            .docx_save_operation_intent("paper", "manuscript", &format.id, &current_source)
+            .is_err());
+        let mut wrong_revision = current_source.clone();
+        wrong_revision.session_revision = 4;
+        assert!(store
+            .docx_save_operation_intent("paper", "manuscript", &save.id, &wrong_revision)
+            .is_err());
+        let mut wrong_session = current_source.clone();
+        wrong_session.session_id = "another-session".into();
+        assert!(store
+            .docx_save_operation_intent("paper", "manuscript", &save.id, &wrong_session)
+            .is_err());
+        assert!(store
+            .docx_save_operation_intent("other", "manuscript", &save.id, &current_source)
+            .is_err());
+        assert!(store
+            .docx_save_operation_intent("paper", "other", &save.id, &current_source)
+            .is_err());
+        assert!(store
+            .docx_save_operation_intent("paper", "manuscript", "missing-save", &current_source)
             .is_err());
     }
 
@@ -1422,6 +2206,187 @@ mod tests {
     }
 
     #[test]
+    fn operation_recovery_edges_are_exact_and_require_a_bound_predecessor() {
+        let (_directory, store, task) = running();
+        let intent = start_operation(
+            &store,
+            &task,
+            "format",
+            serde_json::json!({"expected_revision":5}),
+        );
+        let omitted = start_operation(
+            &store,
+            &task,
+            "format",
+            serde_json::json!({"expected_revision":5}),
+        );
+        store
+            .finish_docx_operation(
+                "paper",
+                "manuscript",
+                &intent.id,
+                document(),
+                operation_envelope(
+                    "format",
+                    document(),
+                    serde_json::json!({"ok":true,"changed":true,"revision":5}),
+                ),
+            )
+            .unwrap();
+        store
+            .finish_docx_operation(
+                "paper",
+                "manuscript",
+                &omitted.id,
+                document(),
+                operation_envelope(
+                    "format",
+                    document(),
+                    serde_json::json!({"ok":true,"changed":true,"revision":5}),
+                ),
+            )
+            .unwrap();
+        let recovery_key = "d".repeat(64);
+        let content_sha256 = "e".repeat(64);
+        let checkpoint = |source: DocxDocumentIdentity, hash: &str| {
+            store.record_docx_operation_checkpoint(
+                "paper",
+                "manuscript",
+                DocxOperationCheckpoint {
+                    operation_id: &intent.id,
+                    phase: DocxOperationCheckpointPhase::Recovered,
+                    recovery_key: &recovery_key,
+                    content_sha256: hash,
+                    from_document: source,
+                    request_id: None,
+                },
+            )
+        };
+        let original = checkpoint(document(), &content_sha256).unwrap();
+        assert_eq!(checkpoint(document(), &content_sha256).unwrap(), original);
+        assert!(checkpoint(document(), &"f".repeat(64)).is_err());
+        let mut middle = document();
+        middle.session_id = "middle".into();
+        middle.session_revision = 0;
+        middle.saved_revision = -1;
+        assert!(checkpoint(middle.clone(), &content_sha256).is_err());
+        store
+            .recover_docx_task_bindings(
+                &recovery_key,
+                &content_sha256,
+                &document(),
+                middle.clone(),
+                &[],
+                std::slice::from_ref(&intent.id),
+            )
+            .unwrap();
+        let omitted_checkpoint = |source: DocxDocumentIdentity| {
+            store.record_docx_operation_checkpoint(
+                "paper",
+                "manuscript",
+                DocxOperationCheckpoint {
+                    operation_id: &omitted.id,
+                    phase: DocxOperationCheckpointPhase::Recovered,
+                    recovery_key: &recovery_key,
+                    content_sha256: &content_sha256,
+                    from_document: source,
+                    request_id: None,
+                },
+            )
+        };
+        omitted_checkpoint(document()).unwrap();
+        assert!(omitted_checkpoint(middle.clone()).is_err());
+        assert!(checkpoint(middle.clone(), &"f".repeat(64)).is_err());
+        let recovered = checkpoint(middle.clone(), &content_sha256).unwrap();
+        assert_ne!(recovered.id, original.id);
+        assert_eq!(recovered.origin, intent.origin);
+        assert_eq!(recovered.document, document());
+        assert_eq!(
+            checkpoint(middle.clone(), &content_sha256).unwrap(),
+            recovered
+        );
+        assert!(checkpoint(middle.clone(), &"f".repeat(64)).is_err());
+        let mut latest = middle.clone();
+        latest.session_id = "latest".into();
+        store
+            .recover_docx_task_bindings(
+                &recovery_key,
+                &content_sha256,
+                &middle,
+                latest.clone(),
+                &[],
+                std::slice::from_ref(&intent.id),
+            )
+            .unwrap();
+        assert_eq!(
+            store.docx_task_binding("paper", &task.id).unwrap(),
+            Some(latest)
+        );
+        let mut foreign = middle;
+        foreign.workbench_project_id = "foreign".into();
+        assert!(checkpoint(foreign, &content_sha256).is_err());
+    }
+
+    #[test]
+    fn save_operation_receipt_keeps_the_exported_revision_when_live_edits_continue() {
+        let (_directory, store, task) = running();
+        let intent = start_operation(
+            &store,
+            &task,
+            "save",
+            serde_json::json!({"session_id":document().session_id,"expected_revision":5}),
+        );
+        let mut saved = document();
+        saved.baseline_id = "saved-baseline".into();
+        saved.source_sha256 = "e".repeat(64);
+        saved.saved_revision = 5;
+        let result = operation_envelope(
+            "save",
+            saved.clone(),
+            serde_json::json!({
+                "baselineId":saved.baseline_id,"sourceSha256":saved.source_sha256,"revision":5,
+                "document":{"sessionId":saved.session_id,"baselineId":saved.baseline_id,
+                    "sessionRevision":5,"savedRevision":5,"dirty":false},
+            }),
+        );
+        let committed = store
+            .finish_docx_operation(
+                "paper",
+                "manuscript",
+                &intent.id,
+                saved.clone(),
+                result.clone(),
+            )
+            .unwrap();
+        let mut later = saved.clone();
+        later.session_revision = 7;
+        let mut late_result = result;
+        late_result["document"] = serde_json::to_value(&later).unwrap();
+        late_result["result"]["document"]["sessionRevision"] = serde_json::json!(7);
+        late_result["result"]["document"]["dirty"] = serde_json::json!(true);
+        late_result["result"]["formatStatus"] = serde_json::json!("failed");
+        late_result["result"]["formatError"] = serde_json::json!("Later format derivation failed");
+        assert_eq!(
+            store
+                .finish_docx_operation(
+                    "paper",
+                    "manuscript",
+                    &intent.id,
+                    later.clone(),
+                    late_result.clone(),
+                )
+                .unwrap(),
+            committed
+        );
+        assert_eq!(committed.document.session_revision, 5);
+        assert_eq!(committed.origin, intent.origin);
+        late_result["result"]["revision"] = serde_json::json!(4);
+        assert!(store
+            .finish_docx_operation("paper", "manuscript", &intent.id, later, late_result,)
+            .is_err());
+    }
+
+    #[test]
     fn operation_finish_is_durable_after_cancellation_and_idempotent() {
         let (_directory, store, task) = running();
         let intent = start_operation(
@@ -1489,6 +2454,75 @@ mod tests {
                 operation_envelope("format", actual, serde_json::json!({"ok":true})),
             )
             .is_err());
+    }
+
+    #[test]
+    fn equation_write_retains_source_request_and_actual_conversion_receipt() {
+        let (_directory, store, task) = running();
+        let request = serde_json::json!({
+            "paragraph_ref":"p1","expected_revision":5,"latex":"\\mathbb{R}^d",
+            "macros":"","object_ref":"math-1","expected_fingerprint":"source-fingerprint"
+        });
+        let intent = start_operation(&store, &task, "write_equation", request.clone());
+        let result = operation_envelope(
+            "write_equation",
+            document(),
+            serde_json::json!({"ok":true,"changed":true,"revision":5,"warnings":["Bold alphabet corrected"],"sourceHash":"f".repeat(64)}),
+        );
+        let finished = store
+            .finish_docx_operation(
+                "paper",
+                "manuscript",
+                &intent.id,
+                document(),
+                result.clone(),
+            )
+            .unwrap();
+        assert!(matches!(&finished.event, DocxActivityEvent::Runtime {
+            event: DocxRuntimeEvent::Operation { operation, request: retained_request, result: retained_result, .. }
+        } if operation == "write_equation" && retained_request == &request && retained_result == &result));
+        assert_eq!(
+            store
+                .finish_docx_operation("paper", "manuscript", &intent.id, document(), result)
+                .unwrap()
+                .id,
+            finished.id
+        );
+    }
+
+    #[test]
+    fn batch_and_style_import_keep_their_actual_operation_and_source_mapping() {
+        let (_directory, store, task) = running();
+        for operation in ["format_batch", "import_styles"] {
+            let intent = start_operation(
+                &store,
+                &task,
+                operation,
+                serde_json::json!({
+                    "template":"world-selected","style_ids":["Title"],"expected_revision":5
+                }),
+            );
+            let result = operation_envelope(
+                operation,
+                document(),
+                serde_json::json!({
+                    "ok":true,"revision":5,"changed":false,"template":"world-selected",
+                    "templateSourceSha256":"f".repeat(64),"styleIdMap":{"Title":"TitlePasted"}
+                }),
+            );
+            let finished = store
+                .finish_docx_operation(
+                    "paper",
+                    "manuscript",
+                    &intent.id,
+                    document(),
+                    result.clone(),
+                )
+                .unwrap();
+            assert!(matches!(&finished.event, DocxActivityEvent::Runtime {
+                event: DocxRuntimeEvent::Operation { operation: actual, result: retained, .. }
+            } if actual == operation && retained == &result));
+        }
     }
 
     #[test]
@@ -1565,6 +2599,7 @@ mod tests {
                     "check_id":"check-7","project_id":"manuscript","baseline_id":"baseline-1",
                     "world_version_id":"world-7","summary":{"PASS":3,"FAIL":1},
                     "validity":"CURRENT","source_sha256":"c".repeat(64),"snapshot_sha256":"d".repeat(64),
+                    "objectRead":{"tool":"journal_read","arguments":{"operation":"object","kind":"check","object_id":"check-7","world_version_id":"world-7"}},
                     "world":{"large":"x".repeat(100_000)},
                     "rule_results":vec![serde_json::json!({"findings":[1,2,3]})],
                 },
@@ -1578,6 +2613,8 @@ mod tests {
                 "check":{
                     "check_id":"check-7","project_id":"manuscript","baseline_id":"baseline-1",
                     "world_version_id":"world-7","summary":{"PASS":3,"FAIL":1},
+                    "source_sha256":"c".repeat(64),"validity":"CURRENT",
+                    "objectRead":{"tool":"journal_read","arguments":{"operation":"object","kind":"check","object_id":"check-7","world_version_id":"world-7"}},
                 },
             }),
         );
@@ -1634,7 +2671,9 @@ mod tests {
             retained_check.unwrap()["result"]["check"],
             serde_json::json!({
                 "check_id":"check-7","project_id":"manuscript","baseline_id":"baseline-1",
-                "world_version_id":"world-7","summary":{"PASS":3,"FAIL":1}
+                "world_version_id":"world-7","summary":{"PASS":3,"FAIL":1},
+                "source_sha256":"c".repeat(64),"validity":"CURRENT",
+                "objectRead":{"tool":"journal_read","arguments":{"operation":"object","kind":"check","object_id":"check-7","world_version_id":"world-7"}},
             })
         );
     }
@@ -2291,7 +3330,7 @@ mod tests {
 
         let reopened = TaskStore::new(store.root().to_path_buf()).unwrap();
         let connection = reopened.open().unwrap();
-        assert_eq!(schema_version(&connection).unwrap(), 16);
+        assert_eq!(schema_version(&connection).unwrap(), SCHEMA_VERSION);
         let retained = connection
             .prepare("SELECT rowid,event_json FROM research_task_events ORDER BY rowid")
             .unwrap()

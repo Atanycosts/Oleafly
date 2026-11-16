@@ -7,6 +7,7 @@ import {
 import { pickPagesToVerify } from "./pick-pages";
 import { projectMapFromIndex } from "./project-map";
 import type { TypstFigureRender } from "./typst-figure";
+import { DOCX_OBJECT_FORMAT_SCHEMAS, docxObjectFormatMutation, type DocxObjectFormatMutation } from "./docx-object-format";
 
 export type FigureEngine = "latex" | "typst";
 export type FigurePreview = { pdfBytes: Uint8Array } | { pngDataUrl: string };
@@ -144,13 +145,194 @@ export interface DocxActivityDocument extends DocxDocumentState {
 
 export interface DocxParagraphView {
   paragraphRef: string;
+  /** Display projection. Fields use their cached result; formula and drawing atoms use U+FFFC. */
   text: string;
   paraId?: string;
+  /** Revision at which this paragraph and its ranges were read. */
+  revision: number;
+  /** Canonical editable projection. Range offsets below always refer to this string. */
+  modelText: string;
+  displayText: string;
+  /** UTF-16 offset of modelText within the complete paragraph when this view is windowed. */
+  modelTextOffset?: number;
+  modelTextLength?: number;
+  modelTextTruncated?: boolean;
+  /** UTF-16 offset of displayText within the complete paragraph when this view is windowed. */
+  displayTextOffset?: number;
+  displayTextLength?: number;
+  displayTextTruncated?: boolean;
+  atoms: DocxInlineAtom[];
+  /**
+   * Safe ordinary-text ranges in the complete paragraph's modelText UTF-16 coordinates.
+   * A text window only filters which ranges are returned. Empty means no range in this
+   * window is currently editable.
+   */
+  editableRanges: DocxModelRange[];
+}
+
+export interface DocxModelRange { start: number; end: number }
+
+export type DocxInlineAtomKind =
+  | "field" | "math" | "drawing" | "note" | "tab" | "break";
+
+export interface DocxInlineAtom {
+  objectRef: string;
+  kind: DocxInlineAtomKind;
+  /** UTF-16 half-open range in the paragraph's modelText. */
+  modelRange: DocxModelRange;
+  /** UTF-16 half-open range in the paragraph's displayText when available. */
+  displayRange: DocxModelRange;
+  displayText?: string;
+  readable?: boolean;
+  /** Whether the payload is a complete semantic projection of the atom. */
+  complete: boolean;
+  editable: false;
+  payload?: unknown;
+  /** A JSON fragment of payload when the complete value cannot fit in this page. */
+  payloadJson?: string;
+  payloadOffset?: number;
+  payloadLength?: number;
+  /** Continue this atom's payload without changing its model/display range. */
+  payloadContinuation?: DocxReadContinuation | null;
+}
+
+/** Host-side continuation. read_docx_document emits the same fields in snake_case. */
+export interface DocxReadContinuation {
+  sessionId?: string;
+  offset?: number;
+  limit?: number;
+  expectedRevision: number;
+  textOffset?: number;
+  textLimit?: number;
+  atomOffset?: number;
+  payloadOffset?: number;
+}
+
+export interface DocxReadQuery {
+  sessionId?: string;
+  offset?: number;
+  limit?: number;
+  expectedRevision?: number;
+  /** Continue within one paragraph. These offsets are UTF-16 half-open modelText coordinates. */
+  textOffset?: number;
+  textLimit?: number;
+  /** Continue atom metadata after the text window has been established. */
+  atomOffset?: number;
+  /** Continue the selected atom's serialized payload. */
+  payloadOffset?: number;
 }
 
 export interface DocxDocumentRead {
   document: DocxActivityDocument;
   paragraphs: DocxParagraphView[];
+  offset: number;
+  nextOffset: number | null;
+  totalParagraphs: number;
+  /** Host-side continuation; the tool output exposes the same fields in snake_case. */
+  nextQuery: DocxReadContinuation | null;
+  /** True only when a paragraph was continued with text_offset/text_limit. */
+  textWindow?: {
+    paragraphRef: string;
+    offset: number;
+    nextOffset: number | null;
+    textLength: number;
+  };
+  /** Atom metadata continuation for the active text window. */
+  atomWindow?: {
+    paragraphRef: string;
+    offset: number;
+    nextOffset: number | null;
+    total: number;
+  };
+}
+
+export interface DocxTextRangeReplaceRequest {
+  sessionId?: string;
+  paragraphRef: string;
+  expectedRevision: number;
+  /** UTF-16 half-open modelText range. Never a display-text coordinate. */
+  range: DocxModelRange;
+  expectedText: string;
+  replacement: string;
+}
+
+export interface DocxTextRangeReplaceResult {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  changed: boolean;
+  revision: number;
+  document: DocxDocumentState;
+}
+
+export interface DocxImageReadRequest {
+  paragraphRef: string;
+  objectRef: string;
+  expectedRevision: number;
+}
+
+export interface DocxImageReadResult {
+  revision: number;
+  objectRef: string;
+  part: string;
+  relationshipId: string;
+  mediaPart: string;
+  mimeType: string;
+  bytes: Uint8Array;
+  description?: string;
+  widthEmu?: number;
+  heightEmu?: number;
+}
+
+/** The application host adds the exact byte hash before exposing the image to a tool. */
+export interface DocxImageReadHostResult extends DocxImageReadResult {
+  imageSha256: string;
+  document: DocxActivityDocument;
+  sourceSha256: string;
+}
+
+export interface DocxImageToolMetadata {
+  source: "live-docx";
+  imageReadComplete: true;
+  contentStatus: "pixels_provided";
+  editable: false;
+  document: DocxActivityDocument;
+  sourceSha256: string;
+  sessionId?: string;
+  paragraphRef: string;
+  objectRef: string;
+  revision: number;
+  part: string;
+  relationshipId: string;
+  mediaPart: string;
+  mimeType: "image/png" | "image/jpeg" | "image/gif";
+  imageSha256: string;
+  width: number;
+  height: number;
+  description?: string;
+  widthEmu?: number;
+  heightEmu?: number;
+}
+
+export const DOCX_READ_MAX_CHARS = 10_000;
+
+export interface DocxWorkspaceContext {
+  viewed: {
+    projectId: string; documentId: string; title: string; kind: string; role: string;
+    revision: string; sessionId?: string; sessionRevision?: number; dirty?: boolean;
+    selection?: { revision: string; paragraphRef?: string; paraId?: string; quote?: string } | null;
+  } | null;
+  writable: DocxActivityDocument[];
+  capabilities?: { sessionId: string; operations: string[] }[];
+  selectionWriteTarget: { sessionId: string; paragraphRef: string; revision: number } | null;
+  targeting: string;
+}
+
+export interface DocxRevealRequest {
+  sessionId?: string;
+  paragraphRef?: string;
+  paraId?: string;
+  expectedRevision?: number;
 }
 
 export interface DocxTargetView extends DocxDocumentState {
@@ -180,6 +362,25 @@ export interface DocxSuggestionApplyResult {
   document: DocxDocumentState;
 }
 
+export interface DocxEquationWriteRequest {
+  sessionId?: string;
+  paragraphRef: string;
+  expectedRevision: number;
+  latex: string;
+  macros?: string;
+  objectRef?: string;
+  expectedFingerprint?: string;
+  adoptSource?: boolean;
+  offset?: number;
+  display?: boolean;
+}
+
+export interface DocxEquationWriteResult extends DocxSuggestionApplyResult {
+  revision: number;
+  warnings: string[];
+  sourceHash?: string;
+}
+
 export type DocxAlignment = "Mixed" | "Unknown" | "Left" | "Centered" | "Right" | "Justified";
 export type DocxReadingOrder = "LeftToRight" | "RightToLeft";
 
@@ -196,21 +397,34 @@ export interface DocxParagraphFormatRead {
   alignment: DocxAlignment; style: string | null; firstLineIndent: number | null;
   leftIndent: number | null; rightIndent: number | null; lineSpacing: number | null;
   spaceBefore: number | null; spaceAfter: number | null; widowControl: boolean | null;
+  keepNext: boolean | null; keepLines: boolean | null; pageBreakBefore: boolean | null;
   readingOrder: DocxReadingOrder;
 }
 export interface DocxParagraphFormatWrite {
-  alignment?: DocxAlignment; style?: string; firstLineIndent?: number; leftIndent?: number;
+  alignment?: DocxAlignment; /** Exact style display name (`w:name`), not the style ID. */ style?: string; firstLineIndent?: number; leftIndent?: number;
   rightIndent?: number; lineSpacing?: number; spaceBefore?: number; spaceAfter?: number;
-  widowControl?: boolean; readingOrder?: DocxReadingOrder;
+  widowControl?: boolean; keepNext?: boolean; keepLines?: boolean;
+  pageBreakBefore?: boolean; readingOrder?: DocxReadingOrder;
 }
 export interface DocxParagraphFormatting {
   paragraphRef: string; text: string; revision: number; paraId?: string;
   font: DocxFontFormatRead; paragraph: DocxParagraphFormatRead;
 }
 export interface DocxFormatMutation { font?: DocxFontFormatWrite; paragraph?: DocxParagraphFormatWrite }
+export interface DocxFormatRange { start: number; end: number }
+export interface DocxFormatBatchItem extends DocxFormatMutation {
+  paragraphRef: string;
+  /** UTF-16 offsets in the system-provided modelText, with fields represented by U+FFFC. */
+  range?: DocxFormatRange;
+  objectFormat?: DocxObjectFormatMutation;
+}
 
 export interface DocxFormatReadQuery {
-  kind?: "objects" | "nodes"; paragraphRef?: string; part?: string; path?: number[];
+  kind?: "overview" | "paragraphs" | "styles" | "objects" | "nodes";
+  expectedRevision?: number;
+  paragraphRef?: string; part?: string; path?: number[];
+  objectKind?: string; role?: string; styleId?: string; objectId?: string; text?: string;
+  textOffset?: number; textLimit?: number;
   namespaceUri?: string; localName?: string;
   attribute?: { namespaceUri?: string; localName: string; value?: string };
   offset?: number; limit?: number;
@@ -219,7 +433,10 @@ export type DocxFormatRecord = { [key: string]: unknown };
 export interface DocxFormatReadResult {
   document: DocxFormatDocumentState; sourceSha256: string; revision: number;
   paragraph?: DocxParagraphFormatting; objects?: DocxFormatRecord[];
+  overview?: DocxFormatRecord; paragraphs?: DocxFormatRecord[]; styles?: DocxFormatRecord[];
   nodes?: DocxFormatRecord[]; total?: number; nextOffset: number | null;
+  /** Tool query with the original selectors and revision for continuing this page. */
+  nextQuery?: DocxFormatRecord | null;
 }
 export interface DocxSaveResult {
   baselineId: string; revision: number; sourceSha256: string; document: DocxDocumentState;
@@ -227,6 +444,12 @@ export interface DocxSaveResult {
   formatError?: string;
 }
 export interface DocxTemplateCheckResult { template: string; check: Record<string, unknown> }
+export interface DocxTemplateStyleImportResult extends DocxSuggestionApplyResult {
+  template: string;
+  templateSourceSha256: string;
+  styleIdMap?: Readonly<Record<string, string>>;
+  themePolicy?: string;
+}
 
 /** Runtime-owned task facts. UI state must not be used to invent these values. */
 export interface DocxAgentAttribution {
@@ -256,8 +479,20 @@ export interface DocxSuggestionApplyRequest {
 }
 
 export interface DocxToolsHost {
+  workspaceContext?(): Promise<DocxWorkspaceContext>;
+  revealWorkingCopy?(input: DocxRevealRequest): Promise<{ document: DocxActivityDocument; navigation: "requested" }>;
+  prepareFonts?(sessionId?: string): Promise<unknown>;
+  exportDocument?(sessionId?: string): Promise<unknown>;
   listDocuments(): Promise<DocxActivityDocument[]>;
-  readDocument(sessionId?: string): Promise<DocxDocumentRead>;
+  readDocument(query?: DocxReadQuery): Promise<DocxDocumentRead>;
+  replaceTextRange?(
+    input: DocxTextRangeReplaceRequest,
+    context?: DocxOperationContext,
+  ): Promise<DocxTextRangeReplaceResult>;
+  writeEquation?(
+    input: DocxEquationWriteRequest,
+    context?: DocxOperationContext,
+  ): Promise<DocxEquationWriteResult>;
   captureTarget(sessionId: string | undefined, paragraphRef: string): Promise<DocxTargetView>;
   inspectTarget(targetId: string): Promise<DocxTargetView>;
   suggestChange(
@@ -272,6 +507,10 @@ export interface DocxToolsHost {
     sessionId: string | undefined,
     query: DocxFormatReadQuery,
   ): Promise<DocxFormatReadResult>;
+  readImage?(
+    sessionId: string | undefined,
+    input: DocxImageReadRequest,
+  ): Promise<DocxImageReadHostResult>;
   formatParagraph?(
     sessionId: string | undefined,
     paragraphRef: string,
@@ -279,6 +518,26 @@ export interface DocxToolsHost {
     format: DocxFormatMutation,
     context?: DocxOperationContext,
   ): Promise<DocxSuggestionApplyResult>;
+  formatObject?(
+    sessionId: string | undefined,
+    paragraphRef: string,
+    expectedRevision: number,
+    format: DocxObjectFormatMutation,
+    context?: DocxOperationContext,
+  ): Promise<DocxSuggestionApplyResult>;
+  formatBatch?(
+    sessionId: string | undefined,
+    expectedRevision: number,
+    operations: DocxFormatBatchItem[],
+    context?: DocxOperationContext,
+  ): Promise<DocxSuggestionApplyResult>;
+  importTemplateStyles?(
+    sessionId: string | undefined,
+    template: string,
+    styleIds: string[],
+    expectedRevision: number,
+    context?: DocxOperationContext,
+  ): Promise<DocxTemplateStyleImportResult>;
   saveDocument?(
     sessionId: string | undefined,
     expectedRevision: number,
@@ -318,11 +577,15 @@ export interface ToolApprovalRequest {
 export type ConfirmFn = (req: ToolApprovalRequest) => Promise<boolean>;
 
 export interface DocxToolsOptions {
+  runId?: () => string | null;
   attribution?: DocxAgentAttribution;
   confirm?: ConfirmFn;
   mutationAllowed?: () => boolean;
+  /** Explicit ordinary-chat model capability. Omit for transports that carry images natively. */
+  imageSupported?: boolean;
   signal?: AbortSignal;
   onToken?: (full: string) => void;
+  onImage?: (dataUrl: string) => void;
 }
 
 export interface ExecAuthorization {
@@ -349,11 +612,15 @@ const DOCX_PARAGRAPH_FORMAT_SCHEMA = {
   type: "object", required: [], additionalProperties: false,
   properties: {
     alignment: { enum: ["Left", "Centered", "Right", "Justified"] },
-    style: { type: "string", description: "An existing style name." },
+    style: { type: "string", description: "Exact existing style display name (w:name), not w:styleId. Resolve imported IDs with a styles read." },
     firstLineIndent: { type: "number" }, leftIndent: { type: "number" },
     rightIndent: { type: "number" }, lineSpacing: { type: "number" },
     spaceBefore: { type: "number" }, spaceAfter: { type: "number" },
-    widowControl: { type: "boolean" }, readingOrder: { enum: ["LeftToRight", "RightToLeft"] },
+    widowControl: { type: "boolean" },
+    keepNext: { type: "boolean", description: "Keep this paragraph on the same page as the next." },
+    keepLines: { type: "boolean", description: "Keep the paragraph's lines on one page." },
+    pageBreakBefore: { type: "boolean", description: "Start this paragraph on a new page." },
+    readingOrder: { enum: ["LeftToRight", "RightToLeft"] },
   },
 } as const;
 
@@ -362,19 +629,80 @@ const DOCX_SESSION_SCHEMA = {
   description: "Session ID from list_docx_documents. Omit for the active session.",
 } as const;
 
+const DOCX_READ_QUERY_SCHEMA = {
+  session_id: DOCX_SESSION_SCHEMA,
+  offset: { type: "integer", minimum: 0, default: 0 },
+  limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+  expected_revision: { type: "integer", minimum: 0 },
+  text_offset: { type: "integer", minimum: 0 },
+  text_limit: { type: "integer", minimum: 1, maximum: 8000 },
+  atom_offset: { type: "integer", minimum: 0 },
+  payload_offset: { type: "integer", minimum: 0 },
+} as const;
+
+const DOCX_MODEL_RANGE_SCHEMA = {
+  type: "object", required: ["start", "end"], additionalProperties: false,
+  properties: {
+    start: { type: "integer", minimum: 0 },
+    end: { type: "integer", minimum: 1 },
+  },
+} as const;
+
+const DOCX_RANGE_SCHEMA = {
+  type: "object", required: ["start", "end"], additionalProperties: false,
+  description: "A same-paragraph font range using UTF-16 offsets in the modelText returned by read_docx_format kind paragraphs. Fields occupy one U+FFFC character.",
+  properties: { start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 1 } },
+} as const;
+
+function docxFormatItem(input: Record<string, unknown>): DocxFormatBatchItem {
+  if (typeof input.paragraph_ref !== "string" || !input.paragraph_ref.trim()) {
+    throw new Error("A DOCX format operation needs a paragraph reference.");
+  }
+  const objectFormat = docxObjectFormatMutation(input);
+  const range = input.range as DocxFormatRange | undefined;
+  if (range !== undefined && (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start < 0 || range.end <= range.start)) {
+    throw new Error("A DOCX font range requires integer offsets with 0 <= start < end.");
+  }
+  if (range && (objectFormat || input.paragraph !== undefined || input.font === undefined)) {
+    throw new Error("A DOCX range applies only to font formatting; omit paragraph and object formats.");
+  }
+  if (objectFormat) return { paragraphRef: input.paragraph_ref, objectFormat };
+  return {
+    paragraphRef: input.paragraph_ref,
+    ...(range ? { range } : {}),
+    ...(input.font ? { font: input.font as DocxFontFormatWrite } : {}),
+    ...(input.paragraph ? { paragraph: input.paragraph as DocxParagraphFormatWrite } : {}),
+  };
+}
+
 function docxFormatQuery(value: unknown): DocxFormatReadQuery {
   const query = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  if (query.expected_revision !== undefined && docxRevision(query.expected_revision) === null)
+    throw new Error("expected_revision must be a non-negative session revision.");
   if (query.offset !== undefined && (!Number.isInteger(query.offset) || Number(query.offset) < 0))
     throw new Error("A DOCX format offset must be a non-negative integer.");
   if (query.limit !== undefined && (!Number.isInteger(query.limit) || Number(query.limit) < 1 || Number(query.limit) > 50))
     throw new Error("Read one to fifty DOCX format objects per window.");
   if (query.path !== undefined && (!Array.isArray(query.path) || query.path.some((index) => !Number.isInteger(index) || index < 0)))
     throw new Error("A DOCX node path must contain non-negative integer child indices.");
+  if (query.text_offset !== undefined && (!Number.isInteger(query.text_offset) || Number(query.text_offset) < 0))
+    throw new Error("A DOCX text offset must be a non-negative UTF-16 offset.");
+  if (query.text_limit !== undefined && (!Number.isInteger(query.text_limit) || Number(query.text_limit) < 1 || Number(query.text_limit) > 16000))
+    throw new Error("A DOCX text window must contain one to sixteen thousand UTF-16 units.");
   const attribute = query.attribute && typeof query.attribute === "object"
     ? query.attribute as Record<string, unknown>
     : {};
   return {
-    ...(query.kind === "objects" || query.kind === "nodes" ? { kind: query.kind } : {}),
+    ...(["overview", "paragraphs", "styles", "objects", "nodes"].includes(String(query.kind))
+      ? { kind: query.kind as DocxFormatReadQuery["kind"] } : {}),
+    ...(typeof query.expected_revision === "number" ? { expectedRevision: query.expected_revision } : {}),
+    ...(typeof query.object_kind === "string" ? { objectKind: query.object_kind } : {}),
+    ...(typeof query.role === "string" ? { role: query.role } : {}),
+    ...(typeof query.style_id === "string" ? { styleId: query.style_id } : {}),
+    ...(typeof query.object_id === "string" ? { objectId: query.object_id } : {}),
+    ...(typeof query.text === "string" ? { text: query.text } : {}),
+    ...(typeof query.text_offset === "number" ? { textOffset: query.text_offset } : {}),
+    ...(typeof query.text_limit === "number" ? { textLimit: query.text_limit } : {}),
     ...(typeof query.paragraph_ref === "string" ? { paragraphRef: query.paragraph_ref } : {}),
     ...(typeof query.part === "string" ? { part: query.part } : {}),
     ...(Array.isArray(query.path)
@@ -400,6 +728,52 @@ function docxFormatQuery(value: unknown): DocxFormatReadQuery {
 
 function docxRevision(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function continuationForTool(
+  continuation: DocxReadContinuation | Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null | undefined {
+  if (continuation === undefined || continuation === null) return continuation;
+  const value = continuation as Record<string, unknown>;
+  const field = (camel: string, snake: string) => value[camel] ?? value[snake];
+  return {
+    ...(field("sessionId", "session_id")
+      ? { session_id: field("sessionId", "session_id") } : {}),
+    ...(value.offset === undefined ? {} : { offset: value.offset }),
+    ...(value.limit === undefined ? {} : { limit: value.limit }),
+    expected_revision: field("expectedRevision", "expected_revision"),
+    ...(field("textOffset", "text_offset") === undefined
+      ? {} : { text_offset: field("textOffset", "text_offset") }),
+    ...(field("textLimit", "text_limit") === undefined
+      ? {} : { text_limit: field("textLimit", "text_limit") }),
+    ...(field("atomOffset", "atom_offset") === undefined
+      ? {} : { atom_offset: field("atomOffset", "atom_offset") }),
+    ...(field("payloadOffset", "payload_offset") === undefined
+      ? {} : { payload_offset: field("payloadOffset", "payload_offset") }),
+  };
+}
+
+export function docxReadForTool(result: DocxDocumentRead): Record<string, unknown> {
+  const { nextQuery, paragraphs, ...rest } = result;
+  return {
+    ...rest,
+    next_query: continuationForTool(nextQuery),
+    paragraphs: paragraphs.map((paragraph) => {
+      const { atoms, ...paragraphRest } = paragraph;
+      return {
+        ...paragraphRest,
+        atoms: atoms.map((atom) => {
+          const { payloadContinuation, ...atomRest } = atom;
+          return {
+            ...atomRest,
+            ...(payloadContinuation === undefined
+              ? {}
+              : { payload_continuation: continuationForTool(payloadContinuation) }),
+          };
+        }),
+      };
+    }),
+  };
 }
 
 const MAX_REPLACEMENTS = 100_000;
@@ -1460,6 +1834,53 @@ export function createDocxTools(
   };
 
   return {
+    get_docx_workspace_context: {
+      description: "Read the material currently being viewed and its selection separately from writable live Word sessions. Historical selections are reference evidence, never implicit write targets. Refresh before acting on 'this' or 'here'.",
+      inputSchema: { type: "object" as const, properties: {}, required: [], additionalProperties: false },
+      execute: async () => {
+        if (!host.workspaceContext) return { unavailable: true, error: "DOCX workspace context is unavailable." };
+        try { return await host.workspaceContext(); } catch (error) { return { error: String(error) }; }
+      },
+    },
+    reveal_docx_working_copy: {
+      description: "Request that the product show the writable Word working copy and optionally locate a current paragraph. Uses the existing navigation/follow state; when following is paused the target is queued until the user resumes. This does not edit or save.",
+      inputSchema: { type: "object" as const, properties: {
+        session_id: DOCX_SESSION_SCHEMA,
+        paragraph_ref: { type: "string", minLength: 1 },
+        expected_revision: { type: "integer", minimum: 0 },
+      }, required: [], additionalProperties: false },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.revealWorkingCopy) return { unavailable: true, error: "Word navigation is unavailable." };
+        if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+        try {
+          const expectedRevision = input.expected_revision === undefined ? undefined : docxRevision(input.expected_revision);
+          if (expectedRevision === null) throw new Error("expected_revision must be a non-negative session revision.");
+          if (input.paragraph_ref && expectedRevision === undefined) throw new Error("Locating a paragraph requires its expected_revision.");
+          return await host.revealWorkingCopy({ sessionId: optionalString(input, "session_id"),
+            paragraphRef: optionalString(input, "paragraph_ref"), ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+        } catch (error) { return { error: String(error) }; }
+      },
+    },
+    prepare_docx_fonts: {
+      description: "Refresh the bound Word session through the product's existing font service and return actual font resolution and measurement status. An available family or completed refresh does not by itself mean every face is ready or journal requirements pass.",
+      inputSchema: { type: "object" as const, properties: { session_id: DOCX_SESSION_SCHEMA }, required: [], additionalProperties: false },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.prepareFonts) return { unavailable: true, error: "Word font preparation is unavailable." };
+        if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+        try { return await host.prepareFonts(optionalString(input, "session_id")); }
+        catch (error) { return unavailableOrError(error); }
+      },
+    },
+    export_docx_document: {
+      description: "Export the current live Word working copy through the same download operation as the user. Returns the exported session revision and output receipt. Export does not save a Workbench baseline or run a check.",
+      inputSchema: { type: "object" as const, properties: { session_id: DOCX_SESSION_SCHEMA }, required: [], additionalProperties: false },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.exportDocument) return { unavailable: true, error: "Word export is unavailable." };
+        if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+        try { return await host.exportDocument(optionalString(input, "session_id")); }
+        catch (error) { return unavailableOrError(error); }
+      },
+    },
     list_docx_documents: {
       description:
         "List active Oleafly DOCX working copies. Session revision, saved revision, dirty state and the Workbench baseline are distinct.",
@@ -1479,18 +1900,175 @@ export function createDocxTools(
     },
     read_docx_document: {
       description:
-        "Read the current paragraphs from an active DOCX working copy. This reads the live session, which may be newer than its saved Workbench baseline.",
+        "Read a bounded page from the live DOCX. `text` is display text; ranges use whole-paragraph `modelText` UTF-16 offsets. Every paragraph carries the exact route for continuing its own modelText window, so keep those offsets in that paragraph. Math payloads report readableMath and diagnostics rather than an image. Drawing objects and fields whose payload contains one embedded-image route remain opaque metadata here; call read_docx_image with the attached paragraph_ref, object_ref and expected_revision to receive their actual pixels. Continue metadata or a long payload with next_query and the returned continuation fields.",
       inputSchema: {
         type: "object" as const,
-        properties: {
-          session_id: DOCX_SESSION_SCHEMA,
-        },
+        properties: DOCX_READ_QUERY_SCHEMA,
         required: [],
         additionalProperties: false,
       },
       execute: async (input: Record<string, unknown>) => {
         try {
-          return await host.readDocument(optionalString(input, "session_id"));
+          const offset = input.offset === undefined ? 0 : Number(input.offset);
+          const limit = input.limit === undefined ? 20 : Number(input.limit);
+          if (!Number.isInteger(offset) || offset < 0)
+            throw new Error("DOCX read offset must be a non-negative integer.");
+          if (!Number.isInteger(limit) || limit < 1 || limit > 50)
+            throw new Error("Read one to fifty DOCX paragraphs per page.");
+          const expectedRevision = input.expected_revision === undefined
+            ? undefined : docxRevision(input.expected_revision);
+          if (expectedRevision === null)
+            throw new Error("expected_revision must be a non-negative session revision.");
+          const textOffset = input.text_offset === undefined ? undefined : Number(input.text_offset);
+          const textLimit = input.text_limit === undefined ? undefined : Number(input.text_limit);
+          const atomOffset = input.atom_offset === undefined ? undefined : Number(input.atom_offset);
+          const payloadOffset = input.payload_offset === undefined ? undefined : Number(input.payload_offset);
+          if (textOffset !== undefined && (!Number.isInteger(textOffset) || textOffset < 0))
+            throw new Error("text_offset must be a non-negative UTF-16 offset.");
+          if (textLimit !== undefined && (!Number.isInteger(textLimit) || textLimit < 1 || textLimit > 8000))
+            throw new Error("text_limit must contain one to eight thousand UTF-16 units.");
+          if ((textOffset === undefined) !== (textLimit === undefined))
+            throw new Error("text_offset and text_limit must be supplied together.");
+          if (atomOffset !== undefined && (!Number.isInteger(atomOffset) || atomOffset < 0))
+            throw new Error("atom_offset must be a non-negative atom index.");
+          if (payloadOffset !== undefined && (!Number.isInteger(payloadOffset) || payloadOffset < 0))
+            throw new Error("payload_offset must be a non-negative UTF-16 offset.");
+          if (atomOffset !== undefined && textOffset === undefined)
+            throw new Error("atom_offset requires text_offset and text_limit.");
+          if (payloadOffset !== undefined && atomOffset === undefined)
+            throw new Error("payload_offset requires atom_offset.");
+          const sessionId = optionalString(input, "session_id");
+          const result = await host.readDocument({
+            ...(sessionId ? { sessionId } : {}),
+            offset, limit,
+            ...(expectedRevision === undefined ? {} : { expectedRevision }),
+            ...(textOffset === undefined ? {} : { textOffset, textLimit }),
+            ...(atomOffset === undefined ? {} : { atomOffset }),
+            ...(payloadOffset === undefined ? {} : { payloadOffset }),
+          });
+          const modelResult = docxReadForTool(result);
+          const serialized = JSON.stringify(modelResult);
+          if (serialized.length > DOCX_READ_MAX_CHARS)
+            throw new Error(`The DOCX read page exceeds the ${DOCX_READ_MAX_CHARS}-character transport budget.`);
+          return modelResult;
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    read_docx_image: {
+      description:
+        "Read the current embedded raster image referenced by one DrawingML or VML drawing, or by a field whose payload contains one embedded-image route, in the live DOCX. Use exactly the read_docx_image route attached in read_docx_document; arbitrary media paths and external images are refused. The response contains document/source identity and image metadata while the actual PNG, JPEG or GIF pixels travel through the tool's image channel for visual inspection. This does not edit, save or export the document.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: DOCX_SESSION_SCHEMA,
+          paragraph_ref: {
+            type: "string",
+            minLength: 1,
+            description: "The paragraph_ref attached to the drawing's read_docx_image route.",
+          },
+          object_ref: {
+            type: "string",
+            minLength: 1,
+            description: "The drawing or field object_ref whose route requested this image.",
+          },
+          expected_revision: {
+            type: "integer",
+            minimum: 0,
+            description: "The exact drawing-route revision in this live DOCX session.",
+          },
+        },
+        required: ["paragraph_ref", "object_ref", "expected_revision"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.readImage) {
+          return { unavailable: true, error: "Live DOCX image reading is unavailable." };
+        }
+        if (!opts?.onImage) {
+          return { unavailable: true, error: "The active Agent transport cannot receive DOCX images." };
+        }
+        if (opts.imageSupported === false) {
+          return { error: "The active model does not accept image input. Use read_docx_document for text, math and drawing metadata." };
+        }
+        try {
+          const paragraphRef = stringField(input, "paragraph_ref");
+          const objectRef = stringField(input, "object_ref");
+          const expectedRevision = docxRevision(input.expected_revision);
+          if (!paragraphRef) throw new Error("paragraph_ref is required.");
+          if (!objectRef) throw new Error("object_ref is required.");
+          if (expectedRevision === null) {
+            throw new Error("expected_revision must be a non-negative session revision.");
+          }
+          const sessionId = optionalString(input, "session_id");
+          const request: DocxImageReadRequest = {
+            paragraphRef,
+            objectRef,
+            expectedRevision,
+          };
+          const result = await host.readImage(sessionId, request);
+          const image = docxImageForTool(result, request, sessionId);
+          opts.onImage(image.dataUrl);
+          return image.metadata;
+        } catch (error) {
+          return { error: String(error) };
+        }
+      },
+    },
+    replace_docx_text_range: {
+      description:
+        "Replace one ordinary text range in the live DOCX. range and expected_text use whole-paragraph modelText UTF-16 offsets. It refuses fields, equations, drawings, notes, formatting/container boundaries and stale revisions; the change is one undoable edit and does not save.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: DOCX_SESSION_SCHEMA,
+          paragraph_ref: { type: "string", minLength: 1 },
+          expected_revision: { type: "integer", minimum: 0 },
+          range: DOCX_MODEL_RANGE_SCHEMA,
+          expected_text: { type: "string" },
+          replacement: { type: "string" },
+        },
+        required: ["paragraph_ref", "expected_revision", "range", "expected_text", "replacement"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.replaceTextRange)
+          return { unavailable: true, error: "Safe DOCX text-range editing is unavailable." };
+        if (!mutationAllowed()) return cancelled();
+        if (context?.signal?.aborted) return cancelled();
+        try {
+          const paragraphRef = stringField(input, "paragraph_ref");
+          const expectedRevision = docxRevision(input.expected_revision);
+          const range = input.range as DocxModelRange | undefined;
+          if (!paragraphRef) throw new Error("paragraph_ref is required.");
+          if (expectedRevision === null)
+            throw new Error("expected_revision must be a non-negative session revision.");
+          if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end) ||
+              range.start < 0 || range.end <= range.start)
+            throw new Error("range must use integer UTF-16 offsets with 0 <= start < end.");
+          if (typeof input.expected_text !== "string" || typeof input.replacement !== "string")
+            throw new Error("expected_text and replacement must be strings.");
+          if (input.expected_text === input.replacement)
+            throw new Error("The replacement is unchanged.");
+          const sessionId = optionalString(input, "session_id");
+          const request: DocxTextRangeReplaceRequest = {
+            ...(sessionId ? { sessionId } : {}),
+            paragraphRef, expectedRevision, range,
+            expectedText: input.expected_text,
+            replacement: input.replacement,
+          };
+          if (opts?.confirm && !(await opts.confirm({
+            tool: "replace_docx_text_range",
+            summary: `Replace text in DOCX paragraph ${paragraphRef}`,
+            path: `DOCX#${paragraphRef}`,
+            diff: { path: `DOCX#${paragraphRef}`, oldText: input.expected_text, newText: input.replacement },
+          }))) return {
+            message: "The user declined this change.", declined: true as const,
+            status: "declined" as const, tool: "replace_docx_text_range",
+          };
+          if (!mutationAllowed()) return cancelled();
+          return await host.replaceTextRange(request, context);
         } catch (error) {
           return { error: String(error) };
         }
@@ -1569,6 +2147,55 @@ export function createDocxTools(
         }
       },
     },
+    write_docx_equation: {
+      description: "Compile one LaTeX equation body with explicit math macro declarations and write editable Word math. Insert at a modelText UTF-16 offset, or replace one current math object using its object_ref and exact expected_fingerprint. Replacement and offset are mutually exclusive. Use adopt_source only to explicitly replace an equation whose source is absent or changed outside this source workflow. Whole documents, algorithms, labels and numbering commands are refused. Conversion losses are reported, and the document is not saved by this tool.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          session_id: DOCX_SESSION_SCHEMA,
+          paragraph_ref: { type: "string", minLength: 1 },
+          expected_revision: { type: "integer", minimum: 0 },
+          latex: { type: "string", minLength: 1, maxLength: 16384 },
+          macros: { type: "string", maxLength: 16384 },
+          object_ref: { type: "string", minLength: 1 },
+          expected_fingerprint: { type: "string", minLength: 1 },
+          adopt_source: { type: "boolean" },
+          offset: { type: "integer", minimum: 0 },
+          display: { type: "boolean" },
+        },
+        required: ["paragraph_ref", "expected_revision", "latex"],
+        additionalProperties: false,
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.writeEquation) return { unavailable: true, error: "DOCX equation writing is unavailable." };
+        if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+        try {
+          const expectedRevision = docxRevision(input.expected_revision);
+          const paragraphRef = stringField(input, "paragraph_ref");
+          const latex = stringField(input, "latex");
+          const objectRef = optionalString(input, "object_ref");
+          const expectedFingerprint = optionalString(input, "expected_fingerprint");
+          if (expectedRevision === null || !paragraphRef.trim() || !latex.trim()) throw new Error("Supply one equation body, its paragraph_ref and current non-negative expected_revision.");
+          if (input.macros !== undefined && typeof input.macros !== "string" || latex.length + stringField(input, "macros").length > 16_384) throw new Error("The equation and explicit macro context must contain at most 16,384 characters.");
+          if (objectRef ? !expectedFingerprint || input.offset !== undefined : !Number.isSafeInteger(input.offset) || Number(input.offset) < 0 || input.expected_fingerprint !== undefined || input.adopt_source !== undefined) throw new Error("Replace with object_ref and expected_fingerprint, or insert at offset. Do not combine these addresses.");
+          for (const name of ["adopt_source", "display"]) if (input[name] !== undefined && typeof input[name] !== "boolean") throw new Error(`${name} must be boolean.`);
+          const request: DocxEquationWriteRequest = {
+            ...(optionalString(input, "session_id") ? { sessionId: optionalString(input, "session_id") } : {}),
+            paragraphRef, expectedRevision, latex,
+            ...(input.macros === undefined ? {} : { macros: input.macros as string }),
+            ...(objectRef ? { objectRef, expectedFingerprint, ...(input.adopt_source === undefined ? {} : { adoptSource: input.adopt_source as boolean }) } : { offset: Number(input.offset) }),
+            ...(input.display === undefined ? {} : { display: input.display as boolean }),
+          };
+          if (opts?.confirm && !(await opts.confirm({
+            tool: "write_docx_equation",
+            summary: `${objectRef ? "Replace" : "Insert"} an editable Word equation at ${paragraphRef}`,
+            diff: { path: paragraphRef, oldText: objectRef ? `Equation ${objectRef}, fingerprint ${expectedFingerprint}` : "", newText: JSON.stringify({ latex, macros: request.macros ?? "", display: request.display ?? (objectRef ? "retain existing placement" : false) }, null, 2) },
+          }))) return declined("write_docx_equation");
+          if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+          return await host.writeEquation(request, context);
+        } catch (error) { return unavailableOrError(error); }
+      },
+    },
     apply_docx_suggestion: {
       description:
         "Apply one whole-paragraph suggestion to the live DOCX session. This does not save a Workbench baseline. It refuses stale targets and paragraphs with complex inline structure.",
@@ -1634,7 +2261,7 @@ export function createDocxTools(
     },
     read_docx_format: {
       description:
-        "Read effective live DOCX formatting and direct paragraph formatting. Use paragraph_ref for one paragraph, kind objects for a paged document query, or kind nodes for structural XML facts. Returns the current session revision and exact export hash.",
+        "Read system-parsed DOCX text, structure, styles and effective formatting. Begin with kind overview for the directory and reading routes; continue paragraphs, styles or objects with nextOffset and the returned revision as query.expected_revision. If the revision changed, refresh the directory before continuing. Paragraphs include editable references and modelText for exact font ranges. Use nodes for XML diagnosis. Returns the live revision and exact export hash.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1646,7 +2273,11 @@ export function createDocxTools(
             type: "object",
             additionalProperties: false,
             properties: {
-              kind: { type: "string", enum: ["objects", "nodes"] },
+              kind: { type: "string", enum: ["overview", "paragraphs", "styles", "objects", "nodes"] },
+              expected_revision: { type: "integer", minimum: 0, description: "Live revision returned by the preceding page. Keeps continued reading on the same document revision." },
+              object_kind: { type: "string" }, role: { type: "string" },
+              style_id: { type: "string" }, object_id: { type: "string" }, text: { type: "string" },
+              text_offset: { type: "integer", minimum: 0 }, text_limit: { type: "integer", minimum: 1, maximum: 16000 },
               paragraph_ref: { type: "string" }, part: { type: "string" },
               path: { type: "array", items: { type: "integer", minimum: 0 } },
               namespace_uri: { type: "string" }, local_name: { type: "string" },
@@ -1676,7 +2307,7 @@ export function createDocxTools(
     },
     apply_docx_format: {
       description:
-        "Apply direct run or paragraph formatting to one live DOCX paragraph. Supply the session revision that was read. Omitted format fields stay unchanged. A style must already exist in the document.",
+        "Apply formatting to a live DOCX paragraph, an exact font range, or its containing section, table, row or cell. A range uses system-provided modelText offsets. Supply the live revision. Scope defaults to paragraph; omitted fields stay unchanged. Styles must already exist. This does not save; use apply_docx_format_batch for an atomic group.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1692,16 +2323,15 @@ export function createDocxTools(
             type: "number",
             description: "Session revision read before this format change.",
           },
+          range: DOCX_RANGE_SCHEMA,
           font: DOCX_FONT_SCHEMA,
           paragraph: DOCX_PARAGRAPH_FORMAT_SCHEMA,
+          ...DOCX_OBJECT_FORMAT_SCHEMAS,
         },
         required: ["paragraph_ref", "expected_revision"],
         additionalProperties: false,
       },
       execute: async (input: Record<string, unknown>) => {
-        if (!host.formatParagraph) {
-          return { unavailable: true, error: "Live DOCX formatting is unavailable." };
-        }
         if (!mutationAllowed()) return cancelled();
         if (context?.signal?.aborted) return cancelled();
         const expectedRevision = docxRevision(input.expected_revision);
@@ -1713,6 +2343,11 @@ export function createDocxTools(
         const paragraphRef = stringField(input, "paragraph_ref");
         const sessionId = optionalString(input, "session_id");
         try {
+          const item = docxFormatItem(input);
+          const objectFormat = item.objectFormat;
+          if (item.range ? !host.formatBatch : objectFormat ? !host.formatObject : !host.formatParagraph) {
+            return { unavailable: true, error: "Live DOCX formatting is unavailable for the requested scope." };
+          }
           if (opts?.confirm) {
             if (!host.readFormat) {
               return {
@@ -1721,17 +2356,17 @@ export function createDocxTools(
               };
             }
             const before = await host.readFormat(sessionId, { paragraphRef });
-            const oldFormat = before.paragraph
+            const oldFormat = objectFormat ? before.objects : before.paragraph
               ? { font: before.paragraph.font, paragraph: before.paragraph.paragraph }
               : {};
             if (!(await opts.confirm({
               tool: "apply_docx_format",
-              summary: `Format a DOCX paragraph in ${before.document.filename} at ${paragraphRef}`,
+              summary: `Format a DOCX ${objectFormat?.kind ?? "paragraph"} in ${before.document.filename} at ${paragraphRef}`,
               path: `${before.document.filename}#${paragraphRef}`,
               diff: {
                 path: `${before.document.filename}#${paragraphRef}`,
                 oldText: JSON.stringify(oldFormat, null, 2),
-                newText: JSON.stringify({ font, paragraph }, null, 2),
+                newText: JSON.stringify(item, null, 2),
               },
             }))) {
               return {
@@ -1744,7 +2379,11 @@ export function createDocxTools(
           }
           if (!mutationAllowed()) return cancelled();
           if (context?.signal?.aborted) return cancelled();
-          return await host.formatParagraph(
+          if (item.range && host.formatBatch) return await host.formatBatch(sessionId, expectedRevision, [item], context);
+          if (objectFormat && host.formatObject) {
+            return await host.formatObject(sessionId, paragraphRef, expectedRevision, objectFormat, context);
+          }
+          return await host.formatParagraph!(
             sessionId,
             paragraphRef,
             expectedRevision,
@@ -1754,6 +2393,79 @@ export function createDocxTools(
         } catch (error) {
           return unavailableOrError(error);
         }
+      },
+    },
+    apply_docx_format_batch: {
+      description:
+        "Apply a group of DOCX format operations as one atomic transaction and one undo step at expected_revision. If any operation is invalid nothing changes. Use exact paragraph references; optional font ranges use modelText UTF-16 offsets returned by read_docx_format. This does not save the working copy.",
+      inputSchema: {
+        type: "object" as const, required: ["expected_revision", "operations"], additionalProperties: false,
+        properties: {
+          session_id: DOCX_SESSION_SCHEMA,
+          expected_revision: { type: "integer", minimum: 0 },
+          operations: { type: "array", minItems: 1, maxItems: 100, items: {
+            type: "object", required: ["paragraph_ref"], additionalProperties: false,
+            properties: { paragraph_ref: { type: "string", minLength: 1 }, range: DOCX_RANGE_SCHEMA,
+              font: DOCX_FONT_SCHEMA, paragraph: DOCX_PARAGRAPH_FORMAT_SCHEMA, ...DOCX_OBJECT_FORMAT_SCHEMAS },
+          } },
+        },
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.formatBatch) return { unavailable: true, error: "Atomic DOCX formatting is unavailable." };
+        if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+        try {
+          const expectedRevision = docxRevision(input.expected_revision);
+          if (expectedRevision === null) throw new Error("expected_revision must be the non-negative session revision that was read.");
+          if (!Array.isArray(input.operations) || input.operations.length < 1 || input.operations.length > 100) throw new Error("Supply one to one hundred DOCX format operations.");
+          const operations = input.operations.map((item) => {
+            if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("A DOCX format operation must be an object.");
+            return docxFormatItem(item as Record<string, unknown>);
+          });
+          const sessionId = optionalString(input, "session_id");
+          if (opts?.confirm) {
+            if (!host.readFormat) return { unavailable: true, error: "Format approval requires live DOCX formatting reads." };
+            const before = await host.readFormat(sessionId, { kind: "overview" });
+            if (!(await opts.confirm({ tool: "apply_docx_format_batch",
+              summary: `Apply ${operations.length} DOCX format operations in ${before.document.filename}`,
+              path: before.document.filename, diff: { path: before.document.filename,
+                oldText: JSON.stringify(before, null, 2), newText: JSON.stringify(operations, null, 2) },
+            }))) return declined("apply_docx_format_batch");
+          }
+          if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+          return await host.formatBatch(sessionId, expectedRevision, operations, context);
+        } catch (error) { return unavailableOrError(error); }
+      },
+    },
+    import_docx_template_styles: {
+      description: "Import selected style definitions and their style/numbering dependencies from an explicit retained Word template into the live working copy. Existing manuscript styles are preserved. Resolve each returned styleIdMap value with read_docx_format kind styles and style_id, then apply the returned exact name through paragraph.style; paragraph.style accepts w:name, not w:styleId. Resolvable source theme fonts override literal fallbacks; unresolved references retain existing literal fonts. Colors use stored fallbacks. Document defaults and the entire theme are not copied, so unspecified values use target defaults. Styles with resource relationships are refused. Read effective formatting after applying. This is one undoable edit and does not save or assign styles to paragraphs.",
+      inputSchema: {
+        type: "object" as const, required: ["template", "style_ids", "expected_revision"], additionalProperties: false,
+        properties: {
+          session_id: DOCX_SESSION_SCHEMA, template: { type: "string", minLength: 1 },
+          expected_revision: { type: "integer", minimum: 0 },
+          style_ids: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string", minLength: 1 } },
+        },
+      },
+      execute: async (input: Record<string, unknown>) => {
+        if (!host.importTemplateStyles) return { unavailable: true, error: "DOCX template style import is unavailable." };
+        if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+        try {
+          const expectedRevision = docxRevision(input.expected_revision);
+          if (expectedRevision === null) throw new Error("Supply the current non-negative expected_revision.");
+          const template = stringField(input, "template").trim();
+          if (!template) throw new Error("Choose an explicit retained Word template world.");
+          if (!Array.isArray(input.style_ids) || input.style_ids.length < 1 || input.style_ids.length > 100 ||
+            input.style_ids.some((id) => typeof id !== "string" || !id.trim()) || new Set(input.style_ids).size !== input.style_ids.length) {
+            throw new Error("Supply one to one hundred unique template style IDs.");
+          }
+          const styleIds = input.style_ids as string[];
+          if (opts?.confirm && !(await opts.confirm({ tool: "import_docx_template_styles",
+            summary: `Import ${styleIds.length} style definitions from template ${template}`,
+            diff: { path: template, oldText: "Existing manuscript styles", newText: JSON.stringify({ template, styleIds }, null, 2) },
+          }))) return declined("import_docx_template_styles");
+          if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+          return await host.importTemplateStyles(optionalString(input, "session_id"), template, styleIds, expectedRevision, context);
+        } catch (error) { return unavailableOrError(error); }
       },
     },
     save_docx_document: {
@@ -1865,6 +2577,90 @@ type ImageDimensions = {
 
 function imageTypeAndDimensions(bytes: Uint8Array): ImageDimensions | null {
   return pngDimensions(bytes) ?? gifDimensions(bytes) ?? jpegDimensions(bytes);
+}
+
+export function docxImageForTool(
+  result: DocxImageReadHostResult,
+  request: DocxImageReadRequest,
+  sessionId?: string,
+): { metadata: DocxImageToolMetadata; dataUrl: string } {
+  if (result.revision !== request.expectedRevision || result.objectRef !== request.objectRef) {
+    throw new Error("The DOCX image result does not describe the requested revision and object.");
+  }
+  if (
+    result.document.sessionRevision !== request.expectedRevision ||
+    result.document.sourceSha256 !== result.sourceSha256 ||
+    (sessionId !== undefined && result.document.sessionId !== sessionId)
+  ) {
+    throw new Error("The DOCX image result does not match its current document source identity.");
+  }
+  if (result.bytes.byteLength === 0) throw new Error("The DOCX image is empty.");
+  if (result.bytes.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error(`DOCX image exceeds the ${MAX_IMAGE_BYTES / (1024 * 1024)} MiB limit.`);
+  }
+  const image = imageTypeAndDimensions(result.bytes);
+  if (!image || image.width <= 0 || image.height <= 0) {
+    throw new Error("Only valid PNG, JPEG, and GIF DOCX images are supported.");
+  }
+  if (image.width * image.height > MAX_IMAGE_PIXELS) {
+    throw new Error(
+      `DOCX image dimensions exceed the ${MAX_IMAGE_PIXELS.toLocaleString()} pixel limit.`,
+    );
+  }
+  if (result.mimeType.toLowerCase() !== image.mime) {
+    throw new Error(
+      `The DOCX image MIME type ${result.mimeType} does not match its ${image.mime} bytes.`,
+    );
+  }
+  if (!/^[0-9a-f]{64}$/i.test(result.imageSha256)) {
+    throw new Error("The DOCX image result has an invalid SHA-256 hash.");
+  }
+  for (const [name, value] of [
+    ["part", result.part],
+    ["relationshipId", result.relationshipId],
+    ["mediaPart", result.mediaPart],
+  ] as const) {
+    if (!value.trim()) throw new Error(`The DOCX image result has no ${name}.`);
+  }
+  for (const [name, value] of [
+    ["widthEmu", result.widthEmu],
+    ["heightEmu", result.heightEmu],
+  ] as const) {
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+      throw new Error(`The DOCX image result has an invalid ${name}.`);
+    }
+  }
+  const metadata: DocxImageToolMetadata = {
+    source: "live-docx",
+    imageReadComplete: true,
+    contentStatus: "pixels_provided",
+    editable: false,
+    document: result.document,
+    sourceSha256: result.sourceSha256,
+    ...(sessionId ? { sessionId } : {}),
+    paragraphRef: request.paragraphRef,
+    objectRef: result.objectRef,
+    revision: result.revision,
+    part: result.part,
+    relationshipId: result.relationshipId,
+    mediaPart: result.mediaPart,
+    mimeType: image.mime,
+    imageSha256: result.imageSha256.toLowerCase(),
+    width: image.width,
+    height: image.height,
+    ...(result.description === undefined ? {} : { description: result.description }),
+    ...(result.widthEmu === undefined ? {} : { widthEmu: result.widthEmu }),
+    ...(result.heightEmu === undefined ? {} : { heightEmu: result.heightEmu }),
+  };
+  if (JSON.stringify(metadata).length > DOCX_READ_MAX_CHARS) {
+    throw new Error(
+      `The DOCX image metadata exceeds the ${DOCX_READ_MAX_CHARS}-character transport budget.`,
+    );
+  }
+  return {
+    metadata,
+    dataUrl: `data:${image.mime};base64,${bytesToBase64(result.bytes)}`,
+  };
 }
 
 function pngDimensions(bytes: Uint8Array): ImageDimensions | null {

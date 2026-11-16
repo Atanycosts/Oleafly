@@ -6,6 +6,7 @@ mod transport;
 
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::{watch, Mutex, Semaphore};
@@ -18,6 +19,11 @@ use crate::task_tools::extra::TaskBinding;
 
 pub use stdio::{serve_stdio_bridge, stdio_bridge_requested, stdio_server, STDIO_FLAG};
 pub use tools::tool_definitions;
+pub use tools::{
+    application_json_content, application_multimodal_content, ApplicationImage,
+    MAX_APPLICATION_IMAGES, MAX_APPLICATION_IMAGE_BYTES, MAX_APPLICATION_IMAGE_DATA_BYTES,
+    MAX_APPLICATION_TEXT_CHARS,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedRootInfo {
@@ -40,6 +46,16 @@ pub trait LinkedRoots: Send + Sync {
 pub trait ApplicationTools: Send + Sync {
     fn definitions(&self) -> Vec<protocol::ToolMeta>;
     fn call(&self, name: String, args: Value) -> TaskRuntimeFuture<Value>;
+    /// Tool calls become MCP content only at this explicit boundary. The default
+    /// preserves the existing JSON text result; multimodal applications override
+    /// this method with validated text and image parts.
+    fn call_content(&self, name: String, args: Value) -> TaskRuntimeFuture<Value> {
+        let result = self.call(name, args);
+        Box::pin(async move { tools::application_json_content(result.await?) })
+    }
+    fn call_timeout(&self, _name: &str) -> Duration {
+        Duration::from_secs(30)
+    }
 }
 
 #[derive(Clone)]

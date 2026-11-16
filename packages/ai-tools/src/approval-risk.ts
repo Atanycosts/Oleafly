@@ -10,8 +10,10 @@ export type ApprovalRuleDecision = "allow" | "deny";
 export const DEFAULT_APPROVAL_MODE: ApprovalMode = "approve-for-me";
 
 const READ_TOOLS = new Set([
+  "get_docx_workspace_context",
   "list_docx_documents",
   "read_docx_document",
+  "read_docx_image",
   "read_docx_format",
   "capture_docx_target",
   "list_research_roots",
@@ -47,9 +49,16 @@ const READ_TOOLS = new Set([
 ]);
 
 const WRITE_TOOLS = new Set([
+  "reveal_docx_working_copy",
+  "prepare_docx_fonts",
+  "export_docx_document",
   "suggest_docx_change",
   "apply_docx_suggestion",
+  "write_docx_equation",
+  "replace_docx_text_range",
   "apply_docx_format",
+  "apply_docx_format_batch",
+  "import_docx_template_styles",
   "save_docx_document",
   "check_docx_template",
   "write_file",
@@ -72,8 +81,10 @@ const NETWORK_TOOLS = new Set([
 ]);
 
 const READ_ONLY_TOOLS = new Set([
+  "get_docx_workspace_context",
   "list_docx_documents",
   "read_docx_document",
+  "read_docx_image",
   "read_docx_format",
   "capture_docx_target",
   "list_research_roots",

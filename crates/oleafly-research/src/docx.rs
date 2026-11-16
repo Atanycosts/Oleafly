@@ -5,6 +5,29 @@ use serde::{Deserialize, Serialize};
 pub const MAX_DOCX_READ_PARAGRAPHS: usize = 50;
 pub const MAX_DOCX_TEXT_BYTES: usize = 32 * 1024;
 
+pub fn is_docx_checkpoint_operation(operation: &str) -> bool {
+    matches!(
+        operation,
+        "read_format"
+            | "replace_range"
+            | "write_equation"
+            | "format"
+            | "format_batch"
+            | "import_styles"
+            | "apply"
+            | "save"
+            | "check"
+    )
+}
+
+pub fn is_docx_operation(operation: &str) -> bool {
+    is_docx_checkpoint_operation(operation)
+        || matches!(
+            operation,
+            "read" | "read_image" | "context" | "reveal" | "prepare_fonts" | "export"
+        )
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DocxDocumentIdentity {
