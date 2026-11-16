@@ -9,15 +9,19 @@ from research_file_workbench.common.json_io import (
     decode_json_object,
     encode_json_object,
 )
+from research_file_workbench.docx.format_snapshot import (
+    FORMAT_SNAPSHOT_METHOD_VERSION as FORMAT_SNAPSHOT_METHOD_VERSION,
+)
+from research_file_workbench.docx.format_snapshot import format_snapshot_method
 from research_file_workbench.projects.artifact_records import read_artifact, store_blob
 from research_file_workbench.projects.baseline_records import get_baseline
 from research_file_workbench.projects.evidence_records import store_evidence
 from research_file_workbench.projects.models import ProjectStoreError
 
 FORMAT_SNAPSHOT_METHOD = "docx_core_format_snapshot"
-FORMAT_SNAPSHOT_METHOD_VERSION = "docx-core-format-snapshot-1.0.0"
 TEMPLATE_FINDINGS_METHOD = "docx_template_comparison"
-TEMPLATE_FINDINGS_METHOD_VERSION = "docx-template-comparison-1.0.0"
+TEMPLATE_FINDINGS_METHOD_VERSION = "docx-template-comparison-1.1.0"
+LEGACY_TEMPLATE_FINDINGS_METHOD_VERSION = "docx-template-comparison-1.0.0"
 
 
 def save_format_snapshot(
@@ -27,10 +31,11 @@ def save_format_snapshot(
     if baseline["source_sha256"] != snapshot["source_sha256"]:
         raise ProjectStoreError("Format snapshot differs from its baseline")
     content = encode_json_object(snapshot).encode()
+    method = format_snapshot_method(snapshot)
     digest = sha256_bytes(content)
     artifact = f"artifact-version-{digest}"
     store_blob(connection, artifact, digest, content)
-    identity = "docx-format-" + sha256_bytes(f"{FORMAT_SNAPSHOT_METHOD_VERSION}\0{digest}".encode())
+    identity = "docx-format-" + sha256_bytes(f"{method}\0{digest}".encode())
     source_version = f"artifact-version-{baseline['source_sha256']}"
     engine = cast(JsonObject, snapshot["engine"])
     record: JsonObject = {
@@ -43,14 +48,14 @@ def save_format_snapshot(
         "limitations": [],
         "dependencies": [
             source_version,
-            FORMAT_SNAPSHOT_METHOD_VERSION,
+            method,
             artifact,
             f"{engine['name']}@{engine['version']}",
         ],
         "statement": "Core-derived effective document facts; not independent review.",
         "scope": {"object_type": "docx_format"},
         "extraction_method": FORMAT_SNAPSHOT_METHOD,
-        "extraction_method_version": FORMAT_SNAPSHOT_METHOD_VERSION,
+        "extraction_method_version": method,
         "verification_record_ids": [],
         "snapshot_artifact_version_id": artifact,
         "source_sha256": snapshot["source_sha256"],
@@ -59,7 +64,7 @@ def save_format_snapshot(
         connection,
         baseline_id,
         source_version,
-        FORMAT_SNAPSHOT_METHOD_VERSION,
+        method,
         [record],
     )
     return {

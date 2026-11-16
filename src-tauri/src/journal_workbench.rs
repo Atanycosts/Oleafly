@@ -15,6 +15,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+const HTTP_CONTRACT_VERSION: &str = "journal-http-1.13.0";
+
 #[derive(Default)]
 pub struct JournalWorkbenchState(
     pub(crate) Mutex<Option<Session>>,
@@ -109,7 +111,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         .json()
         .await
         .map_err(|error| error.to_string())?;
-    if session["contract_version"] != "journal-http-1.11.0" {
+    if session["contract_version"] != HTTP_CONTRACT_VERSION {
         return Err("This Workbench HTTP version is not supported.".into());
     }
     let token = session["token"]
@@ -206,9 +208,18 @@ fn docx_baseline_response(
 }
 
 #[cfg(test)]
-mod docx_baseline_tests {
+mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native_http_contract_matches_workbench_contract() {
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../services/research-workbench/contracts/journals/world-contract.json"
+        ))
+        .unwrap();
+        assert_eq!(HTTP_CONTRACT_VERSION, contract["method_versions"]["http"]);
+    }
 
     #[test]
     fn known_refusals_preserve_structured_http_error_bodies_only_for_matching_request() {

@@ -24,7 +24,6 @@ from research_file_workbench.projects.models import BaselineConflictError
 from research_file_workbench.projects.service import (
     create_project,
     import_captured_document,
-    import_document,
     open_project,
 )
 from research_file_workbench.workbench.manuscripts import manuscript_source, read_manuscript
@@ -156,7 +155,14 @@ class WorkbenchService:
         )
 
     def import_manuscript(
-        self, name: str, filename: str, content: bytes, *, surface: str = "browser"
+        self,
+        name: str,
+        filename: str,
+        content: bytes,
+        *,
+        surface: str = "browser",
+        project_id: str | None = None,
+        reason: str | None = None,
     ) -> JsonObject:
         """Retain an uploaded DOCX in a managed project; no client source path is written."""
         _surface(surface)
@@ -164,10 +170,11 @@ class WorkbenchService:
         filename = _name(filename)
         if Path(filename).suffix.lower() != ".docx":
             raise ValueError("论文需要选择 DOCX 文件。")
-        result = read_docx_bytes(content, source_label=filename)
-        if any(part.status == "failed" for part in result.parts):
-            raise ValueError("论文包含无法解析的 XML 部件，请先检查源文件。")
-        identity = f"project-{uuid4().hex}"
+        identity = (
+            models.require_identifier(project_id, "project ID")
+            if project_id
+            else f"project-{uuid4().hex}"
+        )
         source_root = self.root / "inputs" / identity
         project_root = self.root / "projects" / identity
         self.store.validate_library()
@@ -189,16 +196,14 @@ class WorkbenchService:
                 create_project(
                     staged_project, author_workspace_root=source_root, project_id=identity
                 )
-                outcome = import_document(
+                outcome = import_captured_document(
                     staged_project,
-                    source_root / "manuscript.docx",
-                    source_sha256=result.source_sha256,
+                    content,
+                    filename="manuscript.docx",
                     request_id="initial-world-workbench-import",
                     expected_baseline_id=None,
-                    actor_id="local-operator",
-                    confirmation_reason=(
-                        f"Captured from the {surface} surface for read-only journal checking."
-                    ),
+                    confirmation_reason=reason
+                    or (f"Captured from the {surface} surface for read-only journal checking."),
                 )
                 if outcome.get("status") != "APPLIED":
                     raise ValueError("论文版本未能保存，请检查导入结果。")

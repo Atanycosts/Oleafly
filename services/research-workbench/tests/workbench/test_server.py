@@ -78,8 +78,13 @@ def _world_payload():
                 "kind": "guide_text",
                 "content_base64": base64.b64encode(
                     b"All manuscript pages must use A4 paper."
-                ).decode("ascii"),
-            }
+                ).decode(),
+            },
+            {
+                "name": "template.docx",
+                "kind": "template_docx",
+                "content_base64": base64.b64encode(template_bytes()).decode(),
+            },
         ],
     }
 
@@ -259,7 +264,7 @@ def test_source_page_preview_serves_pdf_and_refuses_invalid_targets(running_serv
 def test_http_user_flow_uses_display_name_and_actual_filename(running_server):
     _, session = _request(running_server, "GET", "/api/session")
     token = session["token"]
-    assert session["contract_version"] == "journal-http-1.11.0"
+    assert session["contract_version"] == "journal-http-1.13.0"
     assert len(session["asset_version"]) == 64
     status, world = _request(running_server, "POST", "/api/worlds", _world_payload(), token)
     assert status == 200
@@ -298,7 +303,7 @@ def test_http_user_flow_uses_display_name_and_actual_filename(running_server):
         token,
     )
     assert status == 200, check
-    assert check["summary"]["compliant"] == 2
+    assert check["summary"]["observed_match"] == 7
     assert check["world"]["journal_name"] == "Test Journal"
     _, state = _request(running_server, "GET", "/api/state")
     assert state["worlds"][0]["journal_name"] == "Test Journal"
@@ -611,8 +616,8 @@ def test_component_import_retains_sources_decisions_and_binding(running_server):
     assert len(imported["sources"]) == len(world["sources"]) + 1
     assert all(source in imported["sources"] for source in world["sources"])
     rules = {rule["property"]: rule for rule in imported["rules"]}
-    assert rules["columns"]["basis_status"] == "candidate"
-    assert rules["columns"]["expected"] == 2
+    assert rules["columns"]["basis_status"] == "conflict"
+    assert rules["columns"]["expected"] is None
     assert rules["page_width_twips"]["expected"] == 12240
     assert rules["page_width_twips"]["resolution"]["reason"] == "Operator-selected letter width."
     assert running_server.service.store.get_binding(project["project_id"]) == original_binding

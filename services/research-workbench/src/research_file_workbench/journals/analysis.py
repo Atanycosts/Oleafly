@@ -8,7 +8,6 @@ from research_file_workbench.common.json_io import JsonObject, encode_json_objec
 from research_file_workbench.docx.reader import read_docx_bytes
 from research_file_workbench.docx.report import READER_VERSION
 from research_file_workbench.journals.components import analyze_component
-from research_file_workbench.journals.guide_rules import recognize_guide
 from research_file_workbench.journals.models import (
     ANALYZER_VERSION,
     ASSURANCE_LIMITATION,
@@ -72,7 +71,9 @@ def analyze_world(
                 "kind": source.kind,
                 "status": "analyzed_with_gaps" if source_gaps else "analyzed",
                 "limitations": [
-                    "Captured bytes do not authenticate the supplied source or its currency."
+                    "Guide text remains source material until explicitly interpreted."
+                    if source.kind.startswith("guide_")
+                    else "Captured source bytes are retained with their declared role."
                 ],
             }
         )
@@ -99,8 +100,8 @@ def analyze_world(
         "coverage_gaps": sorted(gaps, key=encode_json_object),
         "limitations": [
             ASSURANCE_LIMITATION,
-            "Coverage is limited to declared page geometry and body font requirements; "
-            "font availability and full-journal compliance are not established by analysis.",
+            "Guide prose is retained without automatic requirement extraction. "
+            "Declared template geometry and structured components supply comparison facts.",
         ],
     }
     world["version_id"] = world_version_id(world)
@@ -111,61 +112,40 @@ def analyze_world(
 def _source_rules(
     source: SourceInput, journal_id: str, scope: JsonObject
 ) -> tuple[list[JsonObject], list[JsonObject]]:
-    if source.kind == "guide_pdf":
-        blocks, issues = analyze_pdf_bytes(source.content, source.source_id)
-        gaps = [
-            coverage_gap("pdf_reader_issue", issue, source_id=source.source_id) for issue in issues
-        ]
-        pdf_lines = [
-            (f"page:{block.page_number}/block:{block.block_number}", block.text) for block in blocks
-        ]
-        # A PDF without any text blocks has its own pdf_reader_issue gap; running the
-        # recognizer on an empty list would add a misleading empty_guide gap.
-        extracted, text_gaps = (
-            recognize_guide(source.source_id, pdf_lines) if pdf_lines else ([], [])
-        )
-        return extracted, [*gaps, *text_gaps]
     if source.kind == "rule_component_json":
         return analyze_component(source, journal_id, scope)
-    if source.kind == "guide_text":
-        try:
-            text = source.content.decode("utf-8-sig")
-        except UnicodeError as exc:
-            raise WorldAnalysisError("Text guidance must be valid UTF-8") from exc
-        return recognize_guide(
-            source.source_id,
-            [(f"line:{index}", line) for index, line in enumerate(text.splitlines(), start=1)],
-        )
+    if source.kind in {"guide_text", "guide_docx", "guide_pdf"}:
+        gaps = [
+            coverage_gap(
+                "guide_requires_interpretation",
+                "Guide retained for user or Agent interpretation; no requirements are inferred "
+                "from prose. Add explicit structured requirements with source references.",
+                source_id=source.source_id,
+            )
+        ]
+        if source.kind == "guide_text":
+            try:
+                source.content.decode("utf-8-sig")
+            except UnicodeError as exc:
+                raise WorldAnalysisError("Text guidance must be valid UTF-8") from exc
+        elif source.kind == "guide_pdf":
+            _, issues = analyze_pdf_bytes(source.content, source.source_id)
+            gaps.extend(
+                coverage_gap("pdf_reader_issue", issue, source_id=source.source_id)
+                for issue in issues
+            )
+        else:
+            guide = read_docx_bytes(source.content, source_label=source.source_id)
+            gaps.extend(
+                coverage_gap("docx_reader_issue", issue, source_id=source.source_id)
+                for issue in guide.issues
+            )
+        return [], gaps
     result = read_docx_bytes(source.content, source_label=source.source_id)
     gaps = [
         coverage_gap("docx_reader_issue", issue, source_id=source.source_id)
         for issue in result.issues
     ]
-    if source.kind == "guide_docx":
-        lines: list[tuple[str, str]] = []
-        for block in result.text_blocks:
-            if (
-                block.hidden
-                or block.revision_state != "none"
-                or block.contains_field_code
-                or block.contains_omml
-            ):
-                gaps.append(
-                    coverage_gap(
-                        "ambiguous_guide_paragraph",
-                        "Hidden, revised, field or math text is not confirmed as guidance.",
-                        source_id=source.source_id,
-                        locator=block.node_locator,
-                    )
-                )
-            else:
-                lines.append((block.node_locator, block.text))
-        extracted, text_gaps = recognize_guide(
-            source.source_id,
-            lines,
-            context_lines=[(block.node_locator, block.text) for block in result.text_blocks],
-        )
-        return extracted, [*gaps, *text_gaps]
     observations: list[JsonObject] = []
     if not result.sections:
         gaps.append(
@@ -244,8 +224,7 @@ def _aggregate_rules(
         if not relevant:
             continue
         values = {cast(int | str, item["expected"]) for item in relevant}
-        confirmed = [item for item in relevant if item["basis_status"] == "confirmed"]
-        state = "conflict" if len(values) > 1 else "confirmed" if confirmed else "candidate"
+        state = "conflict" if len(values) > 1 else "candidate"
         evidence = {
             encode_json_object(item): item
             for observation in relevant
@@ -256,8 +235,6 @@ def _aggregate_rules(
             for observation in relevant
             for limitation in cast(list[str], observation["limitations"])
         }
-        if state == "confirmed":
-            limitations.add(ASSURANCE_LIMITATION)
         if state == "conflict":
             limitations.add(
                 "Supplied source expectations disagree; no value is selected as authoritative."
@@ -278,8 +255,6 @@ def _aggregate_rules(
                 "basis_status": state,
                 "confirmation_method": "conflicting_sources"
                 if state == "conflict"
-                else "explicit_supplied_guide_pattern"
-                if confirmed
                 else "candidate_observation",
                 "scope": rule_scope,
                 "evidence": [evidence[key] for key in sorted(evidence)],

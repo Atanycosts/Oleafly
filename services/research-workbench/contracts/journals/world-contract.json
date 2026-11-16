@@ -2,9 +2,9 @@
   "contract_version": "journal-world-1.1.0",
   "method_versions": {
     "world_schema": "journal-world-1.1.0",
-    "analyzer": "journal-world-analyzer-1.5.0",
+    "analyzer": "journal-world-analyzer-1.6.0",
     "checker": "journal-geometry-checker-1.2.0",
-    "http": "journal-http-1.11.0"
+    "http": "journal-http-1.13.0"
   },
   "scope": "journal_sources_and_selected_docx_template_comparison",
   "workflow": [
@@ -55,17 +55,16 @@
     "candidate",
     "conflict"
   ],
-  "source_assurance": "operator_supplied; deterministic recognition of explicit requirements does not authenticate a publisher or prove the supplied guide is current",
+  "source_assurance": "user_supplied_sources_and_explicit_structured_decisions; prose never automatically creates or confirms requirements",
   "source_semantics": [
     "Captured sources are immutable and retained with exact hashes and locators.",
     "Template formatting produces candidate expectations, never normative requirements by itself.",
-    "Only explicitly supported unambiguous guideline patterns can be confirmed by deterministic extraction.",
     "Unparsed text, mixed section geometry, unsupported input and absent properties remain explicit coverage gaps.",
     "Shared components are declarative data with exact versions and per-journal applicability evidence; no dynamic imports, eval, commands or script execution.",
     "New world storage validates captured source bytes and reproduces analysis plus the ordered local decisions; a self-consistent manifest hash alone cannot authorize invented rules.",
-    "PDF guidance feeds the same narrow deterministic requirement recognizer as text guidance, with page/block evidence locators; conditional, negative or unparsed blocks remain explicit gaps and never become confirmed rules.",
-    "Page-format definition sentences (for example 'A double column page is defined as a 7.875″ x 10.75″ page') yield the column count and page dimensions; qualifiers in the same sentence without a checkable geometry property are carried as rule limitations.",
-    "body_font_family stores one exact family name as a nonempty string with unit font_family. Explicit English/Chinese body-font instructions can be recognized; richer scope, alternatives and script-specific requirements require source review. Manuscript font names are not journal requirements. Imported components remain candidates until confirmed through the existing evidence decision workflow."
+    "Text, DOCX and PDF guides are retained with exact source locators for user or Agent interpretation. No fixed-sentence or regex requirement recognition runs.",
+    "User or Agent supplied structured components retain applicability and provenance; explicit decisions establish selected requirements. Existing deterministic comparison checks remain available.",
+    "Historical guide-pattern worlds and checks remain readable unchanged. Their obsolete analyzer versions cannot execute new checks or silently upgrade their requirements."
   ],
   "check_semantics": [
     "An applicable confirmed expectation produces compliant only when every required section is observed and matches; a known mismatch produces violation even when other section values are missing.",
@@ -140,7 +139,7 @@
     "Disposition actions are note or defer and retain the original check verdict."
   ],
   "http": {
-    "contract_version": "journal-http-1.11.0",
+    "contract_version": "journal-http-1.13.0",
     "transport": "same_origin_json_on_ipv4_loopback_only",
     "session": {
       "route": "GET /api/session",
@@ -235,7 +234,7 @@
           "expected",
           "reason"
         ],
-        "semantics": "Analyze a captured rule component and optional captured sources with all retained sources of the selected world. Carry prior operator decisions, then apply explicit operator-confirmed decisions, and save one immutable version. preview=true returns the analyzed world without saving sources or a version. Imported declarations remain candidates unless an existing confirmed guide or operator decision determines the same property. Existing manuscript bindings are unchanged. Invalid input saves nothing."
+        "semantics": "Analyze a captured rule component and optional captured sources with all retained sources of the selected world. Carry prior operator decisions, then apply explicit operator-confirmed decisions, and save one immutable version. preview=true returns the analyzed world without saving sources or a version. Imported declarations remain candidates unless an explicit operator decision determines the same property. Existing manuscript bindings are unchanged. Invalid input saves nothing."
       },
       {
         "method": "POST",
@@ -502,7 +501,7 @@
   "runtime_entry_point": "rfw-workbench serve",
   "runtime_boundary": "Local operator workbench; session and origin checks do not provide remote user authentication.",
   "source_review": {
-    "method_version": "journal-source-evidence-1.2.0",
+    "method_version": "journal-source-evidence-1.3.0",
     "relation_method_version": "journal-lexical-relations-1.0.0",
     "fields": [
       "method_version",
@@ -533,15 +532,20 @@
     "relation_score": "lexical cosine in [0,1], retrieval ranking only; no probability, merging or compliance inference",
     "pdf_source_version": "journal-pdf-source-1.0.0",
     "pdf_fragment_binding": "PDF fragment identifiers bind pdf_source_version instead of the DOCX reader version; bbox values are PDF points with a top-left origin.",
-    "template_fragment_binding": "Selected-template object fragments bind core engine version and use normalized_source_id plus exact object part/path. Snapshot JSON supplies their facts. Original and normalized descriptors retain their source roles even when content IDs coincide; fragment_count counts unique fragments for that content ID."
+    "template_fragment_binding": "Selected-template object and style fragments bind snapshot method plus core engine version and use normalized_source_id plus exact object/style part/path. Snapshot JSON supplies their facts. Style fragments use kind template_style. Original and normalized descriptors retain their source roles even when content IDs coincide; fragment_count counts unique fragments for that content ID."
   },
   "template_comparison": {
-    "contract_version": "docx-template-comparison-1.0.0",
-    "analyzer": "docx-template-analyzer-1.0.0",
-    "checker": "docx-template-checker-1.0.0",
-    "snapshot_method": "docx-core-format-snapshot-1.0.0",
-    "findings_evidence_method": "docx-template-comparison-1.0.0",
+    "contract_version": "docx-template-comparison-1.1.0",
+    "analyzer": "docx-template-analyzer-1.3.0",
+    "checker": "docx-template-checker-1.1.0",
+    "snapshot_method": "docx-core-format-snapshot-1.2.0",
+    "findings_evidence_method": "docx-template-comparison-1.1.0",
     "snapshot_schema_version": 1,
+    "snapshot_method_binding": "New imports and baseline captures require method_version equal to snapshot_method. Historical snapshots without it retain docx-core-format-snapshot-1.0.0 identity and remain queryable; new checks require recapture. Historical evidence is never relabelled as the current method.",
+    "style_definitions": "Current snapshots retain every declared style, including unused paragraph, character, table and numbering styles. Identity, inheritance and declared XML remain queryable. effective_status distinguishes paragraph_and_run, character run, and declaration_only; declaration_only does not assert computed layout. Only paragraph definitions supply missing semantic/heading paragraph and run comparison candidates. Manuscript definitions do not generate document findings. Font acquisition includes these fallback run candidates; unknown roles, non-paragraph definitions and definitions superseded by corresponding non-table instances do not add fonts. Earlier 1.1.0 and 1.0.0 snapshots remain readable; new execution requires 1.2.0 capture. Historical analyzer worlds preserve their stored font requirements; new checks require the current analyzer.",
+    "paragraph_controls": "Effective paragraph properties include keepNext, keepLines, widowControl, pageBreakBefore, framePresent and frame. Frame attributes inherit individually; numeric distances are points, absent attributes remain null. These facts do not establish rendered pagination or pixel equivalence.",
+    "object_table_context": "Optional metadata on tr/tc/paragraph/run and descendants: source-local table_object_id, zero-based row_index, row_count, optional column_index/column_count, and conditions. Conditions originate in tblLook, active positive cnfStyle bits and structural position, not formatting values. Table objects do not fabricate row positions. The context refines internal component scope independently of example dimensions, source IDs and cross-document order; raw table_style/cache/node identities are not format requirements.",
+    "table_band_size_limit": "The pinned core computes one-row and one-column bands. Effective tblStyleRowBandSize or tblStyleColBandSize greater than one, from direct table properties or the table style basedOn chain, produces unsupported code table_band_size_unsupported bound to the table object. Affected table-internal manuscript objects and profiles containing affected template candidates return cannot_determine. Unrelated components and table-level stable properties remain comparable. Exact authored XML stays queryable.",
     "adoption": "Explicit template-world import selects the captured template as a project comparison basis without per-property confirmation. It does not authenticate publisher requirements.",
     "storage": "Original bytes, normalized DOCX and snapshot JSON use existing content-addressed sources; baseline snapshots use artifact/evidence; comparisons use world/binding/check_record. No parallel database.",
     "template_fields": [
@@ -554,7 +558,7 @@
       "authority"
     ],
     "optional_template_fields": {
-      "font_requirements": "Array of {family,roles:string[],scripts:string[]}; exact unique nonblank family names from textual run effective font slots active under script_usage. Excludes paragraph marks, empty text, unused slots and unused complex lanes. Uses template authority=user_designated_template for existing exact-family acquisition; implies no publisher authentication or compliance verdict."
+      "font_requirements": "Array of {family,roles:string[],scripts:string[]}; exact unique nonblank family names from textual run effective font slots and missing-role/heading style run candidates adopted by the comparator, active under script_usage. Excludes paragraph marks, empty text instances, unused slots and unused complex lanes. Uses template authority=user_designated_template for existing exact-family acquisition; implies no publisher authentication or compliance verdict."
     },
     "provenance": {
       "engine": "string",
@@ -593,9 +597,19 @@
       "expected_value_count"
     ],
     "case_identity": "case-sha256(object_id + NUL + property_path); stable for the same canonical object and property within a source version. Not a cross-document object identity.",
-    "optional_finding_fields": ["region", "reason"],
+    "optional_finding_fields": ["region", "table_context", "reason"],
     "coverage": "Missing semantic/region profiles with effective facts yield object cannot_determine with reason No corresponding template profile. World coverage_gaps aggregate template core unsupported codes and unknown/mixed role-region counts with representative object locators; exact facts remain in docx-query. They do not imply publisher violations or complete rendering interpretation.",
     "http": {
+      "GET /api/template-source": {
+        "required_query": ["world_version_id"],
+        "returns": ["world_version_id", "source_sha256", "content_base64"],
+        "semantics": "Exact retained normalized Word template bytes for a selected world, with source hash verified before returning. Used by the editor's existing style dependency importer; no manuscript is created or changed."
+      },
+      "POST /api/template-copy": {
+        "required": ["world_version_id", "name", "request_id"],
+        "returns": "project and origin containing request/world/initial baseline/source identities",
+        "semantics": "Create an editable managed manuscript from the exact retained normalized template, preserve original/template sources, capture its current format snapshot and bind the selected world. No author path is written. A repeated request ID recovers the same project and initial origin without resetting later edits or bindings. Conflicting request reuse returns 409."
+      },
       "POST /api/template-world": {
         "required": [
           "journal_id",
@@ -657,7 +671,7 @@
         ],
         "part": "original part bytes as content_base64 with hash/content_type/length",
         "pagination": "nodes, relationships and findings return total, has_more, next_offset; offset default 0, limit default 100, maximum 1000. Findings filters apply before pagination, so total counts filtered findings.",
-        "snapshot_pagination": "Without offset/limit, returns the complete retained snapshot. Either optional offset or limit requests a page of snapshot.objects: offset defaults to 0, limit defaults to 100, maximum 1000. Envelope total/has_more/next_offset describe objects; all other snapshot metadata including parts/capabilities/unsupported remains complete. A page is a view, not a replacement snapshot for POST /api/docx-format.",
+        "snapshot_pagination": "Without offset/limit/collection, returns the complete retained snapshot. Otherwise collection selects objects (default) or style_definitions; offset defaults to 0, limit defaults to 100, maximum 1000. Only the selected collection is included, avoiding repeated full style definitions in object pages. Envelope collection/total/has_more/next_offset describe that collection; parts/capabilities/unsupported metadata remains complete. A page is a view, not a replacement snapshot for POST /api/docx-format.",
         "findings_target": {
           "check_id": "retained check ID"
         },
@@ -679,6 +693,6 @@
         ]
       }
     },
-    "additional_guides": "Additional captured guide sources use the existing guide analyzer/checker; their normative verdicts remain separate from selected-template observed differences."
+    "additional_guides": "Additional guide prose is retained as located source material without automatic rules. Explicit structured components use the existing component/decision and deterministic checker service; template observations remain separate."
   }
 }

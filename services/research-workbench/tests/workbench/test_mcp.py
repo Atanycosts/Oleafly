@@ -16,7 +16,7 @@ from mcp.types import CallToolResult, Tool
 
 from research_file_workbench.journals.models import SourceInput
 from research_file_workbench.workbench.service import WorkbenchService
-from tests.journals.test_analysis import docx_bytes
+from tests.journals.test_analysis import component_bytes, docx_bytes, template_bytes
 
 SERVER_MODULE = "research_file_workbench.workbench.mcp"
 
@@ -127,7 +127,7 @@ def _populated_library(root: Path) -> WorkbenchService:
     service.import_world(
         "journal-test",
         "Test Journal",
-        [SourceInput("guide.txt", "guide_text", b"All manuscript pages must use A4 paper.")],
+        [SourceInput("template.docx", "template_docx", template_bytes())],
     )
     return service
 
@@ -250,7 +250,14 @@ def test_write_tools_drive_the_full_local_journal_loop(tmp_path: Path) -> None:
                     "name": "guide.pdf",
                     "kind": "guide_pdf",
                     "content_base64": base64.b64encode(pdf_bytes).decode("ascii"),
-                }
+                },
+                {
+                    "name": "rules.json",
+                    "kind": "rule_component_json",
+                    "content_base64": base64.b64encode(
+                        component_bytes([("page_width_twips", 11906)])
+                    ).decode(),
+                },
             ],
         },
     )
@@ -259,7 +266,8 @@ def test_write_tools_drive_the_full_local_journal_loop(tmp_path: Path) -> None:
     review = _structured(library_root, "world_review", {"version_id": world["version_id"]})
     assert isinstance(review, dict)
     located = [link for link in review["rule_links"] if link["link_status"] == "located"]
-    assert located and located[0]["locator"] == "page:1/block:1"
+    assert located and located[0]["locator"].startswith("json:/")
+    assert any(item["locator"] == "page:1/block:1" for item in review["fragments"])
 
     manuscript = _structured(
         library_root,
@@ -302,7 +310,9 @@ def test_write_tools_drive_the_full_local_journal_loop(tmp_path: Path) -> None:
         "source_page",
         {
             "version_id": world["version_id"],
-            "source_id": world["sources"][0]["source_id"],
+            "source_id": next(
+                source["source_id"] for source in world["sources"] if source["kind"] == "guide_pdf"
+            ),
             "page": 1,
         },
     )

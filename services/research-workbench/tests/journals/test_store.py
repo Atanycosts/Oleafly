@@ -17,25 +17,41 @@ from research_file_workbench.docx.report import READER_VERSION
 from research_file_workbench.journals.analysis import analyze_world
 from research_file_workbench.journals.checker import check_world
 from research_file_workbench.journals.models import (
+    ANALYZER_VERSION,
     SourceInput,
+    WorldAnalysisError,
+    validate_world_for_execution,
     world_version_id,
 )
+from research_file_workbench.journals.revisions import revise_rule
 from research_file_workbench.journals.store import (
     BindingConflictError,
     WorldStore,
     WorldStoreError,
 )
-from tests.journals.test_analysis import template_bytes
+from tests.journals.test_analysis import component_bytes, template_bytes
 
 
 def world_input(
     content=b"All manuscript pages must use 2 columns.", journal_id="journal-test", **changes
 ):
-    source = SourceInput("guide.txt", "guide_text", content)
+    payload = component_bytes(
+        {"columns": 2},
+        quote=content.decode("utf-8"),
+        journal_id=journal_id,
+    )
+    source = SourceInput("component.json", "rule_component_json", payload)
     world = analyze_world(journal_id, "Test journal", [source])
+    world = revise_rule(
+        world,
+        world["rules"][0]["rule_id"],
+        2,
+        "Explicit test decision for storage behavior",
+        "test-operator",
+    )
     world.update(changes)
     world["version_id"] = world_version_id(world)
-    return world, {source.source_id: content}
+    return world, {source.source_id: payload}
 
 
 @pytest.fixture
@@ -129,7 +145,7 @@ def test_world_sources_and_versions_survive_reopen_and_retry(store):
     source_id = next(iter(sources))
     assert reopened.read_source(source_id) == sources[source_id]
     assert len(reopened.list_worlds()) == 3
-    assert counts(store)["source"] == 2
+    assert counts(store)["source"] == 3
     assert all(item["journal_name"] == "Test journal" for item in reopened.list_worlds())
     assert all("name" not in item for item in reopened.list_worlds())
 
@@ -491,6 +507,37 @@ def test_new_check_refuses_obsolete_world_analysis_without_changing_history(
     assert counts(store) == before
     assert store.get_check(check["check_id"]) == retained
     assert store.save_check(check) == retained
+
+
+def test_retired_pattern_world_is_readable_but_cannot_execute_even_if_reversioned(store):
+    world, sources = world_input()
+    store.save_world(world, sources)
+    previous_id = world["version_id"]
+    world.pop("manual_decisions")
+    rule = world["rules"][0]
+    rule.pop("resolution")
+    rule["confirmation_method"] = "explicit_supplied_guide_pattern"
+    world["analyzer_version"] = "journal-world-analyzer-1.5.0"
+    world["version_id"] = world_version_id(world)
+    payload = encode_json_object(world)
+    # Simulate a retained pre-retirement record, rather than importing obsolete analysis.
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE world SET version_id=?,payload=?,content_sha256=? WHERE version_id=?",
+            (world["version_id"], payload, sha256_text(payload), previous_id),
+        )
+        connection.execute(
+            "UPDATE world_source SET version_id=? WHERE version_id=?",
+            (world["version_id"], previous_id),
+        )
+    retained = store.get_world(world["version_id"])
+    assert retained["rules"] == world["rules"]
+    assert store.read_source(next(iter(sources))) == next(iter(sources.values()))
+    for version in (world["analyzer_version"], ANALYZER_VERSION):
+        reversioned = {**world, "analyzer_version": version}
+        reversioned["version_id"] = world_version_id(reversioned)
+        with pytest.raises(WorldAnalysisError, match="guide-pattern requirements are retired"):
+            validate_world_for_execution(reversioned)
 
 
 def test_dispositions_preserve_verdict_and_cannot_claim_resolution(store, tmp_path):

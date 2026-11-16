@@ -97,8 +97,8 @@ def build_world_evidence(world: JsonObject, sources: Mapping[str, bytes]) -> Jso
             "Similarity is lexical cosine for review ordering, not probability or compliance.",
             "Associations never merge fragments or change retained rule basis and verdicts.",
             "DOCX text is the reader's source projection, not a rendered-page transcription.",
-            "PDF sources yield page- and region-bound fragments; only blocks matching the "
-            "narrow explicit requirement grammar are confirmed as rules.",
+            "Guide sources yield retained, located fragments for user or Agent interpretation; "
+            "prose never automatically becomes a confirmed requirement.",
         ],
     }
 

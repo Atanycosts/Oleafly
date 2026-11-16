@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from base64 import b64encode
 from typing import TYPE_CHECKING, cast
 
 from research_file_workbench.common.clock import utc_now_iso
@@ -11,6 +12,7 @@ from research_file_workbench.common.json_io import (
     decode_json_object,
     encode_json_object,
 )
+from research_file_workbench.docx.format_snapshot import format_snapshot_method
 from research_file_workbench.docx.package_query import query_package
 from research_file_workbench.journals.analysis import analyze_world
 from research_file_workbench.journals.models import (
@@ -23,6 +25,7 @@ from research_file_workbench.journals.models import (
     require_objects,
     require_text,
     validate_scope,
+    validate_world_for_execution,
     world_version_id,
 )
 from research_file_workbench.journals.store_records import BindingConflictError
@@ -67,7 +70,7 @@ def adopt_template(service: WorkbenchService, payload: JsonObject) -> JsonObject
     require_keys(normalized, {"filename", "content_base64", "provenance"})
     raw, docx = captured_bytes(original), captured_bytes(normalized)
     snapshot = require_object(payload["snapshot"], "snapshot")
-    validate_snapshot(snapshot, docx)
+    validate_snapshot(snapshot, docx, require_current=True)
     snapshot_bytes = encode_json_object(snapshot).encode()
     descriptors: list[JsonObject] = []
     sources: dict[str, bytes] = {}
@@ -157,8 +160,89 @@ def retain_format(service: WorkbenchService, payload: JsonObject) -> JsonObject:
     baseline = project.get_baseline(baseline_id)
     content = project.read_artifact("artifact-version-" + str(baseline["source_sha256"]))
     snapshot = require_object(payload["snapshot"], "snapshot")
-    validate_snapshot(snapshot, content)
+    validate_snapshot(snapshot, content, require_current=True)
     return project.save_format_snapshot(baseline_id, snapshot)
+
+
+def template_source(service: WorkbenchService, version_id: str) -> JsonObject:
+    """Read exact normalized bytes from one explicitly selected retained template."""
+    world = service.store.get_world(version_id)
+    validate_world_for_execution(world)
+    template = require_object(world.get("template"), "selected Word template")
+    content = service.store.read_source(str(template["normalized_source_id"]))
+    if sha256_bytes(content) != template["source_sha256"]:
+        raise ValueError("The retained template source does not match its world version.")
+    return {
+        "world_version_id": version_id,
+        "source_sha256": template["source_sha256"],
+        "content_base64": b64encode(content).decode("ascii"),
+    }
+
+
+def start_template_copy(service: WorkbenchService, payload: JsonObject) -> JsonObject:
+    """Create a managed editable draft from exact retained template bytes."""
+    require_keys(payload, {"world_version_id", "name", "request_id"})
+    version_id = text(payload, "world_version_id")
+    name = text(payload, "name")
+    request_id = require_identifier(payload["request_id"], "template copy request ID")
+    world = service.store.get_world(version_id)
+    validate_world_for_execution(world)
+    template = require_object(world.get("template"), "selected Word template")
+    content = service.store.read_source(str(template["normalized_source_id"]))
+    snapshot = decode_json_object(service.store.read_source(str(template["snapshot_source_id"])))
+    validate_snapshot(snapshot, content, require_current=True)
+    identity = "project-" + sha256_bytes(("template-copy:" + request_id).encode())[:32]
+    root = service.project_root(identity)
+    reason = encode_json_object(
+        {
+            "operation": "start_template_copy",
+            "request_id": request_id,
+            "world_version_id": version_id,
+            "template_source_sha256": sha256_bytes(content),
+            "name": name,
+        }
+    )
+    if root.exists():
+        project = open_project(root)
+        initial = project.get_request("local-operator", "initial-world-workbench-import")
+        initial_result = require_object(initial["result"], "initial template copy result")
+        baseline = project.get_baseline(str(initial_result["result_baseline_id"]))
+        if baseline["confirmation_reason"] != reason:
+            raise BindingConflictError(
+                "The template-copy request ID was already used for different inputs."
+            )
+    else:
+        created = service.import_manuscript(
+            name,
+            "template-working-copy.docx",
+            content,
+            project_id=identity,
+            reason=reason,
+        )
+        project = open_project(root)
+        baseline = project.get_baseline(str(created["baseline_id"]))
+    baseline_id = str(baseline["baseline_id"])
+    project.save_format_snapshot(baseline_id, snapshot)
+    # A retry recovers creation; it must not undo a later edit or explicit rebind.
+    if service.store.get_binding(identity) is None:
+        service.store.bind_project(
+            identity,
+            root.as_posix(),
+            baseline_id,
+            version_id,
+            expected_binding_id=None,
+            actor_id="local-operator",
+            surface="browser",
+        )
+    return {
+        "project": service.project(identity),
+        "origin": {
+            "request_id": request_id,
+            "world_version_id": version_id,
+            "baseline_id": baseline_id,
+            "source_sha256": baseline["source_sha256"],
+        },
+    }
 
 
 def query_document(service: WorkbenchService, payload: JsonObject) -> JsonObject:
@@ -221,13 +305,16 @@ def query_document(service: WorkbenchService, payload: JsonObject) -> JsonObject
             else None
         )
     if operation == "snapshot":
-        require_keys(payload, {"target", "operation"}, {"offset", "limit"})
+        require_keys(payload, {"target", "operation"}, {"offset", "limit", "collection"})
+        collection = payload.get("collection", "objects")
+        if not isinstance(collection, str) or collection not in {"objects", "style_definitions"}:
+            raise ValueError("Snapshot collection must be objects or style_definitions")
         result: JsonObject = {
             "schema_version": 1,
             "source_sha256": sha256_bytes(content),
             "snapshot": snapshot,
         }
-        if "offset" in payload or "limit" in payload:
+        if "offset" in payload or "limit" in payload or "collection" in payload:
             offset, limit = payload.get("offset", 0), payload.get("limit", 100)
             if (
                 type(offset) is not int
@@ -237,13 +324,20 @@ def query_document(service: WorkbenchService, payload: JsonObject) -> JsonObject
             ):
                 raise ValueError("Snapshot pagination requires offset >= 0 and limit 1..1000")
             facts = cast(JsonObject, snapshot)
-            objects = cast(list[JsonObject], facts["objects"])
-            end = min(offset + limit, len(objects))
+            items = require_objects(facts.get(str(collection), []), str(collection))
+            end = min(offset + limit, len(items))
+            page = {
+                key: value
+                for key, value in facts.items()
+                if key not in {"objects", "style_definitions"}
+            }
+            page[str(collection)] = items[offset:end]
             result.update(
-                snapshot={**facts, "objects": objects[offset:end]},
-                total=len(objects),
-                has_more=end < len(objects),
-                next_offset=end if end < len(objects) else None,
+                snapshot=page,
+                collection=collection,
+                total=len(items),
+                has_more=end < len(items),
+                next_offset=end if end < len(items) else None,
             )
         return result
     return query_package(content, {key: value for key, value in payload.items() if key != "target"})
@@ -283,12 +377,15 @@ def check_template(service: WorkbenchService, payload: JsonObject) -> JsonObject
                 )
             return service.check_record(identity)
     world = service.store.get_world(world_id)
+    validate_world_for_execution(world)
     template = require_object(world.get("template"), "selected template")
     template_snapshot = decode_json_object(
         service.store.read_source(str(template["snapshot_source_id"]))
     )
     project = open_project(service.project_root(project_id))
     snapshot = project.get_format_snapshot(baseline_id)
+    if format_snapshot_method(snapshot) != SNAPSHOT_METHOD:
+        raise ValueError("DOCX format reader changed; recapture manuscript format facts")
     source_bytes = project.read_artifact("artifact-version-" + str(snapshot["source_sha256"]))
     checked = compare_world(world, template_snapshot, snapshot, source_bytes)
     comparison = require_object(checked["template_comparison"], "template comparison")

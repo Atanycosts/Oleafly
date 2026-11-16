@@ -47,6 +47,13 @@ def handle_api_get(
                 query_text(query, "baseline_id"),
             )
         )
+    elif path == "/api/template-source":
+        from research_file_workbench.workbench.template_service import template_source
+
+        require_query_fields(query, {"world_version_id"})
+        handler._json(
+            template_source(handler.server.service, query_text(query, "world_version_id"))
+        )
     elif path == "/api/derived-renders":
         require_query_fields(query, {"project_id", "baseline_id"})
         handler._json(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from typing import cast
 from zipfile import ZipFile
 
 from research_file_workbench.common.hashing import sha256_bytes
@@ -10,6 +11,10 @@ from research_file_workbench.common.json_io import (
     JsonObject,
     decode_json_object,
     encode_json_object,
+)
+from research_file_workbench.docx.format_snapshot import (
+    FORMAT_SNAPSHOT_METHOD_VERSION,
+    format_snapshot_method,
 )
 from research_file_workbench.docx.parsing.package import package_part_names
 from research_file_workbench.journals.models import (
@@ -21,12 +26,14 @@ from research_file_workbench.journals.models import (
     require_text,
 )
 
-TEMPLATE_ANALYZER_VERSION = "docx-template-analyzer-1.0.0"
-TEMPLATE_CHECKER_VERSION = "docx-template-checker-1.0.0"
-SNAPSHOT_METHOD = "docx-core-format-snapshot-1.0.0"
+TEMPLATE_ANALYZER_VERSION = "docx-template-analyzer-1.3.0"
+TEMPLATE_CHECKER_VERSION = "docx-template-checker-1.1.0"
+SNAPSHOT_METHOD = FORMAT_SNAPSHOT_METHOD_VERSION
 
 
-def validate_snapshot(snapshot: JsonObject, content: bytes) -> None:
+def validate_snapshot(
+    snapshot: JsonObject, content: bytes, *, require_current: bool = False
+) -> None:
     """Validate captured facts against the retained package, without recomputing core semantics."""
     require_keys(
         snapshot,
@@ -39,7 +46,13 @@ def validate_snapshot(snapshot: JsonObject, content: bytes) -> None:
             "capabilities",
             "unsupported",
         },
+        {"method_version", "style_definitions"},
     )
+    method = format_snapshot_method(snapshot)
+    if require_current and method != SNAPSHOT_METHOD:
+        raise WorldAnalysisError("DOCX format reader changed; recapture format facts")
+    if method == SNAPSHOT_METHOD and "style_definitions" not in snapshot:
+        raise WorldAnalysisError("Current format snapshots must include style definitions")
     if type(snapshot["schema_version"]) is not int or snapshot["schema_version"] != 1:
         raise WorldAnalysisError("Unsupported core format snapshot schema")
     if snapshot["source_sha256"] != sha256_bytes(content):
@@ -65,15 +78,14 @@ def validate_snapshot(snapshot: JsonObject, content: bytes) -> None:
     if seen != set(actual):
         raise WorldAnalysisError("Snapshot must account for every package entry")
     ids: set[str] = set()
-    for item in require_objects(snapshot["objects"], "snapshot objects"):
+    objects = require_objects(snapshot["objects"], "snapshot objects")
+    for item in objects:
         identity = require_text(item.get("object_id"), "object ID")
         if identity in ids or item.get("part") not in seen:
             raise WorldAnalysisError("Snapshot object identity or part is invalid")
         ids.add(identity)
-        path = item.get("path")
-        if not isinstance(path, list) or any(type(value) is not int or value < 0 for value in path):
-            raise WorldAnalysisError("Snapshot paths must contain nonnegative child indices")
-        expected_id = str(item["part"]) + "#" + ".".join(str(index) for index in path)
+        expected_id = _canonical_locator(item)
+        path = item["path"]
         evidence = require_object(item["evidence"], "evidence")
         section_context = evidence.get("core_section")
         section_index = section_context.get("index") if isinstance(section_context, dict) else None
@@ -107,15 +119,114 @@ def validate_snapshot(snapshot: JsonObject, content: bytes) -> None:
             }:
                 raise WorldAnalysisError("Unknown document region role")
             require_objects(region["role_basis"], "region role basis")
-    for item in require_objects(snapshot["objects"], "snapshot objects"):
+    tables = {str(item["object_id"]): item for item in objects if item["kind"] == "table"}
+    for item in objects:
         if (
             "region" in item
             and require_object(item["region"], "region")["section_object_id"] not in ids
         ):
             raise WorldAnalysisError("Region identifies an absent section object")
+        if "table_context" in item:
+            _validate_table_context(item, tables)
+    style_ids: set[str] = set()
+    for style in require_objects(snapshot.get("style_definitions", []), "style definitions"):
+        require_keys(
+            style,
+            {
+                "style_id",
+                "name",
+                "type",
+                "based_on",
+                "part",
+                "path",
+                "object_id",
+                "role",
+                "role_basis",
+                "properties",
+            },
+            {"declared", "effective_status"},
+        )
+        style_id = require_text(style["style_id"], "style ID")
+        if style_id in style_ids or style["object_id"] in ids:
+            raise WorldAnalysisError("Snapshot has duplicate style identities")
+        style_ids.add(style_id)
+        ids.add(require_text(style["object_id"], "style object ID"))
+        if style["part"] not in seen or style["object_id"] != _canonical_locator(style):
+            raise WorldAnalysisError("Style definition differs from its canonical package locator")
+        style_type = require_text(style["type"], "style type")
+        if method != SNAPSHOT_METHOD and style_type != "paragraph":
+            raise WorldAnalysisError("Effective style definitions must be paragraph styles")
+        if "declared" in style:
+            require_object(style["declared"], "declared style")
+        if "effective_status" in style:
+            expected_status = {"paragraph": "paragraph_and_run", "character": "run"}.get(
+                style_type, "declaration_only"
+            )
+            if style["effective_status"] != expected_status:
+                raise WorldAnalysisError("Style effective status differs from its type")
+        for field in ("name", "based_on"):
+            if style[field] is not None:
+                require_text(style[field], f"style {field}")
+        require_text(style["role"], "style role")
+        require_objects(style["role_basis"], "style role basis")
+        effective = require_object(style["properties"], "style properties")
+        for field in ("paragraph", "run", "script_usage"):
+            require_object(effective.get(field), f"effective style {field}")
     require_object(snapshot["capabilities"], "snapshot capabilities")
     require_objects(snapshot["unsupported"], "snapshot unsupported")
     encode_json_object(snapshot)
+
+
+def _canonical_locator(item: JsonObject) -> str:
+    path = item.get("path")
+    if not isinstance(path, list) or any(type(value) is not int or value < 0 for value in path):
+        raise WorldAnalysisError("Snapshot paths must contain nonnegative child indices")
+    return str(item["part"]) + "#" + ".".join(str(index) for index in path)
+
+
+def _validate_table_context(item: JsonObject, tables: dict[str, JsonObject]) -> None:
+    context = require_object(item["table_context"], "table context")
+    require_keys(
+        context,
+        {"table_object_id", "row_count", "conditions"},
+        {"row_index", "column_index", "column_count"},
+    )
+    table_id = require_text(context["table_object_id"], "context table object ID")
+    if table_id not in tables or tables[table_id]["part"] != item["part"]:
+        raise WorldAnalysisError("Table context identifies an absent source-local table")
+    table_path = cast(list[int], tables[table_id]["path"])
+    object_path = cast(list[int], item["path"])
+    if object_path[: len(table_path)] != table_path:
+        raise WorldAnalysisError("Table context identifies a different component")
+    for field in ("row_count", "column_count", "row_index", "column_index"):
+        if field in context and (type(context[field]) is not int or cast(int, context[field]) < 0):
+            raise WorldAnalysisError(
+                "Table context indices and counts must be nonnegative integers"
+            )
+    for index, count in (("row_index", "row_count"), ("column_index", "column_count")):
+        if index in context and (
+            count not in context or cast(int, context[index]) >= cast(int, context[count])
+        ):
+            raise WorldAnalysisError("Table context position falls outside its table")
+    conditions = context["conditions"]
+    allowed = {
+        "firstRow",
+        "lastRow",
+        "firstCol",
+        "lastCol",
+        "band1Horz",
+        "band2Horz",
+        "band1Vert",
+        "band2Vert",
+        "nwCell",
+        "neCell",
+        "swCell",
+        "seCell",
+    }
+    if not isinstance(conditions, list) or any(
+        not isinstance(value, str) or value not in allowed for value in conditions
+    ):
+        raise WorldAnalysisError("Unknown table format condition")
 
 
 def template_rules(snapshot: JsonObject, source_id: str) -> list[JsonObject]:
@@ -124,6 +235,11 @@ def template_rules(snapshot: JsonObject, source_id: str) -> list[JsonObject]:
     for item in require_objects(snapshot["objects"], "objects"):
         key = (str(item["kind"]), str(item["role"]))
         groups.setdefault(key, []).append(str(item["object_id"]))
+    for style in require_objects(snapshot.get("style_definitions", []), "style definitions"):
+        if style["type"] != "paragraph" or style["role"] == "unknown":
+            continue
+        for kind in ("paragraph", "run"):
+            groups.setdefault((kind, str(style["role"])), []).append(str(style["object_id"]))
     return [
         {
             "rule_id": "rule-" + record_digest({"kind": kind, "role": role}),
@@ -145,14 +261,37 @@ def template_rules(snapshot: JsonObject, source_id: str) -> list[JsonObject]:
     ]
 
 
-def template_font_requirements(snapshot: JsonObject) -> list[JsonObject]:
-    """Expose exact font families in active text lanes for existing font acquisition."""
-    from research_file_workbench.journals.template_compare import _run_slot_is_used
+def template_font_requirements(
+    snapshot: JsonObject, *, include_style_definitions: bool = True
+) -> list[JsonObject]:
+    """Expose exact fonts from text and the comparator's missing-role style profiles."""
+    from research_file_workbench.journals.template_compare import (
+        _is_table_related,
+        _run_slot_is_used,
+        _semantic_context_key,
+        _semantic_index,
+        _style_definition_groups,
+    )
 
     families: dict[str, tuple[set[str], set[str]]] = {}
-    for item in require_objects(snapshot["objects"], "objects"):
-        if item["kind"] != "run" or not str(item.get("text") or "").strip():
-            continue
+    objects = require_objects(snapshot["objects"], "objects")
+    candidates = [
+        item for item in objects if item["kind"] == "run" and str(item.get("text") or "").strip()
+    ]
+    if include_style_definitions:
+        semantics = _semantic_index(objects)
+        occupied = {
+            _semantic_context_key(item, semantics)
+            for item in objects
+            if not _is_table_related(item)
+        }
+        candidates.extend(
+            item
+            for group in _style_definition_groups(snapshot, occupied).values()
+            for item in group
+            if item["kind"] == "run"
+        )
+    for item in candidates:
         properties = require_object(item["properties"], "properties")
         run = require_object(properties.get("run"), "effective run")
         usage = require_object(properties.get("script_usage"), "script usage")
@@ -282,9 +421,16 @@ def validate_template_sources(world: JsonObject, sources: dict[str, bytes]) -> N
     template = require_object(world["template"], "template")
     snapshot = decode_json_object(sources[str(template["snapshot_source_id"])])
     validate_snapshot(snapshot, sources[str(template["normalized_source_id"])])
+    legacy_font_requirements = world["analyzer_version"] in {
+        "docx-template-analyzer-1.0.0",
+        "docx-template-analyzer-1.1.0",
+        "docx-template-analyzer-1.2.0",
+    }
     if "font_requirements" in template and template[
         "font_requirements"
-    ] != template_font_requirements(snapshot):
+    ] != template_font_requirements(
+        snapshot, include_style_definitions=not legacy_font_requirements
+    ):
         raise WorldAnalysisError("Template font requirements differ from active captured run fonts")
     object_rules = [
         rule

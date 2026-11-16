@@ -65,16 +65,16 @@ def compare_world(
                 "limitations": [],
             }
         )
-    guide_rules = [
+    structured_rules = [
         rule
         for rule in require_objects(world["rules"], "rules")
         if rule["property"] != "object_format"
     ]
-    if guide_rules:
+    if structured_rules:
         from research_file_workbench.docx.reader import read_docx_bytes
         from research_file_workbench.journals.checker import check_world
 
-        # The guide's retained rules use the existing checker rather than template heuristics.
+        # Explicit structured requirements use the existing deterministic checker.
         guide_world = dict(world)
         guide_world.pop("template")
         from research_file_workbench.docx.report import READER_VERSION
@@ -93,7 +93,7 @@ def compare_world(
             for gap in require_objects(world["coverage_gaps"], "coverage gaps")
             if gap["source_id"] is None or gap["source_id"] in guide_source_ids
         ]
-        guide_world["rules"] = guide_rules
+        guide_world["rules"] = structured_rules
         guide_world["analyzer_version"] = ANALYZER_VERSION
         guide_world["reader_version"] = READER_VERSION
         guide_world["version_id"] = world_version_id(guide_world)

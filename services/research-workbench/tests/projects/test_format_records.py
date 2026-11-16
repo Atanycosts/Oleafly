@@ -63,10 +63,12 @@ def _baseline_id(result: JsonObject) -> str:
 
 def _snapshot(content: bytes) -> JsonObject:
     return {
+        "method_version": format_records.FORMAT_SNAPSHOT_METHOD_VERSION,
         "schema_version": 1,
         "source_sha256": sha256_bytes(content),
         "engine": {"name": "@docx-editor.dev/core", "version": "2.36.0"},
         "parts": [],
+        "style_definitions": [],
         "objects": [],
         "capabilities": {},
         "unsupported": [],
@@ -137,11 +139,13 @@ def test_snapshot_identity_changes_with_format_method_version(
     repeated = store.save_format_snapshot(baseline_id, snapshot)
     assert repeated["snapshot_id"] == first["snapshot_id"]
 
-    monkeypatch.setattr(
-        format_records,
-        "FORMAT_SNAPSHOT_METHOD_VERSION",
-        "docx-core-format-snapshot-2.0.0",
-    )
+    from research_file_workbench.docx import format_snapshot
+
+    previous_method = format_records.FORMAT_SNAPSHOT_METHOD_VERSION
+    next_method = "docx-core-format-snapshot-2.0.0"
+    monkeypatch.setattr(format_records, "FORMAT_SNAPSHOT_METHOD_VERSION", next_method)
+    monkeypatch.setattr(format_snapshot, "FORMAT_SNAPSHOT_METHOD_VERSION", next_method)
+    snapshot["method_version"] = next_method
     corrected = store.save_format_snapshot(baseline_id, snapshot)
     records = store.list_evidence(baseline_id, reader_version=READER_VERSION)
     by_method = {cast(str, item["extraction_method_version"]): item for item in records}
@@ -153,12 +157,25 @@ def test_snapshot_identity_changes_with_format_method_version(
         ]
         == "CURRENT"
     )
-    assert (
-        by_method["docx-core-format-snapshot-1.0.0"]["applicability_to_current_baseline"] == "STALE"
+    assert by_method[previous_method]["applicability_to_current_baseline"] == "STALE"
+    assert by_method[previous_method]["stale_reasons"] == ["reader_version_changed"]
+
+
+def test_pre_versioned_snapshot_keeps_legacy_method_and_remains_readable(
+    store: ProjectStore,
+) -> None:
+    content = b"historical exact format source"
+    baseline_id = _baseline_id(_apply(store, content, request_id="legacy-snapshot"))
+    snapshot = _snapshot(content)
+    snapshot.pop("method_version")
+    snapshot.pop("style_definitions")
+    store.save_format_snapshot(baseline_id, snapshot)
+    record = _by_scope(
+        store.list_evidence(baseline_id, reader_version=READER_VERSION), "docx_format"
     )
-    assert by_method["docx-core-format-snapshot-1.0.0"]["stale_reasons"] == [
-        "reader_version_changed"
-    ]
+    assert record["extraction_method_version"] == "docx-core-format-snapshot-1.0.0"
+    assert record["stale_reasons"] == ["reader_version_changed"]
+    assert store.get_format_snapshot(baseline_id) == snapshot
 
 
 def _insert_legacy_findings(
@@ -181,7 +198,7 @@ def _insert_legacy_findings(
         "limitations": [],
         "dependencies": [
             source_version,
-            format_records.TEMPLATE_FINDINGS_METHOD_VERSION,
+            format_records.LEGACY_TEMPLATE_FINDINGS_METHOD_VERSION,
             findings_artifact_version_id,
         ],
         "statement": "Legacy template findings retained before method metadata was added.",
@@ -221,8 +238,8 @@ def test_legacy_findings_need_exact_scope_and_a_valid_retained_artifact(
 
     assert len(initial) == 1
     assert initial[0]["evidence_version"] == evidence_id
-    assert initial[0]["applicability_to_current_baseline"] == "CURRENT"
-    assert initial[0]["stale_reasons"] == []
+    assert initial[0]["applicability_to_current_baseline"] == "STALE"
+    assert initial[0]["stale_reasons"] == ["reader_version_changed"]
 
     advanced = _apply(
         store,
@@ -232,7 +249,7 @@ def test_legacy_findings_need_exact_scope_and_a_valid_retained_artifact(
     )
     assert evidence_id in cast(list[str], advanced["invalidated_refs"])
     historical = store.list_evidence(baseline_id, reader_version=READER_VERSION)
-    assert historical[0]["stale_reasons"] == ["source_version_changed"]
+    assert historical[0]["stale_reasons"] == ["source_version_changed", "reader_version_changed"]
 
 
 @pytest.mark.parametrize(

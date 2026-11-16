@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 import pymupdf
 
-from tests.journals.test_analysis import template_bytes
+from tests.journals.test_analysis import component_bytes, template_bytes
 from tests.journals.test_components import component
 from tests.workbench.test_server import _request, _world_payload
 from tests.workbench.test_template_service import setup_comparison
@@ -46,9 +46,9 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
     font_payload = _world_payload()
     font_payload["sources"] = [
         {
-            "name": "font-guide.txt",
-            "kind": "guide_text",
-            **upload(b"Body text must use PT Serif font."),
+            "name": "font.json",
+            "kind": "rule_component_json",
+            **upload(component_bytes([("body_font_family", "PT Serif")])),
         }
     ]
     font_world = capture("font_world", "POST", "/api/worlds", font_payload)

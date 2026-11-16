@@ -53,7 +53,8 @@ not rewritten. This does not block the separately scoped macOS DOCX workflow.
 
 The 2026-11-13 exact-font correction retains body-font family requirements through the
 existing guide/component, evidence, decision and immutable world flow. Exact English/Chinese
-body-font instructions can be recognized deterministically. Model research still returns
+body-font instructions were previously recognized by fixed patterns; that mechanism was retired on
+2026-11-14. Guide prose is now retained for user or Agent interpretation. Model research returns
 candidates for applicability review. Manuscript font declarations alone do not establish
 journal requirements. The machine-readable contract above owns the current method and
 transport versions. New checks require reanalysis under the current analyzer; retained older
@@ -717,13 +718,20 @@ DOCX and conversion provenance in the existing source/world library. Explicit se
 template immediately usable as the comparison basis. It does not require confirming each font or
 size and does not turn a template difference into a publisher-authenticated violation.
 
-The application captures source-bound effective facts with its pinned DOCX core. Workbench verifies
+The application captures source-bound effective facts with its pinned DOCX core, including all declared
+styles and table-internal condition/position contexts. Paragraph and character definitions carry their
+supported effective formats; table/numbering/other styles remain explicitly declaration-only. Recognized paragraph definitions
+supply expectations when the template has no corresponding paragraph/run role and heading-level
+instance outside tables. Exact-font preparation includes active script lanes from these same fallback
+run profiles; unknown roles, non-paragraph definitions and superseded styles add no fonts. Historical
+worlds retain their original font lists and remain readable; new checks require the current analyzer.
+Manuscript style definitions do not generate document findings. Workbench verifies
 package part hashes and retains the baseline snapshot through existing artifact/evidence storage.
 Object comparison uses semantic kind/role, heading level and caption context, excluding identity,
 example text, raw formatting declarations and unused script font slots. Variable template formats
 remain uncertain. Results retain exact source/method versions and object evidence; request replay
 is idempotent and a changed binding is a conflict. Full package parts, XML nodes and relationships
-are available through bounded read-only queries. Snapshot objects and saved findings support
+are available through bounded read-only queries. Snapshot objects, style definitions and saved findings support
 pagination; finding filters apply before pagination. Findings are stored once as a content-addressed
 artifact, with summary/selectors and an initial page in the check. Core observations carry their
 own method versions so subsequent manuscript saves preserve historical evidence and mark its
@@ -731,12 +739,12 @@ source applicability accurately. Wire fields and current methods are maintained 
 [the journal contract](../contracts/journals/world-contract.json), under `template_comparison`.
 
 This extends the journal business model; the historical geometry analyzer remains readable and
-continues to serve its existing guide checks. Python does not recompute the core's style cascade.
+continues to check explicit structured requirements. Python does not recompute the core's style cascade.
 Backend contract/component checks exercise retained bytes and HTTP, while actual application,
 legacy conversion, native Agent editing and Office rendering are separate integration evidence.
 
-The final module gate passed on 2026-11-14: Ruff formatting (223 files), lint, mypy (124 source
-files), and pytest (1140 passed, 33 skipped; five existing PyMuPDF/SWIG deprecation warnings).
+The current module gate passed on 2026-11-14: Ruff formatting (223 files), lint, mypy (124 source
+files), and pytest (1152 passed, 33 skipped; five existing PyMuPDF/SWIG deprecation warnings).
 It covers exact package queries, active-script font requirements, object comparison, filtered
 finding and snapshot pagination, explicit binding conflicts, save-after-check and historical replay,
 and method-specific evidence applicability. The application-owned real-document browser acceptance
@@ -745,12 +753,66 @@ finding-page traversal and unchanged author hashes. Its raw report is local-only
 `.private/journal-template-acceptance/real-bqD6BA/report.json` under the repository root. Native
 application acceptance is tracked in the linked Agent status.
 
+The 2026-11-17 font-preparation correction passed Ruff format (223 files), lint and mypy (124
+source files). The full pytest run returned 1160 passed, 33 skipped and one environment failure:
+an untracked Finder `.DS_Store` in the served web directory. After preserving that metadata under
+ignored `var/`, the asset check and template comparison/service regressions passed together (68
+tests). The application template-panel render regressions passed (10 tests), including Word's
+zero-based outline levels and body sentinel. This correction did not rerun native or Office
+rendering acceptance.
+
+The 2026-11-15 Word opening correction reuses captured-byte import for the first
+manuscript baseline, so its DOCX package is parsed once. Retained source bytes,
+initial-import identity, evidence and display filenames keep the existing
+contracts. The scoped project and Workbench service suites passed 67 cases;
+the parser-count regression also compares the retained evidence with the prior
+path import. These checks do not replace native opening and interaction
+acceptance, which remains owned by the Agent status.
+
+The template-copy HTTP route reuses managed manuscript import, retains the exact normalized source
+and current snapshot, and binds the selected world. Its stable request ID recovers the same project
+without resetting later edits or bindings. The source-read route supplies exact hash-verified normalized
+template bytes for the editor's existing style dependency importer, without creating a manuscript.
+These routes write only inside the selected library; author inputs and retained templates stay unchanged.
+Live paged reads, transactional editing and template-copy UI acceptance belong to the application status.
+
 Explicit semantic regions refine section, paragraph, run and table profiles using core section
 membership and content roles. Front matter, body, references and appendix regions can be compared
 without pairing by section order, XML path, object ID or the formatting value under test. Mixed or
 unknown regions retain common-property comparison and variable values remain `cannot_determine`.
 Missing semantic/region profiles also produce an explicit uncertain object with its reason.
-Table, row and cell profiles compare stable common formatting within a region, without arbitrary
-table-to-table alignment or treating example dimensions as requirements. Core unsupported constructs
+Table-internal profiles retain header/body, first/last column and other conditional scopes within a
+region, without arbitrary table-to-table alignment or treating example dimensions as requirements.
+Frame presence/attributes and paragraph pagination controls participate in comparison. Authored
+table band sizes greater than one remain a pinned-core limitation: affected internal objects or
+template candidates return `cannot_determine`, while stable table-level properties and unrelated
+components remain comparable. Historical
+snapshots keep their original method identity and remain readable; new imports, captures and checks
+require the current reader. New-reader local acceptance validated 31 source-bound snapshots, 11 independent
+ZIP/XML controls and 22 real local HTTP checks, including the IJAM English and Chinese inputs.
+Raw local-only evidence is under `.private/word-format-fix/reader-acceptance/` and
+`.private/word-format-fix/comparison-acceptance/`. A separate four-case reader-to-HTTP
+acceptance under `.private/word-format-fix/band-acceptance/` verifies direct and inherited
+two-row/two-column band limitations, a direct size-one override, and an unsupported
+template candidate. Only affected table internals lose deterministic comparison;
+unrelated tables and body control paragraphs remain comparable. Core unsupported constructs
 and unknown/mixed role-region counts remain aggregated coverage gaps. Complete package retention
 does not imply that every OOXML construct already has an effective-format comparison interpretation.
+
+## Guide pattern retirement (2026-11-14)
+
+Fixed-sentence and regex requirement recognition has been removed, including execution-time
+re-recognition. Captured TXT, DOCX and PDF guides remain readable with exact source locators;
+their prose creates no rules and reports `guide_requires_interpretation`. Users and Agents can
+use the existing structured component import, evidence and explicit-decision flow to establish
+requirements. Deterministic template facts, object comparison and geometry checks remain.
+Old worlds/checks retain their bytes and conclusions; obsolete analyzers and retired pattern
+requirements cannot execute a new check. Current method versions live in the journal contract.
+
+The retirement gate passed: Ruff formatting (222 files), lint, mypy (123 source files),
+and the complete Python suite (1120 passed, 33 skipped, five existing PyMuPDF/SWIG warnings).
+Regression coverage includes retained guide fragments, HTTP/CLI/MCP flows, explicit component
+decisions, template-plus-component checks, and historical pattern records that remain readable
+but cannot execute even when assigned the current analyzer version. Frontend journal tests
+(2 cases), TypeScript, scoped lint, and English/Chinese catalog and type checks also passed.
+This cleanup did not rerun native application or Office rendering acceptance.

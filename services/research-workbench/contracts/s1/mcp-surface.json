@@ -43,13 +43,13 @@
     "source_page"
   ],
   "method_versions": {
-    "http": "journal-http-1.11.0",
+    "http": "journal-http-1.13.0",
     "reader": "s1-readonly-reader-1.5.0",
     "report": "1.0.0",
     "query": "s1-read-query-1.7.0",
     "read_receipt": "s1-read-receipt-1.2.0",
     "world_schema": "journal-world-1.1.0",
-    "analyzer": "journal-world-analyzer-1.5.0",
+    "analyzer": "journal-world-analyzer-1.6.0",
     "checker": "journal-geometry-checker-1.2.0"
   },
   "not_permitted": [

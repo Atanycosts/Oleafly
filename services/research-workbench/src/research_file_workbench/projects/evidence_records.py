@@ -166,13 +166,13 @@ def _stored_method_version(connection: sqlite3.Connection, item: JsonObject) -> 
         and isinstance(artifact_id, str)
     ):
         from research_file_workbench.projects.format_records import (
-            TEMPLATE_FINDINGS_METHOD_VERSION,
+            LEGACY_TEMPLATE_FINDINGS_METHOD_VERSION,
         )
 
         artifact = decode_json_object(read_artifact(connection, artifact_id))
         if not isinstance(artifact.get("findings"), list):
             raise ProjectStoreError("Legacy template findings artifact is invalid")
-        return TEMPLATE_FINDINGS_METHOD_VERSION
+        return LEGACY_TEMPLATE_FINDINGS_METHOD_VERSION
     raise ProjectStoreError("Stored evidence is missing extraction_method_version")
 
 

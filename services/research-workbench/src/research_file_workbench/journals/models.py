@@ -7,7 +7,7 @@ from typing import cast
 from research_file_workbench.common.hashing import sha256_bytes, sha256_text
 from research_file_workbench.common.json_io import JsonObject, encode_json_object
 
-ANALYZER_VERSION = "journal-world-analyzer-1.5.0"
+ANALYZER_VERSION = "journal-world-analyzer-1.6.0"
 CHECKER_VERSION = "journal-geometry-checker-1.2.0"
 WORLD_SCHEMA_VERSION = "journal-world-1.1.0"
 COMPONENT_SCHEMA_VERSION = "journal-rule-component-1.0.0"
@@ -31,8 +31,8 @@ PROPERTY_LABELS = {
     "body_font_family": "Body font family",
 }
 ASSURANCE_LIMITATION = (
-    "Confirmed means an explicit requirement recognized in an operator-supplied guide for the "
-    "declared context; publisher identity, completeness and currency are not authenticated."
+    "Confirmed requirements record explicit user decisions for the declared context; "
+    "guide prose is retained as source material and never automatically confirmed."
 )
 
 
@@ -175,6 +175,14 @@ def validate_world_identity(world: JsonObject) -> None:
 def validate_world_for_execution(world: JsonObject) -> None:
     """Require current analysis semantics and consistent local confirmation evidence."""
     validate_world_identity(world)
+    if any(
+        rule.get("confirmation_method") == "explicit_supplied_guide_pattern"
+        for rule in require_objects(world["rules"], "world rules")
+    ):
+        raise WorldAnalysisError(
+            "Automatic guide-pattern requirements are retired; retain the source "
+            "and establish explicit structured requirements before a new check"
+        )
     if "template" in world:
         from research_file_workbench.journals.template_models import TEMPLATE_ANALYZER_VERSION
 
@@ -184,36 +192,14 @@ def validate_world_for_execution(world: JsonObject) -> None:
     if world["analyzer_version"] != ANALYZER_VERSION:
         raise WorldAnalysisError("Journal analyzer changed; reanalyze sources before a new check")
     from research_file_workbench.docx.report import READER_VERSION
-    from research_file_workbench.journals.guide_rules import recognize_guide
 
     if world["reader_version"] != READER_VERSION:
         raise WorldAnalysisError("DOCX reader changed; reanalyze sources before a new check")
-    sources = require_objects(world["sources"], "world sources")
-    guide_ids = {
-        source["source_id"]
-        for source in sources
-        if source["kind"] in {"guide_text", "guide_docx", "guide_pdf"}
-    }
     decisions = require_objects(world.get("manual_decisions", []), "manual decisions")
     for rule in require_objects(world["rules"], "world rules"):
         method = rule["confirmation_method"]
         basis = require_text(rule["basis_status"], "rule basis status")
-        if basis == "confirmed" and method == "explicit_supplied_guide_pattern":
-            matching = False
-            for evidence in require_objects(rule["evidence"], "rule evidence"):
-                if evidence["source_id"] not in guide_ids:
-                    continue
-                extracted, _ = recognize_guide(
-                    cast(str, evidence["source_id"]),
-                    [(cast(str, evidence["locator"]), cast(str, evidence["quote"]))],
-                )
-                matching |= any(
-                    item["property"] == rule["property"] and item["expected"] == rule["expected"]
-                    for item in extracted
-                )
-            if not matching:
-                raise WorldAnalysisError("Confirmed rule has no matching supplied guide evidence")
-        elif basis == "confirmed" and method == "human_decision":
+        if basis == "confirmed" and method == "human_decision":
             resolution = require_object(rule.get("resolution"), "rule resolution")
             selected = [item for item in decisions if item["rule_id"] == rule["rule_id"]]
             if (

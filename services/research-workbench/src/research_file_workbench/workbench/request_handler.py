@@ -95,6 +95,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 check_template,
                 query_document,
                 retain_format,
+                start_template_copy,
             )
 
             template_routes = {
@@ -102,6 +103,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 "/api/docx-format": retain_format,
                 "/api/template-check": check_template,
                 "/api/docx-query": query_document,
+                "/api/template-copy": start_template_copy,
             }
             if parsed.path in template_routes:
                 self._json(template_routes[parsed.path](self.server.service, payload))

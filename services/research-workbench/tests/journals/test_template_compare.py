@@ -4,6 +4,7 @@ import json
 
 from research_file_workbench.common.json_io import JsonObject
 from research_file_workbench.journals.template_compare import compare_template
+from research_file_workbench.journals.template_models import template_font_requirements
 
 
 def object_fact(
@@ -17,6 +18,7 @@ def object_fact(
     style_id: str | None = None,
     evidence: JsonObject | None = None,
     role_basis: list[JsonObject] | None = None,
+    table_context: JsonObject | None = None,
 ) -> JsonObject:
     result: JsonObject = {
         "object_id": object_id,
@@ -33,6 +35,8 @@ def object_fact(
         result["style_id"] = style_id
     if evidence:
         result["evidence"] = evidence
+    if table_context:
+        result["table_context"] = table_context
     return result
 
 
@@ -47,6 +51,7 @@ def run_fact(
     evidence: JsonObject | None = None,
     role_basis: list[JsonObject] | None = None,
     inline: JsonObject | None = None,
+    table_context: JsonObject | None = None,
 ) -> JsonObject:
     run_properties: JsonObject = {"fontSizePt": size}
     if inline:
@@ -60,6 +65,7 @@ def run_fact(
         style_id=style_id,
         evidence=evidence,
         role_basis=role_basis,
+        table_context=table_context,
         properties={
             "run": run_properties,
             "script_usage": {
@@ -72,12 +78,45 @@ def run_fact(
     )
 
 
-def snapshot(*objects: JsonObject) -> JsonObject:
-    return {"schema_version": 1, "objects": list(objects)}
+def snapshot(*objects: JsonObject, unsupported: list[JsonObject] | None = None) -> JsonObject:
+    result: JsonObject = {"schema_version": 1, "objects": list(objects)}
+    if unsupported is not None:
+        result["unsupported"] = unsupported
+    return result
+
+
+def unsupported_band_size(table_id: str) -> JsonObject:
+    return {
+        "code": "table_band_size_unsupported",
+        "detail": "Table row or column band sizes other than one are not supported.",
+        "object_ids": [table_id],
+    }
 
 
 def findings_for(findings: list[JsonObject], property_path: str) -> list[JsonObject]:
     return [finding for finding in findings if finding["property_path"] == property_path]
+
+
+def table_context(
+    table_id: str,
+    row_index: int,
+    row_count: int,
+    *,
+    column_index: int | None = None,
+    column_count: int | None = None,
+    conditions: list[str] | None = None,
+) -> JsonObject:
+    result: JsonObject = {
+        "table_object_id": table_id,
+        "row_index": row_index,
+        "row_count": row_count,
+        "conditions": conditions or [],
+    }
+    if column_index is not None:
+        result["column_index"] = column_index
+    if column_count is not None:
+        result["column_count"] = column_count
+    return result
 
 
 def test_title_and_body_are_paired_by_role_instead_of_path_or_sample_text():
@@ -880,3 +919,1006 @@ def test_thousands_of_body_runs_have_bounded_linear_findings_and_provenance():
         "value" not in basis for finding in findings for basis in finding["template_role_basis"]
     )
     assert len(encoded) < len(findings) * 4096
+
+
+def table_objects(
+    prefix: str,
+    row_count: int,
+    *,
+    header_bold: bool,
+    first_column_shading: str,
+) -> list[JsonObject]:
+    table_id = f"{prefix}-table"
+    objects: list[JsonObject] = [
+        object_fact(
+            table_id,
+            kind="table",
+            role="table",
+            path=[0, 0],
+            properties={
+                "table": {
+                    "alignment": "center",
+                    "columnWidthsPt": [120, 120],
+                }
+            },
+        )
+    ]
+    for row_index in range(row_count):
+        conditions = ["firstRow"] if row_index == 0 else []
+        row_id = f"{prefix}-row-{row_index}"
+        objects.append(
+            object_fact(
+                row_id,
+                kind="tr",
+                role="unknown",
+                path=[0, 0, row_index],
+                table_context=table_context(table_id, row_index, row_count),
+                properties={"row": {"isHeader": row_index == 0}},
+            )
+        )
+        for column_index in range(2):
+            cell_conditions = list(conditions)
+            if column_index == 0:
+                cell_conditions.append("firstCol")
+                if row_index == 0:
+                    cell_conditions.append("nwCell")
+            cell_id = f"{prefix}-cell-{row_index}-{column_index}"
+            objects.append(
+                object_fact(
+                    cell_id,
+                    kind="tc",
+                    role="unknown",
+                    path=[0, 0, row_index, column_index],
+                    table_context=table_context(
+                        table_id,
+                        row_index,
+                        row_count,
+                        column_index=column_index,
+                        column_count=2,
+                        conditions=cell_conditions,
+                    ),
+                    properties={
+                        "cell": {
+                            "id": f"{prefix}-node-{row_index}-{column_index}",
+                            "gridColumn": column_index,
+                            "gridColumnId": f"{prefix}-grid-{column_index}",
+                            "shading": first_column_shading if column_index == 0 else None,
+                        },
+                        "table_style": {
+                            "paragraphPropertyNodes": [{"id": f"{prefix}-style-node-{row_index}"}],
+                            "runProperties": [],
+                        },
+                    },
+                )
+            )
+            paragraph_id = f"{prefix}-paragraph-{row_index}-{column_index}"
+            objects.append(
+                object_fact(
+                    paragraph_id,
+                    kind="paragraph",
+                    role="body",
+                    path=[0, 0, row_index, column_index, 0],
+                    table_context=table_context(
+                        table_id,
+                        row_index,
+                        row_count,
+                        column_index=column_index,
+                        column_count=2,
+                        conditions=cell_conditions,
+                    ),
+                    properties={"paragraph": {"alignment": "center"}},
+                )
+            )
+            objects.append(
+                run_fact(
+                    f"{prefix}-run-{row_index}-{column_index}",
+                    "body",
+                    size=10,
+                    path=[0, 0, row_index, column_index, 0, 0],
+                    evidence={"paragraph_object_id": paragraph_id},
+                    table_context=table_context(
+                        table_id,
+                        row_index,
+                        row_count,
+                        column_index=column_index,
+                        column_count=2,
+                        conditions=cell_conditions,
+                    ),
+                    inline={"bold": header_bold if row_index == 0 else False},
+                )
+            )
+    return objects
+
+
+def test_conditional_table_profiles_distinguish_correct_and_wrong_header_formatting():
+    template = snapshot(
+        *table_objects(
+            "template",
+            3,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    correct = compare_template(
+        template,
+        snapshot(
+            *table_objects(
+                "correct",
+                3,
+                header_bold=True,
+                first_column_shading="E2F0D9",
+            )
+        ),
+    )
+    header_correct = [
+        finding
+        for finding in findings_for(correct, "run.bold")
+        if finding["object_id"] == "correct-run-0-0"
+    ][0]
+    assert header_correct["verdict"] == "observed_match"
+    assert set(header_correct["table_context"]["conditions"]) == {
+        "firstCol",
+        "firstRow",
+        "nwCell",
+    }
+
+    wrong = compare_template(
+        template,
+        snapshot(
+            *table_objects(
+                "wrong",
+                3,
+                header_bold=False,
+                first_column_shading="E2F0D9",
+            )
+        ),
+    )
+    header_wrong = [
+        finding
+        for finding in findings_for(wrong, "run.bold")
+        if finding["object_id"] == "wrong-run-0-0"
+    ][0]
+    assert header_wrong["observed"] is False
+    assert header_wrong["expected"] is True
+    assert header_wrong["verdict"] == "observed_difference"
+    data_findings = [
+        finding
+        for finding in findings_for(wrong, "run.bold")
+        if finding["object_id"].startswith("wrong-run-1-")
+    ]
+    assert data_findings
+    assert all(finding["verdict"] == "observed_match" for finding in data_findings)
+
+
+def test_conditional_table_profiles_distinguish_correct_and_wrong_first_column_shading():
+    template = snapshot(
+        *table_objects(
+            "template",
+            2,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    correct = compare_template(
+        template,
+        snapshot(
+            *table_objects(
+                "correct",
+                2,
+                header_bold=True,
+                first_column_shading="E2F0D9",
+            )
+        ),
+    )
+    first_column = [
+        finding
+        for finding in findings_for(correct, "cell.shading")
+        if finding["object_id"].endswith("-cell-1-0")
+    ][0]
+    other_column = [
+        finding
+        for finding in findings_for(correct, "cell.shading")
+        if finding["object_id"].endswith("-cell-1-1")
+    ][0]
+    assert first_column["verdict"] == "observed_match"
+    assert other_column["verdict"] == "observed_match"
+
+    wrong = compare_template(
+        template,
+        snapshot(
+            *table_objects(
+                "wrong",
+                2,
+                header_bold=True,
+                first_column_shading="FFFFFF",
+            )
+        ),
+    )
+    first_column_wrong = [
+        finding
+        for finding in findings_for(wrong, "cell.shading")
+        if finding["object_id"].endswith("-cell-1-0")
+    ][0]
+    assert first_column_wrong["observed"] == "FFFFFF"
+    assert first_column_wrong["expected"] == "E2F0D9"
+    assert first_column_wrong["verdict"] == "observed_difference"
+    assert "firstCol" in first_column_wrong["table_context"]["conditions"]
+
+
+def test_table_conditional_profiles_apply_by_position_not_absolute_row_count():
+    template = snapshot(
+        *table_objects(
+            "template",
+            3,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    manuscript = snapshot(
+        *table_objects(
+            "longer",
+            5,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    findings = compare_template(template, manuscript)
+    header = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "longer-run-0-0"
+    ][0]
+    last_data_row = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "longer-run-4-0"
+    ][0]
+    assert header["verdict"] == "observed_match"
+    assert last_data_row["verdict"] == "observed_match"
+    assert header["template_object_ids"] == ["template-run-0-0"]
+
+
+def test_table_object_properties_are_compared_without_row_context():
+    template_objects = table_objects(
+        "template",
+        1,
+        header_bold=True,
+        first_column_shading="E2F0D9",
+    )
+    manuscript_objects = table_objects(
+        "manuscript",
+        1,
+        header_bold=True,
+        first_column_shading="E2F0D9",
+    )
+    manuscript_table = manuscript_objects[0]
+    manuscript_table["properties"] = {
+        "table": {
+            **manuscript_table["properties"]["table"],
+            "alignment": "left",
+        }
+    }
+    findings = compare_template(snapshot(*template_objects), snapshot(*manuscript_objects))
+    alignment = [
+        finding
+        for finding in findings_for(findings, "table.alignment")
+        if finding["object_id"] == "manuscript-table"
+    ][0]
+    assert alignment["observed"] == "left"
+    assert alignment["expected"] == "center"
+    assert alignment["verdict"] == "observed_difference"
+
+
+def test_manuscript_band_size_unsupported_only_degrades_affected_table_children():
+    template = snapshot(
+        *table_objects(
+            "template",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    manuscript = snapshot(
+        *table_objects(
+            "manuscript",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        ),
+        unsupported=[unsupported_band_size("manuscript-table")],
+    )
+    findings = compare_template(template, manuscript)
+
+    table_findings = [finding for finding in findings if finding["object_id"] == "manuscript-table"]
+    child_findings = [
+        finding
+        for finding in findings
+        if finding["object_id"] != "manuscript-table"
+        and finding["kind"] in {"tr", "tc", "paragraph", "run"}
+    ]
+    assert table_findings
+    assert all(finding["verdict"] == "observed_match" for finding in table_findings)
+    assert all("reason" not in finding for finding in table_findings)
+    assert child_findings
+    assert all(finding["verdict"] == "cannot_determine" for finding in child_findings)
+    assert all(
+        finding["reason"] == "Table row or column band sizes other than one are not supported"
+        for finding in child_findings
+    )
+
+
+def test_unsupported_template_candidate_is_not_filtered_from_a_shared_scope():
+    template = snapshot(
+        *table_objects(
+            "supported-template",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        ),
+        *table_objects(
+            "unsupported-template",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        ),
+        unsupported=[unsupported_band_size("unsupported-template-table")],
+    )
+    manuscript = snapshot(
+        *table_objects(
+            "manuscript",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    findings = compare_template(template, manuscript)
+
+    header = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "manuscript-run-0-0"
+    ][0]
+    assert header["template_object_count"] == 2
+    assert header["expected"] is True
+    assert header["verdict"] == "cannot_determine"
+    assert header["reason"] == "Table row or column band sizes other than one are not supported"
+
+
+def test_unsupported_manuscript_table_does_not_degrade_an_unrelated_table():
+    template = snapshot(
+        *table_objects(
+            "template",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    manuscript = snapshot(
+        *table_objects(
+            "affected",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        ),
+        *table_objects(
+            "unrelated",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        ),
+        unsupported=[unsupported_band_size("affected-table")],
+    )
+    findings = compare_template(template, manuscript)
+
+    affected = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "affected-run-0-0"
+    ][0]
+    unrelated = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "unrelated-run-0-0"
+    ][0]
+    assert affected["verdict"] == "cannot_determine"
+    assert unrelated["verdict"] == "observed_match"
+    assert "reason" not in unrelated
+
+
+def test_unsupported_nested_table_does_not_degrade_its_outer_table():
+    template = snapshot(
+        *table_objects(
+            "template-outer",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        ),
+        *table_objects(
+            "template-inner",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        ),
+    )
+    manuscript = snapshot(
+        *table_objects(
+            "manuscript-outer",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        ),
+        *table_objects(
+            "manuscript-inner",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        ),
+        unsupported=[unsupported_band_size("manuscript-inner-table")],
+    )
+    findings = compare_template(template, manuscript)
+
+    outer = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "manuscript-outer-run-0-0"
+    ][0]
+    inner = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "manuscript-inner-run-0-0"
+    ][0]
+    assert outer["verdict"] == "observed_match"
+    assert inner["verdict"] == "cannot_determine"
+    assert inner["reason"] == "Table row or column band sizes other than one are not supported"
+
+
+def test_table_object_is_compared_without_table_context_children():
+    template = snapshot(
+        object_fact(
+            "template-table",
+            kind="table",
+            role="table",
+            properties={"table": {"alignment": "center"}},
+        )
+    )
+    manuscript = snapshot(
+        object_fact(
+            "manuscript-table",
+            kind="table",
+            role="table",
+            properties={"table": {"alignment": "left"}},
+        )
+    )
+    findings = compare_template(template, manuscript)
+    assert len(findings) == 1
+    assert findings[0]["property_path"] == "table.alignment"
+    assert findings[0]["verdict"] == "observed_difference"
+
+
+def test_template_table_order_never_selects_a_profile():
+    first = table_objects(
+        "first-template",
+        2,
+        header_bold=True,
+        first_column_shading="E2F0D9",
+    )
+    second = table_objects(
+        "second-template",
+        2,
+        header_bold=False,
+        first_column_shading="FFFFFF",
+    )
+    manuscript = snapshot(
+        *table_objects(
+            "manuscript",
+            2,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    forward = compare_template(snapshot(*first, *second), manuscript)
+    reverse = compare_template(snapshot(*second, *first), manuscript)
+    assert forward == reverse
+    header = [
+        finding
+        for finding in findings_for(forward, "run.bold")
+        if finding["object_id"] == "manuscript-run-0-0"
+    ][0]
+    assert header["expected"] == [False, True]
+    assert header["verdict"] == "cannot_determine"
+
+
+def test_paragraph_frame_presence_is_explicit_when_manuscript_adds_a_frame():
+    template = snapshot(
+        object_fact(
+            "template-paragraph",
+            kind="paragraph",
+            role="body",
+            properties={"paragraph": {"frame": None}},
+        )
+    )
+    manuscript = snapshot(
+        object_fact(
+            "manuscript-paragraph",
+            kind="paragraph",
+            role="body",
+            properties={
+                "paragraph": {
+                    "frame": {
+                        "widthPt": 120,
+                        "hAnchor": "page",
+                    }
+                }
+            },
+        )
+    )
+    findings = compare_template(template, manuscript)
+    assert len(findings) == 1
+    assert findings[0]["property_path"] == "paragraph.frame.present"
+    assert findings[0]["observed"] is True
+    assert findings[0]["expected"] is False
+    assert findings[0]["verdict"] == "observed_difference"
+
+
+def test_paragraph_frame_presence_is_explicit_when_manuscript_removes_a_frame():
+    template = snapshot(
+        object_fact(
+            "template-paragraph",
+            kind="paragraph",
+            role="body",
+            properties={
+                "paragraph": {
+                    "frame": {
+                        "widthPt": 120,
+                        "heightPt": 40,
+                        "hAnchor": "page",
+                    }
+                }
+            },
+        )
+    )
+    manuscript = snapshot(
+        object_fact(
+            "manuscript-paragraph",
+            kind="paragraph",
+            role="body",
+            properties={"paragraph": {"frame": None}},
+        )
+    )
+    findings = compare_template(template, manuscript)
+    assert len(findings) == 1
+    assert findings[0]["property_path"] == "paragraph.frame.present"
+    assert findings[0]["observed"] is False
+    assert findings[0]["expected"] is True
+    assert findings[0]["verdict"] == "observed_difference"
+
+
+def test_reader_frame_presence_is_canonicalized_without_a_duplicate_finding():
+    template = snapshot(
+        object_fact(
+            "template-paragraph",
+            kind="paragraph",
+            role="body",
+            properties={"paragraph": {"framePresent": False, "frame": None}},
+        )
+    )
+    manuscript = snapshot(
+        object_fact(
+            "manuscript-paragraph",
+            kind="paragraph",
+            role="body",
+            properties={
+                "paragraph": {
+                    "framePresent": True,
+                    "frame": {
+                        "widthPt": 120,
+                        "hAnchor": "page",
+                    },
+                }
+            },
+        )
+    )
+    findings = compare_template(template, manuscript)
+    assert [finding["property_path"] for finding in findings] == ["paragraph.frame.present"]
+    assert findings[0]["observed"] is True
+    assert findings[0]["expected"] is False
+    assert findings[0]["verdict"] == "observed_difference"
+
+
+def test_table_body_instances_do_not_block_uninstantiated_body_style_fallback():
+    template = snapshot(
+        *table_objects(
+            "template",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    template["style_definitions"] = [
+        {
+            **style_definition(role="body", size=13, outline=None, style_id="BodyText"),
+            "name": "Body Text",
+        }
+    ]
+    template["method_version"] = "docx-core-format-snapshot-1.1.0"
+    correct_manuscript = snapshot(run_fact("manuscript-body", "body", size=13))
+    correct_manuscript["method_version"] = "docx-core-format-snapshot-1.1.0"
+    correct = compare_template(template, correct_manuscript)
+    correct_size = findings_for(correct, "run.fontSizePt")[0]
+    assert correct_size["verdict"] == "observed_match"
+    assert correct_size["template_object_ids"] == ["/word/styles.xml#0.2.1.0"]
+
+    wrong_manuscript = snapshot(run_fact("manuscript-body", "body", size=17))
+    wrong_manuscript["method_version"] = "docx-core-format-snapshot-1.1.0"
+    wrong = compare_template(template, wrong_manuscript)
+    wrong_size = findings_for(wrong, "run.fontSizePt")[0]
+    assert wrong_size["observed"] == 17
+    assert wrong_size["expected"] == 13
+    assert wrong_size["verdict"] == "observed_difference"
+    assert wrong_size["template_object_ids"] == ["/word/styles.xml#0.2.1.0"]
+
+
+def test_table_runs_never_pair_with_external_body_runs():
+    external_template = run_fact("template-external", "body", size=18, inline={"bold": True})
+    table_template = snapshot(
+        *table_objects(
+            "template",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    table_manuscript = snapshot(
+        *table_objects(
+            "manuscript",
+            1,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    manuscript = snapshot(
+        run_fact("manuscript-external", "body", size=18, inline={"bold": True}),
+        *table_manuscript["objects"],
+    )
+    without_external = compare_template(table_template, table_manuscript)
+    with_external = compare_template(snapshot(external_template), manuscript)
+    assert any(finding["verdict"] == "observed_difference" for finding in with_external)
+    external_findings = [
+        finding for finding in with_external if finding["object_id"] == "manuscript-external"
+    ]
+    assert external_findings
+    assert all(
+        finding["template_object_ids"] == ["template-external"] for finding in external_findings
+    )
+    assert {finding["object_id"] for finding in without_external} == {
+        finding["object_id"]
+        for finding in with_external
+        if finding["object_id"] != "manuscript-external"
+    }
+
+
+def style_definition(
+    *,
+    role: str,
+    size: int,
+    outline: int | None,
+    style_id: str = "Heading3",
+) -> JsonObject:
+    return {
+        "object_id": "/word/styles.xml#0.2.1.0",
+        "part": "/word/styles.xml",
+        "path": [0, 2, 1, 0],
+        "style_id": style_id,
+        "name": "heading 3",
+        "type": "paragraph",
+        "based_on": "Normal",
+        "role": role,
+        "role_basis": [
+            {
+                "source": "style_name",
+                "value": "heading 3",
+                "certainty": "inferred",
+            }
+        ],
+        "properties": {
+            "paragraph": {"outlineLevel": outline},
+            "run": {"fontSizePt": size},
+            "script_usage": {
+                "latin": True,
+                "east_asian": True,
+                "complex": True,
+                "other": True,
+            },
+        },
+    }
+
+
+def heading_manuscript(size: int, *, prefix: str = "manuscript") -> JsonObject:
+    paragraph_id = f"{prefix}-paragraph"
+    return snapshot(
+        object_fact(
+            paragraph_id,
+            kind="paragraph",
+            role="heading",
+            properties={"paragraph": {"outlineLevel": 2}},
+        ),
+        run_fact(
+            f"{prefix}-run",
+            "heading",
+            size=size,
+            evidence={"paragraph_object_id": paragraph_id},
+        ),
+    )
+
+
+def test_uninstantiated_heading_style_definition_supports_match_and_difference():
+    template = snapshot(
+        run_fact("template-h1", "heading", size=12),
+    )
+    template["style_definitions"] = [style_definition(role="heading", size=13, outline=2)]
+    correct = compare_template(template, heading_manuscript(13))
+    correct_run = [
+        finding
+        for finding in findings_for(correct, "run.fontSizePt")
+        if finding["object_id"] == "manuscript-run"
+    ][0]
+    assert correct_run["verdict"] == "observed_match"
+    assert correct_run["template_object_ids"] == ["/word/styles.xml#0.2.1.0"]
+
+    wrong = compare_template(template, heading_manuscript(19))
+    wrong_run = [
+        finding
+        for finding in findings_for(wrong, "run.fontSizePt")
+        if finding["object_id"] == "manuscript-run"
+    ][0]
+    assert wrong_run["observed"] == 19
+    assert wrong_run["expected"] == 13
+    assert wrong_run["verdict"] == "observed_difference"
+
+
+def test_template_instance_takes_priority_over_style_definition():
+    template = snapshot(
+        object_fact(
+            "template-heading-paragraph",
+            kind="paragraph",
+            role="heading",
+            properties={"paragraph": {"outlineLevel": 2}},
+        ),
+        run_fact(
+            "template-heading-run",
+            "heading",
+            size=15,
+            evidence={"paragraph_object_id": "template-heading-paragraph"},
+        ),
+    )
+    template["style_definitions"] = [style_definition(role="heading", size=13, outline=2)]
+    findings = compare_template(template, heading_manuscript(15))
+    run_finding = [
+        finding
+        for finding in findings_for(findings, "run.fontSizePt")
+        if finding["object_id"] == "manuscript-run"
+    ][0]
+    assert run_finding["verdict"] == "observed_match"
+    assert run_finding["template_object_ids"] == ["template-heading-run"]
+
+
+def test_unknown_style_definitions_are_not_used_as_generic_profiles():
+    template = snapshot(run_fact("template-h1", "heading", size=12))
+    template["style_definitions"] = [style_definition(role="unknown", size=13, outline=None)]
+    findings = compare_template(template, heading_manuscript(13))
+    run_findings = [finding for finding in findings if finding["object_id"] == "manuscript-run"]
+    assert len(run_findings) == 1
+    assert run_findings[0]["reason"] == "No corresponding template profile"
+
+
+def test_font_preparation_includes_style_fonts_used_by_heading_comparison():
+    template = snapshot()
+    definition = style_definition(role="heading", size=13, outline=2)
+    definition["properties"]["run"].update(
+        fontFamily="Heading Latin Exact",
+        fontFamilyEastAsia="Heading CJK Exact",
+        complexLane={"fontFamily": "Heading Arabic Exact"},
+    )
+    template["style_definitions"] = [definition]
+    manuscript = heading_manuscript(13)
+    manuscript["objects"][1]["properties"]["script_usage"] = {
+        "latin": True,
+        "east_asian": True,
+        "complex": True,
+        "other": True,
+    }
+    findings = compare_template(template, manuscript)
+    assert findings_for(findings, "run.fontFamily")[0]["expected"] == "Heading Latin Exact"
+    assert findings_for(findings, "run.fontFamilyEastAsia")[0]["expected"] == "Heading CJK Exact"
+    assert (
+        findings_for(findings, "run.complexLane.fontFamily")[0]["expected"]
+        == "Heading Arabic Exact"
+    )
+    assert template_font_requirements(template) == [
+        {"family": "Heading Arabic Exact", "roles": ["heading"], "scripts": ["complex"]},
+        {"family": "Heading CJK Exact", "roles": ["heading"], "scripts": ["east_asian"]},
+        {"family": "Heading Latin Exact", "roles": ["heading"], "scripts": ["latin", "other"]},
+    ]
+
+
+def test_font_preparation_preserves_instance_priority_and_excludes_unused_style_lanes():
+    template = heading_manuscript(15, prefix="template")
+    template["objects"][1]["text"] = "Heading"
+    template["objects"][1]["properties"]["run"]["fontFamily"] = "Instance Exact"
+    overridden = style_definition(role="heading", size=13, outline=2)
+    overridden["properties"]["run"]["fontFamily"] = "Overridden Font"
+    unknown = style_definition(role="unknown", size=13, outline=None)
+    unknown["properties"]["run"]["fontFamily"] = "Unknown Font"
+    character = style_definition(role="body", size=13, outline=None)
+    character["type"] = "character"
+    character["properties"]["run"]["fontFamily"] = "Character Font"
+    fallback = style_definition(role="body", size=13, outline=None)
+    fallback["properties"]["script_usage"] = {"east_asian": True}
+    fallback["properties"]["run"].update(
+        fontFamily="Inactive Latin Font",
+        fontFamilyEastAsia="Body CJK Exact",
+        complexLane={"fontFamily": "Inactive Arabic Font"},
+    )
+    unpaired_heading = style_definition(role="heading", size=13, outline=None)
+    unpaired_heading["properties"]["run"]["fontFamily"] = "Unpaired Heading Font"
+    template["style_definitions"] = [overridden, unknown, character, fallback, unpaired_heading]
+    manuscript = heading_manuscript(15)
+    body = run_fact("manuscript-body", "body", size=13)
+    body["properties"]["script_usage"] = {"east_asian": True}
+    manuscript["objects"].append(body)
+    findings = compare_template(template, manuscript)
+    assert findings_for(findings, "run.fontFamily")[0]["expected"] == "Instance Exact"
+    assert findings_for(findings, "run.fontFamilyEastAsia")[0]["expected"] == "Body CJK Exact"
+    assert template_font_requirements(template) == [
+        {"family": "Body CJK Exact", "roles": ["body"], "scripts": ["east_asian"]},
+        {"family": "Instance Exact", "roles": ["heading"], "scripts": ["latin"]},
+    ]
+
+
+def test_internal_table_nodes_cache_and_raw_style_fields_never_create_findings():
+    template_objects = table_objects(
+        "template",
+        1,
+        header_bold=True,
+        first_column_shading="E2F0D9",
+    )
+    manuscript_objects = table_objects(
+        "manuscript",
+        1,
+        header_bold=True,
+        first_column_shading="E2F0D9",
+    )
+    for obj in template_objects + manuscript_objects:
+        properties = obj["properties"]
+        if obj["kind"] == "paragraph":
+            properties["paragraph"]["tabStopsCacheToken"] = f"{obj['object_id']}-cache"
+        if obj["kind"] == "run":
+            properties["run"]["cacheToken"] = f"{obj['object_id']}-cache"
+        if obj["kind"] == "tc":
+            properties["cell"]["gridColumnId"] = f"{obj['object_id']}-grid"
+    findings = compare_template(snapshot(*template_objects), snapshot(*manuscript_objects))
+    assert not any(
+        finding["property_path"].endswith(
+            ("cacheToken", "gridColumnId", "paragraphPropertyNodes", "id")
+        )
+        or finding["property_path"].startswith("table_style.")
+        for finding in findings
+    )
+
+
+def test_old_snapshots_without_table_context_keep_legacy_table_behavior():
+    template = snapshot(
+        run_fact("template-table-run", "body", size=12, inline={"bold": True}),
+    )
+    manuscript = snapshot(
+        run_fact("manuscript-table-run", "body", size=10, inline={"bold": False}),
+    )
+    template["method_version"] = "docx-core-format-snapshot-1.0.0"
+    manuscript["method_version"] = "docx-core-format-snapshot-1.0.0"
+    findings = compare_template(template, manuscript)
+    by_path = {finding["property_path"]: finding for finding in findings}
+    assert by_path["run.fontSizePt"]["verdict"] == "observed_difference"
+    assert by_path["run.bold"]["verdict"] == "observed_difference"
+    assert all("table_context" not in finding for finding in findings)
+
+
+def test_missing_table_context_never_claims_conditional_coverage():
+    template_objects = table_objects(
+        "template",
+        1,
+        header_bold=True,
+        first_column_shading="E2F0D9",
+    )
+    manuscript_objects = table_objects(
+        "manuscript",
+        1,
+        header_bold=True,
+        first_column_shading="E2F0D9",
+    )
+    for obj in manuscript_objects:
+        obj.pop("table_context", None)
+    template = snapshot(*template_objects)
+    template["method_version"] = "docx-core-format-snapshot-1.1.0"
+    manuscript = snapshot(*manuscript_objects)
+    manuscript["method_version"] = "docx-core-format-snapshot-1.1.0"
+    findings = compare_template(template, manuscript)
+    table_findings = [finding for finding in findings if finding["kind"] in {"tr", "tc", "run"}]
+    assert table_findings
+    assert all(finding["verdict"] == "cannot_determine" for finding in table_findings)
+    assert all(
+        finding["reason"] == "No corresponding template profile" for finding in table_findings
+    )
+
+
+def test_same_table_style_with_different_row_style_ids_does_not_cross_pair():
+    template_objects = table_objects(
+        "template",
+        2,
+        header_bold=True,
+        first_column_shading="E2F0D9",
+    )
+    manuscript_objects = table_objects(
+        "manuscript",
+        2,
+        header_bold=False,
+        first_column_shading="E2F0D9",
+    )
+    for obj in template_objects:
+        if obj["kind"] == "paragraph":
+            obj["style_id"] = "TemplateRowStyle"
+    for obj in manuscript_objects:
+        if obj["kind"] == "paragraph":
+            obj["style_id"] = "ManuscriptRowStyle"
+    findings = compare_template(snapshot(*template_objects), snapshot(*manuscript_objects))
+    header = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "manuscript-run-0-0"
+    ][0]
+    data = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "manuscript-run-1-0"
+    ][0]
+    assert header["template_object_ids"] == ["template-run-0-0"]
+    assert header["verdict"] == "observed_difference"
+    assert data["template_object_ids"] == ["template-run-1-0"]
+    assert data["verdict"] == "observed_match"
+
+
+def test_incompatible_conditional_table_profiles_remain_undetermined():
+    first = table_objects(
+        "first-template",
+        2,
+        header_bold=True,
+        first_column_shading="E2F0D9",
+    )
+    second = table_objects(
+        "second-template",
+        2,
+        header_bold=False,
+        first_column_shading="FFFFFF",
+    )
+    manuscript = snapshot(
+        *table_objects(
+            "manuscript",
+            2,
+            header_bold=True,
+            first_column_shading="E2F0D9",
+        )
+    )
+    findings = compare_template(snapshot(*first, *second), manuscript)
+    header = [
+        finding
+        for finding in findings_for(findings, "run.bold")
+        if finding["object_id"] == "manuscript-run-0-0"
+    ][0]
+    first_column = [
+        finding
+        for finding in findings_for(findings, "cell.shading")
+        if finding["object_id"] == "manuscript-cell-1-0"
+    ][0]
+    assert header["expected"] == [False, True]
+    assert header["verdict"] == "cannot_determine"
+    assert first_column["expected"] == ["E2F0D9", "FFFFFF"]
+    assert first_column["verdict"] == "cannot_determine"

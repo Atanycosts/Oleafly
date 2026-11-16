@@ -3,10 +3,9 @@
 Captured PDF guidance yields reading-ordered text blocks with exact page numbers
 and point-unit bounding boxes so every fragment can be located back to the PDF
 without a rendered image. Extraction follows the PDF text layer only: pages
-without a text layer stay an explicit per-page coverage gap, and only blocks
-matching the narrow explicit requirement grammar can confirm rules in the world
-analyzer. The page preview renders in the same unrotated coordinate frame the
-bounding boxes use.
+without a text layer stay an explicit per-page coverage gap. Blocks remain source
+material for user or Agent interpretation and never create requirements. The page
+preview renders in the same unrotated coordinate frame the bounding boxes use.
 """
 
 from __future__ import annotations
