@@ -46,12 +46,12 @@ historical evidence and must not be edited to claim a new execution.
 ## Local setup and verification
 
 The primary development and acceptance platform is macOS (operator decision, 2026-10-31);
-the PowerShell gates below remain the recorded Windows evidence procedure and historical
-artifacts are never rewritten. Use Python 3.12 or later. The gates run inside the repository
-virtual environment, because the project declares runtime dependencies; verifying against a
+the Windows evidence procedure remains historical and its artifacts are never rewritten. Use
+Python 3.12 or later. The gates run inside the repository virtual environment, because the project declares runtime dependencies; verifying against a
 bare interpreter would exercise a different package set from the one that ships. Fixture-building libraries are developer tools,
 not the DOCX reader.
-Poppler `pdfinfo`, Node.js and PowerShell 7 must be available for the current Windows evidence gate.
+Poppler `pdfinfo`, Node.js and PowerShell 7 are required when reproducing the historical Windows
+evidence procedure.
 The browser response tests use Node's built-in runner against real HTTP responses and damaged
 copies. Node is a verification dependency; the shipped application needs no npm packages.
 Pinned author inputs and renderer identities are environment-bound requirements: their absence
@@ -70,24 +70,20 @@ PyMuPDF is pinned to a minor range because block
 segmentation feeds `journal-pdf-source-1.0.0`; a pymupdf upgrade that changes extraction
 results must bump that method version in the same change.
 
-```powershell
+```sh
 python -m venv .venv
 uv pip install -e ".[dev,fixture-building]"
-pwsh -NoProfile -File tools/verify.ps1
+ruff format --check --no-cache .
+ruff check --no-cache .
+mypy
+python -m pytest
 ```
 
-`uv` is only the installer here; any environment at `.venv` works. The verification script refuses
-to start without it, and the interpreter can be overridden with `-Python`. It runs Ruff, mypy,
-pytest and Phase 0 validation and stops on any failed gate. Each test run uses a new
-`var/verification-<id>` directory.
-
-Nine tests skip on `OSError` when the process cannot create a symbolic link, and several of them
-are the reparse-point boundary tests. Whether a given process holds `SeCreateSymbolicLinkPrivilege`
-is not guaranteed here and has been observed to differ between processes, so the gate probes it
-up front and fails loudly rather than reporting a green run in which those boundaries were never
-checked. `pytest` also runs with `-rs` so any remaining skip is named in the output. The script
-restores its working directory and `PYTHONPATH`; it does not rebuild reports, run an Office
-renderer, or modify author inputs.
+`uv` is only the installer here; any environment at `.venv` works. `pytest` also runs with `-rs`
+so any remaining skip is named in the output. Historical `rfw-phase0 validate` runs require the
+registered author catalog and pinned rendering environment. Run them separately when reproducing
+that evidence; they are not part of the portable development gate. Missing inputs must remain
+reported as an environment failure, and earlier failures remain historical evidence.
 
 Equivalent individual gates remain documented in `AGENTS.md`. An environment-bound validation
 failure must remain distinct from a deterministic unit-test failure. Do not call a release portable
@@ -111,7 +107,8 @@ Method compatibility excludes earlier renders that predate this supply path. The
 derived-render response also reports the current cache-content identity, while each render retains
 the identity actually supplied to it. Clients compare those identities after service restart so a
 PDF from an older cache is not reused as current; a historical render without that identity is not
-a current-cache match. The current response contract is `journal-http-1.10.0`. The render HTTP
+a current-cache match. The current HTTP method is defined in
+[`contracts/journals/world-contract.json`](../../contracts/journals/world-contract.json). The render HTTP
 request adds no profile, font-directory or cache-identity path fields; the service owns the profile
 location and derives the identity from the configured native cache roots. See
 [`contracts/s1/render-bundle.json`](../../contracts/s1/render-bundle.json) for the authoritative

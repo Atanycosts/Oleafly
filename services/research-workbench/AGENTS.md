@@ -99,20 +99,15 @@ take precedence over it. Do not treat planned capabilities as implemented.
 
 Before declaring a code or contract change complete, run:
 
-```powershell
+```sh
 ruff format --check --no-cache .
 ruff check --no-cache .
 mypy
 python -m pytest
-$env:PYTHONPATH = "src"
-python -m research_file_workbench.phase0 validate
 ```
 
 Run these inside the repository virtual environment, which provides the declared runtime
-dependencies; see `docs/engineering/development-guide.md` for its setup, including the symbolic
-link capability the reparse-point tests need.
-
-`pwsh -NoProfile -File tools/verify.ps1` runs the same gates, stops on the first failure,
-and puts temporary test data in a unique directory under `var/`. Tests must not launch Office
-or mutate author workspaces. Real render verification is a separate explicitly scoped operation.
-S1 acceptance requires independent annotations; never derive expected answers from reader output.
+dependencies; see `docs/engineering/development-guide.md` for its setup.
+Tests must not launch Office or mutate author workspaces. Real render verification is a separate
+explicitly scoped operation. S1 acceptance requires independent annotations; never derive expected
+answers from reader output.
