@@ -1,0 +1,437 @@
+diff --git a/packages/core/src/automation/plan.ts b/packages/core/src/automation/plan.ts
+index a825538..2cff8bb 100644
+--- a/packages/core/src/automation/plan.ts
++++ b/packages/core/src/automation/plan.ts
+@@ -423,9 +423,16 @@ export function createBatchPlanner(host: BatchPlannerHost): BatchPlanner {
+   const claimFormatting = (
+     plan: StoryPlan,
+     paragraphId: string,
+-    container: 'runs' | 'paragraph' | `list:${string}:${number}`
++    container: 'runs' | 'paragraph' | `list:${string}:${number}`,
++    range?: { readonly start: number; readonly end: number }
+   ): PlannedOperation | null => {
+-    const claimed = `${container}:${paragraphId}`;
++    const prefix = `${container}:${paragraphId}`;
++    const claimed = range ? `${prefix}:${range.start}:${range.end}` : prefix;
++    if (range && [...plan.formatted].some((key) => {
++      if (!key.startsWith(`${prefix}:`)) return key === prefix;
++      const [start, end] = key.slice(prefix.length + 1).split(':').map(Number);
++      return range.start < end! && start! < range.end;
++    })) return refuse('conflicting-operations', 'font ranges in a batch overlap', paragraphId);
+     if (plan.formatted.has(claimed)) {
+       return refuse(
+         'conflicting-operations',
+@@ -981,7 +988,7 @@ export function createBatchPlanner(host: BatchPlannerHost): BatchPlanner {
+     const ops: TreeDocOp[] = [];
+     for (const share of spanOffsets(range, reads)) {
+       if (share.end <= share.start && !share.whole) continue;
+-      const conflict = claimFormatting(plan, share.paragraphId, 'runs');
++      const conflict = claimFormatting(plan, share.paragraphId, 'runs', { start: share.start, end: share.end });
+       if (conflict) return conflict;
+       for (const edit of runPropertyEdits(
+         part,
+diff --git a/packages/core/src/store/store/clipboard-fragment-closure.ts b/packages/core/src/store/store/clipboard-fragment-closure.ts
+index 094b8cd..4682440 100644
+--- a/packages/core/src/store/store/clipboard-fragment-closure.ts
++++ b/packages/core/src/store/store/clipboard-fragment-closure.ts
+@@ -359,7 +359,7 @@ export function themeFontsOf(pkg: OoxmlPackage, documentPart: string): ThemeFont
+     const slot = node.localName === 'majorFont' ? slots.major : slots.minor;
+     for (const child of node.children) {
+       if (!isElementNode(child)) continue;
+-      const typeface = attributeValueOf(child, 'typeface');
++      const typeface = attributeValueOf(child, 'typeface', '');
+       if (!typeface) continue;
+       if (child.localName === 'latin') slot.latin = typeface;
+       else if (child.localName === 'ea') slot.eastAsia = typeface;
+@@ -414,7 +414,8 @@ export function literalizeThemeReferences(node: OoxmlNode, fonts: ThemeFonts): O
+       next.push(attribute);
+     }
+     for (const [literal, face] of literalized) {
+-      if (next.some((attribute) => attribute.localName === literal)) continue;
++      const existing = next.findIndex((attribute) => attribute.localName === literal && attribute.namespaceUri === WML_NAMESPACE_URI);
++      if (existing >= 0) next.splice(existing, 1);
+       next.push({
+         kind: 'genericExtension',
+         namespaceUri: WML_NAMESPACE_URI,
+diff --git a/packages/core/src/store/store/clipboard-fragment-merge.ts b/packages/core/src/store/store/clipboard-fragment-merge.ts
+index 7271fa4..01464e0 100644
+--- a/packages/core/src/store/store/clipboard-fragment-merge.ts
++++ b/packages/core/src/store/store/clipboard-fragment-merge.ts
+@@ -1,3 +1,4 @@
++import { collectNumIds, collectStyleIds, literalizeThemeReferences, numberingClosure, styleClosure, stylesIndexOf, themeFontsOf, walkNodes } from './clipboard-fragment-closure.ts';
+ import { containsClipboardObject } from './clipboard-object-policy.ts';
+ // Clipboard fragment merge: a read-back fragment package lands in a target package
+ // (rich-clipboard-fidelity tasks 2.2-2.4).
+@@ -86,6 +87,7 @@ export type FragmentMergeResult =
+       readonly pkg: OoxmlPackage;
+       /** The fragment blocks, rewritten to target identifiers, ready for `insertFragment`. */
+       readonly blocks: readonly OoxmlNode[];
++      readonly styleIdMap: ReadonlyMap<string, string>;
+     }
+   | { readonly ok: false; readonly reason: FragmentMergeRejection };
+ 
+@@ -238,7 +240,8 @@ function admittedMediaMime(bytes: Uint8Array, declaredType: string): string | nu
+ export function mergeFragmentIntoPackage(
+   target: OoxmlPackage,
+   fragment: OoxmlPackage,
+-  ownerPartName: string
++  ownerPartName: string,
++  stylesOnly = false
+ ): FragmentMergeResult {
+   for (const part of fragment.parts.values()) {
+     if (containsClipboardObject([part.root])) return { ok: false, reason: 'unsupported-content' };
+@@ -264,7 +267,7 @@ export function mergeFragmentIntoPackage(
+         child.kind === 'paragraph' || child.kind === 'table' || child.kind === 'contentControl'
+     )
+   );
+-  if (blocks.length === 0) return { ok: false, reason: 'no-fragment-document' };
++  if (blocks.length === 0 && !stylesOnly) return { ok: false, reason: 'no-fragment-document' };
+ 
+   let pkg = target;
+ 
+@@ -350,6 +353,25 @@ export function mergeFragmentIntoPackage(
+       withoutDefaultFlag(withRewrittenAttribute(style, WML_NAMESPACE_URI, 'styleId', fresh))
+     );
+   }
++  if (stylesOnly) {
++    let changed = true;
++    while (changed) {
++      changed = false;
++      for (const style of fragmentStyles.styles) {
++        const id = attributeValueOf(style, 'styleId');
++        if (!id || styleIdMap.get(id) !== id) continue;
++        const existing = targetStyles.byId.get(id);
++        if (!existing) continue;
++        const comparable = styleSignature(rewriteIdentifiers(style, { styleIds: styleIdMap, numIds: numIdMap }) as OoxmlElement);
++        if (targetSignatureOf(id, existing) === comparable) continue;
++        const fresh = freshUniqueId(`${id}Pasted`, takenIds, idSuffixes);
++        takenIds.add(fresh);
++        styleIdMap.set(id, fresh);
++        stylesToImport.push(withoutDefaultFlag(withRewrittenAttribute(style, WML_NAMESPACE_URI, 'styleId', fresh)));
++        changed = true;
++      }
++    }
++  }
+   // Unique names for every imported style whose name collides with a different target style.
+   const importedWithNames = stylesToImport.map((style) => {
+     const nameNode = style.children.find((inner) => isWml(inner, 'name'));
+@@ -889,5 +911,50 @@ export function mergeFragmentIntoPackage(
+     })
+   );
+ 
+-  return { ok: true, pkg, blocks: rewritten };
++  return { ok: true, pkg, blocks: rewritten, styleIdMap };
++}
++
++export type StyleImportResult =
++  | { readonly ok: true; readonly pkg: OoxmlPackage; readonly styleIdMap: ReadonlyMap<string, string>; readonly themePolicy: 'literal-source-fonts-and-stored-color-fallbacks' }
++  | { readonly ok: false; readonly reason: string };
++
++export function planImportStyles(target: OoxmlPackage, source: OoxmlPackage, styleIds: readonly string[]): StyleImportResult {
++  const index = stylesIndexOf(source, source.mainDocumentPart);
++  if (styleIds.length === 0 || styleIds.some((id) => !index.byId.has(id))) return { ok: false, reason: 'unknown-style' };
++  const referenced = new Set(styleIds);
++  const numIds = new Set<string>();
++  let styles: OoxmlElement[] = [];
++  let numbering = numberingClosure(source, source.mainDocumentPart, numIds);
++  for (;;) {
++    const before = referenced.size + numIds.size;
++    styles = styleClosure({ ...index, defaults: [] }, referenced);
++    collectNumIds(styles, numIds);
++    numbering = numberingClosure(source, source.mainDocumentPart, numIds);
++    const nodes = [...numbering.nums, ...numbering.abstracts];
++    collectStyleIds(nodes, referenced);
++    for (const node of [...styles, ...nodes]) walkNodes(node, (inner) => {
++      if (inner.kind === 'textValue' || inner.namespaceUri !== WML_NAMESPACE_URI) return;
++      if (['basedOn', 'next', 'link', 'styleLink', 'numStyleLink'].includes(inner.localName)) {
++        const value = attributeValueOf(inner, 'val');
++        if (value) referenced.add(value);
++      }
++    });
++    if (before === referenced.size + numIds.size) break;
++  }
++  if ([...referenced].some((id) => !index.byId.has(id))) return { ok: false, reason: 'missing-style-dependency' };
++  if ([...numIds].some((id) => id !== '0' && !numbering.nums.some((node) => attributeValueOf(node, 'numId') === id))) return { ok: false, reason: 'missing-numbering-dependency' };
++  let unsupported = false;
++  for (const node of [...styles, ...numbering.abstracts, ...numbering.nums]) walkNodes(node, (inner) => {
++    if (inner.kind === 'textValue') return;
++    if (inner.attributes.some((attribute) => attribute.namespaceUri === R_NS)) unsupported = true;
++  });
++  if (unsupported) return { ok: false, reason: 'unsupported-style-resource-relationship' };
++  const fonts = themeFontsOf(source, source.mainDocumentPart);
++  const document = readOoxmlPart(`<w:document xmlns:w="${WML_NAMESPACE_URI}"><w:body/></w:document>`, { name: source.mainDocumentPart, contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml' });
++  if (!document.ok || !index.part) return { ok: false, reason: 'missing-source-part' };
++  const parts = new Map<string, OoxmlPart>([[source.mainDocumentPart, document.part]]);
++  parts.set(index.part.name, { ...index.part, root: { ...index.part.root, children: styles.map((node) => literalizeThemeReferences(node, fonts)) } as OoxmlElement });
++  if (numbering.part) parts.set(numbering.part.name, { ...numbering.part, root: { ...numbering.part.root, children: [...numbering.abstracts, ...numbering.nums].map((node) => literalizeThemeReferences(node, fonts)) } as OoxmlElement });
++  const merged = mergeFragmentIntoPackage(target, { ...source, parts }, target.mainDocumentPart, true);
++  return merged.ok ? { ok: true, pkg: merged.pkg, styleIdMap: merged.styleIdMap, themePolicy: 'literal-source-fonts-and-stored-color-fallbacks' } : merged;
+ }
+diff --git a/packages/core/src/store/store/index.ts b/packages/core/src/store/store/index.ts
+index 29be7ca..66cfa09 100644
+--- a/packages/core/src/store/store/index.ts
++++ b/packages/core/src/store/store/index.ts
+@@ -35,6 +35,8 @@ export {
+ } from './clipboard-fragment-extract.ts';
+ export {
+   mergeFragmentIntoPackage,
++  planImportStyles,
++  type StyleImportResult,
+   type FragmentMergeRejection,
+   type FragmentMergeResult,
+ } from './clipboard-fragment-merge.ts';
+diff --git a/packages/core/src/store/store/tree-op-section.ts b/packages/core/src/store/store/tree-op-section.ts
+index af14671..fe563b7 100644
+--- a/packages/core/src/store/store/tree-op-section.ts
++++ b/packages/core/src/store/store/tree-op-section.ts
+@@ -774,6 +774,22 @@ function mergedSectionChildren(
+       children.splice(sectionInsertIndex(children, 'pgMar'), 0, nextPgMar);
+     }
+   }
++  if (op.columns !== undefined) {
++    const existing = sectionChild(sectPr, 'cols');
++    const equalWidth = sectionAttribute(existing, 'equalWidth');
++    const needsEqualWidth = equalWidth !== undefined && !['1', 'true', 'on'].includes(equalWidth) ||
++      childrenOf(existing).some((child) => child.kind !== 'textValue' && child.namespaceUri === WML_NAMESPACE_URI && child.localName === 'col');
++    const rewritten = new Set(['num', ...(needsEqualWidth ? ['equalWidth'] : []), ...(op.columns.spaceTwips === undefined ? [] : ['space']), ...(op.columns.separator === undefined ? [] : ['sep'])]);
++    const columns = sectionElement(existing?.id ?? nextId(), 'cols', [
++      ...attributesOf(existing).filter((entry) => !rewritten.has(entry.localName)),
++      wmlAttribute('num', String(op.columns.count)),
++      ...(needsEqualWidth ? [wmlAttribute('equalWidth', '1')] : []),
++      ...(op.columns.spaceTwips === undefined ? [] : [wmlAttribute('space', String(op.columns.spaceTwips))]),
++      ...(op.columns.separator === undefined ? [] : [wmlAttribute('sep', op.columns.separator ? '1' : '0')]),
++    ], []);
++    if (existing) children = children.map((child) => child.id === existing.id ? columns : child);
++    else children.splice(sectionInsertIndex(children, 'cols'), 0, columns);
++  }
+   return children;
+ }
+ 
+diff --git a/packages/core/src/store/store/tree-op-types.ts b/packages/core/src/store/store/tree-op-types.ts
+index ac2cbaf..8ea1d15 100644
+--- a/packages/core/src/store/store/tree-op-types.ts
++++ b/packages/core/src/store/store/tree-op-types.ts
+@@ -119,6 +119,7 @@ export const ACCEPTED_PARAGRAPH_PROPERTIES = [
+   'ind', // left/right/first-line/hanging indents
+   'tabs',
+   'numPr', // numbering identity and level
++  'framePr', // paragraph positioning frame
+   'keepNext',
+   'keepLines',
+   'widowControl',
+@@ -468,6 +469,7 @@ export type TreeDocOp =
+       readonly marginRightTwips?: number;
+       readonly marginBottomTwips?: number;
+       readonly marginLeftTwips?: number;
++      readonly columns?: { readonly count: number; readonly spaceTwips?: number; readonly separator?: boolean };
+       /**
+        * Word's "Apply to: This section": update only the section GOVERNING this
+        * paragraph — the nearest mid-body `w:sectPr` at or after it, else the body-level
+diff --git a/packages/core/src/store/store/tree-op-validate.ts b/packages/core/src/store/store/tree-op-validate.ts
+index 37c93e5..74d9013 100644
+--- a/packages/core/src/store/store/tree-op-validate.ts
++++ b/packages/core/src/store/store/tree-op-validate.ts
+@@ -447,7 +447,7 @@ export function validateTreeOp(
+     if (
+       dims.every((value) => value === undefined) &&
+       margins.every((value) => value === undefined) &&
+-      op.orientation === undefined
++      op.orientation === undefined && op.columns === undefined
+     ) {
+       return 'invalid-property-value';
+     }
+@@ -472,6 +472,11 @@ export function validateTreeOp(
+     ) {
+       return 'invalid-property-value';
+     }
++    if (op.columns !== undefined && (
++      !Number.isInteger(op.columns.count) || op.columns.count < 1 || op.columns.count > 45 ||
++      (op.columns.spaceTwips !== undefined && (!Number.isInteger(op.columns.spaceTwips) || op.columns.spaceTwips < 0 || op.columns.spaceTwips > 31680)) ||
++      (op.columns.separator !== undefined && typeof op.columns.separator !== 'boolean')
++    )) return 'invalid-property-value';
+     if (op.anchorParagraphId !== undefined) {
+       const anchor = findNode(part, op.anchorParagraphId);
+       if (!anchor) return 'unknown-paragraph';
+diff --git a/packages/core/src/store/__tests__/format-execution.test.ts b/packages/core/src/store/__tests__/format-execution.test.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/core/src/store/__tests__/format-execution.test.ts
+@@ -0,0 +1,67 @@
++import { expect, test } from 'bun:test';
++import { applyTreeOp } from '../store/tree-ops.ts';
++import { directParagraphProperties, mergedProperties } from '../store/direct-properties.ts';
++import { readOoxmlPart, serializeOoxmlPart } from '../package/ooxml-tree.ts';
++
++
++const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
++function part() {
++  const parsed = readOoxmlPart(`<w:document xmlns:w="${W}"><w:body><w:p><w:pPr><w:keepNext/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p><w:sectPr><w:cols w:num="3" w:space="500" w:sep="1"/></w:sectPr></w:body></w:document>`, { name: "/word/document.xml", contentType: "app/xml" });
++  if (!parsed.ok) throw new Error(parsed.reason);
++  return parsed.part;
++}
++
++test('frame authoring and removal preserve other paragraph properties', () => {
++  const original = part();
++  const paragraph = original.root.children.flatMap((node) => node.kind === 'textValue' ? [] : node.children).find((node) => node.kind === 'paragraph');
++  if (!paragraph) throw new Error('paragraph');
++  const properties = directParagraphProperties(original, paragraph.id);
++  const framed = applyTreeOp(original, { op: 'setParagraphProperties', paragraphId: paragraph.id, properties: mergedProperties(properties, { localName: 'framePr', attributes: { w: '10000', wrap: 'notBeside', hAnchor: 'page' } }) });
++  expect(framed.ok).toBe(true);
++  if (!framed.ok) throw new Error(framed.reason);
++  expect(serializeOoxmlPart(framed.part)).toContain('w:framePr');
++  const removed = applyTreeOp(framed.part, { op: 'setParagraphProperties', paragraphId: paragraph.id, properties });
++  if (!removed.ok) throw new Error(removed.reason);
++  expect(serializeOoxmlPart(removed.part)).not.toContain('w:framePr');
++  expect(serializeOoxmlPart(removed.part)).toContain('w:keepNext');
++});
++
++test('column count writes preserve omitted column settings and reject invalid counts', () => {
++  const original = part();
++  const result = applyTreeOp(original, { op: 'setSectionProperties', columns: { count: 2 } });
++  if (!result.ok) throw new Error(result.reason);
++  const xml = serializeOoxmlPart(result.part);
++  expect(xml).toContain('w:num="2"');
++  expect(xml).toContain('w:space="500"');
++  expect(xml).toContain('w:sep="1"');
++  expect(applyTreeOp(original, { op: 'setSectionProperties', columns: { count: 0 } }).ok).toBe(false);
++});
++
++
++test('saving equal-width column edits preserves absent or true equalWidth declarations', () => {
++  for (const declaration of ['', ' w:equalWidth="true"', ' w:equalWidth="1"']) {
++    const opened = readOoxmlPart(`<w:document xmlns:w="${W}"><w:body><w:p/><w:sectPr><w:cols w:num="1"${declaration}/></w:sectPr></w:body></w:document>`, { name: '/word/document.xml', contentType: 'app/xml' });
++    if (!opened.ok) throw new Error(opened.reason);
++    const result = applyTreeOp(opened.part, { op: 'setSectionProperties', columns: { count: 2, spaceTwips: 288, separator: false } });
++    if (!result.ok) throw new Error(result.reason);
++    const xml = serializeOoxmlPart(result.part);
++    expect(xml).toContain('w:num="2"');
++    expect(xml).toContain('w:space="288"');
++    expect(xml).toContain('w:sep="0"');
++    if (declaration) expect(xml).toContain(declaration.trim());
++    else expect(xml).not.toContain('equalWidth');
++  }
++});
++
++test('equal-width column requests convert unequal declarations and remove per-column widths', () => {
++  for (const declaration of [' w:equalWidth="0"', ' w:equalWidth="false"', '']) {
++    const opened = readOoxmlPart(`<w:document xmlns:w="${W}"><w:body><w:p/><w:sectPr><w:cols w:num="2"${declaration}><w:col w:w="2000" w:space="300"/><w:col w:w="4000"/></w:cols></w:sectPr></w:body></w:document>`, { name: '/word/document.xml', contentType: 'app/xml' });
++    if (!opened.ok) throw new Error(opened.reason);
++    const result = applyTreeOp(opened.part, { op: 'setSectionProperties', columns: { count: 3 } });
++    if (!result.ok) throw new Error(result.reason);
++    const xml = serializeOoxmlPart(result.part);
++    expect(xml).toContain('w:num="3"');
++    expect(xml).toContain('w:equalWidth="1"');
++    expect(xml).not.toContain('<w:col ');
++  }
++});
+diff --git a/packages/core/src/automation/__tests__/format-execution.test.ts b/packages/core/src/automation/__tests__/format-execution.test.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/core/src/automation/__tests__/format-execution.test.ts
+@@ -0,0 +1,20 @@
++import { expect, test } from 'bun:test';
++import { docx, open, p, paragraphsOf, roots, savedMainXml, refusal } from './support/protocol.ts';
++
++test('two disjoint font ranges in one paragraph share a transaction', () => {
++  const host = open(docx(p('Alpha Middle Omega')));
++  const [paragraph] = paragraphsOf(host, roots(host).body);
++  const response = host.execute({ operations: [
++    { op: 'setFont', span: { start: { paragraph: paragraph!, offset: 0 }, end: { paragraph: paragraph!, offset: 5 } }, font: { bold: true } },
++    { op: 'setFont', span: { start: { paragraph: paragraph!, offset: 13 }, end: { paragraph: paragraph!, offset: 18 } }, font: { italic: true } },
++  ] });
++  expect(response.ok).toBe(true);
++  expect(response.revision).toBe(1);
++  expect(savedMainXml(host)).toContain('Alpha');
++  const overlapping = host.execute({ operations: [
++    { op: 'setFont', span: { start: { paragraph: paragraph!, offset: 0 }, end: { paragraph: paragraph!, offset: 8 } }, font: { bold: true } },
++    { op: 'setFont', span: { start: { paragraph: paragraph!, offset: 5 }, end: { paragraph: paragraph!, offset: 12 } }, font: { italic: true } },
++  ] });
++  expect(refusal(overlapping)).toBe('conflicting-operations');
++  expect(overlapping.revision).toBe(1);
++});
+diff --git a/packages/core/src/store/__tests__/style-import.test.ts b/packages/core/src/store/__tests__/style-import.test.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/core/src/store/__tests__/style-import.test.ts
+@@ -0,0 +1,81 @@
++import { expect, test } from 'bun:test';
++import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
++import { docx } from '../../automation/__tests__/support/protocol.ts';
++import { readOoxmlPackage } from '../package/ooxml-package.ts';
++import { serializeOoxmlPart } from '../package/ooxml-tree.ts';
++import { literalizeThemeReferences } from '../store/clipboard-fragment-closure.ts';
++import { planImportStyles } from '../store/clipboard-fragment-merge.ts';
++
++function pkg(styles: string) {
++  const opened = readOoxmlPackage(docx('<w:p><w:r><w:t>Keep content</w:t></w:r></w:p>', styles));
++  if (!opened.ok) throw new Error(opened.reason);
++  return opened.package;
++}
++const base = '<w:style w:type="paragraph" w:styleId="Base"><w:name w:val="Base"/><w:rPr><w:b/></w:rPr></w:style>';
++const title = '<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Base"/><w:link w:val="TitleChar"/><w:pPr><w:framePr w:w="10000"/></w:pPr></w:style>';
++const linked = '<w:style w:type="character" w:styleId="TitleChar"><w:name w:val="TitleChar"/><w:link w:val="Title"/><w:rPr><w:i/></w:rPr></w:style>';
++
++test('imports selected styles and linked dependency closure without changing content or collision definitions', () => {
++  const target = pkg('<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:rPr><w:color w:val="FF0000"/></w:rPr></w:style>');
++  const source = pkg(base + title + linked + '<w:style w:type="paragraph" w:styleId="Unused"><w:name w:val="Unused"/></w:style>');
++  const result = planImportStyles(target, source, ['Title']);
++  if (!result.ok) throw new Error(result.reason);
++  expect(result.styleIdMap.get('Title')).toBe('TitlePasted');
++  const styles = serializeOoxmlPart(result.pkg.parts.get('/word/styles.xml')!);
++  expect(styles).toContain('w:styleId="TitlePasted"');
++  expect(styles).toContain('w:val="TitlePasted"');
++  expect(styles).toContain('w:styleId="TitleChar"');
++  expect(styles).toContain('w:styleId="Base"');
++  expect(styles).not.toContain('w:styleId="Unused"');
++  expect(styles).toContain('w:val="FF0000"');
++  expect(serializeOoxmlPart(result.pkg.parts.get(target.mainDocumentPart)!)).toBe(serializeOoxmlPart(target.parts.get(target.mainDocumentPart)!));
++});
++
++test('reuses an identical definition and refuses missing dependencies', () => {
++  const source = pkg(base);
++  const result = planImportStyles(pkg(base), source, ['Base']);
++  if (!result.ok) throw new Error(result.reason);
++  expect(result.styleIdMap.get('Base')).toBe('Base');
++  expect(planImportStyles(pkg(''), source, ['Unknown']).ok).toBe(false);
++  expect(planImportStyles(pkg(''), pkg(title), ['Title']).ok).toBe(false);
++});
++
++test('a reused parent definition is remapped when its dependency collides', () => {
++  const target = pkg('<w:style w:type="paragraph" w:styleId="Base"><w:name w:val="Base"/><w:rPr><w:i/></w:rPr></w:style>' + title + linked);
++  const result = planImportStyles(target, pkg(title + linked + base), ['Title']);
++  if (!result.ok) throw new Error(result.reason);
++  expect(result.styleIdMap.get('Base')).toBe('BasePasted');
++  expect(result.styleIdMap.get('Title')).toBe('TitlePasted');
++  expect(result.styleIdMap.get('TitleChar')).toBe('TitleCharPasted');
++});
++
++
++test('theme literalization prioritizes resolved source faces and retains unresolved fallbacks', () => {
++  const source = pkg('<w:style w:type="paragraph" w:styleId="Theme"><w:name w:val="Theme"/><w:rPr><w:rFonts w:ascii="Stale" w:asciiTheme="majorHAnsi"/></w:rPr></w:style>');
++  const styles = source.parts.get('/word/styles.xml')!;
++  const resolved = literalizeThemeReferences(styles.root, { major: { latin: 'Resolved Source', eastAsia: null, cs: null }, minor: { latin: null, eastAsia: null, cs: null } });
++  const xml = serializeOoxmlPart({ ...styles, root: resolved as typeof styles.root });
++  expect(xml).toContain('w:ascii="Resolved Source"');
++  expect(xml).not.toContain('Stale');
++  expect(xml).not.toContain('asciiTheme');
++  const imported = planImportStyles(pkg(''), source, ['Theme']);
++  if (!imported.ok) throw new Error(imported.reason);
++  const unresolved = serializeOoxmlPart(imported.pkg.parts.get('/word/styles.xml')!);
++  expect(unresolved).toContain('w:ascii="Stale"');
++  expect(unresolved).not.toContain('asciiTheme');
++});
++
++
++test('public style import reads unqualified DrawingML typeface attributes from the source theme', () => {
++  const parts = unzipSync(docx('<w:p/>', '<w:style w:type="paragraph" w:styleId="Theme"><w:name w:val="Theme"/><w:rPr><w:rFonts w:ascii="Stale" w:asciiTheme="majorHAnsi"/></w:rPr></w:style>', { rels: '<Relationship Id="theme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>' }));
++  parts['[Content_Types].xml'] = strToU8(strFromU8(parts['[Content_Types].xml']!).replace('</Types>', '<Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/></Types>'));
++  parts['word/theme/theme1.xml'] = strToU8('<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:fontScheme name="Test"><a:majorFont><a:latin typeface="Resolved Source"/></a:majorFont></a:fontScheme></a:themeElements></a:theme>');
++  const source = readOoxmlPackage(zipSync(parts));
++  if (!source.ok) throw new Error(source.reason);
++  const imported = planImportStyles(pkg(''), source.package, ['Theme']);
++  if (!imported.ok) throw new Error(imported.reason);
++  const styles = serializeOoxmlPart(imported.pkg.parts.get('/word/styles.xml')!);
++  expect(styles).toContain('w:ascii="Resolved Source"');
++  expect(styles).not.toContain('Stale');
++  expect(styles).not.toContain('asciiTheme');
++});

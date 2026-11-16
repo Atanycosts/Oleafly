@@ -19,6 +19,15 @@ export interface DocxFormatRegion {
   role_basis: DocxFormatRoleBasis[];
 }
 
+export interface DocxFormatTableContext {
+  table_object_id: string;
+  row_index: number;
+  row_count: number;
+  column_index?: number;
+  column_count?: number;
+  conditions: string[];
+}
+
 export interface DocxFormatObject {
   object_id: string;
   part: string;
@@ -27,6 +36,7 @@ export interface DocxFormatObject {
   role: DocxFormatRole;
   role_basis: DocxFormatRoleBasis[];
   region?: DocxFormatRegion;
+  table_context?: DocxFormatTableContext;
   text?: string;
   style_id?: string;
   properties: DocxFormatProperties;
@@ -34,7 +44,33 @@ export interface DocxFormatObject {
   evidence: DocxFormatProperties;
 }
 
+export interface DocxFormatStyleDefinition {
+  object_id: string;
+  part: string;
+  path: number[];
+  style_id: string;
+  name: string | null;
+  type: string;
+  based_on: string | null;
+  role: DocxFormatRole;
+  role_basis: DocxFormatRoleBasis[];
+  /** Original style declaration, including types the effective resolver does not interpret. */
+  declared?: DocxFormatProperties;
+  effective_status?: "paragraph_and_run" | "run" | "declaration_only";
+  properties: {
+    paragraph: DocxFormatProperties;
+    run: DocxFormatProperties;
+    script_usage: {
+      latin: true;
+      east_asian: true;
+      complex: true;
+      other: true;
+    };
+  };
+}
+
 export interface DocxFormatSnapshotV1 {
+  method_version?: string;
   schema_version: 1;
   source_sha256: string;
   engine: { name: "@docx-editor.dev/core"; version: string };
@@ -47,6 +83,7 @@ export interface DocxFormatSnapshotV1 {
     status: "parsed" | "binary" | "unparsed";
     node_count: number;
   }[];
+  style_definitions?: DocxFormatStyleDefinition[];
   objects: DocxFormatObject[];
   capabilities: {
     package_entries: "all";

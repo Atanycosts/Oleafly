@@ -28,11 +28,12 @@ function outputMap(root, kind) {
   return metafile.outputs;
 }
 
-function signature(output) {
+function signature(output, baselineInputs) {
   return JSON.stringify([
     output.entryPoint ?? null,
     Object.keys(output.inputs ?? {})
       .map((file) => file.replace(/^(?:\.\.\/)+source\//, ''))
+      .filter((file) => !baselineInputs || baselineInputs.has(file))
       .sort()
   ]);
 }
@@ -42,9 +43,16 @@ function matchByMetafile() {
   for (const kind of ['esm', 'cjs']) {
     const baseline = outputMap(baselineRoot, kind);
     const patched = outputMap(patchedRoot, kind);
-    const patchedBySignature = new Map(
-      Object.entries(patched).map(([file, output]) => [signature(output), file.slice(5)])
-    );
+    // New source modules may join an existing shared chunk. Match its original members,
+    // while refusing a changed split that would give two outputs the same identity.
+    const baselineInputs = new Set(Object.values(baseline).flatMap((output) =>
+      Object.keys(output.inputs ?? {}).map((file) => file.replace(/^(?:\.\.\/)+source\//, ''))));
+    const patchedBySignature = new Map();
+    for (const [file, output] of Object.entries(patched)) {
+      const key = signature(output, baselineInputs);
+      if (patchedBySignature.has(key)) throw new Error(`Ambiguous patched output identity: ${file}`);
+      patchedBySignature.set(key, file.slice(5));
+    }
 
     for (const [file, output] of Object.entries(baseline)) {
       const baselineFile = file.slice(5);

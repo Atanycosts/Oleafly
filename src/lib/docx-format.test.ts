@@ -34,6 +34,191 @@ function runs(objects: DocxFormatObject[]): DocxFormatObject[] {
 }
 
 describe("DOCX content-bound format facts", () => {
+  it("publishes effective unused paragraph styles with canonical styles-part locators", async () => {
+    const facts = await openDocxFormatFacts(docx(
+      p("Body text", "Body"),
+      '<w:style w:type="paragraph" w:styleId="Body"><w:name w:val="Body Text"/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:sz w:val="24"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Body"/><w:pPr><w:keepNext w:val="0"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="RunOnly"><w:name w:val="Run Only"/><w:rPr><w:i/></w:rPr></w:style>',
+    ));
+    expect(facts.snapshot.method_version).toBe("docx-core-format-snapshot-1.2.0");
+    expect(facts.snapshot.schema_version).toBe(1);
+    const heading = facts.snapshot.style_definitions?.find((style) => style.style_id === "Heading3");
+    if (!heading) throw new Error("Expected unused Heading3 style");
+    expect(heading).toMatchObject({
+      name: "heading 3",
+      type: "paragraph",
+      based_on: "Body",
+      role: "heading",
+      part: "/word/styles.xml",
+      object_id: expect.stringMatching(/^\/word\/styles\.xml#/),
+      path: expect.any(Array),
+      properties: {
+        paragraph: { outlineLevel: 2, keepNext: false, framePresent: false, frame: null },
+        run: { fontSizePt: 12, bold: true },
+      },
+    });
+    expect(heading.path.length).toBeGreaterThan(1);
+    expect(heading.role_basis).toContainEqual({ source: "outline_level", value: "2", certainty: "explicit" });
+    const source = facts.query({ kind: "nodes", part: heading.part, path: heading.path });
+    if (source.kind !== "nodes") throw new Error("Expected style source nodes");
+    expect(source.nodes[0]?.node).toMatchObject({ localName: "style", attributes: expect.arrayContaining([expect.objectContaining({ localName: "styleId", value: "Heading3" })]) });
+    expect(facts.snapshot.style_definitions).toContainEqual(expect.objectContaining({
+      style_id: "RunOnly",
+      properties: { paragraph: expect.any(Object), run: expect.objectContaining({ italic: true }), script_usage: expect.any(Object) },
+    }));
+  });
+
+  it("cascades paragraph break controls and frame attributes into effective facts", async () => {
+    const styles = '<w:style w:type="paragraph" w:styleId="Framed"><w:pPr><w:keepNext/><w:keepLines/><w:widowControl w:val="0"/><w:pageBreakBefore/><w:framePr w:w="5000" w:h="1000" w:hRule="exact" w:hAnchor="page" w:vAnchor="margin" w:wrap="around" w:hSpace="100" w:vSpace="200"/></w:pPr></w:style>';
+    const facts = await openDocxFormatFacts(docx(
+      p("Inherited", "Framed") +
+      p("Overridden", "Framed", "", '<w:keepNext w:val="0"/><w:keepLines w:val="0"/><w:widowControl/><w:pageBreakBefore w:val="0"/><w:framePr w:w="7000" w:vSpace="400"/>'),
+      styles,
+    ));
+    const paragraphs = facts.snapshot.objects.filter((object) => object.kind === "paragraph");
+    expect(group(paragraphs[0], "paragraph")).toMatchObject({
+      keepNext: true,
+      keepLines: true,
+      widowControl: false,
+      pageBreakBefore: true,
+      framePresent: true,
+      frame: { widthPt: 250, heightPt: 50, heightRule: "exact", hAnchor: "page", vAnchor: "margin", wrap: "around", hSpacePt: 5, vSpacePt: 10 },
+    });
+    expect(group(paragraphs[1], "paragraph")).toMatchObject({
+      keepNext: false,
+      keepLines: false,
+      widowControl: true,
+      pageBreakBefore: false,
+      framePresent: true,
+      frame: { widthPt: 350, heightPt: 50, heightRule: "exact", hAnchor: "page", vAnchor: "margin", wrap: "around", hSpacePt: 5, vSpacePt: 20 },
+    });
+  });
+
+  it("distinguishes frame presence and normalizes explicit automatic defaults", async () => {
+    const styles = '<w:style w:type="paragraph" w:styleId="Framed"><w:pPr><w:framePr w:w="5000" w:h="1000" w:hRule="exact" w:hAnchor="page" w:vAnchor="margin"/></w:pPr></w:style><w:style w:type="paragraph" w:styleId="DefaultFrame"><w:pPr><w:framePr w:w="0" w:h="0" w:hRule="auto" w:hAnchor="text" w:vAnchor="text" w:wrap="around" w:x="0" w:y="0" w:hSpace="0" w:vSpace="0" w:anchorLock="0"/></w:pPr></w:style>';
+    const facts = await openDocxFormatFacts(docx(
+      p("No frame") +
+      p("Inherited fixed frame", "Framed") +
+      p("Explicit equivalent frame", "Framed", "", '<w:framePr w:w="5000" w:h="1000" w:hRule="exact" w:hAnchor="page" w:vAnchor="margin" w:x="0" w:y="0" w:hSpace="0" w:vSpace="0" w:anchorLock="0"/>') +
+      p("Inherited automatic frame", "DefaultFrame"),
+      styles,
+    ));
+    const paragraphs = facts.snapshot.objects.filter((object) => object.kind === "paragraph");
+    expect(group(paragraphs[0], "paragraph")).toMatchObject({ framePresent: false, frame: null });
+    expect(group(paragraphs[1], "paragraph").frame).toEqual(group(paragraphs[2], "paragraph").frame);
+    expect(group(paragraphs[3], "paragraph")).toMatchObject({
+      framePresent: true,
+      frame: {
+        widthPt: null,
+        heightPt: null,
+        heightRule: "auto",
+        xPt: 0,
+        yPt: 0,
+        hAnchor: "text",
+        vAnchor: "text",
+        wrap: "around",
+        hSpacePt: 0,
+        vSpacePt: 0,
+        anchorLock: false,
+      },
+    });
+    const definition = facts.snapshot.style_definitions?.find((style) => style.style_id === "Framed");
+    expect(definition?.properties.paragraph).toMatchObject({
+      framePresent: true,
+      frame: { widthPt: 250, heightPt: 50, heightRule: "exact" },
+    });
+  });
+
+  it("propagates positional table scope and explicit conditional-style evidence", async () => {
+    const table = `<w:tbl><w:tblPr><w:tblLook w:firstRow="1" w:firstColumn="1" w:noHBand="1" w:noVBand="1"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:trPr><w:cnfStyle w:val="100000000000"/></w:trPr><w:tc><w:tcPr><w:cnfStyle w:val="100000000000"/></w:tcPr>${p("Header A")}</w:tc><w:tc>${p("Header B")}</w:tc></w:tr><w:tr><w:tc>${p("Body A")}</w:tc><w:tc>${p("Body B")}</w:tc></w:tr></w:tbl>`;
+    const facts = await openDocxFormatFacts(docx(table));
+    const tableObject = facts.snapshot.objects.find((object) => object.kind === "table");
+    expect(tableObject?.table_context).toBeUndefined();
+    const rows = facts.snapshot.objects.filter((object) => object.kind === "tr");
+    expect(rows.map((row) => row.table_context)).toMatchObject([
+      { table_object_id: tableObject?.object_id, row_index: 0, row_count: 2, conditions: ["firstRow"] },
+      { table_object_id: tableObject?.object_id, row_index: 1, row_count: 2, conditions: [] },
+    ]);
+    expect(rows.every((row) => row.table_context && !("column_index" in row.table_context))).toBe(true);
+    const header = facts.snapshot.objects.find((object) => object.text === "Header A");
+    const headerRun = facts.snapshot.objects.find((object) => object.kind === "run" && object.text === "Header A");
+    for (const object of [header, headerRun]) {
+      expect(object?.table_context).toMatchObject({
+        table_object_id: tableObject?.object_id,
+        row_index: 0,
+        row_count: 2,
+        column_index: 0,
+        column_count: 2,
+        conditions: ["firstCol", "firstRow", "nwCell"],
+      });
+    }
+    expect(facts.snapshot.objects.find((object) => object.text === "Header B")?.table_context).toMatchObject({
+      row_index: 0,
+      column_index: 1,
+      conditions: ["firstRow"],
+    });
+  });
+
+  it("keeps table position metadata without tblLook and combines cnfStyle conditions", async () => {
+    const table = '<w:tbl><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Plain</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:cnfStyle w:val="000100000000"/></w:tcPr><w:p><w:r><w:t>Last</w:t></w:r></w:p></w:tc></w:tr></w:tbl>';
+    const facts = await openDocxFormatFacts(docx(table));
+    expect(facts.snapshot.objects.find((object) => object.text === "Plain")?.table_context).toMatchObject({
+      row_index: 0,
+      row_count: 1,
+      column_index: 0,
+      column_count: 2,
+      conditions: ["band1Vert", "band1Horz"],
+    });
+    expect(facts.snapshot.objects.find((object) => object.kind === "run" && object.text === "Last")?.table_context).toMatchObject({
+      row_index: 0,
+      row_count: 1,
+      column_index: 1,
+      column_count: 2,
+      conditions: ["band1Horz", "lastCol"],
+    });
+  });
+
+  it.each([
+    { direct: '<w:tblStyleRowBandSize w:val="2"/>', inherited: "", blocked: true },
+    { direct: "", inherited: '<w:tblStyleColBandSize w:val="2"/>', blocked: true },
+    { direct: '<w:tblStyleColBandSize w:val="1"/>', inherited: '<w:tblStyleColBandSize w:val="2"/>', blocked: false },
+  ])("discloses effective unsupported table band sizes: %j", async ({ direct, inherited, blocked }) => {
+    const table = `<w:tbl><w:tblPr><w:tblStyle w:val="Derived"/>${direct}</w:tblPr><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:tc>${p("Banded")}</w:tc></w:tr></w:tbl>`;
+    const facts = await openDocxFormatFacts(docx(table,
+      `<w:style w:type="table" w:styleId="Base"><w:tblPr>${inherited}</w:tblPr></w:style><w:style w:type="table" w:styleId="Derived"><w:basedOn w:val="Base"/></w:style>`,
+    ));
+    const gap = facts.snapshot.unsupported.find((item) => item.code === "table_band_size_unsupported");
+    if (blocked) {
+      expect(gap?.object_ids).toEqual([facts.snapshot.objects.find((item) => item.kind === "table")?.object_id]);
+    } else expect(gap).toBeUndefined();
+  });
+
+  it("does not treat zero cnfStyle bits as active conditions", async () => {
+    const table = '<w:tbl><w:tblPr><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:trPr><w:cnfStyle w:val="000000000000"/></w:trPr><w:tc><w:tcPr><w:cnfStyle w:val="000000000000"/></w:tcPr><w:p><w:r><w:t>Plain</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:cnfStyle w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:oddVBand="0" w:evenVBand="0" w:oddHBand="0" w:evenHBand="0" w:firstRowFirstColumn="0" w:firstRowLastColumn="0" w:lastRowFirstColumn="0" w:lastRowLastColumn="0"/></w:tcPr><w:p><w:r><w:t>Second</w:t></w:r></w:p></w:tc></w:tr></w:tbl>';
+    const facts = await openDocxFormatFacts(docx(table));
+    const row = facts.snapshot.objects.find((object) => object.kind === "tr");
+    expect(row?.table_context?.conditions).toEqual([]);
+    for (const text of ["Plain", "Second"]) {
+      expect(facts.snapshot.objects.find((object) => object.text === text)?.table_context?.conditions).toEqual([]);
+      expect(facts.snapshot.objects.find((object) => object.kind === "run" && object.text === text)?.table_context?.conditions).toEqual([]);
+    }
+  });
+
+  it("replaces an outer table scope when a nested table defines its own", async () => {
+    const nested = `<w:tbl><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>${p("Nested")}</w:tc></w:tr></w:tbl>`;
+    const table = `<w:tbl><w:tblPr><w:tblLook w:firstRow="1" w:firstColumn="1" w:noHBand="1" w:noVBand="1"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:tc>${nested}</w:tc></w:tr></w:tbl>`;
+    const facts = await openDocxFormatFacts(docx(table));
+    const tables = facts.snapshot.objects.filter((object) => object.kind === "table");
+    expect(tables).toHaveLength(2);
+    expect(facts.snapshot.objects.find((object) => object.text === "Nested")?.table_context).toMatchObject({
+      table_object_id: tables[1].object_id,
+      row_index: 0,
+      row_count: 1,
+      column_index: 0,
+      column_count: 1,
+      conditions: ["band1Vert", "band1Horz"],
+    });
+  });
+
   it("uses effective formatting instead of style identity and distinguishes direct overrides", async () => {
     const bytes = docx(
       p("Same style", "Body") + p("Direct override", "Body", '<w:sz w:val="30"/>') + p("Alias style", "Alias"),
@@ -269,7 +454,8 @@ describe("DOCX content-bound format facts", () => {
   });
 
   it.runIf(process.env.OLEAFLY_DOCX_FORMAT_ACCEPTANCE === "1")("reads real retained author inputs without changing their bytes", async () => {
-    const paths = [".private/journal-template-acceptance/template.docx", "/Volumes/Studio/Research/研/交付文件/英文稿/IJAM_english_working.docx", "/Volumes/Studio/Research/研/交付文件/中文稿/批注.docx"];
+    const paths: string[] = JSON.parse(process.env.OLEAFLY_DOCX_FORMAT_INPUTS ?? "[]");
+    expect(paths.length, "Set OLEAFLY_DOCX_FORMAT_INPUTS to a JSON array of retained DOCX paths.").toBeGreaterThan(0);
     for (const path of paths) {
       const bytes = new Uint8Array(await readFile(path));
       const hash = createHash("sha256").update(bytes).digest("hex");

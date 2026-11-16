@@ -5,7 +5,9 @@ import {
   cascadeRunProperties,
   enumerateDocumentSectionsBounded,
   geometryOfSection,
+  isValidStyleId,
   parseSectionProperties,
+  paragraphBreaksBefore,
   readTableStructure,
   resolveParagraphLayoutInputs,
   resolveRunStyle,
@@ -20,6 +22,7 @@ import {
   openHeadlessDocument,
   readOoxmlPart,
   resolveContentTypeOf,
+  stylesPartOf,
   type OoxmlElement,
   type OoxmlNode,
   type OoxmlProperty,
@@ -36,11 +39,14 @@ import type {
   DocxFormatRole,
   DocxFormatRoleBasis,
   DocxFormatSnapshotV1,
+  DocxFormatStyleDefinition,
+  DocxFormatTableContext,
 } from "./docx-format-types";
 
 export type * from "./docx-format-types";
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const METHOD_VERSION = "docx-core-format-snapshot-1.2.0";
 const STORY_NAMES = new Set(["document", "hdr", "ftr", "footnote", "endnote"]);
 const STRUCTURAL_NAMES = new Set(["tbl", "tr", "tc", "sectPr", "drawing", "pict", "object", "sdt", "txbxContent", "footnotes", "endnotes", "comment"]);
 
@@ -65,11 +71,210 @@ function attr(node: OoxmlElement | undefined, name: string): string | undefined 
   return node?.attributes.find((attribute) => attribute.namespaceUri === W && attribute.localName === name)?.value;
 }
 
+function onOff(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  return value !== "0" && value !== "false" && value !== "off";
+}
+
 function properties(container: OoxmlElement | undefined): readonly OoxmlProperty[] {
   return container?.children.flatMap((node) => node.kind === "textValue" || node.namespaceUri !== W ? [] : [{
     localName: node.localName,
     attributes: Object.fromEntries(node.attributes.map((attribute) => [attribute.localName, attribute.value])),
   }]) ?? [];
+}
+
+function effectiveParagraphFlags(props: readonly OoxmlProperty[]): DocxFormatProperties {
+  const toggle = (name: string, fallback: boolean): boolean => {
+    let value = fallback;
+    for (const prop of props) if (prop.localName === name) value = onOff(prop.attributes?.val, true);
+    return value;
+  };
+  return {
+    keepNext: toggle("keepNext", false),
+    keepLines: toggle("keepLines", false),
+    widowControl: toggle("widowControl", true),
+    pageBreakBefore: paragraphBreaksBefore(props),
+    framePresent: props.some((prop) => prop.localName === "framePr"),
+  };
+}
+
+function effectiveFrame(props: readonly OoxmlProperty[]): DocxFormatProperties | null {
+  const attributes: Record<string, string> = {};
+  let present = false;
+  for (const prop of props) {
+    if (prop.localName !== "framePr") continue;
+    present = true;
+    Object.assign(attributes, prop.attributes);
+  }
+  if (!present) return null;
+  const twips = (name: string, absent: number | null = null): number | null => {
+    const raw = attributes[name];
+    if (raw === undefined) return absent;
+    if (!/^-?\d+$/.test(raw)) return null;
+    return Number(raw) / 20;
+  };
+  const width = twips("w");
+  const heightRule = attributes.hRule ??
+    (attributes.h !== undefined && twips("h") !== 0 ? "atLeast" : "auto");
+  const hAnchor = attributes.hAnchor ?? "text";
+  const vAnchor = attributes.vAnchor ?? "text";
+  const xAlign = attributes.xAlign ?? null;
+  const yAlign = vAnchor === "text" ? null : attributes.yAlign ?? null;
+  const wrap = attributes.wrap ?? "around";
+  return {
+    // Word uses zero to mean an automatically sized frame width.
+    widthPt: width === 0 ? null : width,
+    // Layout ignores an authored height when hRule is auto.
+    heightPt: heightRule === "auto" ? null : twips("h"),
+    heightRule,
+    xPt: xAlign === null ? twips("x", 0) : 0,
+    yPt: yAlign === null ? twips("y", 0) : 0,
+    hSpacePt: wrap === "around" || wrap === "auto" ? twips("hSpace", 0) : 0,
+    vSpacePt: twips("vSpace", 0),
+    hAnchor,
+    vAnchor,
+    xAlign,
+    yAlign,
+    wrap,
+    anchorLock: attributes.anchorLock === undefined ? false : onOff(attributes.anchorLock, false),
+    dropCap: attributes.dropCap ?? null,
+    lines: attributes.lines === undefined || !/^\d+$/.test(attributes.lines) ? null : Number(attributes.lines),
+  };
+}
+
+const TABLE_CONDITION_ORDER = [
+  "band1Vert", "band2Vert", "band1Horz", "band2Horz",
+  "firstCol", "lastCol", "firstRow", "lastRow",
+  "nwCell", "neCell", "swCell", "seCell",
+] as const;
+
+const CNF_STYLE_BITS = [
+  "firstRow", "lastRow", "firstCol", "lastCol",
+  "band1Vert", "band2Vert", "band1Horz", "band2Horz",
+  "nwCell", "neCell", "swCell", "seCell",
+] as const;
+
+const CNF_STYLE_ATTRIBUTES = [
+  "firstRow", "lastRow", "firstColumn", "lastColumn",
+  "oddVBand", "evenVBand", "oddHBand", "evenHBand",
+  "firstRowFirstColumn", "firstRowLastColumn", "lastRowFirstColumn", "lastRowLastColumn",
+] as const;
+
+function tableLook(tableNode: OoxmlElement): {
+  firstRow: boolean;
+  lastRow: boolean;
+  firstColumn: boolean;
+  lastColumn: boolean;
+  rowBanding: boolean;
+  columnBanding: boolean;
+} {
+  const tableProperties = child(tableNode, "tblPr");
+  const look = tableProperties && child(tableProperties, "tblLook");
+  if (!look) return { firstRow: false, lastRow: false, firstColumn: false, lastColumn: false, rowBanding: true, columnBanding: true };
+  const value = attr(look, "val");
+  const bits = value && /^[0-9A-Fa-f]{1,4}$/.test(value) ? Number.parseInt(value, 16) : 0;
+  return {
+    firstRow: onOff(attr(look, "firstRow"), (bits & 0x20) !== 0),
+    lastRow: onOff(attr(look, "lastRow"), (bits & 0x40) !== 0),
+    firstColumn: onOff(attr(look, "firstColumn"), (bits & 0x80) !== 0),
+    lastColumn: onOff(attr(look, "lastColumn"), (bits & 0x100) !== 0),
+    rowBanding: attr(look, "noHBand") === undefined ? (bits & 0x200) === 0 : !onOff(attr(look, "noHBand"), false),
+    columnBanding: attr(look, "noVBand") === undefined ? (bits & 0x400) === 0 : !onOff(attr(look, "noVBand"), false),
+  };
+}
+
+function hasUnsupportedTableBandSize(node: OoxmlElement, table: StyleCascadeTable): boolean {
+  const direct = child(node, "tblPr");
+  const named = attr(direct && child(direct, "tblStyle"), "val");
+  const containers = [direct];
+  const visited = new Set<string>();
+  let current = named && isValidStyleId(named) && table.styles.get(named)?.type === "table" ? named : table.defaultTableStyleId;
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    const style = table.styles.get(current);
+    if (style?.type !== "table") break;
+    containers.push(style.tablePropertiesNode);
+    current = style.basedOn;
+  }
+  return ["tblStyleRowBandSize", "tblStyleColBandSize"].some((name) => {
+    for (const container of containers) {
+      const value = attr(container && child(container, name), "val");
+      if (value !== undefined) return /^\d+$/.test(value) && Number(value) > 1;
+    }
+    return false;
+  });
+}
+
+function cnfConditions(container: OoxmlElement | undefined, target: Set<string>): void {
+  const cnf = container && child(container, "cnfStyle");
+  if (!cnf) return;
+  const value = attr(cnf, "val");
+  if (value && /^[01]{1,12}$/.test(value)) {
+    const padded = value.padStart(12, "0");
+    for (let index = 0; index < padded.length; index++) {
+      if (padded[index] === "1") target.add(CNF_STYLE_BITS[index]);
+    }
+  }
+  for (let index = 0; index < CNF_STYLE_ATTRIBUTES.length; index++) {
+    if (onOff(attr(cnf, CNF_STYLE_ATTRIBUTES[index]), false)) target.add(CNF_STYLE_BITS[index]);
+  }
+}
+
+function tableConditions(
+  tableNode: OoxmlElement,
+  row: OoxmlElement,
+  cell: OoxmlElement,
+  rowIndex: number,
+  rowCount: number,
+  columnIndex: number,
+  columnSpan: number,
+  columnCount: number,
+): string[] {
+  const conditions = new Set<string>();
+  cnfConditions(child(row, "trPr"), conditions);
+  cnfConditions(child(cell, "tcPr"), conditions);
+  const look = tableLook(tableNode);
+  const firstRow = conditions.has("firstRow") || (look.firstRow && rowIndex === 0);
+  const lastRow = conditions.has("lastRow") || (look.lastRow && rowIndex === rowCount - 1);
+  const firstCol = conditions.has("firstCol") || (look.firstColumn && columnIndex === 0);
+  const lastCol = conditions.has("lastCol") || (look.lastColumn && columnIndex + columnSpan >= columnCount);
+  if (!conditions.has("band1Vert") && !conditions.has("band2Vert") && look.columnBanding && !firstCol && !lastCol) {
+    const band = columnIndex - (look.firstColumn ? 1 : 0);
+    conditions.add(band % 2 === 0 ? "band1Vert" : "band2Vert");
+  }
+  if (!conditions.has("band1Horz") && !conditions.has("band2Horz") && look.rowBanding && !firstRow && !lastRow) {
+    const band = rowIndex - (look.firstRow ? 1 : 0);
+    conditions.add(band % 2 === 0 ? "band1Horz" : "band2Horz");
+  }
+  if (firstCol) conditions.add("firstCol");
+  if (lastCol) conditions.add("lastCol");
+  if (firstRow) conditions.add("firstRow");
+  if (lastRow) conditions.add("lastRow");
+  if (firstRow && firstCol) conditions.add("nwCell");
+  if (firstRow && lastCol) conditions.add("neCell");
+  if (lastRow && firstCol) conditions.add("swCell");
+  if (lastRow && lastCol) conditions.add("seCell");
+  return TABLE_CONDITION_ORDER.filter((condition) => conditions.has(condition));
+}
+
+function rowConditions(
+  tableNode: OoxmlElement,
+  row: OoxmlElement,
+  rowIndex: number,
+  rowCount: number,
+): string[] {
+  const conditions = new Set<string>();
+  cnfConditions(child(row, "trPr"), conditions);
+  const look = tableLook(tableNode);
+  const firstRow = conditions.has("firstRow") || (look.firstRow && rowIndex === 0);
+  const lastRow = conditions.has("lastRow") || (look.lastRow && rowIndex === rowCount - 1);
+  if (!conditions.has("band1Horz") && !conditions.has("band2Horz") && look.rowBanding && !firstRow && !lastRow) {
+    const band = rowIndex - (look.firstRow ? 1 : 0);
+    conditions.add(band % 2 === 0 ? "band1Horz" : "band2Horz");
+  }
+  if (firstRow) conditions.add("firstRow");
+  if (lastRow) conditions.add("lastRow");
+  return TABLE_CONDITION_ORDER.filter((condition) => conditions.has(condition));
 }
 
 function declared(node: OoxmlElement): DocxFormatProperties {
@@ -161,6 +366,71 @@ function roleFor(
     if (labels.some((label) => pattern.test(label))) return { role, basis: basis.map((entry) => ({ ...entry, certainty: "inferred" })) };
   }
   return { role: "unknown", basis: [...basis, { source: "context", value: "No supported semantic role evidence", certainty: "uncertain" }] };
+}
+
+function styleDefinitions(
+  table: StyleCascadeTable,
+  stylesRoot: OoxmlElement | null,
+  part: string,
+  pathsByNode: WeakMap<OoxmlNode, number[]>,
+  idOf: (part: string, node: OoxmlNode) => string,
+): DocxFormatStyleDefinition[] {
+  const definitions: DocxFormatStyleDefinition[] = [];
+  const escaped = (value: string) => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  const styleNodes = new Map<string, OoxmlElement>();
+  for (const node of stylesRoot?.children ?? []) {
+    if (node.kind === "textValue" || node.namespaceUri !== W || node.localName !== "style") continue;
+    const styleId = attr(node, "styleId");
+    if (styleId) styleNodes.set(styleId, node);
+  }
+  for (const [styleId, sourceNode] of styleNodes) {
+    const style = table.styles.get(styleId);
+    if (style?.type !== "paragraph") {
+      const isCharacter = style?.type === "character";
+      const run = isCharacter ? cascadeRunProperties([], [{ localName: "rStyle", attributes: { val: styleId } }], table) : null;
+      definitions.push({
+        object_id: idOf(part, sourceNode), part, path: pathsByNode.get(sourceNode) ?? [],
+        style_id: styleId, name: style?.name ?? attr(child(sourceNode, "name"), "val") ?? null,
+        type: style?.type ?? attr(sourceNode, "type") ?? "unknown",
+        based_on: style?.basedOn ?? attr(child(sourceNode, "basedOn"), "val") ?? null,
+        role: "unknown", role_basis: [], declared: record(sourceNode),
+        effective_status: isCharacter ? "run" : "declaration_only",
+        properties: { paragraph: {}, run: run ? record(resolveRunStyle(run, table.themeFonts)) : {},
+          script_usage: { latin: true, east_asian: true, complex: true, other: true } },
+      });
+      continue;
+    }
+    const parsed = readOoxmlPart(
+      `<w:document xmlns:w="${W}"><w:body><w:p><w:pPr><w:pStyle w:val="${escaped(style.styleId)}"/></w:pPr></w:p></w:body></w:document>`,
+      { name: "/word/document.xml", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" },
+    );
+    if (!parsed.ok) continue;
+    const paragraph = parsed.part.root.children[0]?.kind !== "textValue" ? parsed.part.root.children[0]?.children[0] : undefined;
+    if (!paragraph || paragraph.kind === "textValue") continue;
+    const cascade = cascadeParagraphFormatting(table, child(paragraph, "pPr"));
+    const layout = resolveParagraphLayoutInputs(paragraph, 0, table);
+    const role = roleFor(table, style.styleId, layout, "", "unknown");
+    const path = pathsByNode.get(sourceNode) ?? [];
+    definitions.push({
+      object_id: idOf(part, sourceNode),
+      part,
+      path,
+      style_id: style.styleId,
+      name: style.name ?? null,
+      type: style.type,
+      based_on: style.basedOn,
+      role: role.role,
+      role_basis: role.basis,
+      declared: record(sourceNode),
+      effective_status: "paragraph_and_run",
+      properties: {
+        paragraph: record({ ...layout, ...effectiveParagraphFlags(layout.props), frame: effectiveFrame(layout.props) }),
+        run: record(resolveRunStyle(cascade.runProperties, table.themeFonts)),
+        script_usage: { latin: true, east_asian: true, complex: true, other: true },
+      },
+    });
+  }
+  return definitions;
 }
 
 function refineBodyRoles(objects: DocxFormatObject[], mainPart: string): void {
@@ -352,6 +622,7 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
   const pkg = view.currentPackage();
   const sourceSha256 = await sha256(bytes);
   const table = buildStyleCascadeTable(view.stylesRoot(), view.documentThemeFonts(), view.settingsRoot());
+  const stylesPart = stylesPartOf(pkg);
   const numbering = buildNumberingIndex(view.numberingRoot());
   const trees = new Map(pkg.parts);
   for (const [name, partBytes] of pkg.partBytes) {
@@ -377,6 +648,7 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
   for (const [name, part] of trees) indexNode(name, part.root, [0]);
   const idOf = (part: string, node: OoxmlNode) => `${part}#${nodePaths.get(`${part}\0${node.id}`)?.join(".") ?? "synthetic"}`;
   const objects: DocxFormatObject[] = [];
+  const styleSnapshots = styleDefinitions(table, stylesPart?.root ?? null, stylesPart?.name ?? "/word/styles.xml", pathsByNode, idOf);
   const unsupported: DocxFormatSnapshotV1["unsupported"] = [];
   const noteUnsupported = (code: string, detail: string, objectId: string) => {
     const existing = unsupported.find((entry) => entry.code === code);
@@ -432,6 +704,7 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
     cellStyle?: TableCellStyleFormatting;
     inCell: boolean;
     tableDepth: number;
+    tableContext?: DocxFormatTableContext;
     storyContent: boolean;
   };
   const makeObject = (part: string, node: OoxmlElement, kind: string, role: DocxFormatRole): DocxFormatObject => ({
@@ -453,8 +726,13 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
     if (!rootIsStory) continue;
     const blocks = storyBlocks(part);
     const listItems = resolveStoryListItems(blocks, numbering, table);
-    const cellContexts = new Map<string, { style: TableCellStyleFormatting; width: number; properties: DocxFormatProperties }>();
-    const rowProperties = new Map<string, DocxFormatProperties>();
+    const cellContexts = new Map<string, {
+      style: TableCellStyleFormatting;
+      width: number;
+      properties: DocxFormatProperties;
+      tableContext: DocxFormatTableContext;
+    }>();
+    const rowProperties = new Map<string, { properties: DocxFormatProperties; tableContext: DocxFormatTableContext }>();
     const walk = (node: OoxmlNode, incoming: Context) => {
       if (node.kind === "textValue") return;
       const directSectionBinding = partName === mainDocumentPart.name ?
@@ -468,12 +746,15 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
       const sectionWidth = columnWidths?.[0] ?? (fullWidth - (section.columns.count - 1) * section.columns.gapTwips / 20) / section.columns.count;
       const context: Context = {
         ...incoming,
+        tableContext: node.namespaceUri === W && node.localName === "tbl" ? undefined : incoming.tableContext,
         story: storyRole(node, incoming.story), section, sectionBinding,
         width: directSectionBinding && !incoming.inCell ? sectionWidth : incoming.width,
         storyContent: incoming.storyContent || STORY_NAMES.has(node.localName),
       };
       const cell = cellContexts.get(node.id);
-      if (cell) Object.assign(context, { cellStyle: cell.style, width: cell.width, inCell: true });
+      if (cell) Object.assign(context, { cellStyle: cell.style, width: cell.width, inCell: true, tableContext: cell.tableContext });
+      const row = rowProperties.get(node.id);
+      if (row) context.tableContext = row.tableContext;
       let object: DocxFormatObject | undefined;
       if (node.namespaceUri === W && node.localName === "p" && context.storyContent) {
         const pPr = child(node, "pPr");
@@ -485,7 +766,11 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
         object.role_basis = role.basis;
         object.text = text;
         if (cascade.styleId) object.style_id = cascade.styleId;
-        object.properties = record({ paragraph: layout, paragraph_mark: resolveRunStyle(cascade.markRunProperties, table.themeFonts), script_usage: scriptUsage(text) });
+        object.properties = record({
+          paragraph: { ...layout, ...effectiveParagraphFlags(layout.props), frame: effectiveFrame(layout.props) },
+          paragraph_mark: resolveRunStyle(cascade.markRunProperties, table.themeFonts),
+          script_usage: scriptUsage(text),
+        });
         object.evidence = record({ style_chain: styleChain(table, cascade.styleId), doc_defaults: true, theme: table.themeFonts, in_table_cell: context.inCell, top_level_body: partName === pkg.mainDocumentPart && bodyBlockIds.has(node.id), container_width_pt: context.width });
         context.paragraph = { object, layout };
       } else if (node.namespaceUri === W && node.localName === "r" && context.paragraph) {
@@ -503,17 +788,41 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
         object = makeObject(partName, node, "table", "table");
         object.role_basis = [{ source: "context", value: "w:tbl", certainty: "explicit" }];
         object.evidence = record({ top_level_body: partName === pkg.mainDocumentPart && bodyBlockIds.has(node.id) });
+        if (hasUnsupportedTableBandSize(node, table)) noteUnsupported("table_band_size_unsupported", "The pinned core computes one-row and one-column table bands. Authored larger band sizes are retained in XML; dependent table-internal format comparisons are uncertain.", object.object_id);
         const structure = readTableStructure(node, context.width, context.tableDepth, table);
         if (structure) {
           const { rows, ...tableProps } = structure;
           object.properties = record({ table: tableProps });
-          for (const row of rows) {
+          const rowNodes = new Map(node.children.flatMap((candidate) =>
+            candidate.kind !== "textValue" && candidate.namespaceUri === W && candidate.localName === "tr" ? [[candidate.id, candidate] as const] : []));
+          const cellNodes = new Map<string, OoxmlElement>();
+          for (const candidate of node.children) {
+            if (candidate.kind === "textValue" || candidate.namespaceUri !== W || candidate.localName !== "tr") continue;
+            for (const nested of candidate.children) {
+              if (nested.kind !== "textValue" && nested.namespaceUri === W && nested.localName === "tc") cellNodes.set(nested.id, nested);
+            }
+          }
+          for (const [rowIndex, row] of rows.entries()) {
             const { cells, ...rowProps } = row;
-            rowProperties.set(row.id, record({ row: rowProps }));
+            const rowNode = rowNodes.get(row.id);
+            const rowContext: DocxFormatTableContext = {
+              table_object_id: object.object_id,
+              row_index: rowIndex,
+              row_count: rows.length,
+              conditions: rowNode ? rowConditions(node, rowNode, rowIndex, rows.length) : [],
+            };
+            rowProperties.set(row.id, { properties: record({ row: rowProps }), tableContext: rowContext });
             for (const resolvedCell of cells) {
               const { blocks: _blocks, styleFormatting, ...cellProps } = resolvedCell;
               const width = structure.columnWidthsPt.slice(resolvedCell.gridColumn, resolvedCell.gridColumn + resolvedCell.gridSpan).reduce((sum, value) => sum + value, 0) - resolvedCell.margins.left - resolvedCell.margins.right;
-              cellContexts.set(resolvedCell.id, { style: styleFormatting, width, properties: record({ cell: cellProps, table_style: styleFormatting }) });
+              const cellNode = cellNodes.get(resolvedCell.id);
+              const tableContext: DocxFormatTableContext = {
+                ...rowContext,
+                column_index: resolvedCell.gridColumn,
+                column_count: structure.columnWidthsPt.length,
+                conditions: cellNode ? tableConditions(node, rowNode ?? node, cellNode, rowIndex, rows.length, resolvedCell.gridColumn, resolvedCell.gridSpan, structure.columnWidthsPt.length) : rowContext.conditions,
+              };
+              cellContexts.set(resolvedCell.id, { style: styleFormatting, width, properties: record({ cell: cellProps, table_style: styleFormatting }), tableContext });
             }
           }
         } else noteUnsupported("table_structure_unresolved", "Core did not resolve this table structure. Declared XML remains queryable.", object.object_id);
@@ -528,11 +837,12 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
         object.role_basis = [{ source: "story", value: node.localName, certainty: "explicit" }];
       } else if (context.storyContent && ((node.namespaceUri !== W) || STRUCTURAL_NAMES.has(node.localName))) {
         object = makeObject(partName, node, node.namespaceUri === W ? node.localName : "unsupported_node", context.story);
-        object.properties = cell?.properties ?? rowProperties.get(node.id) ?? {};
+        object.properties = cell?.properties ?? rowProperties.get(node.id)?.properties ?? {};
         object.declared = record({ namespace_uri: node.namespaceUri, local_name: node.localName, attributes: node.attributes, namespace_bindings: node.namespaceBindings });
         if (node.namespaceUri !== W || ["drawing", "pict", "object"].includes(node.localName)) noteUnsupported("structural_only", "Structural facts are retained. This adapter does not compute drawing, equation, or extension rendering.", object.object_id);
       }
       if (object) {
+        if (context.tableContext) object.table_context = { ...context.tableContext, conditions: [...context.tableContext.conditions] };
         if (partName === mainDocumentPart.name && sectionBinding) bindToSection(object, sectionBinding);
         objects.push(object);
       }
@@ -567,8 +877,8 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
     return { name, content_type: type, byte_length: partBytes.byteLength, sha256: await sha256(partBytes), xml, status: parsed ? "parsed" as const : xml ? "unparsed" as const : "binary" as const, node_count: nodes.filter((entry) => entry.part === name).length };
   }));
   const snapshot: DocxFormatSnapshotV1 = {
-    schema_version: 1, source_sha256: sourceSha256,
-    engine: { name: "@docx-editor.dev/core", version: corePackage.version }, parts, objects,
+    method_version: METHOD_VERSION, schema_version: 1, source_sha256: sourceSha256,
+    engine: { name: "@docx-editor.dev/core", version: corePackage.version }, parts, style_definitions: styleSnapshots, objects,
     capabilities: { package_entries: "all", raw_part_bytes: true, xml_tree_query: true, relationship_query: true, effective_paragraphs: true, effective_runs: true, effective_sections: true, effective_tables: "semantic_structure", role_assignment: "evidence_with_uncertainty", rendered_pagination: false, journal_compliance: false, path_addressing: "canonical_tree_child_indices" },
     unsupported,
   };

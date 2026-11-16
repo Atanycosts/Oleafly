@@ -1,0 +1,350 @@
+diff --git a/packages/core/src/store/__tests__/revision-id-export.test.ts b/packages/core/src/store/__tests__/revision-id-export.test.ts
+index 55dc5b6..fdc027c 100644
+--- a/packages/core/src/store/__tests__/revision-id-export.test.ts
++++ b/packages/core/src/store/__tests__/revision-id-export.test.ts
+@@ -334,20 +334,21 @@ describe('saved revision ids', () => {
+     expect(before.at(-1)).not.toBe('ins:2');
+   });
+ 
+-  test('a document whose ids are unique saves byte-identical parts', () => {
+-    const pkg = open(
+-      docx(
+-        `<w:p>${ins('05', 'a')}${del('-3', 'b')}${ins('2', 'c')}</w:p>`,
+-        `<w:p>${ins('9', 'h')}</w:p>`
+-      )
++  test('a document whose ids are unique preserves its original entry bytes', () => {
++    const source = docx(
++      `<w:p>${ins('05', 'a')}${del('-3', 'b')}${ins('2', 'c')}</w:p>`,
++      `<w:p>${ins('9', 'h')}</w:p>`
+     );
++    const pkg = open(source);
+     expect(uniqueRevisionIdsExportPackage(pkg)).toBe(pkg);
+     const bytes = writeOoxmlPackage(pkg);
+     expect(bytes).toEqual(writeOoxmlPackageKeepingRevisionIds(pkg));
+     const entries = unzipSync(bytes);
++    const original = unzipSync(source);
+     for (const name of ['/word/document.xml', '/word/header1.xml']) {
+-      expect(new TextDecoder().decode(entries[name.slice(1)]!)).toBe(
+-        serializeOoxmlPart(pkg.parts.get(name)!)
++      expect(entries[name.slice(1)]).toEqual(original[name.slice(1)]);
++      expect(serializeOoxmlPart(pkg.parts.get(name)!)).not.toBe(
++        new TextDecoder().decode(original[name.slice(1)]!)
+       );
+     }
+   });
+diff --git a/packages/core/src/store/package/__tests__/original-entry-reuse.test.ts b/packages/core/src/store/package/__tests__/original-entry-reuse.test.ts
+new file mode 100644
+index 0000000..d0de9ae
+--- /dev/null
++++ b/packages/core/src/store/package/__tests__/original-entry-reuse.test.ts
+@@ -0,0 +1,258 @@
++// Saving reuses an XML part's original archive entry only when neither the tree nor its stored
++// bytes changed. These tests compare inflated entries, not ZIP containers: the writer pins its
++// own timestamps and may compress the same bytes differently without changing the part.
++
++import { describe, expect, test } from 'bun:test';
++import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
++import { openTreeSession } from '../../../binding/tree-session.ts';
++import { normalizeParagraphIdentity } from '../para-id.ts';
++import { withoutPart } from '../package-edit.ts';
++import {
++  readOoxmlPackage,
++  withPart,
++  writeOoxmlPackage,
++  type OoxmlPackage,
++} from '../ooxml-package.ts';
++import { serializeOoxmlPart, type OoxmlPart } from '../ooxml-tree.ts';
++
++const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
++const W14 = 'http://schemas.microsoft.com/office/word/2010/wordml';
++const CT = 'http://schemas.openxmlformats.org/package/2006/content-types';
++const REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
++const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
++const OD = `${R}/officeDocument`;
++const COMMENTS_CT = 'application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml';
++const STYLES_CT = 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml';
++
++const CONTENT_TYPES =
++  `<Types xmlns="${CT}">` +
++  '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
++  '<Default Extension="xml" ContentType="application/xml"/>' +
++  '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
++  `<Override PartName="/word/styles.xml" ContentType="${STYLES_CT}"/>` +
++  `<Override PartName="/word/comments.xml" ContentType="${COMMENTS_CT}"/>` +
++  '</Types>';
++
++const ROOT_RELS =
++  `<Relationships xmlns="${REL}">` +
++  `<Relationship Id="rId1" Type="${OD}" Target="word/document.xml"/>` +
++  '</Relationships>';
++
++const DOCUMENT_RELS =
++  `<Relationships xmlns="${REL}">` +
++  `<Relationship Id="rId2" Type="${R}/comments" Target="comments.xml"/>` +
++  '</Relationships>';
++
++const STYLES =
++  `<?retain before-root?><!--styles XML comment--><w:styles xmlns:w="${W}">` +
++  "<w:style w:type='paragraph' w:styleId='Normal'><w:name w:val=\"Normal\"/></w:style>" +
++  '</w:styles>';
++
++const CUSTOM_XML =
++  '<?retain custom-data?><!--customXml XML comment-->' +
++  '<properties xmlns="urn:test:properties">' +
++  '<value><![CDATA[a & b]]></value></properties>';
++
++const COMMENTS =
++  `<?retain comments?><w:comments xmlns:w="${W}" xmlns:w14="${W14}">` +
++  '<w:comment w:id="1" w:author="Reviewer">' +
++  '<w:p w14:paraId="4C000002" w14:textId="4C000002"><w:r>' +
++  '<w:t><![CDATA[comment & text]]></w:t></w:r></w:p></w:comment></w:comments>';
++
++interface BuildOptions {
++  readonly validIdentity?: boolean;
++  readonly duplicateNoteProperties?: boolean;
++}
++
++function documentXml(options: BuildOptions = {}): string {
++  const paragraph = options.validIdentity
++    ? '<w:p w14:paraId="4C000001" w14:textId="4C000001">'
++    : '<w:p>';
++  const duplicateNoteProperties = options.duplicateNoteProperties
++    ? '<w:sectPr>' +
++      '<w:footnotePr><w:numFmt w:val="decimal"/></w:footnotePr>' +
++      '<w:footnotePr><w:numRestart w:val="eachSect"/></w:footnotePr>' +
++      '</w:sectPr>'
++    : '';
++  return (
++    `<w:document xmlns:w="${W}" xmlns:w14="${W14}"><!--main XML comment--><w:body>` +
++    paragraph +
++    '<w:r><w:t>hello</w:t></w:r></w:p>' +
++    duplicateNoteProperties +
++    '</w:body></w:document>'
++  );
++}
++
++function entries(options: BuildOptions = {}): Record<string, Uint8Array> {
++  return {
++    '[Content_Types].xml': strToU8(CONTENT_TYPES),
++    '_rels/.rels': strToU8(ROOT_RELS),
++    'word/document.xml': strToU8(documentXml(options)),
++    'word/_rels/document.xml.rels': strToU8(DOCUMENT_RELS),
++    'word/styles.xml': strToU8(STYLES),
++    'word/comments.xml': strToU8(COMMENTS),
++    'customXml/item1.xml': strToU8(CUSTOM_XML),
++  };
++}
++
++function docx(options: BuildOptions = {}): {
++  readonly bytes: Uint8Array;
++  readonly entries: Record<string, Uint8Array>;
++} {
++  const source = entries(options);
++  return { bytes: zipSync(source), entries: source };
++}
++
++function load(bytes: Uint8Array): OoxmlPackage {
++  const result = readOoxmlPackage(bytes);
++  if (!result.ok) throw new Error(`${result.reason}: ${result.detail ?? ''}`);
++  return result.package;
++}
++
++function open(bytes: Uint8Array) {
++  const result = openTreeSession(bytes);
++  if (!result.ok) throw new Error(`${result.reason}: ${result.detail ?? ''}`);
++  return result.session;
++}
++
++function canonicalBytes(part: OoxmlPart): Uint8Array {
++  return strToU8(serializeOoxmlPart(part));
++}
++
++function expectEntryBytes(
++  actual: Record<string, Uint8Array>,
++  expected: Record<string, Uint8Array>,
++  names: readonly string[]
++): void {
++  for (const name of names) expect(actual[name], name).toEqual(expected[name]);
++}
++
++function expectSameEntries(
++  actual: Record<string, Uint8Array>,
++  expected: Record<string, Uint8Array>
++): void {
++  expect(Object.keys(actual).sort()).toEqual(Object.keys(expected).sort());
++  expectEntryBytes(actual, expected, Object.keys(expected));
++}
++
++describe('original XML entry reuse', () => {
++  test('a no-op save reuses every untouched inflated entry byte-for-byte', () => {
++    const source = docx({ validIdentity: true });
++    const saved = unzipSync(open(source.bytes).save());
++    expectSameEntries(saved, source.entries);
++
++    const pkg = load(source.bytes);
++    for (const name of ['/word/styles.xml', '/word/comments.xml', '/customXml/item1.xml']) {
++      const part = pkg.parts.get(name);
++      expect(part, name).toBeDefined();
++      if (!part) continue;
++      expect(
++        canonicalBytes(part),
++        `${name} must exercise non-canonical source spelling`
++      ).not.toEqual(source.entries[name.slice(1)]);
++    }
++    for (const name of ['/word/document.xml', '/word/styles.xml', '/customXml/item1.xml']) {
++      const part = pkg.parts.get(name);
++      expect(part, name).toBeDefined();
++      if (!part) continue;
++      expect(strFromU8(canonicalBytes(part)), `${name} XML comment`).not.toContain(
++        '<!--'
++      );
++    }
++  });
++
++  test('a leaf edit canonicalizes only its changed part', () => {
++    const source = docx({ validIdentity: true });
++    const session = open(source.bytes);
++    const edited = session.applyTreeOps([
++      { op: 'insertText', paragraphId: session.paragraphIds()[0]!, offset: 0, text: 'X-' },
++    ]);
++    expect(edited.committed).toBe(true);
++
++    const saved = unzipSync(session.save());
++    expect(saved['word/document.xml']).not.toEqual(source.entries['word/document.xml']);
++    expect(strFromU8(saved['word/document.xml']!)).toContain('X-hello');
++    expectEntryBytes(saved, source.entries, [
++      '[Content_Types].xml',
++      '_rels/.rels',
++      'word/_rels/document.xml.rels',
++      'word/styles.xml',
++      'word/comments.xml',
++      'customXml/item1.xml',
++    ]);
++  });
++
++  test('undo restores the original entry when the loaded root becomes current again', () => {
++    const source = docx({ validIdentity: true });
++    const session = open(source.bytes);
++    const original = load(source.bytes);
++    const loadedMain = original.parts.get(original.mainDocumentPart)!;
++    expect(
++      session.applyTreeOps([
++        { op: 'insertText', paragraphId: session.paragraphIds()[0]!, offset: 0, text: 'X-' },
++      ]).committed
++    ).toBe(true);
++    // A package save follows an edit before the command that undoes it. This also avoids
++    // conflating the save writer's snapshot cache with the underlying history root.
++    expect(unzipSync(session.save())['word/document.xml']).not.toEqual(
++      source.entries['word/document.xml']
++    );
++    session.undo();
++    expect(session.part().root).toEqual(loadedMain.root);
++
++    expectSameEntries(unzipSync(session.save()), source.entries);
++  });
++
++  test('normalizing a part from the same load makes its entry serialize canonically', () => {
++    const source = docx();
++    const loaded = load(source.bytes);
++    const loadedMain = loaded.parts.get(loaded.mainDocumentPart)!;
++    const normalized = normalizeParagraphIdentity(loadedMain);
++    expect(normalized).not.toBe(loadedMain);
++
++    const saved = unzipSync(writeOoxmlPackage(withPart(loaded, normalized)));
++    expect(saved['word/document.xml']).not.toEqual(source.entries['word/document.xml']);
++    expect(strFromU8(saved['word/document.xml']!)).toContain('w14:paraId=');
++    expectEntryBytes(saved, source.entries, [
++      'word/styles.xml',
++      'word/comments.xml',
++      'customXml/item1.xml',
++    ]);
++  });
++
++  test('a save-time note-property repair invalidates reuse for the repaired part', () => {
++    const source = docx({ validIdentity: true, duplicateNoteProperties: true });
++    const session = open(source.bytes);
++    const saved = unzipSync(session.save());
++    const main = strFromU8(saved['word/document.xml']!);
++    expect(saved['word/document.xml']).not.toEqual(source.entries['word/document.xml']);
++    expect(main.match(/<w:footnotePr\b/g)).toHaveLength(1);
++    expectEntryBytes(saved, source.entries, ['word/styles.xml', 'customXml/item1.xml']);
++  });
++
++  test('replacing stored bytes or copying a part without its source record forces serialization', () => {
++    const source = docx({ validIdentity: true });
++    const pkg = load(source.bytes);
++    const styles = pkg.parts.get('/word/styles.xml')!;
++    const replacementBytes = new Map(pkg.partBytes);
++    replacementBytes.set('/word/styles.xml', strToU8(`${STYLES}\n`));
++
++    const replaced = unzipSync(writeOoxmlPackage({ ...pkg, partBytes: replacementBytes }));
++    expect([...replaced['word/styles.xml']!]).toEqual([...canonicalBytes(styles)]);
++
++    const copied = unzipSync(writeOoxmlPackage(withPart(pkg, { ...styles })));
++    expect([...copied['word/styles.xml']!]).toEqual([...canonicalBytes(styles)]);
++  });
++
++  test('deleting a part and its owner relationship cannot resurrect either record', () => {
++    const source = docx({ validIdentity: true });
++    const removed = withoutPart(load(source.bytes), '/word/comments.xml');
++    expect(removed.ok).toBe(true);
++
++    const saved = unzipSync(writeOoxmlPackage(removed.pkg));
++    expect(saved['word/comments.xml']).toBeUndefined();
++    expect(strFromU8(saved['word/_rels/document.xml.rels']!)).not.toContain('comments.xml');
++    expect(strFromU8(saved['[Content_Types].xml']!)).not.toContain('/word/comments.xml');
++    expectEntryBytes(saved, source.entries, ['word/styles.xml', 'customXml/item1.xml']);
++  });
++});
+diff --git a/packages/core/src/store/package/ooxml-package.ts b/packages/core/src/store/package/ooxml-package.ts
+index 3302bbd..b09b3db 100644
+--- a/packages/core/src/store/package/ooxml-package.ts
++++ b/packages/core/src/store/package/ooxml-package.ts
+@@ -51,7 +51,7 @@ import {
+   type IgnoredContentTypes,
+   type OverrideRecord,
+ } from './content-types.ts';
+-import type { OoxmlPart, OoxmlReadRejection } from './ooxml-tree.ts';
++import type { OoxmlElement, OoxmlPart, OoxmlReadRejection } from './ooxml-tree.ts';
+ import { serializeOoxmlPartSteps } from './ooxml-serialize-steps.ts';
+ import { captureXmlPartRoot } from './canonical-primitive-lower.ts';
+ import { commentExportPackage } from './comment-export-cleanup.ts';
+@@ -190,6 +190,19 @@ export interface OoxmlPackage {
+   readonly mainDocumentPart: string;
+ }
+ 
++interface OoxmlPartSource {
++  readonly root: OoxmlElement;
++  readonly bytes: Uint8Array;
++}
++
++/**
++ * Original entry bytes for one loaded tree.
++ *
++ * Keyed by the part object, so structural sharing keeps this record beside the unchanged part.
++ * A copied part without a recorded source falls back to canonical serialization.
++ */
++const ooxmlPartSources = new WeakMap<OoxmlPart, OoxmlPartSource>();
++
+ /** Why a package could not be loaded. Every code describes the FILE, not the caller. */
+ export type OoxmlPackageRejection =
+   | ZipRejection
+@@ -590,6 +603,7 @@ export function* readOoxmlPackageSteps(
+       limits.xml
+     );
+     if (!read.ok) return { ok: false, reason: read.reason, detail: partName };
++    ooxmlPartSources.set(read.part, { root: read.part.root, bytes: data });
+     parts.set(normalized.partName, read.part);
+   }
+ 
+@@ -675,6 +689,10 @@ export function* writeOoxmlPackageSteps(
+   yield;
+   const entries = new Map<string, Uint8Array>(exported.partBytes);
+   for (const [name, part] of exported.parts) {
++    const source = ooxmlPartSources.get(part);
++    // The cleanup and repair passes above can replace a root or an entry. Reuse is sound only
++    // when both still match the exact objects read from the archive.
++    if (source?.root === part.root && exported.partBytes.get(name) === source.bytes) continue;
+     entries.set(name, yield* serializeOoxmlPartSteps(part));
+     yield;
+   }
