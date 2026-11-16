@@ -303,7 +303,6 @@ fn text_delta(event: &TaskRuntimeEvent) -> Option<(TextSegmentKind, &str)> {
 }
 
 struct RecorderState {
-    next_sequence: u64,
     open: Option<OpenSegment>,
     emit_scheduled: bool,
     closed: bool,
@@ -324,14 +323,12 @@ impl TranscriptRecorder {
         task_id: String,
         generation: u64,
     ) -> Arc<Self> {
-        let next_sequence = store.next_event_sequence(&task_id, generation).unwrap_or(1);
         Arc::new(Self {
             store,
             state,
             task_id,
             generation,
             inner: Mutex::new(RecorderState {
-                next_sequence,
                 open: None,
                 emit_scheduled: false,
                 closed: false,
@@ -436,8 +433,18 @@ impl TranscriptRecorder {
                             .open
                             .take()
                             .and_then(|mut open| self.unsent_delta(&mut open));
-                        let sequence = inner.next_sequence;
-                        inner.next_sequence += 1;
+                        let sequence = match self
+                            .store
+                            .reserve_event_sequence(&self.task_id, self.generation)
+                        {
+                            Ok(sequence) => sequence,
+                            Err(error) => {
+                                eprintln!(
+                                    "Oleafly could not reserve a research task event: {error}"
+                                );
+                                return;
+                            }
+                        };
                         let created_at = now_ms();
                         inner.open = Some(OpenSegment {
                             kind,
@@ -479,8 +486,16 @@ impl TranscriptRecorder {
                 .open
                 .take()
                 .and_then(|mut open| self.unsent_delta(&mut open));
-            let sequence = inner.next_sequence;
-            inner.next_sequence += 1;
+            let sequence = match self
+                .store
+                .reserve_event_sequence(&self.task_id, self.generation)
+            {
+                Ok(sequence) => sequence,
+                Err(error) => {
+                    eprintln!("Oleafly could not reserve a research task event: {error}");
+                    return;
+                }
+            };
             let created_at = now_ms();
             if let Some(write) = self.event_write(sequence, created_at, &event) {
                 self.state.writer().submit(write);
@@ -586,5 +601,125 @@ mod tests {
         batch.retry(unsaved);
         assert_eq!(batch.rows.len(), MAX_UNSAVED_ROWS);
         assert_eq!(batch.rows[0].sequence, 11);
+    }
+
+    #[tokio::test]
+    async fn recorder_event_sequences_keep_text_extensions_tool_results_and_docx_facts() {
+        use crate::docx::{DocxDocumentIdentity, DocxRuntimeEvent};
+        use crate::model::ToolPhase;
+        use crate::test_support::{FakeEnv, FakeHost};
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("tasks");
+        let store = TaskStore::new(root.clone()).unwrap();
+        let task = store
+            .create(crate::test_support::draft(
+                "paper",
+                "Keep all event producers",
+            ))
+            .unwrap();
+        let document = DocxDocumentIdentity {
+            session_id: "docx-session".into(),
+            app_project_id: "paper".into(),
+            workbench_project_id: "manuscript".into(),
+            baseline_id: "baseline".into(),
+            source_sha256: "a".repeat(64),
+            filename: None,
+            title: None,
+            session_revision: 0,
+            saved_revision: 0,
+        };
+        store
+            .bind_docx_task("paper", &task.id, document.clone())
+            .unwrap();
+        store.request_start(&task.id).unwrap();
+        let task = store.claim_next().unwrap().unwrap();
+        let state = ResearchTaskState::for_test(root, 1);
+        let host = FakeHost::new(FakeEnv::new());
+        state.attach(Arc::new(host.clone()), tokio::runtime::Handle::current());
+        let recorder = TranscriptRecorder::new(
+            store.clone(),
+            state.clone(),
+            task.id.clone(),
+            task.execution_generation,
+        );
+
+        recorder.record(TaskRuntimeEvent::Text {
+            text: "first".into(),
+        });
+        state.writer().flush();
+        let first = store
+            .events(&task.id, task.execution_generation, None, 10)
+            .unwrap()
+            .events
+            .remove(0);
+        let activity = store
+            .record_docx_activity(
+                "paper",
+                &task.id,
+                task.execution_generation,
+                document,
+                DocxRuntimeEvent::Read {
+                    offset: 500,
+                    paragraphs: Vec::new(),
+                },
+            )
+            .unwrap();
+        recorder.record(TaskRuntimeEvent::Text {
+            text: " second".into(),
+        });
+        let result = TaskRuntimeEvent::Tool {
+            call_id: Some("manuscript-page-500".into()),
+            name: "read_docx_document".into(),
+            phase: ToolPhase::Result,
+            detail: "read complete".into(),
+            status: Some("done".into()),
+        };
+        recorder.record(result.clone());
+        let visible = state
+            .events(
+                &task.id,
+                task.execution_generation,
+                Some(first.sequence),
+                10,
+            )
+            .unwrap()
+            .events;
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[1].event, result);
+        recorder.close();
+
+        let reopened = TaskStore::new(store.root().to_path_buf()).unwrap();
+        let events = reopened
+            .events(&task.id, task.execution_generation, None, 10)
+            .unwrap()
+            .events;
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].sequence, first.sequence);
+        assert_eq!(events[0].created_at, first.created_at);
+        assert_eq!(
+            events[0].event,
+            TaskRuntimeEvent::Text {
+                text: "first second".into()
+            }
+        );
+        assert!(events[1].sequence > events[0].sequence);
+        assert!(events[2].sequence > events[1].sequence);
+        assert_eq!(events[2].event, result);
+        assert_eq!(
+            reopened
+                .docx_task_activities("paper", &task.id, 0, 50)
+                .unwrap()
+                .activities
+                .last()
+                .unwrap()
+                .activity,
+            activity
+        );
+        let deltas = lock(&host.deltas);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].sequence, first.sequence);
+        assert_eq!(deltas[0].created_at, first.created_at);
+        assert_eq!(deltas[0].append, " second");
     }
 }

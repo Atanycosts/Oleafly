@@ -210,11 +210,12 @@ fn insert_on(tx: &Transaction<'_>, activity: &DocxActivity) -> Result<(), String
     if encoded.len() > MAX_EVENT_BYTES {
         return Err("The retained DOCX activity exceeds 128 KiB.".into());
     }
+    let sequence =
+        reserve_event_sequence_on(tx, &activity.origin.task_id, activity.origin.generation)?;
     tx.execute(
         "INSERT INTO research_task_events(task_id,execution_generation,sequence,event_json,created_at)
-         SELECT ?1,?2,COALESCE(MAX(sequence),0)+1,?3,?4 FROM research_task_events
-         WHERE task_id=?1 AND execution_generation=?2",
-        params![activity.origin.task_id, activity.origin.generation as i64, encoded, activity.created_at],
+         VALUES (?1,?2,?3,?4,?5)",
+        params![activity.origin.task_id, activity.origin.generation as i64, sequence as i64, encoded, activity.created_at],
     ).map_err(store_error)?;
     let event_rowid = tx.last_insert_rowid();
     tx.execute(
