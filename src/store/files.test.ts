@@ -2378,6 +2378,16 @@ describe("project.json in an opened folder", () => {
 describe("editor tab bookkeeping", () => {
   const CLEAN = { content: "x\n", dirty: false };
 
+  it("opens Word files without sending binary packages to the text reader", async () => {
+    useFilesStore.setState({ projectId: "project", files: {}, openTabs: [], tabOrder: {}, activePath: null });
+    for (const path of ["英文稿/paper.docx", "template.DOC"]) {
+      await useFilesStore.getState().openFile(path);
+      expect(useFilesStore.getState().activePath).toBe(path);
+      expect(mocks.readFileContent).not.toHaveBeenCalledWith("project", path);
+      expect(useFilesStore.getState().files[path]).toBeUndefined();
+    }
+  });
+
   function openThree(extra: Record<string, unknown> = {}) {
     useFilesStore.setState({
       files: { "a.tex": CLEAN, "b.tex": CLEAN, "c.tex": CLEAN },

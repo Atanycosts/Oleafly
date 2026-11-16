@@ -35,6 +35,7 @@ vi.mock("@/store/files", () => ({
 
 import * as api from "@/lib/research-tasks";
 import { useResearchTasksStore } from "./research-tasks";
+import { useAgentWorkspaceStore } from "./agent-workspace";
 
 function task(id: string, projectId: string, createdAt = 1): ResearchTask {
   return {
@@ -112,6 +113,21 @@ describe("research task store", () => {
       detailOpen: true,
       detailTab: null,
     });
+  });
+
+  it("does not reclaim focus when the user pauses or follows another flow while start is pending", async () => {
+    const selected = task("starting-task", "paper");
+    const pending = deferred<ResearchTask>();
+    vi.mocked(api.startResearchTask).mockReturnValue(pending.promise);
+    useResearchTasksStore.setState({ projectId: "paper", tasks: [selected] });
+    useAgentWorkspaceStore.getState().setProject("paper");
+    const starting = useResearchTasksStore.getState().startTask(selected.id);
+    useAgentWorkspaceStore.getState().beginFollow("paper", { kind: "external", flowId: "user-chosen" });
+    useAgentWorkspaceStore.getState().pause();
+    pending.resolve({ ...selected, executionGeneration: 3 });
+    await starting;
+    expect(useAgentWorkspaceStore.getState()).toMatchObject({ paused: true,
+      following: { flowKey: "external:user-chosen" } });
   });
 
   it("opens the task detail on a chosen tab and selects the task", async () => {

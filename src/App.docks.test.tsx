@@ -231,7 +231,7 @@ vi.mock("@/components/layout/BackendProtocolBanner", () => ({
   BackendProtocolBanner: () => null,
 }));
 vi.mock("@/components/dock/TerminalPane", () => ({ TerminalPane: () => null }));
-vi.mock("@/components/editor/Editor", () => ({ Editor: () => null }));
+vi.mock("@/components/editor/Editor", () => ({ Editor: () => null, EditorTabBar: () => null }));
 vi.mock("@/components/editor/cm/controller", () => editorControllerMocks);
 vi.mock("@/components/preview/PreviewPane", () => ({ PreviewPane: () => null }));
 vi.mock("@/components/import/PdfImportView", () => ({ PdfImportView: () => null }));

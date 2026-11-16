@@ -48,10 +48,13 @@ it.each([
 it("clears context on close and initializes it for the next document", () => {
   const store = useDocxWorkspaceStore.getState();
   store.open(request());
+  store.requestClose();
+  expect(useDocxWorkspaceStore.getState().closeRequested).toBe(1);
   store.close();
   expect(useDocxWorkspaceStore.getState()).toMatchObject({ request: null, context: null });
   const next = request({ appProjectId: "next-app" });
   store.open(next);
+  expect(useDocxWorkspaceStore.getState().closeRequested).toBe(0);
   expect(useDocxWorkspaceStore.getState().request).toBe(next);
   expect(useDocxWorkspaceStore.getState().context).toEqual({ world: null, onSaved: next.onSaved });
 });

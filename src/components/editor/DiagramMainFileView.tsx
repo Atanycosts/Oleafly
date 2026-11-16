@@ -21,7 +21,17 @@ import { KIT } from "@/components/diagram/diagram-kit";
 import { readFileContent, writeProjectBytes } from "@/lib/tauri";
 import { useFilesStore } from "@/store/files";
 import { useProjectFolderReadOnly } from "@/store/folder-access";
+import { Button } from "@/components/ui/button";
+import { createMaterialDocument } from "@/lib/material-surface";
+import { openMaterialAnnotations } from "@/store/material-annotations";
 import { isEditorMutationLocked, registerEditorMutationOwner } from "@/lib/editor-mutation-lease";
+import { ProjectSourceContext } from "./ProjectSourceContext";
+import { useMaterialViewSelection } from "@/components/materials/MaterialViewContext";
+
+function DiagramSelection({ id }: { id: string | null }) {
+  useMaterialViewSelection(useMemo(() => id ? { kind: "object", id } : null, [id]));
+  return null;
+}
 
 interface LoadedDiagram {
   model: DiagramModel | null;
@@ -94,6 +104,7 @@ export default function DiagramMainFileView({
 }>) {
   const { t } = useTranslation(["common", "editor", "diagram"]);
   const [model, setModel] = useState<DiagramModel | null>(null);
+  const [selectedObject, setSelectedObject] = useState<string | null>(null);
   const [notDrawable, setNotDrawable] = useState(false);
   const [readOnly, setReadOnly] = useState(true);
   const [mutationLocked, setMutationLocked] = useState(false);
@@ -142,6 +153,7 @@ export default function DiagramMainFileView({
   }, [projectId, path, language]);
   useEffect(() => {
     setModel(null);
+    setSelectedObject(null);
     setNotDrawable(false);
     void reload().catch(() => setNotDrawable(true));
     const unregister = registerEditorMutationOwner({
@@ -190,8 +202,25 @@ export default function DiagramMainFileView({
   if (!model) {
     return <div className="p-6 text-sm text-muted-foreground">{t(($) => $.common.state.loading)}</div>;
   }
-  return (
-    <div className="flex h-full min-h-0 flex-col">
+  return <ProjectSourceContext projectId={projectId} path={path} kind="diagram">
+    <div className="flex h-full min-h-0 flex-col" onClickCapture={(event) => {
+      if ((event.target as Element).closest("button")) return;
+      const object = (event.target as Element).closest<HTMLElement>(".react-flow__node[data-id], .react-flow__edge[data-id]");
+      setSelectedObject(object?.dataset.id ?? null);
+    }}>
+      <DiagramSelection id={selectedObject} />
+      <div className="flex shrink-0 gap-2 border-b px-3 py-2">
+        <Button size="xs" variant="outline" onClick={() => {
+          const text = loadedSource.current;
+          if (text !== null) void createMaterialDocument({ projectId, documentId: `file:${path}`, path, title: path.split("/").pop() ?? path, kind: "diagram" }, { text, mediaType: "text/plain" }).then((document) => openMaterialAnnotations(document));
+        }}>{t(($) => $.editor.materials.annotateWhole)}</Button>
+        <Button size="xs" variant="outline" disabled={!selectedObject} onClick={(event) => {
+          event.stopPropagation();
+          const text = loadedSource.current;
+          const id = selectedObject;
+          if (text !== null && id) void createMaterialDocument({ projectId, documentId: `file:${path}`, path, title: path.split("/").pop() ?? path, kind: "diagram" }, { text, mediaType: "text/plain" }).then((document) => openMaterialAnnotations(document, { kind: "object", id }));
+        }}>{t(($) => $.editor.materials.diagramObject)}</Button>
+      </div>
       {readOnly && (
         <output className="border-b px-4 py-2 text-sm text-muted-foreground">
           {t(($) => $.editor.diagram.readOnlyNotice)}
@@ -206,5 +235,5 @@ export default function DiagramMainFileView({
         />
       </DiagramKitContext.Provider>
     </div>
-  );
+  </ProjectSourceContext>;
 }

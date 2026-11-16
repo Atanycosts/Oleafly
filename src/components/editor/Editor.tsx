@@ -11,7 +11,14 @@ import { MarkdownToolbar } from "./MarkdownToolbar";
 import { TypstToolbar } from "./TypstToolbar";
 import { SelectionActionMenu } from "./SelectionActionMenu";
 import { DiffView } from "./diff/DiffView";
-import { PdfViewer } from "@/components/pdf/PdfViewer";
+import { MaterialPdfView } from "@/components/materials/MaterialPdfView";
+import { MaterialImageView } from "@/components/materials/MaterialImageView";
+import { MaterialViewContext } from "@/components/materials/MaterialViewContext";
+import { ProjectSourceContext } from "./ProjectSourceContext";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
+import { createMaterialDocument, type MaterialDocument } from "@/lib/material-surface";
+import { openMaterialAnnotations } from "@/store/material-annotations";
+import { Button } from "@/components/ui/button";
 import { SidebarCollapseToggle } from "@/components/layout/WorkspaceControls";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -65,15 +72,20 @@ const FORMATTING_SHORTCUTS: ReadonlyMap<string, "bold" | "italic"> = new Map([
 
 function PdfFileView({ projectId, path }: Readonly<{ projectId: string; path: string }>) {
   const { t } = useTranslation(["common", "editor"]);
-  const [bytes, setBytes] = useState<Uint8Array | null>(null);
+  const active = useWorkspaceSurfaceStore((state) => state.active === "files");
+  const [loaded, setLoaded] = useState<{ bytes: Uint8Array; document: MaterialDocument } | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setBytes(null);
+    setLoaded(null);
     setErr(null);
     readFileBase64(projectId, path)
-      .then((b64) => { if (!cancelled) setBytes(base64ToUint8Array(b64)); })
+      .then(async (b64) => {
+        const bytes = base64ToUint8Array(b64);
+        const document = await createMaterialDocument({ projectId, documentId: `file:${path}`, path, title: basename(path), kind: "pdf" }, { bytes, mediaType: "application/pdf" });
+        if (!cancelled) setLoaded({ bytes, document });
+      })
       .catch((e) => { if (!cancelled) setErr(String(e)); });
     return () => { cancelled = true; };
   }, [projectId, path]);
@@ -85,23 +97,27 @@ function PdfFileView({ projectId, path }: Readonly<{ projectId: string; path: st
       </div>
     );
   }
-  if (!bytes) return <div className="p-6 text-sm text-muted-foreground">{t(($) => $.common.state.loading)}</div>;
-  return <PdfViewer data={bytes} scale={1} />;
+  if (!loaded) return <div className="p-6 text-sm text-muted-foreground">{t(($) => $.common.state.loading)}</div>;
+  return <MaterialViewContext document={loaded.document} active={active} materialRole="working"><MaterialPdfView key={loaded.document.revision} document={loaded.document} bytes={loaded.bytes} /></MaterialViewContext>;
 }
 
 function ImageFileView({ projectId, path }: Readonly<{ projectId: string; path: string }>) {
   const { t } = useTranslation(["common", "editor"]);
-  const [src, setSrc] = useState<string | null>(null);
+  const active = useWorkspaceSurfaceStore((state) => state.active === "files");
+  const [loaded, setLoaded] = useState<{ src: string; document: MaterialDocument } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [undecodable, setUndecodable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    setSrc(null);
+    setLoaded(null);
     setErr(null);
     setUndecodable(false);
     readFileBase64(projectId, path)
-      .then((b64) => { if (!cancelled) setSrc(`data:${imageMime(path)};base64,${b64}`); })
+      .then(async (b64) => {
+        const document = await createMaterialDocument({ projectId, documentId: `file:${path}`, path, title: basename(path), kind: "image" }, { bytes: base64ToUint8Array(b64), mediaType: imageMime(path) });
+        if (!cancelled) setLoaded({ src: `data:${imageMime(path)};base64,${b64}`, document });
+      })
       .catch((e) => { if (!cancelled) setErr(String(e)); });
     return () => { cancelled = true; };
   }, [projectId, path]);
@@ -113,7 +129,7 @@ function ImageFileView({ projectId, path }: Readonly<{ projectId: string; path: 
       </div>
     );
   }
-  if (!src) return <div className="p-6 text-sm text-muted-foreground">{t(($) => $.common.state.loading)}</div>;
+  if (!loaded) return <div className="p-6 text-sm text-muted-foreground">{t(($) => $.common.state.loading)}</div>;
   if (undecodable) {
     return (
       <div
@@ -126,19 +142,12 @@ function ImageFileView({ projectId, path }: Readonly<{ projectId: string; path: 
       </div>
     );
   }
-  return (
-    <div className="flex h-full items-center justify-center overflow-auto p-4">
-      <img
-        src={src}
-        alt={basename(path)}
-        onError={() => setUndecodable(true)}
-        className="max-h-full max-w-full object-contain"
-      />
-    </div>
-  );
+  return <MaterialViewContext document={loaded.document} active={active} materialRole="working"><MaterialImageView key={loaded.document.revision} document={loaded.document} src={loaded.src} onError={() => setUndecodable(true)} /></MaterialViewContext>;
 }
 
+const HtmlOutputPanel = lazy(() => import("@/components/preview/HtmlOutputPanel").then((module) => ({ default: module.HtmlOutputPanel })));
 const DiagramMainFileView = lazy(() => import("./DiagramMainFileView"));
+const DocxFileView = lazy(() => import("./DocxFileView"));
 
 function keepEditorFocus(event: MouseEvent) {
   if (!(event.target instanceof Element) || !event.target.classList.contains("cm-scroller")) return;
@@ -148,6 +157,7 @@ function keepEditorFocus(event: MouseEvent) {
 
 function openFileKind(activePath: string | null) {
   return {
+    isWordFile: activePath != null && /\.docx?$/i.test(activePath),
     isPdfFile: activePath?.toLowerCase().endsWith(".pdf"),
     isImageFile: activePath != null && isImagePath(activePath),
     isOpaqueFile:
@@ -161,7 +171,25 @@ function markdownModeFor(split: boolean, visual: boolean): "both" | "visual" | "
   return visual ? "visual" : "code";
 }
 
-export function Editor() {
+export function EditorTabBar({ diffFocused }: { diffFocused: boolean }) {
+  const { t } = useTranslation(["editor"]);
+  return <div className="flex h-9 shrink-0 items-center border-b">
+    <div className="flex shrink-0 items-center border-r border-border pl-2 pr-1"><SidebarCollapseToggle /></div>
+    <EditorTabStrip diffFocused={diffFocused} />
+    <div className="flex shrink-0 items-center gap-1 border-l border-border pl-1 pr-2">
+      <CloseAssistantTabsButton />
+      <Tooltip label={t(($) => $.editor.shell.editorSettings)} side="bottom">
+        <button type="button" aria-label={t(($) => $.editor.shell.editorSettings)}
+          onClick={() => useSettingsStore.getState().openSettingsAt("appearance", "editor")}
+          className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground">
+          <Settings2 className="size-4" aria-hidden />
+        </button>
+      </Tooltip>
+    </div>
+  </div>;
+}
+
+export function Editor({ showTabBar = true }: { showTabBar?: boolean }) {
   const { t } = useTranslation(["common", "editor"]);
   const zen = useZenStore((s) => s.active);
   const interactionRoot = useRef<HTMLDivElement>(null);
@@ -210,7 +238,7 @@ export function Editor() {
   }, []);
 
   const hasOpenFile = activePath !== null;
-  const { isPdfFile, isImageFile, isOpaqueFile } = openFileKind(activePath);
+  const { isWordFile, isPdfFile, isImageFile, isOpaqueFile } = openFileKind(activePath);
   const projectId = useFilesStore((s) => s.projectId);
   const projectKind = useFilesStore((s) => s.projectKind);
   const mainDoc = useFilesStore((s) => s.mainDoc);
@@ -270,6 +298,15 @@ export function Editor() {
           {t(($) => $.editor.shell.managedFileReadOnly, { file: activePath })}
         </output>
       ) : null}
+      {projectId && activePath && <div className="flex shrink-0 gap-2 border-b px-3 py-1">
+        <Button size="xs" variant="ghost" onMouseDown={(event) => event.preventDefault()} onClick={() => {
+          if (markdownVisual) flushWysiwygPendingEdits();
+          const view = markdownVisual ? null : getEditorView();
+          const text = view?.state.doc.toString() ?? useFilesStore.getState().files[activePath]?.content ?? "";
+          const range = view?.state.selection.main;
+          void createMaterialDocument({ projectId, documentId: `file:${activePath}`, path: activePath, title: basename(activePath), kind: isMarkdownFile ? "markdown" : "source" }, { text, mediaType: "text/plain" }).then((document) => openMaterialAnnotations(document, range && !range.empty ? { kind: "text", from: range.from, to: range.to, quote: text.slice(range.from, range.to) } : undefined));
+        }}>{t(($) => $.editor.materials.sourceSelection)}</Button>
+      </div>}
       <ChangedOnDiskBanner />
       {linkedFile && !managedFile ? (
         <output
@@ -371,7 +408,7 @@ export function Editor() {
       );
     }
     if (isDiagramMainFile) {
-      return (
+      const body = (
         <div className="min-h-0 flex-1 overflow-hidden">
           <EditorContextMenu>
             <CodeMirrorEditor />
@@ -379,18 +416,27 @@ export function Editor() {
           <SelectionActionMenu />
         </div>
       );
+      return projectId && activePath ? <ProjectSourceContext projectId={projectId} path={activePath} kind="source">{body}</ProjectSourceContext> : body;
+    }
+    if (isWordFile && projectId && activePath) {
+      return <Suspense fallback={<LoadingState className="h-full justify-center" label={t(($) => $.common.state.loading)} />}>
+        <DocxFileView key={`${projectId}:${activePath}`} projectId={projectId} path={activePath} />
+      </Suspense>;
+    }
+    if (activePath && /\.html?$/iu.test(activePath) && projectId) {
+      return <div className="min-h-0 flex-1"><Suspense fallback={null}><HtmlOutputPanel key={`${projectId}:${activePath}`} projectId={projectId} path={activePath} builtAt={null} /></Suspense></div>;
     }
     if (isPdfFile && projectId && activePath) {
       return (
         <div className="min-h-0 flex-1 overflow-auto bg-sidebar">
-          <PdfFileView projectId={projectId} path={activePath} />
+          <PdfFileView key={`${projectId}:${activePath}`} projectId={projectId} path={activePath} />
         </div>
       );
     }
     if (isImageFile && projectId && activePath) {
       return (
         <div className="min-h-0 flex-1 overflow-auto bg-sidebar">
-          <ImageFileView projectId={projectId} path={activePath} />
+          <ImageFileView key={`${projectId}:${activePath}`} projectId={projectId} path={activePath} />
         </div>
       );
     }
@@ -406,7 +452,8 @@ export function Editor() {
         </div>
       );
     }
-    return renderTextArea();
+    const body = renderTextArea();
+    return projectId && activePath ? <ProjectSourceContext projectId={projectId} path={activePath} kind={isMarkdownFile ? "markdown" : "source"}>{body}</ProjectSourceContext> : body;
   };
 
   const renderBody = () => {
@@ -476,27 +523,7 @@ export function Editor() {
       data-tour="project-editor"
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background"
     >
-      {!zen && (
-        <div className="flex h-9 shrink-0 items-center border-b">
-          <div className="flex shrink-0 items-center border-r border-border pl-2 pr-1">
-            <SidebarCollapseToggle />
-          </div>
-          <EditorTabStrip diffFocused={diffFocused} />
-          <div className="flex shrink-0 items-center gap-1 border-l border-border pl-1 pr-2">
-            <CloseAssistantTabsButton />
-            <Tooltip label={t(($) => $.editor.shell.editorSettings)} side="bottom">
-              <button
-                type="button"
-                aria-label={t(($) => $.editor.shell.editorSettings)}
-                onClick={() => useSettingsStore.getState().openSettingsAt("appearance", "editor")}
-                className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground"
-              >
-                <Settings2 className="size-4" aria-hidden />
-              </button>
-            </Tooltip>
-          </div>
-        </div>
-      )}
+      {!zen && showTabBar && <EditorTabBar diffFocused={diffFocused} />}
       <CollabRemovedFileSlot />
       {!diffFocused ? (
         <ProofreadingNotifications

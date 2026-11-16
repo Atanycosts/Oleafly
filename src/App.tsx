@@ -46,7 +46,8 @@ import { CloudSyncHost } from "@/components/cloud/CloudSyncHost";
 import { FolderWatchKeeper } from "@/components/layout/FolderWatchKeeper";
 import { CollabLiveKeeper } from "@/components/layout/CollabLiveKeeper";
 import { CollabLinkKeeper } from "@/components/layout/CollabLinkKeeper";
-import { Editor } from "@/components/editor/Editor";
+import { WorkspaceCenter } from "@/components/editor/WorkspaceCenter";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import {
   editorUndo,
   editorRedo,
@@ -157,6 +158,7 @@ import {
   runFieldHistory,
   visualFormHistory,
 } from "@/lib/field-history";
+import { runDocxHistory } from "@/lib/docx-history";
 import {
   startNativeDockShortcutBridge,
   usesNativeDockMenu,
@@ -326,7 +328,7 @@ function TypstCjkFontSlot() {
 }
 
 const WorkspaceSidebar = memo(Sidebar);
-const WorkspaceEditor = memo(Editor);
+const WorkspaceEditor = memo(WorkspaceCenter);
 const WorkspacePreview = memo(PreviewPane);
 const WorkspaceAssistant = memo(ChatPanel);
 
@@ -444,6 +446,7 @@ function runDocumentMenuHistory(active: HTMLElement | null, redo: boolean): void
 function runMenuHistory(redo: boolean): void {
   if (!useFilesStore.getState().projectId) return;
   const active = document.activeElement as HTMLElement | null;
+  if (runDocxHistory(active, redo)) return;
   const form = visualFormHistory(active);
   if (form === "document") {
     runDocumentMenuHistory(active, redo);
@@ -516,7 +519,8 @@ function AppContent() {
   const recompile = useCompileStore((s) => s.recompile);
   const selectedViewMode = useSettingsStore((s) => s.viewMode);
   const detached = usePreviewDetachedStore((s) => s.projectId === projectId && projectId !== null);
-  const viewMode = shownViewMode(detached, selectedViewMode);
+  const centerSurface = useWorkspaceSurfaceStore((s) => s.active);
+  const viewMode = centerSurface === "files" ? shownViewMode(detached, selectedViewMode) : "editor";
   const showTree = useSettingsStore((s) => s.showTree);
   const editorFontSize = useSettingsStore((s) => s.editorFontSize);
   const appFontSize = useSettingsStore((s) => s.appFontSize);
@@ -540,6 +544,7 @@ function AppContent() {
   const zen = useZenStore((s) => s.active);
   const zenProjectId = useZenStore((s) => s.projectId);
   const previewHost = useKeptAliveHost("h-full min-h-0 min-w-0");
+  const editorHost = useKeptAliveHost("h-full min-h-0 min-w-0");
   const previewShown = !workspaceHidden && viewMode !== "editor";
   const [previewKeptFor, setPreviewKeptFor] = useState<string | null>(null);
   useEffect(() => {
@@ -906,6 +911,11 @@ function AppContent() {
       if (useTourStore.getState().activeTourId) return;
       if (!useFilesStore.getState().projectId) return;
       const active = document.activeElement as HTMLElement | null;
+      if (runDocxHistory(active, isRedo)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       if (inVisualForm(active)) return;
       if (secondaryCodeEditorOwns(active)) return;
       // Once Vim owns the source editor, let its modal handler see the key
@@ -1176,11 +1186,7 @@ function AppContent() {
                             style={PANEL_STYLE}
                             className="min-h-0 min-w-0"
                           >
-                            <ErrorBoundary surface="editor" resetKey={projectId}>
-                              <Suspense fallback={<SurfaceLoading label={t(($) => $.workspace.surfaces.editor)} />}>
-                                <WorkspaceEditor />
-                              </Suspense>
-                            </ErrorBoundary>
+                            <KeptAliveSlot host={editorHost} className="h-full min-h-0 min-w-0" />
                           </Panel>
                         )}
                         {viewMode === "split" && (
@@ -1270,6 +1276,14 @@ function AppContent() {
               </Panel>
             </Group>
           </ErrorBoundary>
+          {projectId && createPortal(
+            <ErrorBoundary surface="editor" resetKey={projectId}>
+              <Suspense fallback={<SurfaceLoading label={t(($) => $.workspace.surfaces.editor)} />}>
+                <WorkspaceEditor key={projectId} />
+              </Suspense>
+            </ErrorBoundary>,
+            editorHost,
+          )}
           {keepPreview &&
             createPortal(
               <ErrorBoundary surface="PDF preview" resetKey={projectId}>

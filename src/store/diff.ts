@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { nextTabSeq } from "@/store/tab-order";
 import { readString, writeString } from "@/lib/local-storage";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 
 export type DiffSide = "working" | "staged" | "disk";
 export type DiffMode = "split" | "unified";
@@ -37,7 +38,8 @@ export const useDiffStore = create<DiffState>((set) => ({
   diffs: [],
   activeKey: null,
   mode: loadMode(),
-  openDiff: (path, side) =>
+  openDiff: (path, side) => {
+    useWorkspaceSurfaceStore.getState().showFiles();
     set((s) => {
       const key = diffKey({ path, side });
       const exists = s.diffs.some((d) => diffKey(d) === key);
@@ -45,7 +47,8 @@ export const useDiffStore = create<DiffState>((set) => ({
         diffs: exists ? s.diffs : [...s.diffs, { path, side, order: nextTabSeq() }],
         activeKey: key,
       };
-    }),
+    });
+  },
   closeDiff: (key) =>
     set((s) => ({
       diffs: s.diffs.filter((d) => diffKey(d) !== key),
@@ -59,7 +62,7 @@ export const useDiffStore = create<DiffState>((set) => ({
       activeKey: s.activeKey !== null && closing.has(s.activeKey) ? null : s.activeKey,
     }));
   },
-  setActiveDiff: (key) => set({ activeKey: key }),
+  setActiveDiff: (key) => { useWorkspaceSurfaceStore.getState().showFiles(); set({ activeKey: key }); },
   clearActiveDiff: () => set({ activeKey: null }),
   setMode: (mode) => {
     writeString(MODE_KEY, mode);

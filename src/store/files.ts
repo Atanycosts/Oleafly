@@ -57,6 +57,7 @@ import { useDiffStore } from "@/store/diff";
 import { projectFolderIsReadOnly, readOnlyFolderMessage } from "@/store/folder-access";
 import { dismissEngineHint, engineHintDismissed } from "@/store/engine-picker";
 import { useSettingsStore } from "@/store/settings";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import { useMcpApprovalStore } from "@/store/mcp-approvals";
 import { nextTabSeq } from "@/store/tab-order";
 import { recordProjectStateRevision } from "@/lib/project-state-revision";
@@ -1970,6 +1971,7 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
       return;
     }
     useDiffStore.getState().clearActiveDiff();
+    useWorkspaceSurfaceStore.getState().showFiles();
     set((s) => {
       const isNew = !s.openTabs.includes(path);
       return {
@@ -1984,6 +1986,7 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
 
   setActive: (path) => {
     useDiffStore.getState().clearActiveDiff();
+    useWorkspaceSurfaceStore.getState().showFiles();
     set({ activePath: path });
   },
 
