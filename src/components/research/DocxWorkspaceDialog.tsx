@@ -1,24 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { DocxEditor, type DocxEditorRef, useDocxEditor, useEditorState, useFonts, useScopedChromeAnchor } from "@docx-editor.dev/react";
+import { useDocxEditor, useEditorState, useFonts, useScopedChromeAnchor } from "@docx-editor.dev/react";
 import type { DocxEditorInstance, FontMeasurementState } from "@docx-editor.dev/core/editor";
+import type { EditorSnapshot } from "@docx-editor.dev/core/contracts/editor";
 import type { DocxFormatReadQuery, DocxFormatReadResult, DocxSaveResult, DocxTemplateCheckResult } from "@oleafly/ai-tools";
-import { Check, Download, Minimize2, Save, Sparkles, Square, Undo2, X } from "lucide-react";
+import { Check, Download, PanelRight, Save, Square, Undo2, X } from "lucide-react";
 import "@docx-editor.dev/core/styles/editor.css";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Tooltip } from "@/components/ui/tooltip";
-import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { runInlineCompletion } from "@/lib/ai-inline";
 import { base64ToBytes } from "@/lib/base64";
 import { downloadDocxCopy } from "@/lib/docx-download";
+import { createDocxFormatReader } from "@/lib/docx-format-reader";
 import { createDocxFontResolver, type DocxFontStatus } from "@/lib/docx-fonts";
-import { createDocxSession, type DocxParagraph, type DocxSession, type DocxTarget } from "@/lib/docx-session";
+import { ensureDocxFonts } from "@/lib/docx-prepare-fonts";
+import { createDocxSession, type DocxSession, type DocxTarget } from "@/lib/docx-session";
 import {
   registerDocxAgentSession,
   unregisterDocxAgentSession,
   updateDocxAgentSession,
+  type DocxAgentRegistration,
   type DocxTaskOperationResult,
 } from "@/lib/docx-agent-host";
 import {
@@ -37,6 +39,7 @@ import {
   type DocxRecoveryApplied,
   type DocxRecoveryReceipt,
   type DocxRecoveryOperation,
+  type DocxRecoverySaveOperation,
 } from "@/lib/docx-recovery";
 import { loadDocxSource, prepareDocxSave, type DocxSave, type DocxSource } from "@/lib/docx-workbench";
 import { journalRequest, type JournalCheck, type JournalProject, type JournalState, type JournalWorld } from "@/lib/journal-workbench";
@@ -45,10 +48,29 @@ import { registerProjectLeaveGuard } from "@/lib/project-leave-guards";
 import { registerEditorMutationOwner } from "@/lib/editor-mutation-lease";
 import { useDocxWorkspaceStore, type DocxWorkspaceRequest } from "@/store/docx-workspace";
 import { handoffToAssistant } from "@/features/assistant-handoff";
-import { settleDocxTaskActivity, type DocxActivity, type DocxDocumentIdentity, type DocxProposalOutcome } from "@/lib/docx-task-activity";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
+import { useAgentWorkspaceStore, type AgentWorkspaceSelection } from "@/store/agent-workspace";
+import { bindDocxTask, settleDocxTaskActivity, type DocxActivity, type DocxDocumentIdentity, type DocxProposalOutcome } from "@/lib/docx-task-activity";
 import { DocxActivitySource, DocxTaskActivity } from "./DocxTaskActivity";
-import { DocxRenderPanel } from "./DocxRenderPanel";
+import { DocxRenderPanel, type DocxRenderPreview } from "./DocxRenderPanel";
+import { MaterialPdfView } from "@/components/materials/MaterialPdfView";
+import { MaterialViewContext } from "@/components/materials/MaterialViewContext";
+import type { MaterialDocument } from "@/lib/material-surface";
 import { DocxFontsPanel } from "./DocxFontsPanel";
+import { DocxEquationPanel } from "./DocxEquationPanel";
+import { DocxMaterialTools, type DocxMaterialView } from "@/components/materials/DocxMaterialTools";
+import { WordSurface, WordToolbarPortal } from "@/components/materials/WordSurface";
+import { WordDocument, type WordDocumentRef } from "@/components/materials/WordDocument";
+import type { MaterialVersionSide } from "@/components/materials/MaterialVersionStack";
+import {
+  captureRetainedDocxMaterial,
+  captureWorkingDocxMaterial,
+  DocxMaterialCaptureError,
+  readDocxMaterialSelection,
+  type DocxMaterialSelection,
+} from "@/lib/docx-material";
+import { registerDocxHistory } from "@/lib/docx-history";
+import { openMaterialAnnotations } from "@/store/material-annotations";
 
 const fontShaping = Object.freeze({ maxFontBytes: 64 * 1024 * 1024 });
 const RECOVERY_DEBOUNCE_MS = 1500;
@@ -60,8 +82,6 @@ interface Props {
   recovery?: DocxRecoverySnapshot;
   onClose(): void;
   onSaved(): Promise<void>;
-  minimized?: boolean;
-  onMinimize?(): void;
 }
 
 interface Suggestion {
@@ -74,7 +94,6 @@ interface Suggestion {
 export function DocxWorkspaceHost() {
   const request = useDocxWorkspaceStore((state) => state.request);
   const context = useDocxWorkspaceStore((state) => state.context);
-  const minimized = useDocxWorkspaceStore((state) => state.minimized);
   const [prepared, setPrepared] = useState<DocxWorkspaceRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { t } = useTranslation("researchTools");
@@ -94,13 +113,16 @@ export function DocxWorkspaceHost() {
     return () => { active = false; };
   }, [request]);
   return request ? <>
-    {prepared === request && context && <DocxWorkspaceDialog {...request} {...context} minimized={minimized} onMinimize={() => useDocxWorkspaceStore.getState().minimize()} onClose={() => useDocxWorkspaceStore.getState().close()} />}
-    {error && <Dialog open onOpenChange={() => useDocxWorkspaceStore.getState().close()}><DialogContent><DialogHeader><DialogTitle>{t(($) => $.researchTools.docx.recovery.title)}</DialogTitle><DialogDescription>{error}</DialogDescription></DialogHeader></DialogContent></Dialog>}
-    {minimized && <Button className="fixed bottom-6 right-6 z-40 shadow-lg" onClick={() => useDocxWorkspaceStore.getState().restore()}>{t(($) => $.researchTools.docx.restore)} · {request.project.name}</Button>}
+    {prepared === request && context && <DocxWorkspaceDialog {...request} {...context} onClose={() => useDocxWorkspaceStore.getState().close()} />}
+    {error && <div className="space-y-3 p-6"><h2>{t(($) => $.researchTools.docx.recovery.title)}</h2><p role="alert" className="text-sm text-destructive">{error}</p><Button variant="outline" onClick={() => useDocxWorkspaceStore.getState().close()}>{t(($) => $.researchTools.workspace.closeDocument)}</Button></div>}
   </> : null;
 }
 
-function SessionBridge({ onReady, onMeasurement }: { onReady(editor: DocxEditorInstance): void; onMeasurement(value: FontMeasurementState): void }) {
+function SessionBridge({ onReady, onMeasurement, onSelection }: {
+  onReady(editor: DocxEditorInstance): void;
+  onMeasurement(value: FontMeasurementState): void;
+  onSelection(editor: DocxEditorInstance, snapshot?: EditorSnapshot): void;
+}) {
   const editor = useDocxEditor();
   const readyState = useEditorState((snapshot) => ({
     isLoading: snapshot.isLoading,
@@ -127,6 +149,23 @@ function SessionBridge({ onReady, onMeasurement }: { onReady(editor: DocxEditorI
       onReady(editor);
     }
   }, [editor, onReady, readyState]);
+  useEffect(() => {
+    if (!editor || readyState.isLoading || readyState.isOpening || readyState.parseError || readyState.pageTotal === 0) return;
+    onSelection(editor);
+    return editor.on("selectionChange", (snapshot) => onSelection(editor, snapshot));
+  }, [editor, onSelection, readyState.isLoading, readyState.isOpening, readyState.pageTotal, readyState.parseError]);
+  return null;
+}
+
+function ReadOnlySelectionBridge({ onSelection }: { onSelection(editor: DocxEditorInstance): void }) {
+  const editor = useDocxEditor();
+  const ready = useEditorState((snapshot) => !snapshot.isLoading && !snapshot.isOpening &&
+    snapshot.parseError === null && snapshot.page.total > 0);
+  useEffect(() => {
+    if (!editor || !ready) return;
+    onSelection(editor);
+    return editor.on("selectionChange", () => onSelection(editor));
+  }, [editor, onSelection, ready]);
   return null;
 }
 
@@ -139,7 +178,7 @@ function SuggestionOverlay({ suggestion, accept, stop }: { suggestion: Suggestio
   const visible = suggestion?.phase === "streaming" || suggestion?.phase === "reviewing";
   return <div ref={anchor.ref} style={anchor.style} className="pointer-events-none z-20 w-96" hidden={!visible} data-testid="docx-inline-suggestion">
     {visible && <div className="rounded-lg border border-primary/30 bg-background p-3 text-xs text-foreground shadow-lg">
-      <p className="font-medium">{`${text.phases[suggestion.phase]} · r${suggestion.target.revision}`}</p>
+      <p className="font-medium">{text.phases[suggestion.phase]}</p>
       <p className="my-2 line-clamp-3 whitespace-pre-wrap">{suggestion.proposed || text.loading}</p>
       {suggestion.phase === "reviewing" ? <Button className="pointer-events-auto" size="sm" onClick={accept}>{text.accept}</Button> : <Button className="pointer-events-auto" size="sm" variant="outline" onClick={stop}>{text.stop}</Button>}
     </div>}
@@ -147,21 +186,42 @@ function SuggestionOverlay({ suggestion, accept, stop }: { suggestion: Suggestio
 }
 
 /** A working copy of a retained baseline; the original author path is never opened for writing. */
-export default function DocxWorkspaceDialog({ appProjectId, project, world, recovery, onClose, onSaved, minimized = false, onMinimize }: Props) {
+export default function DocxWorkspaceDialog({ appProjectId, project, world, recovery, onClose, onSaved }: Props) {
   const onSavedRef = useRef(onSaved);
   onSavedRef.current = onSaved;
   const { t, i18n } = useTranslation("researchTools");
+  const { t: tEditor } = useTranslation("editor");
   const text = t(($) => $.researchTools.docx, { returnObjects: true });
   const [source, setSource] = useState<DocxSource | null>(null);
+  const initialSourceRef = useRef<DocxSource | null>(null);
+  const [materialView, setMaterialView] = useState<DocxMaterialView>("working");
+  const [originalKept, setOriginalKept] = useState(false);
+  const [stackForeground, setStackForeground] = useState<MaterialVersionSide>("current");
+  const [workingMaterialSelection, setWorkingMaterialSelection] = useState<DocxMaterialSelection | null>(null);
+  const [originalMaterialSelection, setOriginalMaterialSelection] = useState<DocxMaterialSelection | null>(null);
+  const [workingViewSelection, setWorkingViewSelection] = useState<
+    AgentWorkspaceSelection & { collapsedModelOffset?: number } | null
+  >(null);
+  const [originalViewSelection, setOriginalViewSelection] = useState<AgentWorkspaceSelection | null>(null);
+  const [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null);
+  const activeSurface = useWorkspaceSurfaceStore((state) => state.active);
   const initialProject = useRef(project);
   const initialRecovery = useRef(recovery);
   const sourceMismatchMessage = useRef(text.recovery.sourceChanged);
   const editorLocale = useRef(i18n.language);
   const [baselineId, setBaselineId] = useState(recovery?.baseBaselineId ?? project.baseline_id);
   const [error, setError] = useState<string | null>(null);
-  const [paragraphs, setParagraphs] = useState<readonly DocxParagraph[]>([]);
-  const [selected, setSelected] = useState("");
-  const [instruction, setInstruction] = useState("");
+  const [toolsOpen, setToolsOpen] = useState(!!recovery?.taskState);
+  const [preview, setPreview] = useState<DocxRenderPreview | null>(null);
+  const [showPdf, setShowPdf] = useState(false);
+  const closeRequested = useDocxWorkspaceStore((state) => state.closeRequested);
+  const handledClose = useRef(0);
+  const closeAction = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (handledClose.current === closeRequested) return;
+    handledClose.current = closeRequested;
+    closeAction.current();
+  }, [closeRequested]);
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const suggestionRef = useRef<Suggestion | null>(null);
   const [taskReady, setTaskReady] = useState(false);
@@ -196,13 +256,18 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const [check, setCheck] = useState<JournalCheck | null>(null);
   const [closePrompt, setClosePrompt] = useState(false);
   const [discarding, setDiscarding] = useState(false);
-  const editorRef = useRef<DocxEditorRef>(null);
+  const editorRef = useRef<WordDocumentRef>(null);
+  const originalEditorRef = useRef<WordDocumentRef>(null);
   const editorInstance = useRef<DocxEditorInstance | null>(null);
   const [editorReady, setEditorReady] = useState(false);
   const sessionRef = useRef<DocxSession | null>(null);
-  const liveSaveRef = useRef<(request: { expectedRevision: number; signal?: AbortSignal }) => Promise<DocxSaveResult>>(async () => { throw new Error("The DOCX editor is not ready."); });
+  const liveSaveRef = useRef<NonNullable<DocxAgentRegistration["save"]>>(async () => { throw new Error("The DOCX editor is not ready."); });
   const liveCheckRef = useRef<(request: { template: string; signal?: AbortSignal }) => Promise<DocxTemplateCheckResult>>(async () => { throw new Error("The DOCX editor is not ready."); });
   const liveFormatRef = useRef<(query: DocxFormatReadQuery) => Promise<DocxFormatReadResult>>(async () => { throw new Error("The DOCX editor is not ready."); });
+  const livePrepareFontsRef = useRef<() => Promise<unknown>>(async () => { throw new Error("The DOCX editor is not ready."); });
+  const liveExportRef = useRef<() => Promise<unknown>>(async () => { throw new Error("The DOCX editor is not ready."); });
+  const formatReaderRef = useRef<{ session: DocxSession; read: ReturnType<typeof createDocxFormatReader> } | null>(null);
+  const formatDocumentRef = useRef({ sessionId: "", filename: "", baselineId: "", savedRevision: 0 });
   const recoveryQueueRef = useRef<Promise<void>>(Promise.resolve());
   const recoveryEpoch = useRef(0);
   const [sessionId] = useState(() => `docx:${crypto.randomUUID()}`);
@@ -211,23 +276,42 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const alive = useRef(true);
   const [fontMeasurement, setFontMeasurement] = useState<FontMeasurementState>({ measurer: "fixed", resolving: true });
   const [fontStatus, setFontStatus] = useState<DocxFontStatus>({ probed: false, missing: [], aliases: [] });
+  const fontStatusRef = useRef(fontStatus);
+  const fontPreparationError = useRef<string | null>(null);
+  const fontRefreshQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [fontRevision, setFontRevision] = useState(0);
   const createFontResolver = () => createDocxFontResolver({
-    onError: (cause) => { if (alive.current) setError(`${text.fontError}: ${String(cause)}`); },
-    onStatus: (value) => { if (alive.current) setFontStatus(value); },
+    onError: (cause) => {
+      fontPreparationError.current = String(cause);
+      if (alive.current) setError(`${text.fontError}: ${String(cause)}`);
+    },
+    onStatus: (value) => { fontStatusRef.current = value; if (alive.current) setFontStatus(value); },
   });
   const [localFontResolver] = useState(createFontResolver);
   const fonts = useFonts(localFontResolver);
-  async function refreshFonts() {
-    const editor = editorInstance.current;
-    if (editor) {
+  function refreshFonts() {
+    const refreshing = fontRefreshQueue.current.then(async () => {
+      const editor = editorInstance.current;
+      if (!editor || !alive.current) throw new Error(text.notReady);
+      fontPreparationError.current = null;
+      fontStatusRef.current = { probed: false, missing: [], aliases: [] };
+      setFontStatus(fontStatusRef.current);
       await editor.setFonts(createFontResolver());
       if (alive.current) setFontRevision((value) => value + 1);
-    }
+      if (fontPreparationError.current) throw new Error(fontPreparationError.current);
+      return { status: fontStatusRef.current, measurement: editor.fontMeasurement() };
+    });
+    fontRefreshQueue.current = refreshing.catch(() => {});
+    return refreshing;
   }
   const busySave = useRef(false);
   const discardingRef = useRef(false);
   const interactionRoot = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = interactionRoot.current;
+    if (!root) return;
+    return registerDocxHistory(root, () => editorInstance.current);
+  }, []);
   identityRef.current = () => {
     if (!source) throw new Error("The DOCX source is not loaded.");
     return { sessionId, appProjectId, workbenchProjectId: project.project_id,
@@ -237,13 +321,54 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const recoveryConflict = !!recovery && project.baseline_id !== recovery.baseBaselineId;
   const streaming = suggestion?.phase === "streaming";
   const saveRefused = !!pendingCheckpoint.current && refusedSave === `${pendingCheckpoint.current.recoveryKey}:${pendingCheckpoint.current.contentSha256}`;
+  const closeBlocked = saving || checking || (pendingReceipts > 0 && !fixedSavePending.current);
+  const recordMaterialSelection = useCallback((surface: "working" | "original", selection: DocxMaterialSelection | null) => {
+    if (surface === "working") setWorkingMaterialSelection(selection);
+    else setOriginalMaterialSelection(selection);
+  }, []);
+  const captureWorkingSelection = useCallback((editor: DocxEditorInstance, snapshot?: EditorSnapshot) => {
+    const current = snapshot ?? editor.snapshot();
+    const materialSelection = readDocxMaterialSelection(editor, current);
+    recordMaterialSelection("working", materialSelection);
+    const selection = current.selection;
+    const session = sessionRef.current;
+    if (!selection || !session) { setWorkingViewSelection(null); return; }
+    const paraId = "paraId" in selection.from && "paraId" in selection.to && selection.from.paraId === selection.to.paraId
+      ? selection.from.paraId : undefined;
+    const surfaceSelection = editor.surface?.state().selection;
+    const collapsedModelOffset = surfaceSelection &&
+      surfaceSelection.anchor.paragraphId === surfaceSelection.head.paragraphId &&
+      surfaceSelection.anchor.offset === surfaceSelection.head.offset
+      ? surfaceSelection.anchor.offset
+      : undefined;
+    setWorkingViewSelection({ revision: String(session.revision()), paraId,
+      ...(collapsedModelOffset === undefined ? {} : { collapsedModelOffset }),
+      quote: current.selectionCollapsed ? undefined : materialSelection?.quote ?? editor.query({ type: "selectedText" }) });
+  }, [recordMaterialSelection]);
+  const captureOriginalSelection = useCallback((editor: DocxEditorInstance) => {
+    recordMaterialSelection("original", readDocxMaterialSelection(editor));
+    const current = editor.snapshot();
+    const selection = current.selection;
+    if (!selection || !initialSourceRef.current) { setOriginalViewSelection(null); return; }
+    const paraId = "paraId" in selection.from && "paraId" in selection.to && selection.from.paraId === selection.to.paraId
+      ? selection.from.paraId : undefined;
+    setOriginalViewSelection({ revision: initialSourceRef.current.source_sha256, paraId,
+      quote: current.selectionCollapsed ? undefined : editor.query({ type: "selectedText" }) });
+  }, [recordMaterialSelection]);
+  useEffect(() => {
+    useDocxWorkspaceStore.getState().setClosingBlocked(closeBlocked);
+    return () => useDocxWorkspaceStore.getState().setClosingBlocked(false);
+  }, [closeBlocked]);
 
   useEffect(() => {
     const unfinished = dirty || streaming || suggestion?.phase === "reviewing" || !!pendingSave || saving || checking || pendingReceipts > 0;
     const stopLeave = registerProjectLeaveGuard(async (leave) => {
       if (leave.projectId !== appProjectId) return true;
       if (!unfinished) { onClose(); return true; }
-      if (!saving && !checking) setClosePrompt(true);
+      if (!saving && !checking) {
+        useWorkspaceSurfaceStore.getState().showWord();
+        setClosePrompt(true);
+      }
       return false;
     });
     const stopOwner = registerEditorMutationOwner({
@@ -318,25 +443,31 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const updateSuggestion = useCallback((next: Suggestion | null) => {
     suggestionRef.current = next;
     setSuggestion(next);
+    if (next?.phase === "streaming" || next?.phase === "reviewing") setToolsOpen(true);
   }, []);
 
   useEffect(() => {
+    let active = true;
     alive.current = true;
     const snapshot = initialRecovery.current;
     void loadDocxSource(initialProject.current.project_id, snapshot?.baseBaselineId ?? initialProject.current.baseline_id)
       .then((value) => {
+        if (!active) return;
         if (snapshot && (snapshot.appProjectId !== appProjectId || snapshot.workbenchProjectId !== value.project_id || snapshot.baseBaselineId !== value.baseline_id || snapshot.sourceSha256 !== value.source_sha256)) {
           throw new Error(sourceMismatchMessage.current);
         }
+        initialSourceRef.current = value;
         if (alive.current) setSource(snapshot ? { ...value, bytes: snapshot.bytes } : value);
       })
-      .catch((cause) => { if (alive.current) setError(String(cause)); });
+      .catch((cause) => { if (active) setError(String(cause)); });
     return () => {
+      active = false;
       alive.current = false;
       stopRef.current?.abort();
       unsubscribeRef.current?.();
       unregisterDocxAgentSession(sessionId);
       sessionRef.current?.dispose();
+      useAgentWorkspaceStore.getState().clearView(appProjectId, `docx:${initialProject.current.project_id}`);
     };
   }, [appProjectId, sessionId]);
 
@@ -410,6 +541,35 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       savedRevision: initialRecovery.current ? -1 : 0,
       sourceSha256: identityRef.current().sourceSha256,
       session,
+      prepareFonts: () => livePrepareFontsRef.current(),
+      exportDocument: () => liveExportRef.current(),
+      reveal: async ({ paragraphRef, paraId, expectedRevision, signal }) => {
+        if (signal?.aborted) return;
+        if (expectedRevision !== undefined && session.revision() !== expectedRevision) {
+          throw new Error("The Word navigation target belongs to an earlier revision. Refresh the working copy context.");
+        }
+        const paragraphs = session.listParagraphs();
+        const paragraph = paragraphRef ? paragraphs.find((item) => item.handle.ref === paragraphRef)
+          : paraId ? paragraphs.find((item) => item.paraId === paraId) : undefined;
+        if ((paragraphRef || paraId) && !paragraph?.paraId) throw new Error("The Word navigation paragraph is no longer present.");
+        // Commit visibility before the imperative editor measures its viewport.
+        flushSync(() => {
+          setMaterialView("working");
+          setStackForeground("current");
+          setShowPdf(false);
+          useWorkspaceSurfaceStore.getState().showWord();
+        });
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        if (signal?.aborted) return;
+        if (!alive.current || sessionRef.current !== session) throw new Error("The Word working copy closed before navigation completed.");
+        if (expectedRevision !== undefined && session.revision() !== expectedRevision) {
+          throw new Error("The Word working copy changed before navigation completed.");
+        }
+        if (paragraph?.paraId) {
+          if (!editor.scrollToAnchor({ paraId: paragraph.paraId })) throw new Error("The Word navigation paragraph has no visible layout position.");
+          editor.highlightAnchor({ paraId: paragraph.paraId });
+        }
+      },
       readFormat: (query) => liveFormatRef.current(query),
       save: (request) => liveSaveRef.current(request),
       check: (request) => liveCheckRef.current(request),
@@ -424,7 +584,9 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         const operation = taskOperations.current.get(operationId);
         if (!operation) return;
         const result = operation.result as DocxTaskOperationResult;
-        const changed = (result.operation === "format" || result.operation === "apply") && result.ok && result.result.changed;
+        const changed = (result.operation === "replace_range" || result.operation === "format" ||
+          result.operation === "format_batch" || result.operation === "import_styles" ||
+          result.operation === "apply" || result.operation === "write_equation") && result.ok && result.result.changed;
         if (changed) return;
         // Native has retained the actual result (and verified saved source bytes).
         // It no longer belongs to a later unsaved edit's recovery state.
@@ -500,9 +662,8 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         }
         recoveredProposalIds.current.clear();
       }
-      const current = session.listParagraphs();
-      setParagraphs(current);
       setRevision(session.revision());
+      captureWorkingSelection(editor);
       const pending = suggestionRef.current;
       if (pending && (pending.phase === "streaming" || pending.phase === "reviewing")) {
         let unchanged = false;
@@ -529,68 +690,12 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     };
     refresh();
     const documentChanged = session.subscribe(refresh);
-    const selectionChanged = editor.on("selectionChange", (snapshot) => {
-      const target = snapshot.selection?.from;
-      if (target && "paraId" in target) {
-        const paragraph = session.listParagraphs().find((item) => item.paraId === target.paraId);
-        if (paragraph) setSelected(paragraph.handle.ref);
-      }
-    });
-    unsubscribeRef.current = () => { documentChanged(); selectionChanged(); };
-  }, [appProjectId, sessionId, source?.filename, updateSuggestion, recordOutcome]);
+    unsubscribeRef.current = documentChanged;
+  }, [appProjectId, sessionId, source?.filename, updateSuggestion, recordOutcome, captureWorkingSelection]);
 
   useEffect(() => {
     if (suggestion?.phase !== "streaming" && suggestion?.phase !== "reviewing") editorRef.current?.getEditor()?.clearAnchorHighlight();
   }, [suggestion?.phase]);
-
-  function reveal(paragraph: DocxParagraph) {
-    setSelected(paragraph.handle.ref);
-    if (paragraph.paraId) {
-      const editor = editorRef.current?.getEditor();
-      editor?.scrollToAnchor({ paraId: paragraph.paraId });
-      editor?.highlightAnchor({ paraId: paragraph.paraId });
-    }
-  }
-
-  async function generate() {
-    const session = sessionRef.current;
-    const paragraph = paragraphs.find((item) => item.handle.ref === selected);
-    if (!session || !paragraph || !instruction.trim()) return;
-    setError(null);
-    const controller = new AbortController();
-    stopRef.current = controller;
-    let target: DocxTarget | undefined;
-    try {
-      target = session.captureTarget(paragraph.handle);
-      const captured = target;
-      if (captured.paraId) editorRef.current?.getEditor()?.highlightAnchor({ paraId: captured.paraId }, { className: "oleafly-docx-target", timeoutMs: null });
-      updateSuggestion({ target: captured, proposed: "", phase: "streaming" });
-      const index = paragraphs.indexOf(paragraph);
-      const proposed = await runInlineCompletion({
-        instruction: instruction.trim(), selection: captured.original,
-        context: { before: paragraphs[index - 1]?.text ?? "", after: paragraphs[index + 1]?.text ?? "" },
-        signal: controller.signal,
-        onToken: (full) => {
-          const pending = suggestionRef.current;
-          if (alive.current && !controller.signal.aborted && pending && pending.target === captured && pending.phase === "streaming") {
-            updateSuggestion({ ...pending, proposed: full });
-          }
-        },
-      });
-      const pending = suggestionRef.current;
-      if (alive.current && !controller.signal.aborted && pending && pending.target === captured && pending.phase === "streaming") {
-        updateSuggestion({ target: captured, proposed, phase: "reviewing" });
-      }
-    } catch (cause) {
-      if (alive.current && !controller.signal.aborted) {
-        setError(String(cause));
-        const pending = suggestionRef.current;
-        if (pending && pending.target === target) updateSuggestion({ ...pending, phase: "withdrawn" });
-      }
-    } finally {
-      if (stopRef.current === controller) stopRef.current = null;
-    }
-  }
 
   function accept() {
     const session = sessionRef.current;
@@ -618,10 +723,62 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     }
   }
 
-  async function save(expectedRevision?: number, signal?: AbortSignal): Promise<DocxSaveResult | undefined> {
+  function changeMaterialView(view: DocxMaterialView) {
+    setMaterialView(view);
+    if (view !== "working") setOriginalKept(true);
+    if (view === "working") setStackForeground("current");
+    if (view === "original") setStackForeground("previous");
+  }
+
+  async function annotateDocxMaterial(requireSelection: boolean) {
+    const surface = materialView === "original" || (materialView === "compare" && stackForeground === "previous")
+      ? "original" : "working";
+    const liveEditor = surface === "original" ? originalEditorRef.current?.getEditor() : editorRef.current?.getEditor();
+    if (!liveEditor) throw new Error(text.notReady);
+    const selection = requireSelection ? readDocxMaterialSelection(liveEditor) : undefined;
+    if (requireSelection && !selection) throw new Error(tEditor(($) => $.editor.materials.selectionMissing));
+    const metadata = {
+      projectId: appProjectId,
+      documentId: `docx:${initialProject.current.project_id}`,
+      title: (surface === "original" ? initialSourceRef.current : source)?.filename ?? project.name,
+    };
+    if (surface === "original") {
+      const initialSource = initialSourceRef.current;
+      if (!initialSource) throw new Error(text.notReady);
+      const document = await captureRetainedDocxMaterial(metadata, initialSource.bytes);
+      openMaterialAnnotations(document, selection?.anchor);
+      return;
+    }
+    const session = sessionRef.current;
+    const workingEditor = editorRef.current;
+    if (!session || !workingEditor) throw new Error(text.notReady);
+    try {
+      const captured = await captureWorkingDocxMaterial({ metadata, editor: workingEditor, session });
+      if (sessionRef.current !== session || editorRef.current !== workingEditor || session.revision() !== captured.sessionRevision) {
+        throw new DocxMaterialCaptureError("revision-changed");
+      }
+      const capturedIdentity = identityRef.current();
+      openMaterialAnnotations(captured.document, selection?.anchor, {
+        beforeStartTask: async (taskId) => {
+          if (!alive.current || sessionRef.current !== session || session.revision() !== captured.sessionRevision) {
+            throw new Error(tEditor(($) => $.editor.materials.captureChanged));
+          }
+          await bindDocxTask(appProjectId, taskId, sessionId, captured.sessionRevision, capturedIdentity);
+        },
+      });
+    } catch (cause) {
+      if (cause instanceof DocxMaterialCaptureError && cause.code === "revision-changed") {
+        throw new Error(tEditor(($) => $.editor.materials.captureChanged));
+      }
+      if (cause instanceof DocxMaterialCaptureError && cause.code === "not-ready") throw new Error(text.notReady);
+      throw cause;
+    }
+  }
+
+  async function save(expectedRevision?: number, signal?: AbortSignal, operation?: DocxRecoverySaveOperation): Promise<DocxSaveResult | undefined> {
     const session = sessionRef.current;
     const editor = editorRef.current;
-    if (!source || !session || !editor || busySave.current || checking || recoveryConflict || resuming || !taskReady || saveRefused) {
+    if (!source || !session || !editor || busySave.current || discardingRef.current || checking || recoveryConflict || resuming || !taskReady || saveRefused) {
       if (expectedRevision !== undefined) throw new Error("The DOCX working copy cannot be saved while another document operation is pending.");
       return;
     }
@@ -644,7 +801,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         if (!bytes) throw new Error(text.notReady);
         if (signal?.aborted) throw new Error("The DOCX save was cancelled before the fixed save was created.");
         request = prepareDocxSave({ ...source, baseline_id: baselineId }, exportRevision, bytes);
-        taskState.pendingSave = recoveryPendingSave(request);
+        taskState.pendingSave = recoveryPendingSave(request, operation);
         snapshot = { appProjectId, workbenchProjectId: source.project_id, baseBaselineId: baselineId,
           sourceSha256: source.source_sha256, revision: exportRevision, bytes: new Uint8Array(bytes), taskState,
           recoveryKey: "", contentSha256: "", updatedAt: "" };
@@ -693,6 +850,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       pendingCheckpoint.current = null;
       fixedSavePending.current = false;
       setPendingSave(null);
+      useDocxWorkspaceStore.getState().saved();
       recoveredBytes.current = undefined;
       setCheck(null);
       try {
@@ -728,43 +886,28 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     }
   }
 
-  liveSaveRef.current = async ({ expectedRevision, signal }) => {
-    const result = await save(expectedRevision, signal);
+  liveSaveRef.current = async ({ expectedRevision, signal, operation }) => {
+    const result = await save(expectedRevision, signal, operation);
     if (!result) throw new Error("The fixed DOCX save has not committed. Resolve the displayed save state before retrying.");
     return result;
   };
+  livePrepareFontsRef.current = async () => {
+    const acquisition = await ensureDocxFonts(world, { isActive: () => alive.current });
+    if (!alive.current) throw new Error("The Word working copy closed during font preparation.");
+    return { acquisition, ...await refreshFonts() };
+  };
+  liveExportRef.current = download;
   liveFormatRef.current = async (query) => {
     const session = sessionRef.current;
     const editor = editorRef.current;
     if (!session || !editor || !source) throw new Error(text.notReady);
-    const atRevision = session.revision();
-    const bytes = await editor.save();
-    if (!bytes) throw new Error(text.notReady);
-    const { openDocxFormatFacts } = await import("@/lib/docx-format");
-    const facts = await openDocxFormatFacts(new Uint8Array(bytes));
-    if (session.revision() !== atRevision) throw new Error("The DOCX session changed while its formatting was read. Read it again.");
-    const offset = query.offset ?? 0;
-    const limit = query.limit ?? 20;
-    const document = { sessionId, filename: source.filename, baselineId, sessionRevision: atRevision, savedRevision, dirty: atRevision !== savedRevision };
-    if (query.kind === "nodes") {
-      const selected = facts.query({ kind: "nodes", part: query.part, path: query.path, namespace_uri: query.namespaceUri,
-        local_name: query.localName, attribute: query.attribute && { namespace_uri: query.attribute.namespaceUri, local_name: query.attribute.localName, value: query.attribute.value }, offset, limit });
-      if (selected.kind !== "nodes") throw new Error("The format reader did not return nodes.");
-      return { document, sourceSha256: facts.snapshot.source_sha256, revision: atRevision, nodes: selected.nodes, total: selected.total, nextOffset: selected.next_offset };
+    formatDocumentRef.current = { sessionId, filename: source.filename, baselineId, savedRevision };
+    if (formatReaderRef.current?.session !== session) {
+      formatReaderRef.current = { session, read: createDocxFormatReader({
+        session, exportBytes: () => editor.save(), document: () => formatDocumentRef.current,
+      }) };
     }
-    const paragraph = query.paragraphRef ? session.listParagraphs().find((item) => item.handle.ref === query.paragraphRef) : undefined;
-    if (query.paragraphRef && !paragraph) throw new Error("The DOCX paragraph is no longer present.");
-    const all = facts.snapshot.objects.filter((object) => (!query.part || object.part === query.part) &&
-      (!query.path || query.path.every((value, index) => object.path[index] === value)));
-    const locator = paragraph && session.paragraphLocator?.(paragraph.handle);
-    const matched = locator ? all.find((object) => object.kind === "paragraph" && object.part === locator.part &&
-      object.path.length === locator.path.length && object.path.every((index, slot) => index === locator.path[slot])) : undefined;
-    if (paragraph && !matched) throw new Error("The live paragraph could not be located in its exported format facts. Read the document objects instead.");
-    const selected = paragraph ? (matched ? all.filter((object) => object.object_id === matched.object_id || object.evidence.paragraph_object_id === matched.object_id) : []) : all;
-    const page = selected.slice(offset, offset + limit);
-    const direct = paragraph && session.readParagraphFormatting ? session.readParagraphFormatting(paragraph.handle) : undefined;
-    return { document, sourceSha256: facts.snapshot.source_sha256, revision: atRevision, ...(direct ? { paragraph: direct } : {}), objects: page.map((object) => ({ ...object })), total: selected.length,
-      nextOffset: offset + page.length < selected.length ? offset + page.length : null };
+    return formatReaderRef.current.read(query);
   };
   liveCheckRef.current = async ({ template, signal }) => {
     if (!source || sessionRef.current?.revision() !== savedRevision) throw new Error("Save the current DOCX working copy before checking it.");
@@ -773,7 +916,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     const current = state.projects.find((item) => item.project_id === source.project_id);
     if (!current || current.baseline_id !== baselineId) throw new Error(text.newBaseline);
     const result = await checkJournalTemplate(current, template, "agent");
-    if (alive.current) { setCheck(result); await onSavedRef.current(); }
+    if (alive.current) { setCheck(result); useDocxWorkspaceStore.getState().saved(); await onSavedRef.current(); }
     return { template, check: { ...result } };
   };
 
@@ -787,7 +930,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       if (!current || current.baseline_id !== baselineId) throw new Error(text.newBaseline);
       if (world.template) {
         const result = await checkJournalTemplate(current, world.version_id);
-        if (alive.current) { setCheck(result); await onSavedRef.current(); }
+        if (alive.current) { setCheck(result); useDocxWorkspaceStore.getState().saved(); await onSavedRef.current(); useWorkspaceSurfaceStore.getState().openJournal(); }
         return;
       }
       if (current.binding?.baseline_id !== baselineId || current.binding.world_version_id !== world.version_id) {
@@ -798,7 +941,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       }
       const result = await journalRequest<JournalCheck>("/api/check", { project_id: source.project_id });
       if (result.baseline_id !== baselineId || result.world_version_id !== world.version_id) throw new Error(text.newBaseline);
-      if (alive.current) { setCheck(result); await onSavedRef.current(); }
+      if (alive.current) { setCheck(result); useDocxWorkspaceStore.getState().saved(); await onSavedRef.current(); useWorkspaceSurfaceStore.getState().openJournal(); }
     } catch (cause) {
       if (alive.current) setError(String(cause));
     } finally {
@@ -808,21 +951,27 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
 
   async function download() {
     try {
-      const bytes = await editorRef.current?.save();
-      if (!bytes || !source) return;
-      await downloadDocxCopy(new Uint8Array(bytes), source.filename);
-    } catch (cause) { setError(String(cause)); }
+      const editor = editorRef.current;
+      const session = sessionRef.current;
+      if (!editor || !session || !source) throw new Error(text.notReady);
+      const exporting = editor.save();
+      const sessionRevision = session.revision();
+      const bytes = await exporting;
+      if (!bytes) throw new Error(text.notReady);
+      const result = await downloadDocxCopy(new Uint8Array(bytes), source.filename);
+      return { result, filename: source.filename, sessionId, sessionRevision, byteLength: bytes.byteLength };
+    } catch (cause) { setError(String(cause)); throw cause; }
   }
 
   function close() {
-    if (saving || checking || (pendingReceipts > 0 && !fixedSavePending.current)) return;
+    if (closeBlocked) return;
     if (!source && !sessionRef.current) { onClose(); return; }
     if (dirty || streaming || suggestionRef.current?.phase === "reviewing" || pendingSave) setClosePrompt(true);
     else onClose();
   }
 
   async function discard() {
-    if (!source || discardingRef.current || (fixedSavePending.current && !saveRefused)) return;
+    if (!source || discardingRef.current || busySave.current || (fixedSavePending.current && !saveRefused)) return;
     discardingRef.current = true;
     recoveryEpoch.current += 1;
     setDiscarding(true);
@@ -867,58 +1016,137 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     }
   }
 
+  closeAction.current = close;
+  const originalInFront = materialView === "original" || (materialView === "compare" && stackForeground === "previous");
+  const visibleMaterialSelection = originalInFront ? originalMaterialSelection : workingMaterialSelection;
+  const pdfDocument = useMemo<MaterialDocument | null>(() => {
+    if (!showPdf || !preview?.bytes || preview.error || !source) return null;
+    return {
+      projectId: appProjectId,
+      documentId: `docx-render:${preview.projectId}:${preview.render.baseline_id}:${preview.render.bundle_id}`,
+      path: null,
+      title: `${source.filename} · ${text.render.title}`,
+      kind: "pdf",
+      revision: preview.render.manifest.pdf_sha256,
+      source: { bytes: preview.bytes, mediaType: "application/pdf" },
+    };
+  }, [appProjectId, preview, showPdf, source, text.render.title]);
+  const pdfDocumentId = pdfDocument?.documentId;
+  useEffect(() => () => {
+    if (pdfDocumentId) useAgentWorkspaceStore.getState().clearView(appProjectId, pdfDocumentId);
+  }, [appProjectId, pdfDocumentId]);
+  useEffect(() => {
+    if (!source || activeSurface !== "word") return;
+    if (showPdf) { useAgentWorkspaceStore.getState().clearView(appProjectId, `docx:${project.project_id}`); return; }
+    const initial = initialSourceRef.current;
+    const viewRevision = originalInFront ? initial?.source_sha256 : String(revision);
+    if (!viewRevision) return;
+    const selection = originalInFront ? originalViewSelection : workingViewSelection;
+    useAgentWorkspaceStore.getState().publishView({
+      projectId: appProjectId, documentId: `docx:${project.project_id}`, title: source.filename,
+      kind: "docx", role: originalInFront ? "original" : "working", revision: viewRevision,
+      ...(originalInFront ? {} : { sessionId, sessionRevision: revision, dirty }),
+      selection: selection?.revision === viewRevision ? selection : null,
+    });
+  }, [activeSurface, appProjectId, dirty, originalInFront, originalViewSelection, project.project_id, revision,
+    sessionId, showPdf, source, workingViewSelection]);
+
   return <>
-    <Dialog modal={false} open={!minimized} onOpenChange={(open) => { if (!open) close(); }}>
-      <DialogContent
-        forceMount
+      <section
         ref={interactionRoot}
-        style={minimized ? { display: "none" } : undefined}
-        overlayClassName={minimized ? "hidden" : undefined}
-        className="flex h-[94vh] w-[96vw] max-w-none flex-col gap-3 p-4 sm:max-w-none"
-        closeDisabled={saving || checking}
-        onInteractOutside={(event) => event.preventDefault()}
+        className="flex h-full min-h-0 min-w-0 flex-col gap-2 p-3"
+        aria-label={text.title}
         data-testid="docx-workspace"
+        data-docx-history={originalInFront || showPdf ? "readonly" : "working"}
       >
-        <DialogHeader className="pr-7">
-          <DialogTitle>{text.title} · {project.name}</DialogTitle>
-          <DialogDescription>{text.description}</DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
+          <h2 className="mr-auto truncate text-sm font-semibold">{project.name}</h2>
           <span role="status" data-testid="docx-save-state" className={dirty ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}>
-            {`${dirty ? text.unsaved : text.saved} · r${revision}${savedRevision < 0 ? "" : ` / r${savedRevision}`}`}
+            {dirty ? text.unsaved : text.saved}
           </span>
-          {onMinimize && <Button size="sm" variant="outline" onClick={onMinimize}><Minimize2 className="mr-1 size-3.5" />{text.minimize}</Button>}
-          {onMinimize && <Button size="sm" variant="outline" onClick={() => {
-            handoffToAssistant(`Read the active Oleafly DOCX working copy using read_docx_document with session_id ${sessionId}.\n${instruction.trim() || "Review the current manuscript and explain useful next changes."}\nUse the live DOCX tools for paragraph edits and respect the current approval policy. The saved Workbench baseline can be older than the live session.`, { autoSend: false });
-            onMinimize();
-          }}>{text.askAgent}</Button>}
+          <Button size="sm" variant="outline" onClick={() => {
+            handoffToAssistant(t(($) => $.researchTools.workspace.reviewDocumentPrompt, { name: project.name }), { autoSend: false });
+          }}>{text.askAgent}</Button>
+          <DocxMaterialTools
+            view={materialView}
+            onViewChange={changeMaterialView}
+            selectionAvailable={!!visibleMaterialSelection}
+            disabled={!source}
+            onAnnotateWhole={() => annotateDocxMaterial(false)}
+            onAnnotateSelection={() => annotateDocxMaterial(true)}
+          />
           <Button size="sm" variant="outline" disabled={!source || saving || checking || recoveryConflict || resuming || !taskReady || saveRefused || (!dirty && !pendingSave)} onClick={() => void save()}>
             {saving ? <Spinner size="sm" className="mr-1" /> : <Save className="mr-1 size-3.5" />}
             {pendingSave ? text.retrySave : text.save}
           </Button>
-          <Button size="sm" variant="outline" disabled={!source || saving} onClick={() => void download()}><Download className="mr-1 size-3.5" />{text.download}</Button>
+          <Button size="sm" variant="outline" disabled={!source || saving} onClick={() => void download().catch(() => {})}><Download className="mr-1 size-3.5" />{text.download}</Button>
           <Button size="sm" variant="outline" disabled={!world || !source || dirty || saving || checking || recoveryConflict || !!pendingSave} onClick={() => void checkSaved()}>
             {checking ? <Spinner size="sm" className="mr-1" /> : <Check className="mr-1 size-3.5" />}{text.check}
           </Button>
-          {check && <span>{text.checked}: {check.validity} · {check.baseline_id}</span>}
+          {check && <span data-testid="docx-check-validity">{text.checked}: {t(($) => check.validity === "CURRENT" && !dirty && check.baseline_id === baselineId && check.world_version_id === world?.version_id ? $.researchTools.journal.current : $.researchTools.journal.stale)}</span>}
+          <Button size="sm" variant="outline" aria-pressed={showPdf} disabled={!source} onClick={() => setShowPdf((value) => !value)}>{showPdf ? t(($) => $.researchTools.workspace.backToDocument) : text.render.open}</Button>
+          <Button size="sm" variant="ghost" onClick={() => useWorkspaceSurfaceStore.getState().openJournal()}>{t(($) => $.researchTools.journal.title)}</Button>
+          <Button size="sm" variant="ghost" aria-expanded={toolsOpen} onClick={() => setToolsOpen((value) => !value)}><PanelRight className="mr-1 size-3.5" />{t(($) => $.researchTools.workspace.documentTools)}</Button>
+          <Button size="icon" variant="ghost" className="size-7" aria-label={t(($) => $.researchTools.workspace.closeDocument)} disabled={closeBlocked} onClick={close}><X className="size-3.5" /></Button>
         </div>
-        {source && <Tooltip label={baselineId}><p className="truncate text-[0.625rem] text-muted-foreground">{text.baseline}: {baselineId}</p></Tooltip>}
-        {source && <p className="text-xs text-muted-foreground" data-testid="docx-font-state" data-measurer={fontMeasurement.measurer} data-resolving={fontMeasurement.resolving} data-producer={fontMeasurement.producer}>{fontMeasurement.resolving ? text.fontsResolving : fontMeasurement.measurer === "shaped" ? text.fontsShaped : text.fontsFixed}</p>}
+        {source && <div className="text-xs text-muted-foreground" data-testid="docx-font-state" data-measurer={fontMeasurement.measurer} data-resolving={fontMeasurement.resolving}>{fontMeasurement.resolving ? t(($) => $.researchTools.workspace.preparingFonts) : fontStatus.missing.length > 0 ? <button type="button" className="text-amber-700 underline dark:text-amber-400" onClick={() => setToolsOpen(true)}>{t(($) => $.researchTools.workspace.missingFonts)}</button> : null}</div>}
         {recovery && <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.docx.recovery.restored, { time: new Date(recovery.updatedAt).toLocaleString(), revision: recovery.revision })}</p>}
         {recoveryConflict && <p role="alert" className="rounded border border-amber-500/40 p-2 text-xs">{text.recovery.conflict}</p>}
         {error && <p role="alert" className="break-words rounded border border-destructive/30 p-2 text-xs text-destructive">{error}</p>}
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_18rem] gap-3 max-md:grid-cols-1">
-          <div className="min-h-0 overflow-hidden rounded border bg-muted/20" data-testid="docx-editor-surface">
-            {source ? <DocxEditor
-              ref={editorRef} document={source.bytes} fonts={fonts} fontShaping={fontShaping} mode="edit" locale={editorLocale.current}
-              title={source.filename} author="Oleafly User"
-              onSave={() => void save()} menu={false} colorMode="system"
-              className="h-full"
-              onFontError={(cause) => setError(`${text.fontError}: ${cause.message}`)}
-            ><SessionBridge onReady={ready} onMeasurement={setFontMeasurement} /><SuggestionOverlay suggestion={suggestion} accept={accept} stop={stop} /></DocxEditor> : <p className="p-6 text-sm">{text.loading}</p>}
+        <div className={`grid min-h-0 flex-1 gap-3 ${toolsOpen ? "grid-cols-[minmax(0,1fr)_16rem] max-lg:grid-cols-[minmax(0,1fr)_13rem]" : "grid-cols-1"}`}>
+          <div hidden={showPdf} className={showPdf ? "hidden min-h-0" : "flex min-h-0 flex-col"}>
+            <div ref={setToolbarTarget} className="shrink-0 border-b bg-background" data-testid="docx-formatting-tools" />
+            <WordSurface
+              view={materialView}
+              onViewChange={changeMaterialView}
+              className="h-auto flex-1"
+              foreground={stackForeground}
+              onForegroundChange={setStackForeground}
+              originalLabel={tEditor(($) => $.editor.materials.docxOriginal)}
+              workingLabel={tEditor(($) => $.editor.materials.docxWorking)}
+              working={<div className="h-full min-h-0 overflow-hidden rounded border bg-muted/20" data-testid="docx-editor-surface">
+              {source ? <WordDocument
+                ref={editorRef} document={source.bytes} fonts={fonts} fontShaping={fontShaping} mode="edit" locale={editorLocale.current}
+                title={source.filename} author="Oleafly User"
+                colorMode="system"
+                className="h-full"
+                onFontError={(cause) => setError(`${text.fontError}: ${cause.message}`)}
+              ><WordToolbarPortal target={toolbarTarget} disabled={originalInFront || showPdf} labels={{
+                toolbar: tEditor(($) => $.editor.wordTools.toolbar),
+                undo: tEditor(($) => $.editor.toolbar.undo, { shortcut: "Mod+Z" }),
+                redo: tEditor(($) => $.editor.toolbar.redo, { shortcut: "Mod+Shift+Z" }),
+                bold: tEditor(($) => $.editor.toolbar.bold), italic: tEditor(($) => $.editor.toolbar.italic),
+                fontFamily: tEditor(($) => $.editor.wordTools.fontFamily), fontSize: tEditor(($) => $.editor.wordTools.fontSize),
+                mixed: tEditor(($) => $.editor.wordTools.mixed), alignLeft: tEditor(($) => $.editor.wordTools.alignLeft),
+                alignCenter: tEditor(($) => $.editor.wordTools.alignCenter), alignRight: tEditor(($) => $.editor.wordTools.alignRight),
+                moreTools: tEditor(($) => $.editor.toolbar.moreOptions), fewerTools: tEditor(($) => $.editor.wordTools.fewerTools),
+              }} /><SessionBridge onReady={ready} onMeasurement={setFontMeasurement} onSelection={captureWorkingSelection} /><SuggestionOverlay suggestion={suggestion} accept={accept} stop={stop} /></WordDocument> : <p className="p-6 text-sm">{text.loading}</p>}
+            </div>}
+              original={originalKept && initialSourceRef.current ? <div className="h-full min-h-0 overflow-hidden rounded border bg-muted/20" data-testid="docx-original-surface" data-docx-history="readonly">
+              <WordDocument
+                ref={originalEditorRef} document={initialSourceRef.current.bytes} fonts={fonts}
+                fontShaping={fontShaping} mode="view" locale={editorLocale.current}
+                title={`${initialSourceRef.current.filename} · ${tEditor(($) => $.editor.materials.docxOriginal)}`}
+                colorMode="system" className="h-full"
+                onFontError={(cause) => setError(`${text.fontError}: ${cause.message}`)}
+              ><ReadOnlySelectionBridge onSelection={captureOriginalSelection} /></WordDocument>
+            </div> : null}
+            />
           </div>
-          <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto" aria-label={text.work}>
-            <DocxFontsPanel world={world} status={fontStatus} ready={editorReady} onRefresh={refreshFonts} />
+          {showPdf && <section className="flex min-h-0 flex-col overflow-hidden rounded border" data-testid="docx-render-preview" data-docx-history="readonly">
+            <p className="shrink-0 border-b p-2 text-xs text-muted-foreground">{preview?.stale ? text.render.stale : text.render.current}</p>
+            <div className="min-h-0 flex-1">
+              {preview?.error ? <p role="alert" className="p-4 text-sm text-destructive">{preview.error}</p> : pdfDocument && preview?.bytes ? <MaterialViewContext key={pdfDocument.documentId} document={pdfDocument} active={activeSurface === "word"} materialRole="result"><MaterialPdfView document={pdfDocument} bytes={preview.bytes} /></MaterialViewContext> : <p role="status" className="p-4 text-sm">{text.render.loading}</p>}
+            </div>
+          </section>}
+          <aside hidden={!toolsOpen} className="min-h-0 space-y-3 overflow-y-auto" aria-label={t(($) => $.researchTools.workspace.documentTools)} data-docx-history="field">
+            <DocxFontsPanel world={world} status={fontStatus} ready={editorReady} onRefresh={async () => { await refreshFonts(); }} />
+            {sessionRef.current && <DocxEquationPanel
+              active={toolsOpen && !originalInFront && !showPdf}
+              sessionId={sessionId}
+              session={sessionRef.current}
+              selection={workingViewSelection}
+            />}
             {recovery?.taskState && !taskReady && <Button size="sm" variant="outline" disabled={resuming} onClick={() => retryResume.current()}>{text.recovery.restore}</Button>}
             {recoveredActivities.map((activity) => <div key={activity.id} className="rounded border p-2 text-xs" data-testid="docx-recovered-source">
               <p>{text.taskActivity.events.recovered}</p><DocxActivitySource activity={activity} />
@@ -928,25 +1156,10 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
               <p>{text.taskActivity.pending}</p>
               <Button size="sm" variant="outline" onClick={() => void checkpointCurrent.current().then(flushReceipts).catch((cause) => setError(String(cause)))}>{text.taskActivity.retry}</Button>
             </div>}
-            <label className="space-y-1 text-xs">
-              <span className="font-medium">{text.target}</span>
-              <select className="h-9 w-full rounded border bg-background px-2" value={selected} onChange={(event) => {
-                const paragraph = paragraphs.find((item) => item.handle.ref === event.target.value);
-                if (paragraph) reveal(paragraph);
-              }}>
-                <option value="">{text.chooseTarget}</option>
-                {paragraphs.filter((item) => item.text.trim()).map((item, index) => <option key={item.handle.ref} value={item.handle.ref}>{index + 1}. {item.text.slice(0, 90)}</option>)}
-              </select>
-            </label>
-            <p className="text-[0.6875rem] text-muted-foreground">{text.targetHelp}</p>
-            <Textarea aria-label={text.instruction} placeholder={text.instruction} rows={3} value={instruction} onChange={(event) => setInstruction(event.target.value)} />
-            <div className="flex gap-2">
-              <Button size="sm" disabled={!selected || !instruction.trim() || streaming || suggestion?.phase === "reviewing" || !sessionRef.current} onClick={() => void generate()}><Sparkles className="mr-1 size-3.5" />{text.generate}</Button>
-              {streaming && <Button size="sm" variant="outline" onClick={stop}><Square className="mr-1 size-3" />{text.stop}</Button>}
-            </div>
+            {streaming && <Button size="sm" variant="outline" onClick={stop}><Square className="mr-1 size-3" />{text.stop}</Button>}
             {suggestion && <section className="space-y-2 rounded border p-3 text-xs" data-testid="docx-suggestion">
               {suggestion.activity && <DocxActivitySource activity={suggestion.activity} />}
-              <p className="font-medium">{`${text.phases[suggestion.phase]} · r${suggestion.target.revision}`}</p>
+              <p className="font-medium">{text.phases[suggestion.phase]}</p>
               <blockquote className="whitespace-pre-wrap border-l-2 pl-2 text-muted-foreground">{suggestion.target.original}</blockquote>
               <div aria-live="polite" className="min-h-8 whitespace-pre-wrap" data-testid="docx-proposed">{suggestion.proposed}</div>
               {suggestion.phase === "withdrawn" && <p>{text.withdrawnHelp}</p>}
@@ -957,14 +1170,13 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
               {suggestion.phase === "applied" && <p className="flex items-center gap-1"><Undo2 className="size-3" />{text.undoHelp}</p>}
             </section>}
             <p className="text-[0.6875rem] text-muted-foreground">{text.previewHelp}</p>
-            <DocxRenderPanel projectId={project.project_id} baselineId={baselineId} dirty={dirty} fontRevision={fontRevision} fontsReady={editorReady && !fontMeasurement.resolving} />
+            <DocxRenderPanel projectId={project.project_id} baselineId={baselineId} dirty={dirty} fontRevision={fontRevision} fontsReady={editorReady && !fontMeasurement.resolving} enabled={showPdf || toolsOpen} onPreview={setPreview} />
           </aside>
         </div>
-      </DialogContent>
-    </Dialog>
+      </section>
     <Dialog open={closePrompt} onOpenChange={setClosePrompt}>
       <DialogContent><DialogHeader><DialogTitle>{text.closeTitle}</DialogTitle><DialogDescription>{pendingSave && !saveRefused ? text.pendingSaveHelp : text.closeHelp}</DialogDescription></DialogHeader>
-        <div className="flex justify-end gap-2"><Button variant="outline" disabled={discarding} onClick={() => setClosePrompt(false)}>{text.keepEditing}</Button><Button variant="destructive" disabled={discarding || (!saveRefused && (!!pendingSave || pendingReceipts > 0))} onClick={() => void discard()}>{text.discard}</Button></div>
+        <div className="flex justify-end gap-2"><Button variant="outline" disabled={discarding} onClick={() => setClosePrompt(false)}>{text.keepEditing}</Button><Button variant="destructive" disabled={discarding || saving || (!saveRefused && (!!pendingSave || pendingReceipts > 0))} onClick={() => void discard()}>{text.discard}</Button></div>
       </DialogContent>
     </Dialog>
   </>;

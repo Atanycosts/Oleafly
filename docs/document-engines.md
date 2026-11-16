@@ -5,8 +5,9 @@ Oleafly loads one backend-owned engine descriptor when a project opens. The fron
 There are five engines: LaTeX through Tectonic or latexmk, Typst, Markdown through Pandoc, and Quarto and Calepin for documents that run code. The table below covers the first three. [Quarto and Calepin](#quarto-and-calepin) has a table of its own.
 
 DOCX uses conversion import/export, retained Workbench manuscript analysis and an embedded
-working-copy editor opened from **Journal checks → Edit DOCX working copy**. The editor provides
-live pages, manual editing, one streamed paragraph suggestion, undo/redo and actual DOCX export.
+working-copy editor opened from the file tree or **Journal checks → Edit DOCX working copy**. The editor provides
+live pages, manual editing, one streamed paragraph suggestion, protected ordinary-text range edits,
+bounded semantic reads with continuations, undo/redo and actual DOCX export.
 Saving creates a retained Workbench baseline, and journal checks run against that saved version.
 This surface is separate from the five project engines. See the
 [session contract](agent/architecture.md#docx-实时工作表面),
@@ -19,8 +20,9 @@ viewer. The panel marks the preview against its baseline and keeps the previous 
 while a newer conversion is running or fails. Unsaved bytes have an application-private recovery
 checkpoint with explicit restore, download and discard. Single tasks and task groups can be bound
 before execution to read the live session, capture a target and retain a proposed replacement;
-user decisions and exact saved versions link back to the original task execution. Task tools do
-not apply or save the document. External Word/WPS automatic synchronization is not implemented.
+user decisions and exact saved versions link back to the original task execution. Task tools can
+read and apply supported document formatting, save a baseline and check it through the same
+active document session. External Word/WPS automatic synchronization is not implemented.
 WPS remains an optional external editor/render source. Neither the embedded editor nor retained WPS process evidence establishes general Word
 layout fidelity. Real English and Chinese manuscript runs preserved package structure through
 the controlled edit/save/reopen path, but substitute fonts, fixed measurement warnings and an
@@ -80,7 +82,12 @@ A `.typ` document switches between the Typst and Calepin engines from the
 compile menu. An opened folder whose main `.typ` file imports the Calepin
 runtime opens on Calepin. Both engines need a trusted folder.
 
-HTML output stays in the build folder, and the preview pane has an
-**Open in browser** button for it. PDF output goes where the other engines
+HTML output stays in the build folder and renders inside the preview pane.
+Local HTML files and task HTML results also open in the central workspace.
+The snapshot retains the entry and statically referenced local CSS, JavaScript,
+images, fonts and other supported resources. The sandbox allows page scripts
+without access to the application origin, external network resources or native
+commands. Selected text can receive versioned feedback. **Open in browser**
+remains an optional action for compiled output. PDF output goes where the other engines
 write theirs, so the viewer, export and the shared project PDF need nothing
 new.

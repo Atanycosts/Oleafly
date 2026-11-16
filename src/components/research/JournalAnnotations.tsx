@@ -28,6 +28,8 @@ export function JournalAnnotations(props: Readonly<Props>) {
 function JournalAnnotationPanel({ projectId, reference, onOpenTarget }: Readonly<Props>) {
   const { t } = useTranslation("researchTools");
   const text = t(($) => $.researchTools.journal.annotations, { returnObjects: true });
+  const targetNames = t(($) => $.researchTools.workspace.journalAnnotationTargets, { returnObjects: true });
+  const describeTarget = (target: AnnotationTarget) => targetNames[target.objectKind as keyof typeof targetNames] ?? targetNames.other;
   const enabled = useResearchTasksEnabled();
   const selectId = useId();
   const [object, setObject] = useState<JournalAnnotationObject | null>(null);
@@ -104,7 +106,7 @@ function JournalAnnotationPanel({ projectId, reference, onOpenTarget }: Readonly
       const brief = defaultBrief(draft.body.slice(0, 2000));
       brief.permissions = { network: true, commands: "off", desktopApps: false };
       newDraft = {
-        projectId, ...target, title: `${text.taskTitle} · ${selectedReference.objectId}`.slice(0, 100),
+        projectId, ...target, title: text.taskTitle,
         prompt: draft.body, brief, skillIds: [], dependencyIds: [],
       };
     }
@@ -139,7 +141,7 @@ function JournalAnnotationPanel({ projectId, reference, onOpenTarget }: Readonly
       <select id={selectId} className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2" value={taskId}
         disabled={!!object.continuationTaskId || !!pendingStart} onChange={(event) => setTaskId(event.target.value)}>
         <option value="">{text.chooseTask}</option>
-        {object.relatedTasks.map((task) => <option key={task.id} value={task.id}>{task.title} · {task.id}</option>)}
+        {object.relatedTasks.map((task) => <option key={task.id} value={task.id}>{task.title}</option>)}
       </select>
     </label>}
     {pendingStart && <div className="space-y-2 rounded-md border p-2 text-xs">
@@ -152,6 +154,6 @@ function JournalAnnotationPanel({ projectId, reference, onOpenTarget }: Readonly
     }}>{text.openTask} · {activeTask.title}</Button>}
     {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}
     {object && <TaskAnnotations contextScope="object" objectTarget={object.target} source={object.source} members={members}
-      submitAnnotation={submit} onReplyChange={(annotation) => { void selectReply(annotation); }} onOpenTarget={onOpenTarget} requestHint={text.feedbackHelp} />}
+      submitAnnotation={submit} onReplyChange={(annotation) => { void selectReply(annotation); }} onOpenTarget={onOpenTarget} requestHint={text.feedbackHelp} describeTarget={describeTarget} />}
   </section>;
 }

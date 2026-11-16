@@ -101,9 +101,11 @@ import {
   sessionZoomByProject,
 } from "./preview-zoom";
 import { Spinner } from "@/components/ui/spinner";
-import type { FrozenPdfSelection } from "@/lib/pdf-selection";
-
-const PdfSelectionDialog = lazy(() => import("./PdfSelectionDialog").then((module) => ({ default: module.PdfSelectionDialog })));
+import { createMaterialDocument, type MaterialDocument } from "@/lib/material-surface";
+import { openMaterialAnnotations } from "@/store/material-annotations";
+import { MaterialViewContext } from "@/components/materials/MaterialViewContext";
+import { MaterialPdfSelection } from "@/components/materials/MaterialPdfView";
+import { pauseAgentWorkspaceFollow } from "@/lib/agent-workspace-interaction";
 
 interface PreviewDocument {
   bytes: Uint8Array;
@@ -696,7 +698,7 @@ function StaleTooltipLabel({
 }
 
 export function PreviewPane({ active = true }: { active?: boolean } = {}) {
-  const { t } = useTranslation(["common", "preview", "shell"]);
+  const { t } = useTranslation(["common", "preview", "shell", "editor"]);
   const status = useCompileStore((s) => s.status);
   const phase = useCompileStore((s) => s.phase);
   const pdfBytes = useCompileStore((s) => s.pdfBytes);
@@ -735,7 +737,6 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
   const zenLogsShown = useRef(false);
   const tourTabRef = useRef<"pdf" | "logs" | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
-  const [pdfSelection, setPdfSelection] = useState<{ projectId: string; frozen: FrozenPdfSelection | null } | null>(null);
   const [saveName, setSaveName] = useState("");
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -767,6 +768,7 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
   const [passwordDraft, setPasswordDraft] = useState("");
   const [viewerDocument, setViewerDocument] =
     useState<PreviewDocument | null>(null);
+  const [materialDocument, setMaterialDocument] = useState<MaterialDocument | null>(null);
   const [retainedLoadFailure, setRetainedLoadFailure] = useState<
     string | null
   >(null);
@@ -811,7 +813,6 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
     setRotation(0);
     setRotationPending(false);
     setScreenReaderMode(false);
-    setPdfSelection(null);
     setHasRendered(false);
   }, [projectId]);
 
@@ -881,6 +882,13 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
     (htmlBuiltAt !== null ||
       (htmlEngine && !displayedBytes && status !== "error" && status !== "unavailable"));
   const shownBytes = showHtmlOutput ? null : displayedBytes;
+  useEffect(() => {
+    let current = true;
+    setMaterialDocument(null);
+    if (projectId && shownBytes) void createMaterialDocument({ projectId, documentId: "compiled:pdf", path: null,
+      title: `${projectName ?? "Document"}.pdf`, kind: "pdf" }, { bytes: shownBytes, mediaType: "application/pdf" }).then((document) => { if (current) setMaterialDocument(document); });
+    return () => { current = false; };
+  }, [projectId, projectName, shownBytes]);
   const staleAnnouncement = displayedCheckpoint
     ? t(($) => $.preview.stale.explanation)
     : t(($) => $.preview.stale.noIdentity);
@@ -1300,13 +1308,17 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => {
               const selection = pdfRef.current?.getTextSelection();
-              const frozen = selection && viewerDocument && selection.documentIdentity === viewerDocument.identity ? {
-                projectId, mainDocument: viewerDocument.checkpoint?.mainDocument ?? mainDoc,
-                checkpoint: viewerDocument.checkpoint, selection, bytes: viewerDocument.bytes.slice(),
-              } : null;
-              setPdfSelection({ projectId, frozen });
+              if (!viewerDocument) return;
+              const path = viewerDocument.checkpoint?.mainDocument ?? mainDoc;
+              const content = viewerDocument.bytes.slice();
+              void createMaterialDocument({ projectId, documentId: `compiled:${path}`, path, title: `${basename(path)} · PDF`, kind: "pdf" }, { bytes: content, mediaType: "application/pdf" }).then((document) => openMaterialAnnotations(document,
+                selection?.documentIdentity === viewerDocument.identity ? { kind: "pdf", pages: selection.pages, quote: selection.text, rotation: selection.rotation } : undefined));
             }}><MessageSquarePlus className="size-3.5" /></Button>
         </Tooltip>}
+        {projectId && !isImage && viewerDocument && <Button size="xs" variant="ghost" onClick={() => {
+          const path = viewerDocument.checkpoint?.mainDocument ?? mainDoc;
+          void createMaterialDocument({ projectId, documentId: `compiled:${path}`, path, title: `${basename(path)} · PDF`, kind: "pdf" }, { bytes: viewerDocument.bytes.slice(), mediaType: "application/pdf" }).then((document) => openMaterialAnnotations(document, { kind: "page", page, rects: [] }));
+        }}>{t(($) => $.editor.materials.annotatePage)}</Button>}
         <PdfToolbarControls
           isImage={isImage} hasDocument={!!shownBytes} numPages={numPages}
           page={page} pageInput={pageInput} setPageInput={setPageInput} jumpToPage={jumpToPage}
@@ -1500,11 +1512,12 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
   );
 
   const renderHtmlOutput = () => (
-    <div className="flex h-full flex-col items-center justify-center bg-sidebar px-6">
+    <div className="flex h-full min-h-0 flex-col bg-sidebar">
       {projectId && (
         <Suspense fallback={null}>
           <HtmlOutputPanel
             projectId={projectId}
+            active={active}
             builtAt={htmlBuiltAt}
             compiling={status === "compiling"}
             onCompile={() => void recompile()}
@@ -1544,7 +1557,7 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
             />
           )}
 
-          {renderPdfScrollArea(viewerDocument)}
+          <MaterialViewContext document={materialDocument} active={active} materialRole="result"><MaterialPdfSelection viewer={pdfRef} page={page}>{renderPdfScrollArea(viewerDocument)}</MaterialPdfSelection></MaterialViewContext>
 
           {renderPdfLoadOverlay(viewerDocument)}
         </div>
@@ -1563,6 +1576,8 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
       data-preview-layout={layout}
       data-preview-inverted={inverted ? "true" : "false"}
       className="relative flex h-full flex-col bg-background"
+      onPointerDownCapture={pauseAgentWorkspaceFollow} onWheelCapture={pauseAgentWorkspaceFollow}
+      onBeforeInputCapture={pauseAgentWorkspaceFollow} onKeyDownCapture={pauseAgentWorkspaceFollow}
     >
       {isFs && fsToolbarHidden && (
         <Tooltip label={t(($) => $.preview.actions.showToolbar)}>
@@ -1600,9 +1615,7 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
 
       <SavePreviewDialog saveOpen={saveOpen} closeSave={closeSave} isImage={isImage} pdfIsStale={pdfIsStale}
         saveName={saveName} setSaveName={setSaveName} saving={saving} hasDocument={!!displayedBytes} submitSavePdf={submitSavePdf} />
-      {pdfSelection && pdfSelection.projectId === projectId && <Suspense fallback={null}>
-        <PdfSelectionDialog projectId={pdfSelection.projectId} frozen={pdfSelection.frozen} onClose={() => setPdfSelection(null)} />
-      </Suspense>}
+
     </div>
   );
 }

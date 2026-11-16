@@ -13,6 +13,7 @@ import {
   notebookToolchainStatus,
   openCompiledHtml,
   removeNotebookTool,
+  readTaskHtmlPreview,
   type NotebookInstallProgress,
 } from "./notebook-commands";
 
@@ -69,4 +70,12 @@ describe("notebook commands", () => {
     await call();
     expect(invoke).toHaveBeenCalledWith(command, args);
   });
+});
+
+
+it("opens task HTML with the reviewed generation and entry hash", async () => {
+  const snapshot = { url: "http://127.0.0.1:1234/token/report.html", bundle: "captured execution bytes", revision: "bundle-sha", path: "report.html" };
+  invoke.mockResolvedValue(snapshot);
+  await expect(readTaskHtmlPreview("task-1", "report.html", 3, "entry-sha")).resolves.toBe(snapshot);
+  expect(invoke).toHaveBeenCalledWith("read_task_html_preview", { taskId: "task-1", path: "report.html", executionGeneration: 3, expectedSha256: "entry-sha" });
 });

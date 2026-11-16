@@ -302,7 +302,12 @@ import { textToBase64 } from "@/lib/base64";
 import { Spinner } from "@/components/ui/spinner";
 
 const MAX_AGENT_TOOL_DEFINITIONS = 128;
-const IMAGE_TOOLS = new Set(["preview_figure", "load_image", "verify_pdf_pages"]);
+const IMAGE_TOOLS = new Set([
+  "preview_figure",
+  "load_image",
+  "read_docx_image",
+  "verify_pdf_pages",
+]);
 const CHAT_COST_REFRESH_MS = 1_000;
 const PERSIST_MAX_WAIT_MS = 2_000;
 
@@ -2508,6 +2513,11 @@ USER_CUSTOM_INSTRUCTIONS`
       createOpts: {
         confirm,
         onImage: collectRunImage,
+        imageSupported: modelSupportsVision(
+          provider,
+          model,
+          runStoredModel?.metadata?.inputModalities,
+        ),
         signal: ac.signal,
         runId: () => activeRunRequestIdRef.current,
         researchScope: { projectId: runProjectId, runtimeId: "builtin", agentId: provider, modelId: model, delegation },

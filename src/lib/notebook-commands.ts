@@ -70,3 +70,18 @@ export const removeNotebookTool = (tool: NotebookTool) =>
 
 export const openCompiledHtml = (projectId: string) =>
   invoke<void>("open_compiled_html", { projectId });
+
+export interface HtmlPreviewSnapshot {
+  url: string;
+  bundle: string;
+  revision: string;
+  path: string;
+}
+export const readHtmlPreview = (projectId: string, path?: string) =>
+  invoke<HtmlPreviewSnapshot>("read_html_preview", { projectId, path: path ?? null });
+export const restoreHtmlPreview = (bundle: string) =>
+  invoke<HtmlPreviewSnapshot>("restore_html_preview", { bundle });
+export const closeHtmlPreview = (url: string) => invoke<void>("close_html_preview", { url });
+
+export const readTaskHtmlPreview = (taskId: string, path: string, generation: number, sha256: string) =>
+  invoke<HtmlPreviewSnapshot>("read_task_html_preview", { taskId, path, executionGeneration: generation, expectedSha256: sha256 });

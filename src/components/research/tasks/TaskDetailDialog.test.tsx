@@ -88,6 +88,12 @@ vi.mock("./TaskCompiledPdfs", () => ({ TaskCompiledPdfs: ({ reference }: { refer
 
 const annotationMocks = vi.hoisted(() => ({ props: null as TaskAnnotationsProps | null, group: vi.fn(), message: vi.fn(), annotations: vi.fn(), pdf: vi.fn() }));
 const journalReference = vi.hoisted(() => ({ load: vi.fn() }));
+const materialViewer = vi.hoisted(() => ({ open: vi.fn() }));
+const retainedMaterial = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock("@/lib/material-annotations", async (original) => ({ ...await original<typeof import("@/lib/material-annotations")>(), readMaterialAnnotation: retainedMaterial.read }));
+const htmlPreview = vi.hoisted(() => ({ read: vi.fn(), close: vi.fn() }));
+vi.mock("@/lib/notebook-commands", () => ({ readTaskHtmlPreview: htmlPreview.read, closeHtmlPreview: htmlPreview.close }));
+vi.mock("@/store/material-viewer", () => ({ useMaterialViewerStore: { getState: () => materialViewer } }));
 vi.mock("@/lib/journal-workbench", () => ({ loadJournalTarget: journalReference.load }));
 vi.mock("@/lib/pdf-selection", () => ({ loadTaskPdfSelection: annotationMocks.pdf }));
 vi.mock("./TaskPdfSelection", () => ({ TaskPdfSelection: ({ taskId, openOriginal }: { taskId: string; openOriginal?: boolean }) => <div data-testid="mock-task-pdf" data-task={taskId} data-open-original={String(openOriginal)} /> }));
@@ -274,6 +280,10 @@ function observedRun(id: string): TaskObservationView {
 
 describe("TaskDetailDialog", () => {
   beforeEach(() => {
+    materialViewer.open.mockReset();
+    retainedMaterial.read.mockReset();
+    htmlPreview.read.mockReset();
+    htmlPreview.close.mockReset().mockResolvedValue(undefined);
     previewMocks.file.mockReset();
     previewMocks.artifact.mockReset();
     previewMocks.events.mockReset();
@@ -400,8 +410,34 @@ describe("TaskDetailDialog", () => {
     await act(async () => { annotationMocks.props?.onOpenTarget?.(target); });
     const original = await page().findByTestId("journal-retained-object");
     expect(within(original).getByText("Original retained journal instruction")).toBeInTheDocument();
-    expect(within(original).getByText("guide:page-4")).toBeInTheDocument();
+    expect(within(original).queryByText("guide:page-4")).not.toBeInTheDocument();
     expect(journalReference.load).toHaveBeenCalledExactlyOnceWith(target);
+    expect(previewMocks.referencedEvents).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { explicitRequest: false, sameTask: true, role: "evidence" },
+    { explicitRequest: true, sameTask: true, role: "task_input" },
+    { explicitRequest: true, sameTask: false, role: "evidence" },
+  ])("opens retained material with $role for request=$explicitRequest and sameTask=$sameTask", async ({ explicitRequest, sameTask, role }) => {
+    const current = task("retained-material");
+    const snapshot = { document: { projectId: current.projectId, documentId: "file:report.md", title: "Report", path: "report.md", kind: "markdown", revision: "old-sha" }, anchor: { kind: "text", from: 0, to: 3, quote: "old" }, sha256: "old-sha", mediaType: "text/markdown", size: 3 };
+    const annotation = { id: "material-annotation", explicitRequest, target: { projectId: current.projectId, taskId: sameTask ? current.id : "another-task", objectKind: "material", objectId: "file:report.md", objectRevision: "old-sha", path: null }, source: { kind: "material_snapshot", content: JSON.stringify(snapshot), sha256: "reference-sha" } };
+    retainedMaterial.read.mockResolvedValue({ snapshot, bytes: [111, 108, 100] });
+    const input = props(current);
+    render(<TaskDetailDialog {...input} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenAnnotationSource).toBeDefined());
+    expect(annotationMocks.props?.describeAnnotation?.(annotation as never)).toContain("Report");
+    expect(annotationMocks.props?.describeAnnotation?.(annotation as never)).not.toContain("old-sha");
+    await act(async () => { annotationMocks.props?.onOpenAnnotationSource?.(annotation as never); });
+    await waitFor(() => expect(materialViewer.open).toHaveBeenCalledOnce());
+    expect(retainedMaterial.read).toHaveBeenCalledWith(current.projectId, "material-annotation");
+    const request = materialViewer.open.mock.calls[0][0];
+    expect(request.role).toBe(role);
+    expect(request.anchor).toEqual(snapshot.anchor);
+    expect(request.revision).toBe("old-sha");
+    expect(await request.load()).toEqual(new Uint8Array([111, 108, 100]));
+    expect(input.onOpenChange).toHaveBeenCalledWith(false);
     expect(previewMocks.referencedEvents).not.toHaveBeenCalled();
   });
 
@@ -1199,6 +1235,17 @@ describe("TaskDetailDialog", () => {
     if (kind === "text") expect(page().getByText("Evidence from the saved task")).toBeInTheDocument();
     if (kind === "image") expect(page().getByRole("img", { name: artifact.label })).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
     if (kind === "binary") expect(page().getByText(/Binary file · 32 bytes/)).toBeInTheDocument();
+    if (kind === "text") {
+      fireEvent.click(page().getByRole("button", { name: enResearchTools.tasks.detail.openInWorkspace }));
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ role: "result", revision: "artifact-sha" });
+      expect(await request.load()).toBe("Evidence from the saved task");
+    } else if (kind === "image") {
+      fireEvent.click(page().getByRole("button", { name: enResearchTools.tasks.detail.openInWorkspace }));
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ kind: "image", role: "result", revision: "artifact-sha", mediaType: "image/png" });
+      expect(await request.load()).toEqual(new TextEncoder().encode("image"));
+    } else expect(page().queryByRole("button", { name: enResearchTools.tasks.detail.openInWorkspace })).not.toBeInTheDocument();
     expect(page().queryByRole("button", { name: "Open elsewhere" })).not.toBeInTheDocument();
     expect(previewMocks.artifact).toHaveBeenCalledWith(current.id, artifact.path, current.executionGeneration);
   });
@@ -1295,6 +1342,108 @@ describe("TaskDetailDialog", () => {
       })) as never;
       return current;
     }
+
+    it("opens complete Markdown result and its exact previous version in the workspace", async () => {
+      const current = withFiles({ path: "results/report.md", kind: "modified" });
+      const content = { ...preview("# Findings"), path: "results/report.md" };
+      content.after.sha256 = "after-exact-sha";
+      content.before.sha256 = "before-exact-sha";
+      previewMocks.file.mockResolvedValue(content);
+      const input = props(current);
+      render(<TaskDetailDialog {...input} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ projectId: current.projectId, documentId: `task:${current.id}:results/report.md`, path: "results/report.md", kind: "markdown", role: "candidate", revision: "after-exact-sha", previous: { role: "task_input", revision: "before-exact-sha" } });
+      expect(await request.load()).toBe("# Findings");
+      expect(await request.previous.load()).toBe("before");
+      expect(input.onOpenChange).toHaveBeenCalledWith(false);
+    });
+
+    it("keeps source and diagram renderers distinct and omits incomplete previous content", async () => {
+      const current = withFiles({ path: "diagram.mmd", kind: "modified" });
+      const content = { ...preview("graph LR; A-->B"), path: "diagram.mmd" };
+      content.before.truncated = true;
+      previewMocks.file.mockResolvedValue(content);
+      render(<TaskDetailDialog {...props(current)} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      expect(materialViewer.open).toHaveBeenCalledWith(expect.objectContaining({ kind: "diagram", previous: undefined }));
+    });
+
+    it("opens an ordinary LaTeX result as source rather than assuming it is a diagram", async () => {
+      previewMocks.file.mockResolvedValue(preview("\\section{Findings}"));
+      render(<TaskDetailDialog {...props(task("source-result"))} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      expect(materialViewer.open).toHaveBeenCalledWith(expect.objectContaining({ kind: "source", path: "main.tex" }));
+    });
+
+    it("does not offer workspace opening for truncated text or binary metadata", async () => {
+      const current = withFiles({ path: "big.tex", kind: "modified" }, { path: "figure.pdf", kind: "added" });
+      previewMocks.file.mockImplementation(async (_id: string, path: string) => path === "big.tex" ? { ...preview("part"), path, after: { ...preview("part").after, truncated: true } } : binaryPreview(path, false, true));
+      render(<TaskDetailDialog {...props(current)} />);
+      for (const button of page().getAllByRole("button", { name: "Preview" })) fireEvent.click(button);
+      await waitFor(() => expect(page().getAllByRole("button", { name: detail.refreshPreview })).toHaveLength(2));
+      expect(page().queryByRole("button", { name: detail.openInWorkspace })).not.toBeInTheDocument();
+    });
+
+    it("opens complete DOCX bytes and the previous DOCX version through the Word renderer", async () => {
+      const current = withFiles({ path: "result.docx", kind: "modified" });
+      const bytes = new Uint8Array([80, 75, 3, 4, 0, 255]);
+      const beforeBytes = new Uint8Array([80, 75, 3, 4, 0, 1]);
+      const sha = (value: Uint8Array) => import("node:crypto").then(({ createHash }) => createHash("sha256").update(value).digest("hex"));
+      const side = async (value: Uint8Array) => ({ exists: true, text: null, base64: Buffer.from(value).toString("base64"), mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", binary: true, truncated: false, size: value.length, sha256: await sha(value) });
+      const before = await side(beforeBytes);
+      const after = await side(bytes);
+      previewMocks.file.mockResolvedValue({ ...preview(""), path: "result.docx", before, after });
+      render(<TaskDetailDialog {...props(current)} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ kind: "docx", role: "candidate", revision: after.sha256, previous: { role: "task_input", revision: before.sha256 } });
+      expect(await request.load()).toEqual(bytes);
+      expect(await request.previous.load()).toEqual(beforeBytes);
+    });
+
+    it.each(["truncated", "wrong MIME"] as const)("does not open %s DOCX bytes", async (reason) => {
+      const current = withFiles({ path: "result.docx", kind: "added" });
+      previewMocks.file.mockResolvedValue({ ...preview(""), path: "result.docx", after: { exists: true, text: null, base64: "UEsDBAD/", mediaType: reason === "wrong MIME" ? "application/octet-stream" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document", binary: true, truncated: reason === "truncated", size: 6, sha256: "sha" } });
+      render(<TaskDetailDialog {...props(current)} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      await page().findByRole("button", { name: detail.refreshPreview });
+      expect(page().queryByRole("button", { name: detail.openInWorkspace })).not.toBeInTheDocument();
+    });
+
+    it("opens verified HTML bundles with the HTML renderer and no raw-source comparison", async () => {
+      const current = withFiles({ path: "report.html", kind: "modified" });
+      const content = { ...preview("<h1>Report</h1>"), path: "report.html" };
+      previewMocks.file.mockResolvedValue(content);
+      htmlPreview.read.mockResolvedValue({ bundle: '{"entry":"report.html","files":{}}', revision: "bundle-sha", path: "report.html", url: "http://127.0.0.1/retained/report.html" });
+      const input = props(current);
+      render(<TaskDetailDialog {...input} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      await waitFor(() => expect(materialViewer.open).toHaveBeenCalledOnce());
+      expect(htmlPreview.read).toHaveBeenCalledWith(current.id, "report.html", current.executionGeneration, content.after.sha256);
+      expect(htmlPreview.close).toHaveBeenCalledWith("http://127.0.0.1/retained/report.html");
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ kind: "html", role: "candidate", revision: "bundle-sha", mediaType: "application/vnd.oleafly.html-bundle+json" });
+      expect(request.previous).toBeUndefined();
+      expect(await request.load()).toBe('{"entry":"report.html","files":{}}');
+    });
+
+    it("retains the task preview and reports failed HTML capture without opening source", async () => {
+      const current = withFiles({ path: "report.html", kind: "added" });
+      previewMocks.file.mockResolvedValue({ ...preview("<h1>Changed</h1>"), path: "report.html" });
+      htmlPreview.read.mockRejectedValue(new Error("HTML entry changed"));
+      render(<TaskDetailDialog {...props(current)} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      await waitFor(() => expect(page().getByRole("alert")).toHaveTextContent("HTML entry changed"));
+      expect(materialViewer.open).not.toHaveBeenCalled();
+      expect(page().getByRole("button", { name: detail.openInWorkspace })).toBeEnabled();
+    });
 
     it("labels added and deleted files and sizes binary previews", async () => {
       const current = withFiles({ path: "fig.pdf", kind: "added" }, { path: "old.pdf", kind: "deleted" });

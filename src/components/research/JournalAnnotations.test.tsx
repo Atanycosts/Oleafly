@@ -47,6 +47,7 @@ async function ready() { await screen.findByTestId("annotation-editor"); await w
 it("saves original feedback without resolving a model or asking an associated task to run", async () => {
   render(<JournalAnnotations projectId="paper" reference={reference} onOpenTarget={vi.fn()} />);
   await ready();
+  expect(api.panel?.describeTarget?.(target)).toBe("This journal requirement");
   const body = "  This rule may be wrong.\nKeep the original quote.  ";
   await act(async () => { await api.panel?.submitAnnotation?.(draft({ body })); });
   expect(api.save).toHaveBeenCalledExactlyOnceWith("paper", reference, body, null, []);

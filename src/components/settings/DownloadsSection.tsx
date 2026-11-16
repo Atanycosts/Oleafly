@@ -1,6 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { create } from "zustand";
 import { ChevronDown, ChevronRight, Download, FileText, FileUp, Info, LayoutTemplate, Trash2, Type } from "lucide-react";
 import { PackList } from "@/components/settings/template-packs/PackList";
 import { PackView } from "@/components/settings/template-packs/PackView";
@@ -10,20 +9,14 @@ import { DictionaryDownloads } from "@/components/settings/DictionaryDownloads";
 import { E2E_HOOKS } from "@/lib/e2e-flags";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip } from "@/components/ui/tooltip";
-import { formatNumber } from "@/lib/intl";
 import { formatDownloadSize } from "@/lib/download-size";
 import { logError } from "@/lib/log";
 import { notifyError, toast } from "@/lib/toast";
 import { useSettingsStore } from "@/store/settings";
 import {
   deleteCustomTemplate,
-  downloadAllFonts,
-  installFontComponent,
-  listFontComponents,
   listTemplates,
-  removeFontComponent,
   templatePreview,
-  withAssetProgress,
   type ComponentInfo,
   type TemplateInfo,
 } from "@/lib/tauri";
@@ -32,17 +25,14 @@ import { SectionHeading } from "@/components/ui/section-heading";
 import { CheckBadge } from "@/components/ui/check-badge";
 import { isTypstFontPackId, type TypstFontPackId } from "@/lib/typst-font-packs";
 import { useFilesStore } from "@/store/files";
-import { useFontPacksStore } from "@/store/font-packs";
+import { ALL_FONT_PACKS, useFontPacksStore } from "@/store/font-packs";
 import { loadPacks, refreshPackCatalogInBackground } from "@/store/template-packs";
 import { takeTemplateLink, useTemplateLinkStore, type PendingTemplateLink } from "@/store/template-link";
 
 function afterTypstPackChange(id: string) {
   if (!isTypstFontPackId(id)) return;
-  void useFontPacksStore.getState().load();
   void useFilesStore.getState().refreshEngine();
 }
-
-const ALL = "__all__";
 
 const FONT_PACK_IDS = ["lato", "ptsans", "ptserif"] as const;
 type FontPackId = (typeof FONT_PACK_IDS)[number];
@@ -50,21 +40,6 @@ type FontPackId = (typeof FONT_PACK_IDS)[number];
 function isFontPackId(id: string): id is FontPackId {
   return (FONT_PACK_IDS as readonly string[]).includes(id);
 }
-
-interface DownloadActivity {
-  fontBusyId: string | null;
-  fontProgress: string;
-}
-
-const useDownloadActivity = create<DownloadActivity>(() => ({
-  fontBusyId: null,
-  fontProgress: "",
-}));
-
-const setBusyId = (fontBusyId: string | null) =>
-  useDownloadActivity.setState({ fontBusyId });
-const setProgress = (fontProgress: string) =>
-  useDownloadActivity.setState({ fontProgress });
 
 const TemplateImportDialog = lazy(() =>
   import("@/components/library/TemplateImportDialog").then((module) => ({
@@ -74,9 +49,16 @@ const TemplateImportDialog = lazy(() =>
 
 export function DownloadsSection() {
   const { t } = useTranslation(["common", "settings"]);
-  const [components, setComponents] = useState<ComponentInfo[]>([]);
-  const busyId = useDownloadActivity((s) => s.fontBusyId);
-  const progress = useDownloadActivity((s) => s.fontProgress);
+  const components = useFontPacksStore((state) => state.packs);
+  const busyId = useFontPacksStore((state) => state.installing);
+  const activeProgress = useFontPacksStore((state) => state.progress);
+  const progress = activeProgress
+    ? t(($) => $.settings.downloads.progress, {
+        label: activeProgress.label,
+        index: activeProgress.index,
+        total: activeProgress.total,
+      })
+    : "";
 
   const templatesHeadingRef = useRef<HTMLHeadingElement>(null);
   const [tab, setTab] = useState<"fonts" | "templates" | "dictionaries">(
@@ -141,74 +123,39 @@ export function DownloadsSection() {
     setScrollTarget(null);
   }, [scrollTarget, setScrollTarget]);
 
-  const refresh = useCallback(async () => {
-    try {
-      setComponents(await listFontComponents());
-    } catch (e) {
-      void logError("list font components", e);
-    }
+  useEffect(() => {
+    void useFontPacksStore.getState().load();
   }, []);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const inheritedFontWork = useRef(busyId !== null);
-  useEffect(() => {
-    if (busyId !== null || !inheritedFontWork.current) return;
-    inheritedFontWork.current = false;
-    void refresh();
-  }, [busyId, refresh]);
-
-  const withProgress = useCallback(
-    async (id: string, run: () => Promise<void>, verb: string, failure: () => string) => {
-      if (useDownloadActivity.getState().fontBusyId !== null) return;
-      setBusyId(id);
-      setProgress("");
-      try {
-        await withAssetProgress(
-          {
-            component: (p) =>
-              setProgress(
-                t(($) => $.settings.downloads.progress, {
-                  label: p.label,
-                  index: formatNumber(p.index),
-                  total: formatNumber(p.total),
-                }),
-              ),
-          },
-          run,
-        );
-        await refresh();
-      } catch (e) {
-        notifyError(verb, e, failure());
-      } finally {
-        setBusyId(null);
-        setProgress("");
-      }
-    },
-    [refresh, t],
-  );
-
-  const install = (id: string) =>
-    withProgress(id, () => installFontComponent(id).then(() => afterTypstPackChange(id)), "download the font", () =>
-      t(($) => $.settings.downloads.errors.fontDownloadFailed),
-    );
-  const downloadAll = () =>
-    withProgress(ALL, () => downloadAllFonts(), "download the fonts", () =>
-      t(($) => $.settings.downloads.errors.fontsDownloadFailed),
-    );
-  const remove = async (id: string) => {
-    if (useDownloadActivity.getState().fontBusyId !== null) return;
-    setBusyId(id);
-    try {
-      await removeFontComponent(id);
-      await refresh();
+  const install = async (id: string) => {
+    if (await useFontPacksStore.getState().install(id)) {
       afterTypstPackChange(id);
-    } catch (e) {
-      notifyError("remove the font", e, t(($) => $.settings.downloads.errors.fontRemoveFailed));
-    } finally {
-      setBusyId(null);
+    } else {
+      notifyError(
+        "download the font",
+        useFontPacksStore.getState().lastError,
+        t(($) => $.settings.downloads.errors.fontDownloadFailed),
+      );
+    }
+  };
+  const downloadAll = async () => {
+    if (!await useFontPacksStore.getState().downloadAll()) {
+      notifyError(
+        "download the fonts",
+        useFontPacksStore.getState().lastError,
+        t(($) => $.settings.downloads.errors.fontsDownloadFailed),
+      );
+    }
+  };
+  const remove = async (id: string) => {
+    if (await useFontPacksStore.getState().remove(id)) {
+      afterTypstPackChange(id);
+    } else {
+      notifyError(
+        "remove the font",
+        useFontPacksStore.getState().lastError,
+        t(($) => $.settings.downloads.errors.fontRemoveFailed),
+      );
     }
   };
 
@@ -219,7 +166,7 @@ export function DownloadsSection() {
     return field === "label" ? c.label : c.description;
   };
   const fontRow = (c: ComponentInfo) => {
-    const busy = busyId === c.id || (busyId === ALL && !c.installed);
+    const busy = busyId === c.id || (busyId === ALL_FONT_PACKS && !c.installed);
     return (
       <div
         key={c.id}
@@ -313,7 +260,7 @@ export function DownloadsSection() {
           disabled={anyBusy || allInstalled}
           className="inline-flex items-center gap-1.5 rounded-md border border-input px-2.5 py-1.5 text-xs hover:bg-accent disabled:opacity-50"
         >
-          {busyId === ALL ? <Spinner size="sm" /> : <Download className="size-3.5" />}
+          {busyId === ALL_FONT_PACKS ? <Spinner size="sm" /> : <Download className="size-3.5" />}
           {allInstalled
             ? t(($) => $.settings.downloads.actions.allDownloaded)
             : t(($) => $.settings.downloads.actions.downloadAll)}

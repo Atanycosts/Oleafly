@@ -20,6 +20,8 @@ import { basename } from "@/lib/path-utils";
 import { useInitialFocus } from "@/components/ui/use-initial-focus";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import { AgentWorkspaceFeedback } from "@/components/materials/AgentWorkspaceFeedback";
+import { pauseAgentWorkspaceFollow } from "@/lib/agent-workspace-interaction";
 
 const DocumentOutline = lazy(() =>
   import("@/components/layout/DocumentOutline").then((module) => ({
@@ -195,10 +197,11 @@ export function Sidebar() {
   const railTab = useSettingsStore((s) => s.railTab);
   const ActivePanel = registry.railTabs.find((t) => t.id === railTab)?.panel ?? FilesPanel;
   return (
-    <div className="flex h-full flex-col bg-sidebar">
+    <div className="flex h-full flex-col bg-sidebar" onPointerDownCapture={pauseAgentWorkspaceFollow} onWheelCapture={pauseAgentWorkspaceFollow} onBeforeInputCapture={pauseAgentWorkspaceFollow} onKeyDownCapture={pauseAgentWorkspaceFollow}>
       <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-sidebar-border bg-background px-1.5">
         <SidebarViews />
       </div>
+      <AgentWorkspaceFeedback compact />
       <div className="min-h-0 flex-1">
         <Suspense fallback={<SidebarPanelFallback />}>
           <ActivePanel />

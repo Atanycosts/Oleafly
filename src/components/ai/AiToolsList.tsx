@@ -66,9 +66,12 @@ export const AI_TOOLS: AiToolInfo[] = [
   { name: "list_files", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.listFiles) },
   { name: "list_docx_documents", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.listDocxDocuments) },
   { name: "read_docx_document", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.readDocxDocument) },
+  { name: "read_docx_image", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.readDocxImage) },
   { name: "capture_docx_target", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.captureDocxTarget) },
   { name: "suggest_docx_change", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.suggestDocxChange) },
   { name: "apply_docx_suggestion", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.applyDocxSuggestion) },
+  { name: "replace_docx_text_range", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.replaceDocxTextRange) },
+  { name: "write_docx_equation", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.writeDocxEquation) },
   { name: "search_project", group: "Files", desc: () => i18n.t(($) => $.ai.tools.catalog.searchProject) },
   {
     name: "project_map",

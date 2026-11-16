@@ -193,7 +193,20 @@ const limits = {
   // 27.80 MB. The entry remains 4.79 MB and the DOCX core is 3.90 MB.
   // Keep the startup and individual-asset gates unchanged. The separate
   // Vite graph check rejects loading the DOCX engine before opening it.
-  totalJavaScript: 28_000_000,
+  // The material workspace, shared Word surface and real Agent operation /
+  // follow context bring the normal production graph to 28,005,804 bytes.
+  // Allow 50 KB above the previous total ceiling; retain the entry and
+  // individual-asset limits and the independent production-hook audit.
+  // OMML matrix/delimiter projection and layout, structured reading diagnostics
+  // and DOCX image tool channels bring this graph to 28,070,998 bytes on macOS
+  // (+54,045 from the previous local build). Retain 29 KB of headroom while
+  // leaving startup and individual-asset gates unchanged.
+  // Controlled equation authoring adds the one-equation converter and independent
+  // MathML visitor, source bindings, the tools panel and extended OMML layout.
+  // The measured graph is 28,119,313 bytes; the converter loads on first write.
+  // Keep all entry and individual-asset limits, allowing 60 KB above the previous
+  // total ceiling for the complete on-demand feature.
+  totalJavaScript: 28_160_000,
   largestLocaleChunk: 950_000,
   largestCss: 400_000,
   harperWasm: 19_000_000,

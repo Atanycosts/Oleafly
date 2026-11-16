@@ -1,5 +1,6 @@
 import type { ToolApprovalRequest } from "@/lib/ai-tools";
 import type { ApprovalMode } from "@oleafly/ai-tools";
+import { useAgentWorkspaceStore } from "@/store/agent-workspace";
 
 export interface RegisteredApproval {
   req: ToolApprovalRequest;
@@ -8,6 +9,7 @@ export interface RegisteredApproval {
 }
 
 export interface ActiveChatRun {
+  flowId: string;
   controller: AbortController;
   projectId: string | null;
   chatId: string | null;
@@ -23,7 +25,8 @@ function emit() {
 }
 
 export function beginChatRun(controller: AbortController, projectId: string | null): ActiveChatRun {
-  active = { controller, projectId, chatId: null, pendingApproval: null, lastPartAt: Date.now() };
+  active = { flowId: crypto.randomUUID(), controller, projectId, chatId: null, pendingApproval: null, lastPartAt: Date.now() };
+  if (projectId) useAgentWorkspaceStore.getState().beginFollow(projectId, { kind: "chat", flowId: active.flowId, chatId: null });
   emit();
   return active;
 }

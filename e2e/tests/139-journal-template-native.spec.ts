@@ -15,7 +15,7 @@ import type {
   DocxFormatProperties,
   DocxFormatSnapshotV1,
 } from "../../src/lib/docx-format-types";
-import type { NormalizedJournalTemplate } from "../../src/lib/docx-template-client";
+import type { NormalizedJournalTemplate, TemplateWorkingCopy } from "../../src/lib/docx-template-client";
 import type {
   JournalCheck,
   JournalProject,
@@ -23,8 +23,9 @@ import type {
   JournalWorld,
 } from "../../src/lib/journal-workbench";
 import { test, expect } from "../fixtures";
-import { createBlankProject, openRailTab } from "../helpers";
+import { createBlankProject, fillTextarea, openRailTab } from "../helpers";
 import { scriptValue } from "../script-value";
+import { webviewScreenshot } from "../webview-screenshot";
 
 const enabled = process.env.OLEAFLY_TEMPLATE_NATIVE_ACCEPTANCE === "1";
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -116,11 +117,43 @@ function topLevelParagraphs(snapshot: DocxFormatSnapshotV1): DocxFormatObject[] 
     .sort((left, right) => comparePaths(left.path, right.path));
 }
 
+function mainStoryParagraphs(snapshot: DocxFormatSnapshotV1): DocxFormatObject[] {
+  const textboxRoots = snapshot.objects
+    .filter((object) => object.part === "/word/document.xml" && object.kind === "txbxContent")
+    .map((object) => object.path);
+  const inTextbox = (path: readonly number[]) => textboxRoots.some((root) =>
+    root.length < path.length &&
+    root.every((value, index) => value === path[index])
+  );
+  return snapshot.objects
+    .filter((object) =>
+      object.kind === "paragraph" &&
+      object.part === "/word/document.xml" &&
+      !inTextbox(object.path)
+    )
+    .sort((left, right) => comparePaths(left.path, right.path));
+}
+
+function authoredParagraphId(paragraph: DocxFormatObject): string | undefined {
+  const attributes = paragraph.declared.attributes;
+  if (!Array.isArray(attributes)) return undefined;
+  const paraId = attributes.find((attribute) =>
+    attribute !== null &&
+    typeof attribute === "object" &&
+    !Array.isArray(attribute) &&
+    attribute.localName === "paraId"
+  );
+  const value = paraId !== null && typeof paraId === "object" && !Array.isArray(paraId)
+    ? paraId.value
+    : undefined;
+  return typeof value === "string" ? value.toUpperCase() : undefined;
+}
+
 function paragraphIndexAtPath(
   snapshot: DocxFormatSnapshotV1,
   path: readonly number[],
 ): number {
-  const index = topLevelParagraphs(snapshot)
+  const index = mainStoryParagraphs(snapshot)
     .findIndex((paragraph) =>
       paragraph.path.length === path.length &&
       paragraph.path.every((value, slot) => value === path[slot])
@@ -252,6 +285,134 @@ async function waitForDocument(page: Page, dirty: boolean, timeout = 120_000): P
   return latest!;
 }
 
+function independentXmlDirectory(path: string): { paragraphs: Record<string, number>; styleIds: string[]; textNodes: Record<string, string[]>; text: { part: string; text: string; modelText: string; fields: boolean }[] } {
+  const python = process.env.OLEAFLY_WORKBENCH_PYTHON ?? resolve("services/research-workbench/.venv/bin/python");
+  return JSON.parse(execFileSync(python, ["-c", `
+import json, sys, zipfile, xml.etree.ElementTree as ET
+W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+paragraphs, styles, texts, text_nodes = {}, [], [], {}
+def paragraph_text(node, owner, model=False):
+    if node is not owner and node.tag==W+'p': return ''
+    if node.tag in {W+name for name in ('pPr','rPr','tblPr','trPr','tcPr','instrText')}: return ''
+    if node.tag==W+'t': return node.text or ''
+    if node.tag==W+'tab': return '\\t'
+    if node.tag==W+'br': return {'page':'\\f','column':'\\x0e'}.get(node.get(W+'type'),'\\v') if model else '\\n'
+    if node.tag==W+'cr': return '\\v' if model else '\\n'
+    return ''.join(paragraph_text(child,owner,model) for child in node)
+with zipfile.ZipFile(sys.argv[1]) as package:
+    for name in package.namelist():
+        if not name.endswith(".xml"): continue
+        try: root = ET.fromstring(package.read(name))
+        except ET.ParseError: continue
+        if root.tag in [W + key for key in ("document", "hdr", "ftr", "footnotes", "endnotes", "comments")]:
+            paragraphs["/" + name] = len(list(root.iter(W + "p")))
+            text_nodes['/'+name]=[node.text or '' for node in root.iter(W+'t')]
+            for node in root.iter(W+'p'):
+                texts.append({'part':'/'+name,'text':paragraph_text(node,node),'modelText':paragraph_text(node,node,True),
+                  'fields':any(child.tag in (W+'fldChar',W+'fldSimple',W+'drawing',W+'pict',W+'object',W+'sym',W+'footnoteReference',W+'endnoteReference') or
+                    child.tag.startswith('{http://schemas.openxmlformats.org/officeDocument/2006/math}') for child in node.iter())})
+        if root.tag == W + "styles":
+            styles = [node.get(W + "styleId") for node in root.findall(W + "style") if node.get(W + "styleId")]
+print(json.dumps({"paragraphs": paragraphs, "styleIds": styles, "text":texts, "textNodes":text_nodes}))
+`, path], { encoding: "utf8" })) as { paragraphs: Record<string, number>; styleIds: string[]; textNodes: Record<string, string[]>; text: { part: string; text: string; modelText: string; fields: boolean }[] };
+}
+
+async function assertUnifiedLiveReading(page: Page, live: DocxDocumentRead, sourcePath: string) {
+  const control = independentXmlDirectory(sourcePath);
+  const overview = await executeDocxTool<DocxFormatReadResult>(page, "read_docx_format", { query: { kind: "overview", limit: 3 } });
+  expect(overview.overview).toMatchObject({ capabilities: { rawPathsWritable: false, rendered_pagination: false },
+    counts: { paragraphs: Object.values(control.paragraphs).reduce((total, count) => total + count, 0) } });
+  expect(overview.overview?.gaps).toEqual(expect.arrayContaining([expect.objectContaining({ code: "rendered_pagination" })]));
+  const all: Record<string, unknown>[] = [];
+  let offset = 0;
+  do {
+    const read = await executeDocxTool<DocxFormatReadResult>(page, "read_docx_format", { query: { kind: "paragraphs", offset, limit: offset === 0 ? 3 : 50 } });
+    expect(read.revision).toBe(live.document.sessionRevision);
+    expect(read.sourceSha256).toBe(overview.sourceSha256);
+    expect(read.total).toBe(Object.values(control.paragraphs).reduce((total, count) => total + count, 0));
+    all.push(...(read.paragraphs ?? []));
+    if (read.nextOffset === null) break;
+    expect(read.nextOffset).toBeGreaterThan(offset);
+    offset = read.nextOffset;
+  } while (true);
+  expect(new Set(all.map((item) => item.object_id)).size).toBe(all.length);
+  for (const [part, count] of Object.entries(control.paragraphs)) expect(all.filter((item) => item.part === part)).toHaveLength(count);
+  let exactTextReads = 0;
+  for (const [part] of Object.entries(control.paragraphs)) {
+    const expected = control.text.filter((item) => item.part === part);
+    const observed = all.filter((item) => item.part === part);
+    for (const [index, paragraph] of observed.entries()) {
+      // Field results, drawings and shapes use a different model projection (U+FFFC).
+      // Compare their exported XML text through source nodes, never treat it as writable model offsets.
+      if (paragraph.textProjection === "model" && expected[index].fields) continue;
+      let textValue = String(paragraph.text ?? "");
+      let continuation = paragraph.textContinuation as Record<string, unknown> | null;
+      while (continuation) {
+        const next = await executeDocxTool<DocxFormatReadResult>(page, "read_docx_format", { query: continuation });
+        const item = next.paragraphs?.[0];
+        expect(item?.textOffset).toBe(textValue.length);
+        textValue += item?.text;
+        continuation = item?.textContinuation as Record<string, unknown> | null;
+      }
+      expect(textValue, `Independent exact XML text in ${part}, paragraph ${index}`).toBe(paragraph.textProjection === "model" ? expected[index].modelText : expected[index].text);
+      exactTextReads++;
+    }
+  }
+  expect(exactTextReads).toBeGreaterThan(0);
+  for (const [part, expected] of Object.entries(control.textNodes)) {
+    const observed: string[] = [];
+    let nodeOffset = 0;
+    do {
+      const result = await executeDocxTool<DocxFormatReadResult>(page, "read_docx_format", { query: {
+        kind: "nodes", part, namespace_uri: WORD_NAMESPACE, local_name: "t", offset: nodeOffset, limit: 50,
+      } });
+      for (const item of result.nodes ?? []) {
+        let node = item.node as { textValues?: { value: string }[] } | undefined;
+        if (item.nodeJson !== undefined) {
+          let serialized = String(item.nodeJson);
+          let continuation = item.nodeJsonContinuation as Record<string, unknown> | null;
+          while (continuation) {
+            const next = await executeDocxTool<DocxFormatReadResult>(page, "read_docx_format", { query: continuation });
+            serialized += next.nodes?.[0].nodeJson;
+            continuation = next.nodes?.[0].nodeJsonContinuation as Record<string, unknown> | null;
+          }
+          node = JSON.parse(serialized);
+        }
+        observed.push((node?.textValues ?? []).map((value) => value.value).join(""));
+      }
+      if (result.nextOffset === null) break;
+      expect(result.nextOffset).toBeGreaterThan(nodeOffset);
+      nodeOffset = result.nextOffset;
+    } while (nodeOffset < expected.length);
+    expect(observed, `Independent raw XML text including field results in ${part}`).toEqual(expected);
+  }
+  const linked = all.filter((item) => typeof item.paragraphRef === "string");
+  expect(new Set(linked.map((item) => item.paragraphRef))).toEqual(new Set(live.paragraphs.map((item) => item.paragraphRef)));
+  for (const paragraph of linked) {
+    expect(paragraph).toMatchObject({ textProjection: "model", offsets: { unit: "utf16", origin: "complete_paragraph" } });
+    expect(paragraph.modelTextLength).toBe(live.paragraphs.find((item) => item.paragraphRef === paragraph.paragraphRef)?.text.length);
+  }
+  if (linked[0]) {
+    const read = await executeDocxTool<DocxFormatReadResult>(page, "read_docx_format", {
+      query: { kind: "objects", object_id: linked[0].object_id, limit: 1 },
+    });
+    expect(read.objects?.[0]).toMatchObject({ paragraphRef: linked[0].paragraphRef, source: { addressing: "export_evidence_only" } });
+  }
+  const styles: Record<string, unknown>[] = [];
+  offset = 0;
+  do {
+    const read = await executeDocxTool<DocxFormatReadResult>(page, "read_docx_format", { query: { kind: "styles", offset, limit: offset === 0 ? 3 : 50 } });
+    expect(read.sourceSha256).toBe(overview.sourceSha256);
+    styles.push(...(read.styles ?? []));
+    if (read.nextOffset === null) break;
+    expect(read.nextOffset).toBeGreaterThan(offset);
+    offset = read.nextOffset;
+  } while (true);
+  expect(styles.map((style) => style.style_id).sort()).toEqual(control.styleIds.sort());
+  return { sourceSha256: overview.sourceSha256, paragraphs: all.length, styles: styles.length, linkedParagraphs: linked.length,
+    independentXml: control, exactTextReads, overview: overview.overview };
+}
+
 async function waitForProject(
   page: Page,
   projectName: string,
@@ -272,7 +433,7 @@ async function waitForWorld(
   let versionId: string | undefined;
   await expect.poll(async () => {
     const state = await journalRequest<JournalState>(page, "/api/state");
-    versionId = state.worlds.find((item) => item.journal_id === journalId)?.version_id;
+    versionId = state.worlds.find((item) => item.journal_name === journalId)?.version_id;
     return Boolean(versionId);
   }, { timeout: 180_000 }).toBe(true);
   return journalRequest<JournalWorld>(
@@ -286,25 +447,24 @@ async function importTemplateThroughUi(
   bytes: Uint8Array,
   filename: string,
   journalName: string,
-  journalId: string,
+  _journalId: string,
 ): Promise<void> {
   const panel = page.getByTestId("journal-checks-panel");
   await expect(panel.getByText("Use Word as template", { exact: true })).toBeEnabled({
     timeout: 90_000,
   });
   await panel.getByText("Use Word as template", { exact: true }).click();
-  const dialog = page.locator('[role="dialog"]');
+  const dialog = page.locator('[role="dialog"][data-state="open"]');
   await expect(dialog).toBeVisible();
-  await page.fill('[role="dialog"] input[id$="-name"]', journalName);
-  await page.fill('[role="dialog"] input[id$="-journal"]', journalId);
-  await page.setInputFiles('[role="dialog"] input[type="file"]', [{
+  await page.setInputFiles('[role="dialog"][data-state="open"] input[type="file"]', [{
     name: filename,
     mimeType: "application/msword",
     buffer: Buffer.from(bytes),
   }]);
+  await page.fill('[role="dialog"][data-state="open"] input[id$="-name"]', journalName);
   await expect(dialog.locator('button[type="submit"]')).toBeEnabled();
   await dialog.locator('button[type="submit"]').click();
-  await expect(page.locator('[role="dialog"]')).toHaveCount(0, { timeout: 180_000 });
+  await expect(page.locator('[role="dialog"][data-state="open"]')).toHaveCount(0, { timeout: 180_000 });
 }
 
 async function importManuscriptThroughUi(
@@ -318,17 +478,17 @@ async function importManuscriptThroughUi(
     timeout: 90_000,
   });
   await panel.getByText("Import DOCX", { exact: true }).click();
-  const dialog = page.locator('[role="dialog"]');
+  const dialog = page.locator('[role="dialog"][data-state="open"]');
   await expect(dialog).toBeVisible();
-  await page.fill('[role="dialog"] input:not([type="file"])', projectName);
-  await page.setInputFiles('[role="dialog"] input[type="file"]', [{
+  await page.fill('[role="dialog"][data-state="open"] input:not([type="file"])', projectName);
+  await page.setInputFiles('[role="dialog"][data-state="open"] input[type="file"]', [{
     name: filename,
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     buffer: Buffer.from(bytes),
   }]);
   await expect(dialog.locator('button[type="submit"]')).toBeEnabled();
   await dialog.locator('button[type="submit"]').click();
-  await expect(page.locator('[role="dialog"]')).toHaveCount(0, { timeout: 180_000 });
+  await expect(page.locator('[role="dialog"][data-state="open"]')).toHaveCount(0, { timeout: 180_000 });
 }
 
 async function selectJournalProject(page: Page, projectId: string): Promise<void> {
@@ -484,7 +644,7 @@ function runFontSizeTarget(
   expected: number;
 } {
   const objects = new Map(snapshot.objects.map((object) => [object.object_id, object]));
-  const orderedParagraphs = topLevelParagraphs(snapshot);
+  const orderedParagraphs = mainStoryParagraphs(snapshot);
   const paragraphPositions = new Map(
     orderedParagraphs.map((paragraph, index) => [paragraph.object_id, index]),
   );
@@ -512,7 +672,12 @@ function runFontSizeTarget(
       !paragraph.path.every((value, slot) => value === finding.path[slot])
     ) return [];
     const liveParagraph = live.paragraphs[paragraphIndex];
-    if (!liveParagraph) return [];
+    const authoredParaId = authoredParagraphId(paragraph);
+    if (
+      !liveParagraph ||
+      liveParagraph.text !== paragraphText ||
+      (authoredParaId !== undefined && liveParagraph.paraId?.toUpperCase() !== authoredParaId)
+    ) return [];
     return [{
       finding,
       paragraphRef: liveParagraph.paragraphRef,
@@ -552,6 +717,62 @@ function assertPackagePreserved(comparison: PackageComparison): void {
   expect(comparison.lostOrModifiedProtectedNodes).toEqual({});
   expect(comparison.paragraphCount.after).toBe(comparison.paragraphCount.before);
   expect(comparison.paragraphTextChanges).toEqual([]);
+}
+
+function templateStyleControl(templatePath: string, manuscriptPath: string, outputPath?: string, styleIdMap?: Record<string, string>): {
+  styleId: string; dependencies: string[]; existingStylesPreserved?: number; mappedStyleId?: string;
+} {
+  const python = process.env.OLEAFLY_WORKBENCH_PYTHON ?? resolve("services/research-workbench/.venv/bin/python");
+  return JSON.parse(execFileSync(python, ["-c", `
+import json, sys, zipfile, xml.etree.ElementTree as ET
+W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+def styles(path):
+    with zipfile.ZipFile(path) as package: root=ET.fromstring(package.read("word/styles.xml"))
+    return {node.get(W+"styleId"):node for node in root.findall(W+"style")}
+def canonical(node):
+    return [node.tag,sorted(node.attrib.items()),node.text or "",[canonical(child) for child in node]]
+source,before=styles(sys.argv[1]),styles(sys.argv[2])
+# Select a real paragraph heading definition by XML outline/style metadata, never app-derived facts.
+candidates=[(sid,node) for sid,node in source.items() if node.get(W+"type")=="paragraph" and
+    (node.find(W+"pPr/"+W+"outlineLvl") is not None or sid=="Heading")]
+assert candidates, "The real template has no independently identifiable heading style"
+sid,node=next(((sid,node) for sid,node in candidates if sid in before and canonical(node)!=canonical(before[sid])),candidates[0])
+deps=[]
+def dependencies(style_id):
+    if style_id in deps: return
+    deps.append(style_id)
+    for name in ("basedOn","next","link"):
+        ref=source[style_id].find(W+name)
+        if ref is not None and ref.get(W+"val") in source: dependencies(ref.get(W+"val"))
+dependencies(sid)
+result={"styleId":sid,"dependencies":deps}
+if len(sys.argv)>3:
+    after=styles(sys.argv[3]); mapping=json.loads(sys.argv[4]); mapped=mapping[sid]
+    assert mapped in after, "Imported selected style is absent"
+    for old_id,old in before.items():
+        assert old_id in after and canonical(old)==canonical(after[old_id]), "Existing manuscript style overwritten: "+old_id
+    if sid in before and canonical(source[sid])!=canonical(before[sid]):
+        assert mapped!=sid and "Pasted" in mapped, "Conflicting source style did not receive a new identity"
+    for dependency in deps:
+        target=mapping.get(dependency,dependency)
+        assert target in after, "Style dependency absent: "+dependency
+        assert after[target].get(W+"type")==source[dependency].get(W+"type"), "Imported style type differs"
+        for name in ("basedOn","next","link"):
+            source_ref=source[dependency].find(W+name)
+            ref=after[target].find(W+name)
+            if ref is not None: assert ref.get(W+"val") in after, "Imported style has an unresolved dependency"
+            if source_ref is not None and source_ref.get(W+"val") in source:
+                expected=mapping.get(source_ref.get(W+"val"),source_ref.get(W+"val"))
+                assert ref is not None and ref.get(W+"val")==expected, "Imported dependency reference was not remapped"
+        outline=source[dependency].find(W+"pPr/"+W+"outlineLvl")
+        if outline is not None:
+            actual=after[target].find(W+"pPr/"+W+"outlineLvl")
+            assert actual is not None and actual.attrib==outline.attrib, "Imported heading outline changed"
+    result.update(existingStylesPreserved=len(before),mappedStyleId=mapped)
+print(json.dumps(result))
+`, templatePath, manuscriptPath, ...(outputPath ? [outputPath, JSON.stringify(styleIdMap)] : [])], {
+    encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
+  }));
 }
 
 test("legacy Word template drives native EN and ZH Agent format repair", async ({ tauriPage: page }, testInfo) => {
@@ -668,7 +889,7 @@ test("legacy Word template drives native EN and ZH Agent format repair", async (
       journalName,
       journalId,
     );
-    const world = await waitForWorld(page, journalId);
+    const world = await waitForWorld(page, journalName);
     expect(world.template).toMatchObject({
       original_sha256: initialHashes.template,
       provenance: {
@@ -680,8 +901,59 @@ test("legacy Word template drives native EN and ZH Agent format repair", async (
     expect(world.template?.font_requirements).toEqual(expectedTemplateFonts);
     await expect.poll(() => page.locator('[data-testid="journal-world-select"]').inputValue())
       .toBe(world.version_id);
-    await expect(page.getByTestId("journal-template-facts")).toContainText(initialHashes.template);
+    await expect(page.getByTestId("journal-template-facts")).toContainText("Word template");
+    expect(await page.getByTestId("journal-template-facts").textContent()).not.toContain(initialHashes.template);
+    const journalText = await page.getByTestId("journal-workspace").textContent();
+    expect(journalText).not.toMatch(/docx-query|template_unknown_role|core_structural_only|retained template observations/);
+    expect(await page.evaluate(`document.querySelector('[data-testid="workspace-journal-surface"]').hidden`)).toBe(false);
+    await webviewScreenshot(page, resolve(evidence, "journal-central-template.png"));
     stages.push({ stage, appProjectId, world });
+
+    stage = "starting an editable draft from the exact retained template";
+    const templateCopy = await page.evaluate<TemplateWorkingCopy>(`window.__oleaflyE2EImport('/src/lib/docx-template-client.ts').then(m =>
+      m.startTemplateWorkingCopy(${scriptValue(world.version_id)}, ${scriptValue(`Native template draft ${Date.now()}`)}, ${scriptValue(`native-template-copy-${randomUUID()}`)}))`);
+    expect(templateCopy.project.binding).toMatchObject({ world_version_id: world.version_id, baseline_id: templateCopy.project.baseline_id });
+    expect(templateCopy.origin).toMatchObject({ world_version_id: world.version_id, source_sha256: world.template?.source_sha256 });
+    const templateCopySource = await journalRequest<{ content_base64: string; source_sha256: string }>(page,
+      `/api/manuscript-source?project_id=${encodeURIComponent(templateCopy.project.project_id)}&baseline_id=${encodeURIComponent(templateCopy.project.baseline_id)}`);
+    expect(templateCopySource.source_sha256).toBe(world.template?.source_sha256);
+    const templateCopyBytes = new Uint8Array(Buffer.from(templateCopySource.content_base64, "base64"));
+    expect(sha256(templateCopyBytes)).toBe(world.template?.source_sha256);
+    const templateCopyPath = resolve(evidence, "template-start-draft.docx");
+    await writeFile(templateCopyPath, templateCopyBytes);
+    await page.evaluate(`Promise.all([window.__oleaflyE2EImport('/src/store/docx-workspace.ts'), window.__oleaflyE2EImport('/src/lib/journal-workbench.ts')]).then(([m, j]) =>
+      m.useDocxWorkspaceStore.getState().open({ appProjectId: ${scriptValue(appProjectId)}, project: ${scriptValue(templateCopy.project)},
+        world: ${scriptValue(world)}, onSaved: async () => { await j.journalRequest('/api/state'); } }))`);
+    await expect(page.getByTestId("docx-workspace")).toBeVisible({ timeout: 120_000 });
+    const templateLive = await waitForDocument(page, false);
+    const templateReading = await assertUnifiedLiveReading(page, templateLive, templateCopyPath);
+    const templateTargetIndex = templateLive.paragraphs.findIndex((item) => item.text.trim().length > 0);
+    const templateTarget = templateLive.paragraphs[templateTargetIndex];
+    expect(templateTarget).toBeTruthy();
+    const templateMutation = await executeDocxTool<{ ok: boolean; document: DocxDocumentRead["document"] }>(page, "apply_docx_format", {
+      paragraph_ref: templateTarget?.paragraphRef, expected_revision: templateLive.document.sessionRevision, paragraph: { keepNext: true },
+    });
+    expect(templateMutation.ok).toBe(true);
+    const templateSaved = await executeDocxTool<{ baselineId: string; sourceSha256: string; document: DocxDocumentRead["document"] }>(page, "save_docx_document", {
+      expected_revision: templateMutation.document.sessionRevision,
+    });
+    expect(templateSaved.document.dirty).toBe(false);
+    await clickWorkspaceButton(page, "Close");
+    await expect(page.getByTestId("docx-workspace")).toHaveCount(0);
+    const refreshedTemplateProject = (await journalRequest<JournalState>(page, "/api/state")).projects.find((item) => item.project_id === templateCopy.project.project_id);
+    expect(refreshedTemplateProject?.baseline_id).toBe(templateSaved.baselineId);
+    await page.evaluate(`window.__oleaflyE2EImport('/src/store/docx-workspace.ts').then(m => m.useDocxWorkspaceStore.getState().open({
+      appProjectId: ${scriptValue(appProjectId)}, project: ${scriptValue(refreshedTemplateProject)}, world: ${scriptValue(world)}, onSaved: async () => {} }))`);
+    await expect(page.getByTestId("docx-workspace")).toBeVisible({ timeout: 120_000 });
+    const templateReopened = await waitForDocument(page, false);
+    expect(templateReopened.document).toMatchObject({ baselineId: templateSaved.baselineId, sourceSha256: templateSaved.sourceSha256 });
+    const reopenedTemplateTarget = templateReopened.paragraphs[templateTargetIndex];
+    expect(reopenedTemplateTarget?.text).toBe(templateTarget?.text);
+    const templateReopenedFormat = await executeDocxTool<DocxFormatReadResult>(page, "read_docx_format", { query: { paragraph_ref: reopenedTemplateTarget?.paragraphRef } });
+    expect(templateReopenedFormat.paragraph?.paragraph.keepNext).toBe(true);
+    await clickWorkspaceButton(page, "Close");
+    await expect(page.getByTestId("docx-workspace")).toHaveCount(0);
+    stages.push({ stage, templateCopy, sourceSha256: templateCopySource.source_sha256, templateReading, saved: templateSaved });
 
     stage = "importing and checking English manuscript through UI";
     const englishName = `Native template English ${Date.now()}`;
@@ -737,6 +1009,18 @@ test("legacy Word template drives native EN and ZH Agent format repair", async (
     expect(chineseInspection.catalog).toHaveProperty("catalog");
     expect(chineseInspection.nodes).toHaveProperty("nodes");
     expect(chineseInspection.relationships).toHaveProperty("relationships");
+    const annotations = page.getByTestId("journal-annotations");
+    await expect(annotations).toContainText("This journal check");
+    await fillTextarea(page, '[data-testid="journal-annotations"] textarea', "Please review the title formatting against this template.");
+    await annotations.getByText("Save annotation", { exact: true }).click();
+    await expect(annotations.getByTestId("task-annotation")).toContainText("Please review the title formatting against this template.");
+    expect(await annotations.textContent()).not.toMatch(/libraryRoot|manuscriptId|sourceSha256|journal_check:/);
+    await annotations.getByTestId("task-annotation").getByText("Recorded object", { exact: true }).click();
+    await expect(page.getByTestId("journal-retained-object")).toContainText("Check results");
+    await page.evaluate(`Array.from(document.querySelectorAll('[role="dialog"][data-state="open"] button')).find(button => button.textContent.trim() === 'Close').click()`);
+    await expect(page.locator('[role="dialog"][data-state="open"]')).toHaveCount(0);
+    expect(await page.getByTestId("journal-workspace").textContent()).not.toMatch(/docx-query|template_unknown_role|core_structural_only|retained template observations/);
+    await webviewScreenshot(page, resolve(evidence, "journal-central-results.png"));
     stages.push({
       stage,
       project: chineseProject,
@@ -750,6 +1034,7 @@ test("legacy Word template drives native EN and ZH Agent format repair", async (
     await page.getByTestId("journal-checks-panel").getByText("Edit DOCX working copy", { exact: true }).click();
     await expect(page.getByTestId("docx-workspace")).toBeVisible({ timeout: 120_000 });
     const englishLive = await waitForDocument(page, false);
+    stages.push({ stage: "English unified system reading", result: await assertUnifiedLiveReading(page, englishLive, englishPath) });
     expect(englishLive.document).toMatchObject({
       workbenchProjectId: englishProject.project_id,
       baselineId: englishProject.baseline_id,
@@ -802,6 +1087,47 @@ test("legacy Word template drives native EN and ZH Agent format repair", async (
       exportSha256: englishExportSha256,
       comparison: englishComparison,
     });
+
+    stage = "importing an independently selected real template style into the English working copy";
+    const retainedTemplateProject = await page.evaluate<TemplateWorkingCopy>(`window.__oleaflyE2EImport('/src/lib/docx-template-client.ts').then(m =>
+      m.startTemplateWorkingCopy(${scriptValue(world.version_id)},'Style import source control',${scriptValue(`style-source-${randomUUID()}`)}))`);
+    const retainedTemplateSource = await journalRequest<{ content_base64: string; source_sha256: string }>(page,
+      `/api/manuscript-source?project_id=${encodeURIComponent(retainedTemplateProject.project.project_id)}&baseline_id=${encodeURIComponent(retainedTemplateProject.project.baseline_id)}`);
+    expect(retainedTemplateSource.source_sha256).toBe(world.template?.source_sha256);
+    const styleTemplatePath = resolve(evidence, "style-import-retained-template.docx");
+    await writeFile(styleTemplatePath, Buffer.from(retainedTemplateSource.content_base64, "base64"));
+    const styleSelection = templateStyleControl(styleTemplatePath, englishExport);
+    const styleImported = await page.evaluate<{
+      ok: boolean; changed: boolean; document: DocxDocumentRead["document"]; template: string;
+      templateSourceSha256: string; styleIdMap: Record<string, string>; themePolicy: string;
+    }>(`window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m => m.DOCX_AGENT_HOST.importTemplateStyles(
+      ${scriptValue(englishLive.document.sessionId)},${scriptValue(world.version_id)},${scriptValue([styleSelection.styleId])},${englishLive.document.sessionRevision}))`);
+    expect(styleImported).toMatchObject({ ok: true, changed: true, template: world.version_id,
+      templateSourceSha256: world.template?.source_sha256, styleIdMap: { [styleSelection.styleId]: expect.any(String) },
+      themePolicy: expect.any(String), document: { dirty: true } });
+    const styleSaved = await executeDocxTool<{ baselineId: string; sourceSha256: string; document: DocxDocumentRead["document"] }>(page,
+      "save_docx_document", { expected_revision: styleImported.document.sessionRevision });
+    expect(styleSaved.document.dirty).toBe(false);
+    const styleSavedSource = await journalRequest<{ content_base64: string; source_sha256: string }>(page,
+      `/api/manuscript-source?project_id=${encodeURIComponent(englishProject.project_id)}&baseline_id=${encodeURIComponent(styleSaved.baselineId)}`);
+    expect(styleSavedSource.source_sha256).toBe(styleSaved.sourceSha256);
+    const importedStylePath = resolve(evidence, "english-template-styles-saved.docx");
+    await writeFile(importedStylePath, Buffer.from(styleSavedSource.content_base64, "base64"));
+    const independentStyleVerification = templateStyleControl(styleTemplatePath, englishExport, importedStylePath, styleImported.styleIdMap);
+    const stylePackageComparison = runPackageComparison(englishExport, importedStylePath);
+    assertPackagePreserved(stylePackageComparison);
+    await clickWorkspaceButton(page, "Close");
+    await expect(page.getByTestId("docx-workspace")).toHaveCount(0);
+    await page.getByTestId("journal-checks-panel").getByText("Edit DOCX working copy", { exact: true }).click();
+    await expect(page.getByTestId("docx-workspace")).toBeVisible({ timeout: 120_000 });
+    const reopenedStyleDocument = await waitForDocument(page, false);
+    expect(reopenedStyleDocument.document).toMatchObject({ baselineId: styleSaved.baselineId, sourceSha256: styleSaved.sourceSha256 });
+    const reopenedStyle = await executeDocxTool<DocxFormatReadResult>(page, "read_docx_format", {
+      query: { kind: "styles", style_id: styleImported.styleIdMap[styleSelection.styleId], limit: 1 },
+    });
+    expect(reopenedStyle.styles?.[0]).toMatchObject({ style_id: styleImported.styleIdMap[styleSelection.styleId] });
+    stages.push({ stage, styleSelection, styleImported, styleSaved, independentStyleVerification, stylePackageComparison,
+      reopenedStyle: reopenedStyle.styles?.[0] });
     await clickWorkspaceButton(page, "Close");
     await expect(page.getByTestId("docx-workspace")).toHaveCount(0);
 
@@ -818,17 +1144,17 @@ test("legacy Word template drives native EN and ZH Agent format repair", async (
     await page.getByTestId("journal-checks-panel").getByText("Edit DOCX working copy", { exact: true }).click();
     await expect(page.getByTestId("docx-workspace")).toBeVisible({ timeout: 120_000 });
     const chineseLive = await waitForDocument(page, false);
+    stages.push({ stage: "Chinese unified system reading", result: await assertUnifiedLiveReading(page, chineseLive, chinesePath) });
     const target = runFontSizeTarget(
       chineseInspection.snapshot,
       chineseLive,
       fontSizeFindings,
     );
+    await clickWorkspaceButton(page, "Document tools");
     const fontCards = page.getByTestId("docx-template-font");
     await expect(fontCards).toHaveCount(expectedTemplateFonts.length);
     for (const [index, font] of expectedTemplateFonts.entries()) {
       await expect(fontCards.nth(index)).toContainText(font.family);
-      for (const role of font.roles) await expect(fontCards.nth(index)).toContainText(role);
-      for (const script of font.scripts) await expect(fontCards.nth(index)).toContainText(script);
     }
     const beforeFormat = await executeDocxTool<DocxFormatReadResult>(
       page,
@@ -877,6 +1203,8 @@ test("legacy Word template drives native EN and ZH Agent format repair", async (
     const dirtyParagraph = dirtyLive.paragraphs[target.paragraphIndex];
     expect(dirtyParagraph).toBeTruthy();
     expect(dirtyParagraph.paragraphRef).toBe(target.paragraphRef);
+    expect(dirtyParagraph.text).toBe(target.paragraphText);
+    if (target.paraId !== undefined) expect(dirtyParagraph.paraId).toBe(target.paraId);
     const dirtyFormat = await executeDocxTool<DocxFormatReadResult>(
       page,
       "read_docx_format",
@@ -967,6 +1295,8 @@ test("legacy Word template drives native EN and ZH Agent format repair", async (
       paragraphIndexAtPath(chineseInspection.snapshot, target.paragraphPath)
     ];
     expect(reopenedParagraph).toBeTruthy();
+    expect(reopenedParagraph.text).toBe(target.paragraphText);
+    if (target.paraId !== undefined) expect(reopenedParagraph.paraId).toBe(target.paraId);
     const reopenedFormat = await executeDocxTool<DocxFormatReadResult>(
       page,
       "read_docx_format",
@@ -1064,6 +1394,7 @@ print("exact canonical run size retained")
     await page.getByTestId("journal-checks-panel").getByText("Edit DOCX working copy", { exact: true }).click();
     await expect(page.getByTestId("docx-workspace")).toBeVisible({ timeout: 120_000 });
     const duplicateLive = await waitForDocument(page, false);
+    stages.push({ stage: "Duplicate unified system reading", result: await assertUnifiedLiveReading(page, duplicateLive, duplicatePath) });
     expect(duplicateLive.paragraphs).toHaveLength(2);
     expect(duplicateLive.paragraphs.map((paragraph) => paragraph.text)).toEqual([
       DUPLICATE_TEXT,

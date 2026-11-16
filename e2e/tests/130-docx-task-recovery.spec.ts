@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
+import type { TauriFixtures } from "@srsholmes/tauri-playwright";
 import { strFromU8, unzipSync } from "fflate";
 import type { DocxDocumentRead } from "../../packages/ai-tools/src/tools";
 import type { DocxRecoveryListing, DocxRecoveryMetadata, DocxRecoverySnapshot } from "../../src/lib/docx-recovery";
@@ -10,7 +11,7 @@ import type { DocxRender } from "../../src/lib/docx-render";
 import type { ResearchTask } from "../../src/lib/research-tasks";
 import type { GroupSnapshot } from "../../src/lib/task-collaboration";
 import { test, expect } from "../fixtures";
-import { createBlankProject, openRailTab, waitLong, type Page } from "../helpers";
+import { createBlankProject, openRailTab, waitLong } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 
@@ -24,6 +25,7 @@ const PROVIDER = "docx-recovery-fixture";
 const MODEL = "gpt/gpt-6.1-sol";
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const path = (name: string) => resolve(run!, name);
+type Page = TauriFixtures["tauriPage"];
 const live = (page: Page) => page.evaluate<DocxDocumentRead>(`window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m => m.DOCX_AGENT_HOST.readDocument())`);
 
 interface Inventory {
@@ -47,9 +49,18 @@ interface RunState {
   committed?: { baselineId: string; sourceSha256: string; revision: number };
   committedSaved?: DocxActivity;
   committedLedger?: Ledger;
+  saveOperationId?: string;
+  resumedGeneration?: number;
 }
 const readRun = async () => JSON.parse(await readFile(path("attribution.json"), "utf8")) as RunState;
 const writeRun = (state: RunState) => writeFile(path("attribution.json"), JSON.stringify(state, null, 2));
+
+async function configureFixtureProvider(page: Page, url: string) {
+  await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(async m => {
+    const config = await m.getConfig();
+    await m.setConfig({ ...config, ai_custom_providers: [...(config.ai_custom_providers ?? []).filter(p => p.id !== ${scriptValue(PROVIDER)}), { id: ${scriptValue(PROVIDER)}, name: 'Scripted DOCX recovery fixture', baseURL: ${scriptValue(`${url}/v1`)}, keyOptional: true }], ai_provider_models: { ...config.ai_provider_models, [${scriptValue(PROVIDER)}]: [{ id: ${scriptValue(MODEL)}, name: ${scriptValue(MODEL)}, enabled: true, source: 'user' }] } });
+  })`);
+}
 
 async function activities(page: Page, state: Pick<RunState, "projectId" | "manuscript">) {
   const retained: DocxActivity[] = [];
@@ -82,6 +93,12 @@ async function clickButton(page: Page, root: string, label: string) {
     if (!button || button.disabled) throw new Error('Unavailable button: ' + ${scriptValue(label)});
     button.click();
   })()`);
+}
+
+async function openDocumentTools(page: Page) {
+  const button = page.getByTestId("docx-workspace").getByText("Document tools", { exact: true });
+  if (await button.getAttribute("aria-expanded") !== "true") await button.click();
+  await expect(button).toHaveAttribute("aria-expanded", "true");
 }
 
 async function selectProject(page: Page, projectId: string) {
@@ -156,8 +173,8 @@ async function confirmRefusedRequest(page: Page, state: RunState, bytes: Buffer)
   })}))`);
   const before = ledger(state);
   expect(before.baselines.at(-1)).toBe(advanced.result_baseline_id);
-  await clickButton(page, '[data-testid="docx-render-preview"]', "Close");
-  await clickButton(page, '[data-testid="docx-workspace"]', "Close");
+  await page.getByTestId("docx-workspace").getByText("Back to document", { exact: true }).click();
+  await page.locator('[data-testid="docx-workspace"] button[aria-label="Close"]').click();
   await expect(page.getByTestId("docx-workspace")).toHaveCount(0);
   await expect(page.getByTestId("docx-recovery-open")).toBeVisible();
   await page.getByTestId("docx-recovery-open").click();
@@ -249,10 +266,7 @@ test("prepare native task-attributed checkpoint before SIGKILL", async ({ tauriP
     await createBlankProject(page, `DOCX task recovery ${basename(input!)} ${Date.now()}`);
     const projectId = await page.evaluate<string>(`window.__oleaflyE2EImport('/src/store/files.ts').then(m => m.useFilesStore.getState().projectId)`);
     await page.evaluate(`window.__researchTasksSet?.(true)`);
-    await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(async m => {
-      const config = await m.getConfig();
-      await m.setConfig({ ...config, ai_custom_providers: [...(config.ai_custom_providers ?? []).filter(p => p.id !== ${scriptValue(PROVIDER)}), { id: ${scriptValue(PROVIDER)}, name: 'Scripted DOCX recovery fixture', baseURL: ${scriptValue(`${server.url}/v1`)}, keyOptional: true }], ai_provider_models: { ...config.ai_provider_models, [${scriptValue(PROVIDER)}]: [{ id: ${scriptValue(MODEL)}, name: ${scriptValue(MODEL)}, enabled: true, source: 'user' }] } });
-    })`);
+    await configureFixtureProvider(page, server.url);
     await openRailTab(page, "Journal checks");
     const panel = page.getByTestId("journal-checks-panel");
     await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled({ timeout: 30_000 });
@@ -260,9 +274,11 @@ test("prepare native task-attributed checkpoint before SIGKILL", async ({ tauriP
     await page.fill('[role="dialog"] input:not([type="file"])', `Recovery ${basename(input!)}`);
     await page.setInputFiles('[role="dialog"] input[type="file"]', [{ name: basename(input!), mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: authorBytes }]);
     await page.click('[role="dialog"] button[type="submit"]');
-    await expect(page.locator('[role="dialog"]')).toHaveCount(0);
+    await expect(page.locator('[role="dialog"][data-state="open"]')).toHaveCount(0, { timeout: 180_000 });
     await panel.getByText("Edit DOCX working copy", { exact: true }).click();
     await expect.poll(() => live(page).then(read => read.document.dirty, () => null), { timeout: 90_000 }).toBe(false);
+    await openDocumentTools(page);
+    await expect(page.locator('[aria-label="Task activity"] select')).toBeVisible();
     const before = await live(page);
     const xml = strFromU8(unzipSync(authorBytes)["word/document.xml"]);
     const topLevel = await page.evaluate<string[]>(`(() => {
@@ -295,7 +311,7 @@ test("prepare native task-attributed checkpoint before SIGKILL", async ({ tauriP
       const step = steps[messages.filter(m => m.role === "tool").length];
       return step ? { name: step.name, args: step.args(request) } : "DOCX_RECOVERY_PROPOSAL_COMPLETE";
     });
-    const task = await page.evaluate<ResearchTask>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(m => m.createResearchTask(${scriptValue({ projectId, title: "DOCX recovery provenance", prompt: "Read the bound DOCX window, capture the paragraph and propose one bounded change for user review. Do not apply or save. Finish after reading the retained proposal activity.", runtimeId: "builtin", agentId: PROVIDER, modelId: MODEL, skillIds: [], dependencyIds: [] })}))`);
+    const task = await page.evaluate<ResearchTask>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(m => m.createResearchTask(${scriptValue({ projectId, title: "DOCX recovery provenance", prompt: "First read the bound DOCX window, capture the paragraph and propose one bounded change for user review. Do not apply or save in this phase. Finish after reading the retained proposal activity. If the user accepts, explicitly restores the checkpoint and resumes this task, read the recovered working copy and save its current revision without another edit.", runtimeId: "builtin", agentId: PROVIDER, modelId: MODEL, skillIds: [], dependencyIds: [] })}))`);
     const group = await page.evaluate<GroupSnapshot>(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m => m.createTaskGroup(${scriptValue(projectId)}, ${scriptValue(task.id)}, [{ name: 'DOCX recovery reviewer', responsibility: 'Own one bound DOCX proposal; do not delegate or subscribe.', runtimeId: 'builtin', agentId: ${scriptValue(PROVIDER)}, modelId: ${scriptValue(MODEL)}, skillIds: [], coordinator: true }]))`);
     await clickButton(page, '[aria-label="Task activity"]', "Refresh activity");
     await waitLong(page, `Array.from(document.querySelectorAll('[aria-label="Task activity"] select option')).some(option => option.value === ${scriptValue(task.id)})`, 15_000);
@@ -326,6 +342,13 @@ test("prepare native task-attributed checkpoint before SIGKILL", async ({ tauriP
     await writeFile(path("accepted-checkpoint.docx"), Buffer.from(snapshot.bytes));
     await writeFile(path("accepted-package.json"), JSON.stringify(packageComparison(path("accepted-checkpoint.docx"), state), null, 2));
     expect(ledger(state).baselines).toEqual([state.baselineId]);
+    const stopped = await page.evaluate<ResearchTask>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(m => m.cancelResearchTask(${scriptValue(task.id)}))`);
+    expect(stopped.status).toBe("cancelled");
+    await page.evaluate(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(groups =>
+      groups.sendGroupMessage(${scriptValue(projectId)}, ${scriptValue(group.group.id)}, {
+        body: 'The user accepted the proposal. After explicit checkpoint restoration and task resume, read the bound recovered working copy and save its current revision without another edit.',
+        recipients: [${scriptValue(state.proposal.origin.memberId)}], replyTo: null, object: null, requestWork: true,
+      }))`);
     await writeRun(state);
     await writeFile(path("prepared-activities.json"), JSON.stringify(await activities(page, state), null, 2));
     await page.screenshot({ path: path("accepted-before-kill.png") });
@@ -339,68 +362,113 @@ test("restore-save native task checkpoint then interrupt a committed response", 
   test.skip(stage !== "restore-save");
   test.setTimeout(300_000);
   const state = await readRun();
-  await restore(page, state, state.recovery);
-  await expect.poll(() => live(page).then(read => read.document.dirty, () => null), { timeout: 90_000 }).toBe(true);
-  await expect(page.getByTestId("docx-recovered-source")).toHaveCount(1, { timeout: 30_000 });
-  const recovered = await live(page);
-  expect(recovered.document.sessionId).not.toBe(state.originalSessionId);
-  expect(recovered.paragraphs.some(p => p.text === state.proposed)).toBe(true);
-  expect(recovered.document.savedRevision).toBe(-1);
-  await expect(page.getByTestId("docx-suggestion")).toHaveCount(0);
-  const retained = await activities(page, state);
-  const resumed = retained.filter(item => item.proposalId === state.proposal.id && item.event.type === "outcome" && item.event.outcome.kind === "recovered");
-  expect(resumed).toHaveLength(1);
-  expect(resumed[0].origin).toEqual(state.proposal.origin);
-  expect(resumed[0].document.sessionId).toBe(recovered.document.sessionId);
-  expect(resumed[0].event).toMatchObject({ type: "outcome", outcome: { kind: "recovered", recoveryKey: state.recovery.recoveryKey, contentSha256: state.recovery.contentSha256, fromDocument: { sessionId: state.originalSessionId } } });
-  // Let the real UI prepare and persist its save, then let native commit finish
-  // Workbench and TaskStore. Only the response to React is withheld until kill.
-  await page.evaluate(`(() => {
-    window.__docxRecoveryCommitProbe = {};
-    // Tauri defines invoke as a non-writable property. Its callback registry is
-    // exposed for debugging; wrap registration and withhold only the exact
-    // three-field native commit result before its promise is resolved.
-    const callbacks = window.__TAURI_INTERNALS__.callbacks;
-    const register = callbacks.set.bind(callbacks);
-    callbacks.set = (id, callback) => register(id, result => {
-      if (result && typeof result === 'object' &&
-        Object.keys(result).sort().join(',') === 'baselineId,revision,sourceSha256' &&
-        typeof result.baselineId === 'string' && typeof result.sourceSha256 === 'string' &&
-        typeof result.revision === 'number') {
-        window.__docxRecoveryCommitProbe = { result, callbackId: id };
-        return;
-      }
-      return callback(result);
+  const server = await startMockAiServer();
+  try {
+    await configureFixtureProvider(page, server.url);
+    await restore(page, state, state.recovery);
+    await expect.poll(() => live(page).then(read => read.document.dirty, () => null), { timeout: 90_000 }).toBe(true);
+    await expect(page.getByTestId("docx-recovered-source")).toHaveCount(1, { timeout: 30_000 });
+    const recovered = await live(page);
+    expect(recovered.document.sessionId).not.toBe(state.originalSessionId);
+    expect(recovered.paragraphs.some(p => p.text === state.proposed)).toBe(true);
+    expect(recovered.document.savedRevision).toBe(-1);
+    await expect(page.getByTestId("docx-suggestion")).toHaveCount(0);
+    const retained = await activities(page, state);
+    const resumed = retained.filter(item => item.proposalId === state.proposal.id && item.event.type === "outcome" && item.event.outcome.kind === "recovered");
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0].origin).toEqual(state.proposal.origin);
+    expect(resumed[0].document.sessionId).toBe(recovered.document.sessionId);
+    expect(resumed[0].event).toMatchObject({ type: "outcome", outcome: { kind: "recovered", recoveryKey: state.recovery.recoveryKey, contentSha256: state.recovery.contentSha256, fromDocument: { sessionId: state.originalSessionId } } });
+    // Continue the original task in the explicitly restored session. Its fixed
+    // save must persist the operation before the response to React is withheld.
+    await page.evaluate(`(() => {
+      window.__docxRecoveryCommitProbe = {};
+      // Tauri defines invoke as a non-writable property. Its callback registry is
+      // exposed for debugging; wrap registration and withhold only the exact
+      // three-field native commit result before its promise is resolved.
+      const callbacks = window.__TAURI_INTERNALS__.callbacks;
+      const register = callbacks.set.bind(callbacks);
+      callbacks.set = (id, callback) => register(id, result => {
+        if (result && typeof result === 'object' &&
+          Object.keys(result).sort().join(',') === 'baselineId,revision,sourceSha256' &&
+          typeof result.baselineId === 'string' && typeof result.sourceSha256 === 'string' &&
+          typeof result.revision === 'number') {
+          window.__docxRecoveryCommitProbe = { result, callbackId: id };
+          return;
+        }
+        return callback(result);
+      });
+      if (!Object.hasOwn(callbacks, 'set')) throw new Error('The native callback fault injection was not installed');
+    })()`);
+    const offset = recovered.paragraphs.findIndex(paragraph => paragraph.text === state.proposed);
+    expect(offset).toBeGreaterThanOrEqual(0);
+    const steps = [
+      { name: "discover_tools", args: (_request: Record<string, unknown>) => ({ query: "docx" }) },
+      { name: "list_docx_documents", args: (_request: Record<string, unknown>) => ({}) },
+      { name: "read_docx_document", args: (_request: Record<string, unknown>) => ({ offset, limit: 1 }) },
+      { name: "save_docx_document", args: (request: Record<string, unknown>) => ({
+        expected_revision: toolResult<{ document: { sessionRevision: number } }>(request, "paragraphs").document.sessionRevision,
+      }) },
+    ];
+    let stepIndex = 0;
+    server.setResponder(request => {
+      const messages = request.messages as { role: string; content: unknown }[];
+      if (messages.some(message => message.role === "system" && typeof message.content === "string" && message.content.includes("Assess responsibility-based participation"))) return '{"decisions":[]}';
+      const step = steps[stepIndex++];
+      return step ? { name: step.name, args: step.args(request) } : "DOCX_RECOVERY_SAVE_COMPLETE";
     });
-    if (!Object.hasOwn(callbacks, 'set')) throw new Error('The native callback fault injection was not installed');
-  })()`);
-  await clickButton(page, '[data-testid="docx-workspace"]', "Save manuscript version");
-  await expect.poll(() => page.evaluate<boolean>(`!!window.__docxRecoveryCommitProbe?.result`), { timeout: 90_000 }).toBe(true);
-  const result = await page.evaluate<NonNullable<RunState["committed"]>>(`window.__docxRecoveryCommitProbe.result`);
-  state.restoredSessionId = recovered.document.sessionId;
-  state.pending = await checkpoint(page, state, true);
-  state.committed = result;
-  expect(result.baselineId).not.toBe(state.baselineId);
-  expect(result.sourceSha256).toBe(state.recovery.contentSha256);
-  // React is still awaiting the response, so its displayed session remains dirty.
-  expect((await live(page)).document.dirty).toBe(true);
-  const pending = await readSnapshot(page, state.pending);
-  expect(pending.taskState?.pendingSave?.requestId).toMatch(/^docx-/);
-  expect(pending.taskState?.document.sessionId).toBe(recovered.document.sessionId);
-  const saved = (await activities(page, state)).filter(item => item.proposalId === state.proposal.id && item.event.type === "outcome" && item.event.outcome.kind === "saved");
-  expect(saved).toHaveLength(1);
-  state.committedSaved = saved[0];
-  expect(saved[0].origin).toEqual(state.proposal.origin);
-  expect(saved[0].document.baselineId).toBe(result.baselineId);
-  expect(saved[0].event).toMatchObject({ type: "outcome", outcome: { kind: "saved", requestId: pending.taskState!.pendingSave!.requestId, contentSha256: state.recovery.contentSha256 } });
-  const actual = await source(page, state, result.baselineId);
-  expect(Buffer.from(actual.content_base64, "base64").equals(await readFile(path("accepted-checkpoint.docx")))).toBe(true);
-  state.committedLedger = ledger(state);
-  expect(state.committedLedger.baselines).toEqual([state.baselineId, result.baselineId]);
-  expect(state.committedLedger.requests.filter(item => item.requestId === pending.taskState!.pendingSave!.requestId)).toEqual([{ requestId: pending.taskState!.pendingSave!.requestId, resultBaselineId: result.baselineId }]);
-  await writeRun(state);
-  await writeFile(path("response-lost-activities.json"), JSON.stringify(await activities(page, state), null, 2));
-  await page.screenshot({ path: path("native-commit-response-withheld.png") });
+    const resumedTask = await page.evaluate<ResearchTask>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m => {
+      await m.retryResearchTask(${scriptValue(state.proposal.origin.taskId)}, 'resume');
+      return m.startResearchTask(${scriptValue(state.proposal.origin.taskId)});
+    })`);
+    state.resumedGeneration = resumedTask.executionGeneration;
+    await expect.poll(() => page.evaluate<boolean>(`!!window.__docxRecoveryCommitProbe?.result`), { timeout: 90_000 }).toBe(true);
+    const result = await page.evaluate<NonNullable<RunState["committed"]>>(`window.__docxRecoveryCommitProbe.result`);
+    state.restoredSessionId = recovered.document.sessionId;
+    state.pending = await checkpoint(page, state, true);
+    state.committed = result;
+    expect(result.baselineId).not.toBe(state.baselineId);
+    expect(result.sourceSha256).toBe(state.recovery.contentSha256);
+    // React is still awaiting the response, so its displayed session remains dirty.
+    expect((await live(page)).document.dirty).toBe(true);
+    const pending = await readSnapshot(page, state.pending);
+    expect(pending.taskState?.pendingSave?.requestId).toMatch(/^docx-/);
+    expect(pending.taskState?.document.sessionId).toBe(recovered.document.sessionId);
+    const operation = pending.taskState!.pendingSave!.operation!;
+    expect(operation.operationId).toBeTruthy();
+    expect(recovered.document).toMatchObject({ ...operation.document });
+    state.saveOperationId = operation.operationId;
+    const resumedActivities = await activities(page, state);
+    const readActivity = resumedActivities.find(item => item.origin.taskId === state.proposal.origin.taskId &&
+      item.origin.generation === state.resumedGeneration && item.document.sessionId === recovered.document.sessionId &&
+      item.event.type === "runtime" && item.event.event.kind === "read");
+    expect(readActivity?.event).toMatchObject({ type: "runtime", event: { kind: "read", offset,
+      paragraphs: [{ text: state.proposed }] } });
+    const saveResults = resumedActivities.filter(item => item.event.type === "runtime" &&
+      item.event.event.kind === "operation" && item.event.event.operationId === operation.operationId);
+    expect(saveResults).toHaveLength(1);
+    expect(saveResults[0]).toMatchObject({ origin: { taskId: state.proposal.origin.taskId, generation: state.resumedGeneration },
+      document: { sessionId: recovered.document.sessionId, baselineId: result.baselineId },
+      event: { type: "runtime", event: { operation: "save", result: { ok: true,
+        result: { baselineId: result.baselineId, sourceSha256: result.sourceSha256, revision: result.revision } } } } });
+    const saved = (await activities(page, state)).filter(item => item.proposalId === state.proposal.id && item.event.type === "outcome" && item.event.outcome.kind === "saved");
+    expect(saved).toHaveLength(1);
+    state.committedSaved = saved[0];
+    expect(saved[0].origin).toEqual(state.proposal.origin);
+    expect(saved[0].document.baselineId).toBe(result.baselineId);
+    expect(saved[0].event).toMatchObject({ type: "outcome", outcome: { kind: "saved", requestId: pending.taskState!.pendingSave!.requestId, contentSha256: state.recovery.contentSha256 } });
+    const actual = await source(page, state, result.baselineId);
+    expect(Buffer.from(actual.content_base64, "base64").equals(await readFile(path("accepted-checkpoint.docx")))).toBe(true);
+    state.committedLedger = ledger(state);
+    expect(state.committedLedger.baselines).toEqual([state.baselineId, result.baselineId]);
+    expect(state.committedLedger.requests.filter(item => item.requestId === pending.taskState!.pendingSave!.requestId)).toEqual([{ requestId: pending.taskState!.pendingSave!.requestId, resultBaselineId: result.baselineId }]);
+    await writeRun(state);
+    await writeFile(path("response-lost-activities.json"), JSON.stringify(await activities(page, state), null, 2));
+    await page.screenshot({ path: path("native-commit-response-withheld.png") });
+  } finally {
+    await writeFile(path("resumed-scripted-requests.json"), JSON.stringify(server.requestBodies().map(body => JSON.parse(body)), null, 2));
+    await server.close();
+  }
 });
 
 test("reconcile native committed request after SIGKILL without another baseline", async ({ tauriPage: page }) => {
@@ -425,6 +493,12 @@ test("reconcile native committed request after SIGKILL without another baseline"
   const saved = outcomes.filter(item => item.event.type === "outcome" && item.event.outcome.kind === "saved");
   expect(saved).toHaveLength(1);
   expect(saved.find(item => item.id === state.committedSaved!.id)).toEqual(state.committedSaved);
+  const saveResults = retained.filter(item => item.event.type === "runtime" &&
+    item.event.event.kind === "operation" && item.event.event.operationId === state.saveOperationId);
+  expect(saveResults).toHaveLength(1);
+  expect(saveResults[0]).toMatchObject({ document: { baselineId: state.committed!.baselineId },
+    event: { type: "runtime", event: { operation: "save", result: { ok: true,
+      result: { sourceSha256: state.committed!.sourceSha256, revision: state.committed!.revision } } } } });
   for (const result of outcomes) expect(result.origin).toEqual(state.proposal.origin);
   const listing = await page.evaluate<DocxRecoveryListing>(`window.__oleaflyE2EImport('/src/lib/docx-recovery.ts').then(m => m.listDocxRecovery())`);
   expect(listing.snapshots).toEqual([]);
@@ -434,6 +508,7 @@ test("reconcile native committed request after SIGKILL without another baseline"
   expect(hash(bytes)).toBe(state.recovery.contentSha256);
   await writeFile(path("reconciled.docx"), bytes);
   await writeFile(path("reconciled-package.json"), JSON.stringify(packageComparison(path("reconciled.docx"), state), null, 2));
+  await openDocumentTools(page);
   await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy", { timeout: 150_000 });
   const renders = await page.evaluate<DocxRender[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(m => m.loadDocxRenders(${scriptValue(state.manuscript)}, ${scriptValue(reopened.document.baselineId)}))`);
   const render = renders.find(item => item.baseline_id === reopened.document.baselineId && item.manifest.source_sha256 === hash(bytes));
@@ -446,7 +521,28 @@ test("reconcile native committed request after SIGKILL without another baseline"
   await writeFile(path("reconciled.pdf"), Buffer.from(pdf));
   await writeFile(path("reconciled-render.json"), JSON.stringify(render, null, 2));
   await clickButton(page, '[data-testid="docx-workspace"]', "Open PDF");
-  await expect(page.getByTestId("docx-render-preview").locator("canvas").first()).toBeVisible({ timeout: 90_000 });
+  try {
+    await expect(page.getByTestId("docx-render-preview").locator("canvas").first()).toBeVisible({ timeout: 90_000 });
+  } catch (error) {
+    const diagnostic = await page.evaluate(`(async () => {
+      const describe = (element) => {
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return {tag:element.tagName,testId:element.getAttribute('data-testid'),hidden:element.hidden,
+          display:style.display,visibility:style.visibility,width:rect.width,height:rect.height,
+          text:element.textContent?.slice(0,2000)};
+      };
+      const preview = document.querySelector('[data-testid="docx-render-preview"]');
+      return {surface:(await window.__oleaflyE2EImport('/src/store/workspace-surface.ts')).useWorkspaceSurfaceStore.getState().active,
+        preview:describe(preview),ancestors:preview ? Array.from((function*(){let node=preview;while(node){yield node;node=node.parentElement;}})()).map(describe) : [],
+        canvases:Array.from(preview?.querySelectorAll('canvas') ?? []).map(describe),
+        buttons:Array.from(document.querySelectorAll('[data-testid="docx-workspace"] button')).filter(button=>/PDF|Back to document/.test(button.textContent)).map(describe),
+        alerts:Array.from(document.querySelectorAll('[role="alert"]')).map(describe)};
+    })()`);
+    await writeFile(path("reconciled-pdf-failure.json"), JSON.stringify(diagnostic, null, 2));
+    throw error;
+  }
   await page.screenshot({ path: path("reconciled-pdf.png") });
   await writeFile(path("reconciled-activities.json"), JSON.stringify(retained, null, 2));
   const reconciledLedger = ledger(state);

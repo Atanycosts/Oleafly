@@ -1,7 +1,7 @@
 import { TaskCompiledPdfs } from "./TaskCompiledPdfs";
 import { TaskPdfSelection } from "./TaskPdfSelection";
 import type { ResearchTaskAgentOption } from "./ResearchTasksPanel";
-import { loadTaskAnnotations, loadTaskGroup, loadTaskGroupMessage, type AnnotationSourceDraft, type AnnotationTarget, type GroupMessage, type GroupSnapshot } from "@/lib/task-collaboration";
+import { loadTaskAnnotations, loadTaskGroup, loadTaskGroupMessage, type AnnotationSourceDraft, type AnnotationTarget, type GroupMessage, type GroupSnapshot, type TaskAnnotation } from "@/lib/task-collaboration";
 import { loadTaskPdfSelection } from "@/lib/pdf-selection";
 import type { JournalAnnotationObject } from "@/lib/journal-workbench";
 import { JournalObjectView } from "@/components/research/JournalObjectView";
@@ -78,6 +78,11 @@ import {
 import { EmptyState, LoadingState } from "@/components/ui/empty";
 import { PendingApprovals } from "./PendingApprovals";
 import { PlanReview } from "./PlanReview";
+import type { MaterialKind } from "@/lib/material-surface";
+import { useMaterialViewerStore } from "@/store/material-viewer";
+import { base64ToBytes } from "@/lib/base64";
+import { closeHtmlPreview, readTaskHtmlPreview } from "@/lib/notebook-commands";
+import { materialAnnotationSnapshot, readMaterialAnnotation } from "@/lib/material-annotations";
 
 const TaskProgressTab = lazy(() =>
   import("./progress/TaskProgressTab").then((module) => ({ default: module.TaskProgressTab })),
@@ -242,6 +247,25 @@ function FilePreviewBody({ preview }: Readonly<{ preview: TaskFilePreview }>) {
       )}
     </div>
   );
+}
+
+function completeText(content: TaskPreviewContent): content is TaskPreviewContent & { text: string; sha256: string } {
+  return content.exists && !content.truncated && !content.binary && content.text !== null && !!content.sha256;
+}
+function completeImage(content: TaskPreviewContent): content is TaskPreviewContent & { base64: string; sha256: string } {
+  return content.exists && !content.truncated && content.base64 !== null && !!content.sha256 && !!content.mediaType?.startsWith("image/");
+}
+function completeDocx(content: TaskPreviewContent): content is TaskPreviewContent & { base64: string; sha256: string } {
+  return content.exists && !content.truncated && content.base64 !== null && !!content.sha256 && content.mediaType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+}
+function canOpenMaterial(content: TaskPreviewContent): content is TaskPreviewContent & { sha256: string } {
+  return completeText(content) || completeImage(content) || completeDocx(content);
+}
+
+function textMaterialKind(path: string): MaterialKind {
+  if (/\.svg$/iu.test(path)) return "image";
+  if (/\.(tikz|mmd)$/iu.test(path)) return "diagram";
+  return /\.(md|markdown|mdown)$/iu.test(path) ? "markdown" : "source";
 }
 
 function isErrorMilestone(text: string, error: string | null): boolean {
@@ -994,6 +1018,21 @@ export function TaskDetailDialog({
       if (request === referenceRequest.current) setReferenceLoading(false);
     }
   };
+  const openAnnotationSource = async (annotation: TaskAnnotation) => {
+    if (annotation.source?.kind !== "material_snapshot") return openAnnotationTarget(annotation.target);
+    const request = ++referenceRequest.current;
+    setReferencePreview({ target: annotation.target });
+    setReferenceLoading(true); setReferenceError(null);
+    try {
+      const retained = await readMaterialAnnotation(task.projectId, annotation.id);
+      if (request !== referenceRequest.current) return;
+      useMaterialViewerStore.getState().open({ ...retained.snapshot.document,
+        role: annotation.explicitRequest && annotation.target.taskId === task.id ? "task_input" : "evidence",
+        load: async () => new Uint8Array(retained.bytes), anchor: retained.snapshot.anchor, mediaType: retained.snapshot.mediaType });
+      onOpenChange(false);
+    } catch (cause) { if (request === referenceRequest.current) setReferenceError(describeError(cause)); }
+    finally { if (request === referenceRequest.current) setReferenceLoading(false); }
+  };
 
   const timelineCache = useRef<{ language: string; cache: TaskTimelineCache | null }>({ language, cache: null });
   const shownTimeline = useRef<TaskTimeline>(NO_TIMELINE);
@@ -1199,6 +1238,37 @@ export function TaskDetailDialog({
     } finally {
       if (activeTaskRun.current === requestRunKey) setPreviewingPath(null);
     }
+  };
+
+  const openMaterialResult = async (path: string, after: TaskPreviewContent, role: "candidate" | "result", before?: TaskPreviewContent) => {
+    if (!canOpenMaterial(after)) return;
+    const requestRunKey = taskRunKey;
+    if (/\.html?$/iu.test(path) || after.mediaType === "text/html") {
+      setPreviewingPath(path); setPreviewError(null);
+      try {
+        const snapshot = await readTaskHtmlPreview(task.id, path, task.executionGeneration, after.sha256);
+        await closeHtmlPreview(snapshot.url);
+        if (activeTaskRun.current !== requestRunKey) return;
+        useMaterialViewerStore.getState().open({ projectId: task.projectId, documentId: `task:${task.id}:${path}`,
+          title: path, path, kind: "html", role, revision: snapshot.revision, load: async () => snapshot.bundle,
+          mediaType: "application/vnd.oleafly.html-bundle+json" });
+        onOpenChange(false);
+      } catch (cause) { if (activeTaskRun.current === requestRunKey) setPreviewError(describeError(cause)); }
+      finally { if (activeTaskRun.current === requestRunKey) setPreviewingPath(null); }
+      return;
+    }
+    const kind = completeDocx(after) ? "docx" : completeImage(after) ? "image" : textMaterialKind(path);
+    const mediaType = kind === "image" ? "image/svg+xml" : after.mediaType ?? undefined;
+    const content = completeDocx(after) || completeImage(after) ? base64ToBytes(after.base64) : after.text ?? "";
+    const previous = before && (kind === "docx" ? completeDocx(before) : kind === "image" ? completeImage(before) || completeText(before) : completeText(before)) ? {
+      title: path, role: "task_input" as const, revision: before.sha256 ?? "", load: async () => completeDocx(before) || completeImage(before) ? base64ToBytes(before.base64) : before.text ?? "",
+      mediaType: before.mediaType ?? mediaType,
+    } : undefined;
+    useMaterialViewerStore.getState().open({
+      projectId: task.projectId, documentId: `task:${task.id}:${path}`, title: path, path, kind,
+      role, revision: after.sha256, load: async () => content, mediaType: after.mediaType ?? mediaType, previous,
+    });
+    onOpenChange(false);
   };
 
   const dependencies = useMemo(
@@ -1407,6 +1477,9 @@ export function TaskDetailDialog({
           >
             {previewButtonLabel(change.path, Boolean(preview))}
           </Button>
+          {preview && canOpenMaterial(preview.after) && <Button type="button" size="xs" variant="outline" disabled={previewingPath === change.path} onClick={() => void openMaterialResult(change.path, preview.after, "candidate", preview.before)}>
+            {t(($) => $.researchTools.tasks.detail.openInWorkspace)}
+          </Button>}
         </div>
         {merging ? (
           <p className="mt-2 flex items-start gap-2 text-xs text-muted-foreground">
@@ -1548,7 +1621,7 @@ export function TaskDetailDialog({
   const outputTab = () => (
     <>
       <TaskPdfSelection key={task.id} taskId={task.id} openOriginal={openPdfInput} />
-      <TaskCompiledPdfs key={taskRunKey} taskId={task.id} generation={task.executionGeneration} status={task.status} />
+      <TaskCompiledPdfs key={taskRunKey} taskId={task.id} generation={task.executionGeneration} status={task.status} onOpenInWorkspace={() => onOpenChange(false)} />
       {task.result ? (
         <section aria-labelledby="research-task-result" className="space-y-3">
           <div className="min-w-0">
@@ -1596,6 +1669,9 @@ export function TaskDetailDialog({
               <p className="truncate text-sm font-medium">
                 {artifactPreview.artifact.label}
               </p>
+              {canOpenMaterial(artifactPreview.content) && <Button type="button" size="xs" variant="outline" disabled={previewingPath === artifactPreview.artifact.path} onClick={() => void openMaterialResult(artifactPreview.artifact.path, artifactPreview.content, "result")}>
+                {t(($) => $.researchTools.tasks.detail.openInWorkspace)}
+              </Button>}
               {artifactPreview.content.text !== null ? (
                 <pre data-select-all-scope className="mt-2 max-h-80 select-text overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all text-xs">
                   {artifactPreview.content.text}
@@ -1784,7 +1860,7 @@ export function TaskDetailDialog({
                 {referenceLoading ? <p role="status" className="text-xs">{t(($) => $.researchTools.tasks.annotations.loading)}</p> : null}
                 {referenceError ? <p role="alert" className="text-xs text-destructive">{referenceError}</p> : null}
                 {referencePreview.journal ? <JournalObjectView object={referencePreview.journal} /> : null}
-                {referencePreview.pdf ? <TaskCompiledPdfs taskId={task.id} generation={referencePreview.pdf.generation} status={task.status} reference={referencePreview.pdf} /> : null}
+                {referencePreview.pdf ? <TaskCompiledPdfs taskId={task.id} generation={referencePreview.pdf.generation} status={task.status} reference={referencePreview.pdf} onOpenInWorkspace={() => onOpenChange(false)} /> : null}
                 {referencePreview.item?.kind === "artifact" && referencePreview.target.objectRevision !== `generation:${task.executionGeneration}` ? <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.tasks.annotations.referenceUnavailable)}</p> : referencePreview.item ? <TimelineList {...timelineProps} runKey={referencePreview.target.objectId} items={[referencePreview.item]} live={false} /> : null}
                 {referencePreview.message ? <><p className="text-xs">{`${referencePreview.message.author.id} · #${referencePreview.message.sequence}`}</p><Markdown>{referencePreview.message.body}</Markdown></> : null}
               </section> : null}
@@ -1797,6 +1873,11 @@ export function TaskDetailDialog({
                 members={groupSnapshot?.members ?? []}
                 revision={groupSnapshot?.group.updatedAt ?? task.updatedAt}
                 onOpenTarget={(target) => { void openAnnotationTarget(target); }}
+                onOpenAnnotationSource={(annotation) => { void openAnnotationSource(annotation); }}
+                describeAnnotation={(annotation) => {
+                  const snapshot = materialAnnotationSnapshot(annotation);
+                  return snapshot ? `${snapshot.document.title} · ${t(($) => $.researchTools.tasks.annotations.recordedObject)} · ${t(($) => $.researchTools.materialAnnotations[snapshot.anchor.kind])}` : "";
+                }}
               />
               </Suspense>
             </TabsContent>

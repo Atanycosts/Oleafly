@@ -50,6 +50,62 @@ beforeEach(() => {
 });
 
 describe("TaskAnnotations", () => {
+  it("shows real member avatars for the author and the person who handled feedback", async () => {
+    const original = annotation({ author: { kind: "user", id: "user" } });
+    api.load.mockResolvedValue({ ...context([original]), handlings: [{ id: "handling", annotationId: original.id, author: { kind: "member", id: "member-reviewer" }, summary: "Checked this figure", resultRefs: [], createdAt: 2 }] });
+    render(<TaskAnnotations task={task()} target={null} members={[member()]} />);
+    const card = await screen.findByTestId("task-annotation");
+    expect(card.querySelector('[data-slot="avatar"] svg')).not.toBeNull();
+    const handling = within(card).getByTestId("annotation-handling");
+    expect(handling.querySelector('[data-slot="avatar"]')).toHaveTextContent("R");
+    expect(within(handling).getByText(/Member · Reviewer · member-reviewer/)).toBeInTheDocument();
+  });
+
+  it("uses readable journal references while preserving the exact target and source for saved feedback", async () => {
+    const journalTarget = target({ taskId: null, objectKind: "journal_check", objectId: '{"libraryRoot":"/private/library","id":"check-secret"}', objectRevision: "check-secret", path: null });
+    const source = { kind: "journal_object", content: '{"reference":{"libraryRoot":"/private/library"},"object":{"check_id":"check-secret"}}' };
+    const saved = annotation({ target: journalTarget, source: { ...source, sha256: "source-secret" }, author: { kind: "member", id: "member-secret" } });
+    api.loadObject.mockResolvedValue(context([saved]));
+    const open = vi.fn();
+    const view = render(<TaskAnnotations contextScope="object" objectTarget={journalTarget} source={source} describeTarget={() => "This journal check"} onOpenTarget={open} />);
+    const card = await screen.findByTestId("task-annotation");
+    expect(within(card).getByRole("button", { name: "This journal check" })).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: text.recordedObject }));
+    expect(open).toHaveBeenCalledWith(journalTarget);
+    expect(view.container.textContent).not.toMatch(/libraryRoot|check-secret|source-secret|member-secret|annotation-1/);
+    expect(view.container.querySelector("pre")).toBeNull();
+    typeBody("Please review the title formatting.");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledWith(expect.objectContaining({ target: journalTarget, source, body: "Please review the title formatting." })));
+  });
+
+  it("opens the exact annotation source when multiple anchors share a material version", async () => {
+    const shared = target({ taskId: null, objectKind: "material", objectId: "figure", objectRevision: "same-version", path: null });
+    const first = annotation({ id: "first", target: shared, body: "First area", source: { kind: "material_snapshot", content: "first", sha256: "a" } });
+    const second = annotation({ id: "second", target: shared, body: "Second area", source: { kind: "material_snapshot", content: "second", sha256: "b" } });
+    api.loadObject.mockResolvedValue(context([first, second]));
+    const open = vi.fn();
+    render(<TaskAnnotations contextScope="object" objectTarget={shared} describeTarget={() => "Figure"} describeAnnotation={(item) => item.body} onOpenAnnotationSource={open} />);
+    const cards = await screen.findAllByTestId("task-annotation");
+    fireEvent.click(within(cards[1]).getByRole("button", { name: text.recordedObject }));
+    expect(open).toHaveBeenLastCalledWith(second);
+    fireEvent.click(within(cards[0]).getByRole("button", { name: "First area" }));
+    expect(open).toHaveBeenLastCalledWith(first);
+  });
+
+  it("hides material snapshot JSON in a task while preserving other source displays", async () => {
+    const material = annotation({ source: { kind: "material_snapshot", content: '{"document":{"revision":"private-hash"}}', sha256: "hash" } });
+    api.load.mockResolvedValue(context([material]));
+    const open = vi.fn();
+    const view = render(<TaskAnnotations task={task()} target={null} describeAnnotation={() => "Retained report version"} onOpenAnnotationSource={open} />);
+    const card = await screen.findByTestId("task-annotation");
+    fireEvent.click(within(card).getByRole("button", { name: text.recordedObject }));
+    expect(open).toHaveBeenCalledWith(material);
+    expect(view.container.querySelector("pre")).toBeNull();
+    expect(within(card).getByRole("button", { name: "Retained report version" })).toBeInTheDocument();
+    expect(view.container.textContent).not.toContain("private-hash");
+  });
+
   it("saves an ordinary chat annotation with its real object target and exact original words without a task context", async () => {
     const objectTarget = target({ taskId: null, objectKind: "thread", objectId: "thread-real", objectRevision: "message:message-stable-1", path: null });
     const body = "  This message needs a second look.\nKeep the original distinction.  ";

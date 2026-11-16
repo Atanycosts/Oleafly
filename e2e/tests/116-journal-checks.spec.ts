@@ -35,6 +35,12 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   const journalId = `journal-${projectId}`;
   await openRailTab(tauriPage, "Journal checks");
   const panel = tauriPage.getByTestId("journal-checks-panel");
+  const openMoreSources = async () => {
+    const details = tauriPage.getByTestId("journal-more-sources");
+    if ((await details.getAttribute("open")) === null) {
+      await details.locator("summary").click();
+    }
+  };
   await expect(panel.getByText("Import DOCX", { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled();
   await panel.getByText("Import DOCX", { exact: true }).click();
@@ -46,16 +52,19 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   await tauriPage.click('[role="dialog"] button[type="submit"]');
   await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
 
+  await openMoreSources();
   await expect(panel.getByText("Import journal sources", { exact: true })).toBeEnabled();
   await panel.getByText("Import journal sources", { exact: true }).click();
   await tauriPage.fill('[role="dialog"] input[id$="-name"]', "Test journal");
-  await tauriPage.fill('[role="dialog"] input[id$="-journal"]', journalId);
+  await tauriPage.getByTestId("journal-import-advanced").locator("summary").click();
+  await tauriPage.fill('[data-testid="journal-id-input"]', journalId);
   await tauriPage.setInputFiles('[role="dialog"] input[type="file"]', [{
     name: "guide.txt", mimeType: "text/plain", buffer: Buffer.from("All manuscript pages must use A4 paper.\nAll manuscript pages must have 25.4 mm margins on all sides.\nAll manuscript pages must use 2 columns."),
   }]);
   await expect(tauriPage.locator('[role="dialog"] button[type="submit"]')).toBeEnabled();
   await tauriPage.click('[role="dialog"] button[type="submit"]');
   await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
+  await openMoreSources();
   await expect(panel.getByText("Use this version", { exact: true })).toBeEnabled();
   await panel.getByText("Use this version", { exact: true }).click();
   await expect(panel.getByText("Version bound", { exact: true })).toBeVisible();
@@ -79,6 +88,7 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   await expect(panel.getByText("The manuscript has changed.", { exact: false })).toBeVisible();
   await expect(panel.locator('[aria-label="Check results"] strong')).toHaveText("Historical · rerun needed");
   await expect(panel.getByText("Run check", { exact: true })).toBeDisabled();
+  await openMoreSources();
   await expect(panel.getByText("Use this version", { exact: true })).toBeEnabled();
   await panel.getByText("Use this version", { exact: true }).click();
   await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
@@ -117,13 +127,16 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   await tauriPage.evaluate(`import("/src/store/settings.ts").then(({ useSettingsStore }) => useSettingsStore.getState().setUiLocalePreference("zh-Hans"))`);
   await expect(panel.getByText("已保存新期刊版本。审阅后可选择“使用此版本”，再重新检查。", { exact: true })).toBeVisible();
   await tauriPage.evaluate(`import("/src/store/settings.ts").then(({ useSettingsStore }) => useSettingsStore.getState().setUiLocalePreference("en"))`);
+  await openMoreSources();
   await expect(panel.getByText("Use this version", { exact: true })).toBeVisible();
   await expect(panel.getByText("Use this version", { exact: true })).toBeEnabled();
   await expect(panel.getByText("Run check", { exact: true })).toBeDisabled();
+  await openMoreSources();
   await panel.getByText("Compare versions", { exact: true }).click();
   await expect(tauriPage.getByText("210.01 mm · Confirmed requirement → 215.9 mm · Confirmed requirement", { exact: true })).toBeVisible();
   await tauriPage.click('[role="dialog"] button:has(.lucide-x)');
 
+  await openMoreSources();
   await panel.getByText("Import candidate JSON", { exact: true }).click();
   await fillText('[aria-label="Candidate rule component JSON"]', JSON.stringify({
     schema_version: "journal-rule-component-1.0.0", component_id: "source-review", component_version: "1.0.0",
@@ -158,6 +171,7 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   expect(reviewed.sources).toBe(2);
   expect(reviewed.rules.find(r => r.property === "page_width_twips").expected).toBe(12240);
   expect(reviewed.rules.find(r => r.property === "body_font_size_halfpoints")).toMatchObject({ expected: 19, basis: "confirmed" });
+  await openMoreSources();
   await expect(panel.getByText("Use this version", { exact: true })).toBeEnabled();
   await panel.getByText("Use this version", { exact: true }).click();
   await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
@@ -206,6 +220,12 @@ test("live journal research returns cited candidates and adopts them into a manu
   })()`);
   await openRailTab(tauriPage, "Journal checks");
   const panel = tauriPage.getByTestId("journal-checks-panel");
+  const openMoreSources = async () => {
+    const details = tauriPage.getByTestId("journal-more-sources");
+    if ((await details.getAttribute("open")) === null) {
+      await details.locator("summary").click();
+    }
+  };
   await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled();
   await panel.getByText("Import DOCX", { exact: true }).click();
   await tauriPage.fill('[role="dialog"] input:not([type="file"])', "Retained IJAM manuscript · TDSC comparison");
@@ -215,15 +235,18 @@ test("live journal research returns cited candidates and adopts them into a manu
   await expect(tauriPage.locator('[role="dialog"] button[type="submit"]')).toBeEnabled();
   await tauriPage.click('[role="dialog"] button[type="submit"]');
   await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
+  await openMoreSources();
   await panel.getByText("Import journal sources", { exact: true }).click();
   await tauriPage.fill('[role="dialog"] input[id$="-name"]', "IEEE Transactions on Dependable and Secure Computing");
-  await tauriPage.fill('[role="dialog"] input[id$="-journal"]', "tdsc-live-research");
+  await tauriPage.getByTestId("journal-import-advanced").locator("summary").click();
+  await tauriPage.fill('[data-testid="journal-id-input"]', "tdsc-live-research");
   await tauriPage.setInputFiles('[role="dialog"] input[type="file"]', [{
     name: "tdsc-page-format-2026-10-14.txt", mimeType: "text/plain", buffer: readFileSync(guidePath),
   }]);
   await expect(tauriPage.locator('[role="dialog"] button[type="submit"]')).toBeEnabled();
   await tauriPage.click('[role="dialog"] button[type="submit"]');
   await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
+  await openMoreSources();
   await panel.getByText("Use this version", { exact: true }).click();
   await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
   await panel.getByText("Run check", { exact: true }).click();

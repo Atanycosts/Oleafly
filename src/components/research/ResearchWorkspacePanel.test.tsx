@@ -9,6 +9,9 @@ import enResearchTools from "@/i18n/locales/en/researchTools.json" with { type: 
 import { briefFixture, taskFieldsSince047 } from "./tasks/tests/task-fixtures";
 
 let ResearchWorkspacePanel: typeof import("./ResearchWorkspacePanel").ResearchWorkspacePanel;
+let MaterialAnnotations: typeof import("@/components/materials/MaterialAnnotations").MaterialAnnotations;
+let useMaterialAnnotationsStore: typeof import("@/store/material-annotations").useMaterialAnnotationsStore;
+let writeSidebarView: typeof import("@/store/sidebar-view-state").writeSidebarView;
 let useFilesStore: typeof import("@/store/files").useFilesStore;
 let useSettingsStore: typeof import("@/store/settings").useSettingsStore;
 let useResearchTasksStore: typeof import("@/store/research-tasks").useResearchTasksStore;
@@ -65,6 +68,9 @@ beforeAll(async () => {
   ({ useResearchTasksStore } = await import("@/store/research-tasks"));
   ({ resetProviderConfigCache } = await import("@/components/ai/provider-config"));
   ({ ResearchWorkspacePanel } = await import("./ResearchWorkspacePanel"));
+  ({ MaterialAnnotations } = await import("@/components/materials/MaterialAnnotations"));
+  ({ useMaterialAnnotationsStore } = await import("@/store/material-annotations"));
+  ({ writeSidebarView } = await import("@/store/sidebar-view-state"));
 });
 
 beforeEach(() => {
@@ -73,7 +79,7 @@ beforeEach(() => {
   resetProviderConfigCache();
   useFilesStore.setState({ projectId: null });
   useSettingsStore.setState({ settingsOpen: false, settingsInitialSection: "general" });
-  useResearchTasksStore.setState({ projectId: null, tasks: [], selectedTaskId: null, events: [], eventsPreviousSequence: null, loading: false, eventsLoading: false, action: null, error: null });
+  useResearchTasksStore.setState({ projectId: null, tasks: [], selectedTaskId: null, events: [], eventsPreviousSequence: null, loading: false, eventsLoading: false, action: null, error: null, detailOpen: false, detailTab: null });
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 });
 
@@ -133,6 +139,40 @@ function providerConfig(): AppConfig {
 }
 
 describe("ResearchWorkspacePanel integration", () => {
+  it.each(["tasks", "folders"] as const)("opens material handling on first sidebar mount with remembered %s", async (rememberedTab) => {
+    const reviewed = { ...task({ projectId: "paper", title: "Material handling", prompt: "Review report", runtimeId: "builtin", agentId: "openai", modelId: "model", skillIds: [], dependencyIds: [] }), status: "awaiting_review" as const, executionGeneration: 1 };
+    const annotation = { id: "material-request", target: { projectId: "paper", taskId: reviewed.id, objectKind: "material", objectId: "report", objectRevision: "revision", path: null }, author: { kind: "user", id: "user" }, body: "Review report", source: null, parentId: null, mentions: [], explicitRequest: true, status: "open", createdAt: 1, updatedAt: 1, handledAt: null, handledBy: null };
+    const context = { annotations: [annotation], deliveries: [], requirements: [], handlings: [], distillations: [] };
+    native.invoke.mockImplementation(async (command) => {
+      if (command === "get_config") return {};
+      if (command === "acp_catalog") return [];
+      if (command === "research_task_list") return [reviewed];
+      if (command === "research_task_events") return { events: [], nextSequence: null, previousSequence: null };
+      if (command === "research_object_annotations" || command === "research_task_annotations") return context;
+      if (command === "research_task_group") return null;
+      if (command === "research_workspace_get") return null;
+      return undefined;
+    });
+    useFilesStore.setState({ projectId: "paper" });
+    useSettingsStore.setState({ showTree: false, railTab: "files" });
+    writeSidebarView("paper", "researchWorkspace", { tab: rememberedTab });
+    useMaterialAnnotationsStore.getState().open({ projectId: "paper", documentId: "report", title: "Report", path: "report.md", kind: "markdown", revision: "revision", source: { text: "Report" } });
+    function InitiallyHiddenResearchSidebar() {
+      const shown = useSettingsStore((state) => state.showTree);
+      const rail = useSettingsStore((state) => state.railTab);
+      return <><MaterialAnnotations />{shown && rail === "research" ? <ResearchWorkspacePanel /> : null}</>;
+    }
+    render(<QueryClientProvider client={queryClient}><InitiallyHiddenResearchSidebar /></QueryClientProvider>);
+    const open = await page().findByRole("button", { name: `${enResearchTools.materialAnnotations.openTask} · ${reviewed.title}` });
+    expect(useResearchTasksStore.getState().projectId).toBeNull();
+    expect(page().queryByTestId("research-workspace-panel")).not.toBeInTheDocument();
+    fireEvent.click(open);
+    expect(await page().findByRole("dialog")).toHaveTextContent(reviewed.title);
+    expect(useSettingsStore.getState()).toMatchObject({ showTree: true, railTab: "research" });
+    expect(useResearchTasksStore.getState()).toMatchObject({ projectId: "paper", selectedTaskId: reviewed.id, detailOpen: true, detailTab: "annotations" });
+    expect(page().getByRole("tab", { name: enResearchTools.workspace.tabTasks, hidden: true })).toHaveAttribute("data-state", "active");
+  });
+
   it("offers project-scoped entry points and opens the research settings without a project", async () => {
     native.invoke.mockResolvedValue({});
     mount();

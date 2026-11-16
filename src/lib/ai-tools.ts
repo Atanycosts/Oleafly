@@ -480,6 +480,7 @@ export function initAiPdfCaptureFlag(): void {
 export function createOleaflyTools(opts?: {
   confirm?: ConfirmFn;
   onImage?: (dataUrl: string) => void;
+  imageSupported?: boolean;
   mutationAllowed?: () => boolean;
   runId?: () => string | null;
   signal?: AbortSignal;

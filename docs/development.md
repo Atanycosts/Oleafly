@@ -143,9 +143,18 @@ bounded raw/snapshot/finding queries. See the [journal contract](../services/res
 and [template architecture](agent/architecture.md#word-模板与有效格式2026-11-14).
 
 The retained DOCX working-copy editor pins `@docx-editor.dev/core`, `react` and
-`fonts` to the same version. It loads on demand from the Journal checks panel.
-The core has a scoped multi-column paragraph-frame patch. Keep its readable source,
-installed ESM/CJS patch and public-API regression together; see the
+`fonts` to the same version. It loads on demand from both the project file tree
+and the Journal checks panel. Those entry points mount the same central
+`DocxWorkspaceHost`, share `useDocxWorkspaceStore`, and recognize `.doc` and
+`.docx` names case-insensitively. The core has scoped multi-column
+paragraph-frame, format-execution, unchanged-entry preservation and OMML
+recognition patches. Format execution adds frame/column edits, disjoint font spans
+and selected style dependency imports through the existing transaction and fragment
+machinery. The OMML patches give the bounded reader and painter matrix, delimiter,
+equation-array, function and mathematical alphabet models. Compact editing still refuses
+source it cannot preserve; controlled LaTeX writes replace a validated complete formula
+through the same transaction and source binding. Unknown math retains a located fallback. Keep readable sources,
+installed ESM/CJS patch, declarations and public-API regressions together; see the
 [rebuild instructions](../patches/docx-core/README.md) before upgrading.
 After upgrading those packages, run `pnpm docx:notices` and check the generated
 upstream notices with `node scripts/sync-docx-notices.mjs --check`. Vite lowers
@@ -170,6 +179,34 @@ verify async dependency loading with `src/lib/vite-config.test.ts`.
 Large desktop builds still need a larger Node heap; use
 `NODE_OPTIONS=--max-old-space-size=6144 pnpm build`. This limits the JavaScript
 heap, not the build process's total memory.
+The project file remains a read-only source. Opening an unmanaged document
+imports it into a Workbench working copy and records the path-to-workbench
+mapping. **Save** commits the current editor bytes as a new baseline;
+**Download DOCX** exports those bytes without changing the baseline. Concurrent
+opens are deduplicated, and a later open reads the latest saved baseline.
+Same-path, same-source opens restore that working copy, renames follow the
+content hash, and an external replacement offers the old draft, an exact draft
+for the replacement content, or a new draft. A source with no exact candidate
+imports directly; an unavailable old draft does not hide the other choices.
+`WorkspaceCenter` keeps source, Word and Journal work surfaces mounted while
+navigation hides inactive surfaces. Its host survives the source editor/PDF
+layout switches. The shared tab strip routes Word close requests through the
+existing save/discard flow; it cannot bypass an in-flight save or check.
+`useWorkspaceSurfaceStore` owns navigation only. The existing document and
+Workbench stores continue to own sessions, saved versions and journal records.
+Journal checks uses one controller: it renders manuscript/template selection
+and check actions into the sidebar and displays results in the center.
+Submission context and additional requirement sources remain available, while
+internal IDs, JSON import/export, raw XML and developer diagnostics have no
+controls in the normal Word or Journal views. Coverage uses the domain gap
+code to select a readable explanation instead of rendering backend diagnostics.
+Journal annotations pass the shared annotation component a target description;
+this replaces internal identities in its display and opens retained sources in
+the existing journal viewer while preserving stored targets and source bytes.
+Source-specific compile/export
+and view controls are shown only on the source surface. The existing right-hand
+Agent receives a readable, editable request and reads domain records through
+its tools rather than asking the user to copy a JSON component.
 The font package is excluded from Vite's development dependency optimizer: its
 `import.meta.url` assets must resolve beside the installed package, rather than
 under `.vite/assets` where missing fonts can return the HTML fallback with status 200.
@@ -182,11 +219,14 @@ another family or nearest face to satisfy a journal font requirement. The host s
 the public shaping ceiling to 64 MiB, matching the per-face admission ceiling.
 
 Confirmed journal body-font requirements carry exact family names and source evidence
-through the existing world/review/version contract. The DOCX panel automatically acquires
-an exact catalog family through the existing font-pack service and refreshes fonts with
-public `setFonts()` without reopening the document. A missing catalog source, failed
-download or unreadable face remains visible. Font availability does not establish
-manuscript compliance. Oleafly passes the application font-cache roots to Workbench,
+through the existing world/review/version contract. Settings downloads and the Word
+panel share catalog, progress and revision state through `useFontPacksStore`.
+Concurrent catalog loads are shared; installations and removals run serially.
+The DOCX editor automatically acquires an exact catalog family through the
+existing font-pack service and refreshes its FontResolver with public `setFonts()`
+without reopening the document. A missing catalog source, failed download or
+unreadable face remains visible. Font availability does not establish manuscript
+compliance. Oleafly passes the application font-cache roots to Workbench,
 which copies current TTF/OTF bytes into each conversion's private `profile/user/fonts` directory.
 Native exact face resolution also retains those original bytes and metadata in
 `assets/resolved-fonts`, including system-only Latin fonts. Rendering waits for editor
@@ -207,7 +247,7 @@ For optional static PDF inspection use Homebrew Poppler (`brew install poppler`)
 Downloaded archives and extracted faces are SHA-256 checked; package fonts also verify actual
 family, PostScript name, weight, style and recorded version. This verifies the catalog source,
 without adding a version requirement to a journal rule that only names a family. Source receipts
-and the editor show actual versions/hashes. The render record distinguishes supplied cache bytes
+retain actual versions/hashes; the font UI presents names, versions and provenance. The render record distinguishes supplied cache bytes
 from actual PDF font names; same-family versions selected by system and LibreOffice may differ.
 DOCX work maintains new UI keys in the Chinese and English catalogs. Complete
 other-language coverage and validation are outside this round's scope. The current
@@ -591,17 +631,14 @@ grows with the documents. `CROWD_SOAK_MAX_CHARS` keeps that bounded.
 
 ## Coding style
 
-Local delegated development follows one controller and at most two responsibility
-chats, with four active agents globally including the controller and delegation
-depth at most two. Give each assignment its goal, necessary inputs, owned files,
-acceptance criteria and prohibited actions. Keep concurrent writes disjoint.
-The Sol controller handles complex implementation and final review at `high`,
-with `xhigh` or `max` for difficult architecture decisions. Current subagent
-assignments use `auto/deepseek-v4.1-flash` at `low`; this endpoint does not
-advertise `none`. Keep each delegated task bounded by its owned files and
-acceptance criteria. Do not use Doubao or Trae for this project.
-These are development delegation settings,
-not the application's model catalog or the user's task runtime defaults.
+Local delegated development follows one controller, independent responsibility
+chats and bounded subagents. Give each assignment its goal, necessary inputs,
+owned files, acceptance criteria and prohibited actions. Keep concurrent writes
+disjoint and stay within the execution platform's available slots. Personal
+model and endpoint preferences belong to the current user's Codex instructions;
+apply the latest explicit request rather than duplicating those settings here.
+Development delegation does not change the application's model catalog or the
+user's task runtime defaults.
 
 - TypeScript: follow what's already there. No comments unless asked. Respect `noUnusedLocals`/`noUnusedParameters`.
 - Rust: idiomatic, small commands, friendly error strings.

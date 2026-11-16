@@ -25,6 +25,7 @@ import { expect, test } from "../fixtures";
 import { createBlankProject, openRailTab, waitLong } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
+import { webviewScreenshot } from "../webview-screenshot";
 
 const enabled = process.env.OLEAFLY_DOCX_TEMPLATE === "1";
 const run = process.env.OLEAFLY_DOCX_RECOVERY_RUN;
@@ -34,6 +35,12 @@ const EAST_ASIA_FONT = "SimHei";
 const MANUSCRIPT_EAST_ASIA_FONT = "SimSun";
 const LATIN_FONT = "Arial";
 const BODY_TEXT = "Synthetic body target 中文";
+const TEMPLATE_CELL_FILL = "D9EAF7";
+const MANUSCRIPT_CELL_FILL = "E2F0D9";
+const TABLE_COLUMN_WIDTHS_TWIPS = [3000, 3000] as const;
+const TABLE_STYLE_ID = "GridTable4-Accent1";
+const TEMPLATE_SECTION_TOP_TWIPS = 1440;
+const MANUSCRIPT_SECTION_TOP_TWIPS = 1200;
 type Page = TauriPage | BrowserPageAdapter;
 
 type Request = Record<string, unknown>;
@@ -50,6 +57,17 @@ type FormatMutationResult = {
   changed: boolean;
   revision: number;
 };
+type ObjectFormat =
+  | { scope: "cell"; cell: { fill: string; verticalAlignment: "center" } }
+  | {
+      scope: "table";
+      table: {
+        styleId: string;
+        headerRowCount: number;
+        columnWidthsTwips: number[];
+      };
+    }
+  | { scope: "section"; section: { marginTopTwips: number } };
 type SaveResult = {
   baselineId: string;
   revision: number;
@@ -60,7 +78,17 @@ type CheckResult = {
   check: Pick<
     JournalCheck,
     "check_id" | "project_id" | "baseline_id" | "world_version_id" | "summary"
-  >;
+  > & {
+    detail: "compact";
+    objectRead: {
+      tool: "journal_read";
+      arguments: { operation: "object"; kind: "check"; object_id: string; world_version_id: string };
+    };
+    findingsRead: {
+      tool: "journal_read";
+      arguments: { operation: "findings"; check_id: string; offset: number; limit: number };
+    };
+  };
 };
 type Finding = {
   case_id: string;
@@ -80,7 +108,22 @@ type FindingsPage = {
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const output = (name: string) => resolve(run!, name);
 
-function syntheticBodyDocx(eastAsia: string): Uint8Array {
+type SyntheticBodyOptions = {
+  eastAsia: string;
+  keepControls: boolean;
+  cellFill: string;
+  verticalAlignment: "top" | "center";
+  headerRow: boolean;
+  sectionTopTwips: number;
+};
+
+function syntheticBodyDocx(options: SyntheticBodyOptions): Uint8Array {
+  const keepControls = options.keepControls
+    ? "<w:keepNext/><w:keepLines/><w:pageBreakBefore/>"
+    : '<w:keepNext w:val="0"/><w:keepLines w:val="0"/><w:pageBreakBefore w:val="0"/>';
+  const header = options.headerRow
+    ? "<w:trPr><w:tblHeader/></w:trPr>"
+    : '<w:trPr><w:tblHeader w:val="0"/></w:trPr>';
   return zipSync({
     "[Content_Types].xml": strToU8(
       '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>',
@@ -92,10 +135,10 @@ function syntheticBodyDocx(eastAsia: string): Uint8Array {
       '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
     ),
     "word/document.xml": strToU8(
-      `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="${LATIN_FONT}" w:hAnsi="${LATIN_FONT}" w:eastAsia="${eastAsia}"/><w:sz w:val="24"/></w:rPr><w:t>${BODY_TEXT}</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>`,
+      `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tblPr><w:tblW w:w="6000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="${TABLE_COLUMN_WIDTHS_TWIPS[0]}"/><w:gridCol w:w="${TABLE_COLUMN_WIDTHS_TWIPS[1]}"/></w:tblGrid><w:tr>${header}<w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="${options.cellFill}"/><w:vAlign w:val="${options.verticalAlignment}"/></w:tcPr><w:p><w:pPr><w:pStyle w:val="Normal"/>${keepControls}</w:pPr><w:r><w:rPr><w:rFonts w:ascii="${LATIN_FONT}" w:hAnsi="${LATIN_FONT}" w:eastAsia="${options.eastAsia}"/><w:sz w:val="24"/></w:rPr><w:t>${BODY_TEXT}</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>Table control cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="${options.sectionTopTwips}" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>`,
     ),
     "word/styles.xml": strToU8(
-      '<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>',
+      `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="table" w:styleId="${TABLE_STYLE_ID}"><w:name w:val="Grid Table 4 Accent 1"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:color="auto"/><w:left w:val="single" w:sz="4" w:color="auto"/><w:bottom w:val="single" w:sz="4" w:color="auto"/><w:right w:val="single" w:sz="4" w:color="auto"/><w:insideH w:val="single" w:sz="4" w:color="auto"/><w:insideV w:val="single" w:sz="4" w:color="auto"/></w:tblBorders></w:tblPr></w:style></w:styles>`,
     ),
   });
 }
@@ -164,11 +207,11 @@ async function clickButton(page: Page, root: string, label: string) {
   })()`);
 }
 
-async function waitForWorld(page: Page, journalId: string): Promise<JournalWorld> {
+async function waitForWorld(page: Page, journalName: string): Promise<JournalWorld> {
   let versionId: string | undefined;
   await expect.poll(async () => {
     const state = await journalRequest<JournalState>(page, "/api/state");
-    versionId = state.worlds.find((item) => item.journal_id === journalId)?.version_id;
+    versionId = state.worlds.find((item) => item.journal_name === journalName)?.version_id;
     return Boolean(versionId);
   }, { timeout: 120_000 }).toBe(true);
   return journalRequest<JournalWorld>(
@@ -191,22 +234,20 @@ async function importTemplateThroughUi(
   page: Page,
   bytes: Uint8Array,
   journalName: string,
-  journalId: string,
 ) {
   const panel = page.getByTestId("journal-checks-panel");
   await expect(panel.getByText("Use Word as template", { exact: true })).toBeEnabled({
     timeout: 60_000,
   });
   await panel.getByText("Use Word as template", { exact: true }).click();
-  await page.fill('[role="dialog"] input[id$="-name"]', journalName);
-  await page.fill('[role="dialog"] input[id$="-journal"]', journalId);
-  await page.setInputFiles('[role="dialog"] input[type="file"]', [{
+  await page.setInputFiles('[role="dialog"][data-state="open"] input[type="file"]', [{
     name: "format-task-template.docx",
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     buffer: Buffer.from(bytes),
   }]);
-  await page.click('[role="dialog"] button[type="submit"]');
-  await expect(page.locator('[role="dialog"]')).toHaveCount(0, { timeout: 120_000 });
+  await page.fill('[role="dialog"][data-state="open"] input[id$="-name"]', journalName);
+  await page.click('[role="dialog"][data-state="open"] button[type="submit"]');
+  await expect(page.locator('[role="dialog"][data-state="open"]')).toHaveCount(0, { timeout: 120_000 });
 }
 
 async function importManuscriptThroughUi(
@@ -219,14 +260,14 @@ async function importManuscriptThroughUi(
     timeout: 60_000,
   });
   await panel.getByText("Import DOCX", { exact: true }).click();
-  await page.fill('[role="dialog"] input:not([type="file"])', projectName);
-  await page.setInputFiles('[role="dialog"] input[type="file"]', [{
+  await page.fill('[role="dialog"][data-state="open"] input:not([type="file"])', projectName);
+  await page.setInputFiles('[role="dialog"][data-state="open"] input[type="file"]', [{
     name: "format-task-manuscript.docx",
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     buffer: Buffer.from(bytes),
   }]);
-  await page.click('[role="dialog"] button[type="submit"]');
-  await expect(page.locator('[role="dialog"]')).toHaveCount(0, { timeout: 120_000 });
+  await page.click('[role="dialog"][data-state="open"] button[type="submit"]');
+  await expect(page.locator('[role="dialog"][data-state="open"]')).toHaveCount(0, { timeout: 120_000 });
 }
 
 async function selectJournalProject(page: Page, projectId: string) {
@@ -313,6 +354,15 @@ async function eastAsiaFindings(
   check: JournalCheck,
   verdict: "observed_difference" | "observed_match",
 ): Promise<Finding[]> {
+  return formatFindings(page, check, verdict, "run.fontFamilyEastAsia");
+}
+
+async function formatFindings(
+  page: Page,
+  check: JournalCheck,
+  verdict: "observed_difference" | "observed_match",
+  propertyPath: string,
+): Promise<Finding[]> {
   const findings: Finding[] = [];
   let offset = 0;
   for (;;) {
@@ -322,7 +372,7 @@ async function eastAsiaFindings(
       offset,
       limit: 1_000,
       verdict,
-      property_path: "run.fontFamilyEastAsia",
+      property_path: propertyPath,
     });
     findings.push(...pageResult.findings);
     if (!pageResult.has_more) return findings;
@@ -378,8 +428,22 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
   test.skip(!run, "Set OLEAFLY_DOCX_RECOVERY_RUN to the isolated acceptance output directory.");
   test.setTimeout(900_000);
 
-  const templateBytes = syntheticBodyDocx(EAST_ASIA_FONT);
-  const manuscriptBytes = syntheticBodyDocx(MANUSCRIPT_EAST_ASIA_FONT);
+  const templateBytes = syntheticBodyDocx({
+    eastAsia: EAST_ASIA_FONT,
+    keepControls: true,
+    cellFill: TEMPLATE_CELL_FILL,
+    verticalAlignment: "center",
+    headerRow: true,
+    sectionTopTwips: TEMPLATE_SECTION_TOP_TWIPS,
+  });
+  const manuscriptBytes = syntheticBodyDocx({
+    eastAsia: MANUSCRIPT_EAST_ASIA_FONT,
+    keepControls: false,
+    cellFill: MANUSCRIPT_CELL_FILL,
+    verticalAlignment: "top",
+    headerRow: false,
+    sectionTopTwips: MANUSCRIPT_SECTION_TOP_TWIPS,
+  });
   const server = await startMockAiServer();
   try {
     await closeLingeringDocxWorkspace(page);
@@ -392,10 +456,9 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
     );
     await openRailTab(page, "Journal checks");
 
-    const journalId = `docx-format-task-${Date.now()}`;
     const journalName = `DOCX format task template ${Date.now()}`;
-    await importTemplateThroughUi(page, templateBytes, journalName, journalId);
-    const world = await waitForWorld(page, journalId);
+    await importTemplateThroughUi(page, templateBytes, journalName);
+    const world = await waitForWorld(page, journalName);
     expect(world.template?.source_sha256).toBe(sha256(templateBytes));
 
     const projectName = `DOCX format task manuscript ${Date.now()}`;
@@ -482,10 +545,29 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
     let firstFormat: Operation<FormatMutationResult> | undefined;
     let firstSave: Operation<SaveResult> | undefined;
     let firstCheck: Operation<CheckResult> | undefined;
+    let cellFormat: Operation<FormatMutationResult> | undefined;
+    let tableFormat: Operation<FormatMutationResult> | undefined;
+    let sectionFormat: Operation<FormatMutationResult> | undefined;
     let secondFormat: Operation<FormatMutationResult> | undefined;
     let secondSave: Operation<SaveResult> | undefined;
     let secondCheck: Operation<CheckResult> | undefined;
     let bodyParagraphRef: string | undefined;
+    const cellFormatInput: ObjectFormat = {
+      scope: "cell",
+      cell: { fill: TEMPLATE_CELL_FILL, verticalAlignment: "center" },
+    };
+    const tableFormatInput: ObjectFormat = {
+      scope: "table",
+      table: {
+        styleId: TABLE_STYLE_ID,
+        headerRowCount: 1,
+        columnWidthsTwips: [...TABLE_COLUMN_WIDTHS_TWIPS],
+      },
+    };
+    const sectionFormatInput: ObjectFormat = {
+      scope: "section",
+      section: { marginTopTwips: TEMPLATE_SECTION_TOP_TWIPS },
+    };
     const steps = [
       {
         name: "discover_tools",
@@ -530,6 +612,11 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
             paragraph_ref: paragraph.paragraphRef,
             expected_revision: firstRead.result.revision,
             font: { name: LATIN_FONT, nameEastAsia: EAST_ASIA_FONT },
+            paragraph: {
+              keepNext: true,
+              keepLines: true,
+              pageBreakBefore: true,
+            },
           };
         },
       },
@@ -550,12 +637,42 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       {
         name: "apply_docx_format",
         args: () => {
-          if (!bodyParagraphRef || !firstSave) {
-            throw new Error("The first round did not retain the paragraph and saved revision.");
-          }
           return {
-            paragraph_ref: bodyParagraphRef,
-            expected_revision: firstSave.document.sessionRevision,
+            paragraph_ref: bodyParagraphRef!,
+            expected_revision: firstSave!.document.sessionRevision,
+            ...cellFormatInput,
+          };
+        },
+      },
+      {
+        name: "apply_docx_format",
+        args: (request: Request) => {
+          cellFormat = operation<FormatMutationResult>(request, "format");
+          return {
+            paragraph_ref: bodyParagraphRef!,
+            expected_revision: cellFormat.document.sessionRevision,
+            ...tableFormatInput,
+          };
+        },
+      },
+      {
+        name: "apply_docx_format",
+        args: (request: Request) => {
+          tableFormat = operation<FormatMutationResult>(request, "format");
+          return {
+            paragraph_ref: bodyParagraphRef!,
+            expected_revision: tableFormat.document.sessionRevision,
+            ...sectionFormatInput,
+          };
+        },
+      },
+      {
+        name: "apply_docx_format",
+        args: (request: Request) => {
+          sectionFormat = operation<FormatMutationResult>(request, "format");
+          return {
+            paragraph_ref: bodyParagraphRef!,
+            expected_revision: sectionFormat!.document.sessionRevision,
             font: { bold: true },
           };
         },
@@ -575,9 +692,9 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
         },
       },
       {
-        name: "docx_task_activity",
+        name: "journal_read",
         args: (request: Request) => {
-          if (!firstSave || !secondSave) {
+          if (!bodyParagraphRef || !firstSave || !secondSave) {
             throw new Error("Both checks require their saved baselines.");
           }
           firstCheck = findToolObject<Operation<CheckResult>>(
@@ -596,7 +713,46 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
               value.result !== undefined &&
               JSON.stringify(value.result).includes(secondSave!.result.baselineId),
           );
-          return { limit: 50 };
+          expect(secondCheck.result.check).toMatchObject({
+            detail: "compact",
+            findingsRead: { tool: "journal_read", arguments: {
+              operation: "findings", check_id: secondCheck.result.check.check_id, offset: 0, limit: 20,
+            } },
+          });
+          expect(secondCheck.result.check).not.toHaveProperty("template_comparison.findings");
+          expect(secondCheck.result.check).not.toHaveProperty("world");
+          expect(JSON.stringify(secondCheck).length).toBeLessThan(64 * 1024);
+          return secondCheck.result.check.objectRead.arguments;
+        },
+      },
+      {
+        name: "journal_read",
+        args: (request: Request) => {
+          const retained = findToolObject<{ object: CheckResult["check"] }>(
+            request,
+            (value) => (value.object as Record<string, unknown> | undefined)?.check_id === secondCheck!.result.check.check_id,
+          );
+          expect(retained.object).toMatchObject({
+            detail: "findings_paged",
+            rule_results: expect.any(Array),
+            findingsRead: secondCheck!.result.check.findingsRead,
+          });
+          expect(retained.object).not.toHaveProperty("template_comparison.findings");
+          expect(JSON.stringify(retained).length).toBeLessThan(64 * 1024);
+          return retained.object.findingsRead.arguments;
+        },
+      },
+      {
+        name: "docx_task_activity",
+        args: (request: Request) => {
+          const page = findToolObject<FindingsPage & { check_id: string }>(
+            request,
+            (value) => value.check_id === secondCheck!.result.check.check_id && Array.isArray(value.findings),
+          );
+          expect(page.total).toBeGreaterThan(0);
+          expect(page.findings.length).toBeGreaterThan(0);
+          expect(page.findings.length).toBeLessThanOrEqual(20);
+          return { limit: 10 };
         },
       },
     ];
@@ -608,14 +764,19 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
         message.content.includes("Assess responsibility-based participation")
       )) return '{"decisions":[]}';
       const step = steps[messages.filter((message) => message.role === "tool").length];
-      return step ? { name: step.name, args: step.args(request) } : "DOCX_FORMAT_TASK_COMPLETE";
+      if (step) return { name: step.name, args: step.args(request) };
+      const activity = findToolObject<DocxActivityPage>(request, (value) => Array.isArray(value.activities));
+      expect(activity.activities.length).toBeGreaterThan(0);
+      expect(activity.activities.length).toBeLessThanOrEqual(10);
+      expect(activity.nextCursor).toBeGreaterThan(0);
+      return "DOCX_FORMAT_TASK_COMPLETE";
     });
 
     const task = await page.evaluate<ResearchTask>(
       `window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(m => m.createResearchTask(${scriptValue({
         projectId: appProjectId,
         title: "Native DOCX two-round format task chain",
-        prompt: `Work only on the bound live DOCX. Use read_docx_document to select the paragraph whose text is exactly "${BODY_TEXT}". Read its format, apply ${LATIN_FONT} as the Latin font and ${EAST_ASIA_FONT} as the East Asian font at the returned revision, save the exact applied revision, and check the saved baseline against template world ${world.version_id}. Then apply bold to that same paragraph at the revision returned by the first save, save the second exact applied revision, and check the new saved baseline against the same template world. Read the retained DOCX task activity before finishing. Do not finish unless all seven tracked operations succeed.`,
+        prompt: `Work only on the bound live DOCX. Use read_docx_document to select the paragraph whose text is exactly "${BODY_TEXT}". Read its format. In the first round, apply ${LATIN_FONT} as the Latin font, ${EAST_ASIA_FONT} as the East Asian font, and keepNext=true, keepLines=true, pageBreakBefore=true at the returned revision. Save that exact applied revision and check its baseline against template world ${world.version_id}. In the second round, use the same paragraph reference and the saved revision to apply cell fill ${TEMPLATE_CELL_FILL} with center vertical alignment, then table style ${TABLE_STYLE_ID}, headerRowCount=1 and column widths ${TABLE_COLUMN_WIDTHS_TWIPS.join(",")} twips, then section marginTopTwips=${TEMPLATE_SECTION_TOP_TWIPS}, then bold to the same paragraph. Use each returned revision for the next format. Save the final exact applied revision and check that baseline against the same template world. Read the retained DOCX task activity before finishing. Do not finish unless all ten tracked operations succeed.`,
         runtimeId: "builtin",
         agentId: PROVIDER,
         modelId: MODEL,
@@ -635,6 +796,7 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       }]))`,
     );
 
+    await clickButton(page, '[data-testid="docx-workspace"]', "Document tools");
     await clickButton(page, '[aria-label="Task activity"]', "Refresh activity");
     await waitLong(
       page,
@@ -674,10 +836,24 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
     expect(firstFormat).toBeTruthy();
     expect(firstSave).toBeTruthy();
     expect(firstCheck).toBeTruthy();
+    expect(cellFormat).toBeTruthy();
+    expect(tableFormat).toBeTruthy();
+    expect(sectionFormat).toBeTruthy();
     expect(secondFormat).toBeTruthy();
     expect(secondSave).toBeTruthy();
     expect(secondCheck).toBeTruthy();
-    for (const receipt of [firstRead, firstFormat, firstSave, firstCheck, secondFormat, secondSave, secondCheck]) {
+    for (const receipt of [
+      firstRead,
+      firstFormat,
+      firstSave,
+      firstCheck,
+      cellFormat,
+      tableFormat,
+      sectionFormat,
+      secondFormat,
+      secondSave,
+      secondCheck,
+    ]) {
       expect(receipt!.ok).toBe(true);
     }
 
@@ -722,26 +898,47 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       },
     });
 
-    expect(secondFormat!.document).toMatchObject({
+    expect(cellFormat!.document).toMatchObject({
       sessionId: liveBefore.document.sessionId,
       sessionRevision: 2,
       savedRevision: 1,
       baselineId: firstSave!.result.baselineId,
     });
+    expect(cellFormat!.result).toMatchObject({ ok: true, changed: true, revision: 2 });
+    expect(tableFormat!.document).toMatchObject({
+      sessionId: liveBefore.document.sessionId,
+      sessionRevision: 3,
+      savedRevision: 1,
+      baselineId: firstSave!.result.baselineId,
+    });
+    expect(tableFormat!.result).toMatchObject({ ok: true, changed: true, revision: 3 });
+    expect(sectionFormat!.document).toMatchObject({
+      sessionId: liveBefore.document.sessionId,
+      sessionRevision: 4,
+      savedRevision: 1,
+      baselineId: firstSave!.result.baselineId,
+    });
+    expect(sectionFormat!.result).toMatchObject({ ok: true, changed: true, revision: 4 });
+    expect(secondFormat!.document).toMatchObject({
+      sessionId: liveBefore.document.sessionId,
+      sessionRevision: 5,
+      savedRevision: 1,
+      baselineId: firstSave!.result.baselineId,
+    });
     expect(secondFormat!.document.sessionRevision).toBeGreaterThan(secondFormat!.document.savedRevision);
-    expect(secondFormat!.result).toMatchObject({ ok: true, changed: true, revision: 2 });
+    expect(secondFormat!.result).toMatchObject({ ok: true, changed: true, revision: 5 });
     expect(secondSave!.document).toMatchObject({
       sessionId: liveBefore.document.sessionId,
-      sessionRevision: 2,
-      savedRevision: 2,
+      sessionRevision: 5,
+      savedRevision: 5,
     });
     expect(secondSave!.result.baselineId).not.toBe(firstSave!.result.baselineId);
     expect(secondSave!.result.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(secondSave!.result.sourceSha256).not.toBe(firstSave!.result.sourceSha256);
     expect(secondCheck!.document).toMatchObject({
       sessionId: liveBefore.document.sessionId,
-      sessionRevision: 2,
-      savedRevision: 2,
+      sessionRevision: 5,
+      savedRevision: 5,
       baselineId: secondSave!.result.baselineId,
     });
     expect(secondCheck!.result).toMatchObject({
@@ -758,8 +955,8 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
     );
     expect(liveAfter.document).toMatchObject({
       sessionId: liveBefore.document.sessionId,
-      sessionRevision: 2,
-      savedRevision: 2,
+      sessionRevision: 5,
+      savedRevision: 5,
       baselineId: secondSave!.result.baselineId,
       sourceSha256: secondSave!.result.sourceSha256,
       dirty: false,
@@ -785,6 +982,15 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
     expect(firstRetainedFont).toContain(`w:ascii="${LATIN_FONT}"`);
     expect(firstRetainedFont).toContain(`w:hAnsi="${LATIN_FONT}"`);
     expect(firstXml).not.toMatch(/<w:b(?:\s+w:val="(?:1|true|on)")?\s*\/>/);
+    expect(firstXml).toMatch(/<w:keepNext\s*\/>/);
+    expect(firstXml).toMatch(/<w:keepLines\s*\/>/);
+    expect(firstXml).toMatch(/<w:pageBreakBefore\s*\/>/);
+    expect(firstXml).toContain(`w:fill="${MANUSCRIPT_CELL_FILL}"`);
+    expect(firstXml).toContain('<w:tblHeader w:val="0"/>');
+    expect(firstXml).toContain(`w:top="${MANUSCRIPT_SECTION_TOP_TWIPS}"`);
+    expect(firstXml).not.toMatch(/<w:keepNext\b[^>]*w:val="(?:0|false|off)"[^>]*\/>/);
+    expect(firstXml).not.toMatch(/<w:keepLines\b[^>]*w:val="(?:0|false|off)"[^>]*\/>/);
+    expect(firstXml).not.toMatch(/<w:pageBreakBefore\b[^>]*w:val="(?:0|false|off)"[^>]*\/>/);
 
     const secondRetained = await retainedSource(secondSave!.result.baselineId);
     const secondRetainedBytes = Buffer.from(secondRetained.content_base64, "base64");
@@ -799,6 +1005,16 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
     expect(secondRetainedFont).toContain(`w:ascii="${LATIN_FONT}"`);
     expect(secondRetainedFont).toContain(`w:hAnsi="${LATIN_FONT}"`);
     expect(secondXml).toMatch(/<w:b(?:\s+w:val="(?:1|true|on)")?\s*\/>/);
+    expect(secondXml).toMatch(/<w:keepNext\s*\/>/);
+    expect(secondXml).toMatch(/<w:keepLines\s*\/>/);
+    expect(secondXml).toMatch(/<w:pageBreakBefore\s*\/>/);
+    expect(secondXml).toContain(`w:fill="${TEMPLATE_CELL_FILL}"`);
+    expect(secondXml).toContain('<w:vAlign w:val="center"/>');
+    expect(secondXml).toContain(`<w:tblStyle w:val="${TABLE_STYLE_ID}"/>`);
+    expect(secondXml).toMatch(/<w:tblHeader(?:\s+w:val="(?:1|true|on)")?\s*\/>/);
+    expect(secondXml).toContain(`<w:gridCol w:w="${TABLE_COLUMN_WIDTHS_TWIPS[0]}"/>`);
+    expect(secondXml).toContain(`<w:gridCol w:w="${TABLE_COLUMN_WIDTHS_TWIPS[1]}"/>`);
+    expect(secondXml).toContain(`w:top="${TEMPLATE_SECTION_TOP_TWIPS}"`);
 
     const firstTaskCheck = await journalRequest<JournalCheck>(
       page,
@@ -838,6 +1054,28 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       expected: EAST_ASIA_FONT,
       verdict: "observed_match",
     });
+    for (const propertyPath of [
+      "paragraph.keepNext",
+      "paragraph.keepLines",
+      "paragraph.pageBreakBefore",
+      "cell.shading",
+      "cell.vAlign",
+      "row.isHeader",
+      "section.margins.topTwips",
+    ]) {
+      const matches = await formatFindings(page, secondTaskCheck, "observed_match", propertyPath);
+      const expected = propertyPath === "cell.shading" ? TEMPLATE_CELL_FILL :
+        propertyPath === "cell.vAlign" ? "center" :
+        propertyPath === "section.margins.topTwips" ? TEMPLATE_SECTION_TOP_TWIPS :
+        true;
+      expect(matches, `${propertyPath}: ${JSON.stringify(secondTaskCheck, null, 2)}`)
+        .toContainEqual(expect.objectContaining({
+          property_path: propertyPath,
+          observed: expected,
+          expected,
+          verdict: "observed_match",
+        }));
+    }
 
     await expectNoRecoverySnapshot(
       page,
@@ -866,7 +1104,7 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
         activity.event.event.kind === "operation"
       ).length;
       return `${startedCount}:${finishedCount}`;
-    }, { timeout: 30_000 }).toBe("7:7");
+    }, { timeout: 30_000 }).toBe("10:10");
 
     const started = operations.filter((activity) =>
       activity.event.type === "runtime" &&
@@ -876,19 +1114,25 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       activity.event.type === "runtime" &&
       activity.event.event.kind === "operation"
     );
-    expect(finished).toHaveLength(7);
+    expect(finished).toHaveLength(10);
     expect(started.map((activity) =>
       activity.event.type === "runtime" &&
       activity.event.event.kind === "operationStarted"
         ? activity.event.event.operation
         : null
-    ).sort()).toEqual(["check", "check", "format", "format", "read_format", "save", "save"]);
+    ).sort()).toEqual([
+      "check", "check", "format", "format", "format", "format", "format",
+      "read_format", "save", "save",
+    ]);
     expect(finished.map((activity) =>
       activity.event.type === "runtime" &&
       activity.event.event.kind === "operation"
         ? activity.event.event.operation
         : null
-    ).sort()).toEqual(["check", "check", "format", "format", "read_format", "save", "save"]);
+    ).sort()).toEqual([
+      "check", "check", "format", "format", "format", "format", "format",
+      "read_format", "save", "save",
+    ]);
 
     const pairs = started.map((start) => {
       if (start.event.type !== "runtime" || start.event.event.kind !== "operationStarted") {
@@ -907,7 +1151,8 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       return { start, completed: completed!, startEvent: start.event.event, completedEvent: completed!.event.event };
     });
     expect(pairs.map(({ startEvent }) => startEvent.operation)).toEqual([
-      "read_format", "format", "save", "check", "format", "save", "check",
+      "read_format", "format", "save", "check",
+      "format", "format", "format", "format", "save", "check",
     ]);
 
     const [
@@ -915,6 +1160,9 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       firstFormatPair,
       firstSavePair,
       firstCheckPair,
+      cellFormatPair,
+      tableFormatPair,
+      sectionFormatPair,
       secondFormatPair,
       secondSavePair,
       secondCheckPair,
@@ -937,7 +1185,14 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       session_id: liveBefore.document.sessionId,
       paragraph_ref: bodyParagraphRef,
       expected_revision: 0,
-      format: { font: { name: LATIN_FONT, nameEastAsia: EAST_ASIA_FONT } },
+      format: {
+        font: { name: LATIN_FONT, nameEastAsia: EAST_ASIA_FONT },
+        paragraph: {
+          keepNext: true,
+          keepLines: true,
+          pageBreakBefore: true,
+        },
+      },
     });
     expect(firstFormatPair.completedEvent.result).toMatchObject({
       operation: "format",
@@ -973,27 +1228,60 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
         },
       },
     });
-    expect(secondFormatPair.startEvent.request).toMatchObject({
+    expect(cellFormatPair.startEvent.request).toMatchObject({
       session_id: liveBefore.document.sessionId,
       paragraph_ref: bodyParagraphRef,
       expected_revision: 1,
+      object_format: { kind: "cell", cell: cellFormatInput.cell },
+    });
+    expect(cellFormatPair.completedEvent.result).toMatchObject({
+      operation: "format",
+      ok: true,
+      result: { ok: true, changed: true, revision: 2 },
+    });
+    expect(tableFormatPair.startEvent.request).toMatchObject({
+      session_id: liveBefore.document.sessionId,
+      paragraph_ref: bodyParagraphRef,
+      expected_revision: 2,
+      object_format: { kind: "table", table: tableFormatInput.table },
+    });
+    expect(tableFormatPair.completedEvent.result).toMatchObject({
+      operation: "format",
+      ok: true,
+      result: { ok: true, changed: true, revision: 3 },
+    });
+    expect(sectionFormatPair.startEvent.request).toMatchObject({
+      session_id: liveBefore.document.sessionId,
+      paragraph_ref: bodyParagraphRef,
+      expected_revision: 3,
+      object_format: { kind: "section", section: sectionFormatInput.section },
+    });
+    expect(sectionFormatPair.completedEvent.result).toMatchObject({
+      operation: "format",
+      ok: true,
+      result: { ok: true, changed: true, revision: 4 },
+    });
+    expect(secondFormatPair.startEvent.request).toMatchObject({
+      session_id: liveBefore.document.sessionId,
+      paragraph_ref: bodyParagraphRef,
+      expected_revision: 4,
       format: { font: { bold: true } },
     });
     expect(secondFormatPair.completedEvent.result).toMatchObject({
       operation: "format",
       ok: true,
-      result: { ok: true, changed: true, revision: 2 },
+      result: { ok: true, changed: true, revision: 5 },
     });
     expect(secondSavePair.startEvent.request).toMatchObject({
       session_id: liveBefore.document.sessionId,
-      expected_revision: 2,
+      expected_revision: 5,
     });
     expect(secondSavePair.completedEvent.result).toMatchObject({
       operation: "save",
       ok: true,
       result: {
         baselineId: secondSave!.result.baselineId,
-        revision: 2,
+        revision: 5,
         sourceSha256: secondSave!.result.sourceSha256,
       },
     });
@@ -1023,7 +1311,14 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       activity.origin.taskId === task.id &&
       activity.event.type === "operationCheckpoint"
     );
-    expect(checkpoints.length).toBeGreaterThan(0);
+    const recoveredCheckpoints = checkpoints.filter((activity) =>
+      activity.event.type === "operationCheckpoint" && activity.event.phase === "recovered"
+    );
+    const savedCheckpoints = checkpoints.filter((activity) =>
+      activity.event.type === "operationCheckpoint" && activity.event.phase === "saved"
+    );
+    expect(recoveredCheckpoints).toHaveLength(7);
+    expect(savedCheckpoints).toHaveLength(5);
     for (const checkpoint of checkpoints) {
       if (checkpoint.event.type !== "operationCheckpoint") {
         throw new Error("Expected a retained operation checkpoint.");
@@ -1037,15 +1332,38 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       expect(completed, `Missing operation ${checkpointEvent.operationId} for checkpoint`).toBeTruthy();
       expect(checkpoint.origin).toEqual(completed!.origin);
       expect(checkpoint.document).toEqual(completed!.document);
+      expect(checkpointEvent.recoveryKey).toMatch(/^[a-f0-9]{64}$/);
+      expect(checkpointEvent.contentSha256).toMatch(/^[a-f0-9]{64}$/);
+      if (checkpointEvent.phase === "recovered") {
+        expect(checkpointEvent.requestId).toBeUndefined();
+        expect(checkpointEvent.fromDocument).toEqual(completed!.document);
+      } else {
+        const firstRound = checkpointEvent.operationId === firstFormatPair.start.id;
+        expect(checkpointEvent.contentSha256).toBe(
+          firstRound ? firstSave!.result.sourceSha256 : secondSave!.result.sourceSha256,
+        );
+        expect(checkpointEvent.fromDocument).toEqual(
+          firstRound ? firstFormatPair.completed.document : secondFormatPair.completed.document,
+        );
+        expect(checkpointEvent.requestId).toBeTruthy();
+      }
+    }
+    for (const { start, startEvent } of pairs) {
+      expect(checkpoints.filter((activity) =>
+        activity.event.type === "operationCheckpoint" && activity.event.operationId === start.id
+      ).map((activity) =>
+        activity.event.type === "operationCheckpoint" ? activity.event.phase : null
+      ).sort()).toEqual(
+        startEvent.operation === "format" ? ["recovered", "saved"] :
+          startEvent.operation === "check" ? ["recovered"] : [],
+      );
     }
     const checkpointOperations = new Set(checkpoints.map((activity) =>
       activity.event.type === "operationCheckpoint" ? activity.event.operationId : ""
     ));
-    for (const { start, startEvent } of pairs) {
-      if (startEvent.operation === "format" || startEvent.operation === "check") {
-        expect(checkpointOperations.has(start.id)).toBe(true);
-      }
-    }
+    expect(checkpointOperations).toEqual(new Set(pairs
+      .filter(({ startEvent }) => startEvent.operation === "format" || startEvent.operation === "check")
+      .map(({ start }) => start.id)));
 
     const expectedOrigin = started[0].origin;
     for (const activity of [...started, ...finished, ...checkpoints]) {
@@ -1127,10 +1445,11 @@ test("native task completes two format/save/check rounds and reopens cleanly", a
       firstCheck: { checkId: firstTaskCheck.check_id, validity: firstTaskCheck.validity },
       secondCheck: { checkId: secondTaskCheck.check_id, validity: secondTaskCheck.validity },
       checkpoints: checkpoints.length,
+      checkpointPhases: { recovered: recoveredCheckpoints.length, saved: savedCheckpoints.length },
       reopened: reopened!.document,
     }, null, 2));
     await writeFile(output("docx-format-task-saved.docx"), secondRetainedBytes);
-    await page.screenshot({ path: output("docx-format-task.png") });
+  await webviewScreenshot(page, output("docx-format-task.png"));
   } finally {
     await writeFile(output("docx-format-task-requests.json"), JSON.stringify(
       server.requestBodies().map((body) => JSON.parse(body)), null, 2,

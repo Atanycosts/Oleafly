@@ -8,7 +8,6 @@ import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 const mocks = vi.hoisted(() => ({ ensure: vi.fn(), find: vi.fn(), pdf: vi.fn() }));
 vi.mock("@/lib/docx-render", () => ({ ensureDocxRender: mocks.ensure, findDocxRenderer: mocks.find, loadDocxPdf: mocks.pdf }));
 vi.mock("@/components/pdf/PdfViewer", () => ({ PdfViewer: ({ documentIdentity }: { documentIdentity: string }) => <output data-testid="render-pdf">{documentIdentity}</output> }));
-vi.mock("@/lib/tauri", () => ({ pickOpenPaths: vi.fn() }));
 import { DocxRenderPanel } from "./DocxRenderPanel";
 
 const text = en.docx.render;
@@ -37,6 +36,39 @@ beforeEach(() => {
   mocks.pdf.mockResolvedValue(Uint8Array.from([37, 80, 68, 70]));
 });
 describe("saved DOCX render panel", () => {
+  it("waits for a visible PDF or tools request and retains the previous result while inactive", async () => {
+    const onPreview = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = (enabled: boolean, baselineId = "baseline-1") => <QueryClientProvider client={client}>
+      <DocxRenderPanel projectId="paper" baselineId={baselineId} dirty={false} enabled={enabled} onPreview={onPreview} />
+    </QueryClientProvider>;
+    const panel = render(view(false));
+    expect(mocks.find).not.toHaveBeenCalled();
+    expect(mocks.ensure).not.toHaveBeenCalled();
+    expect(mocks.pdf).not.toHaveBeenCalled();
+
+    panel.rerender(view(true));
+    await waitFor(() => expect(onPreview).toHaveBeenLastCalledWith(expect.objectContaining({
+      render: record(), bytes: Uint8Array.from([37, 80, 68, 70]), loading: false, stale: false,
+    })));
+    expect(mocks.find).toHaveBeenCalledTimes(1);
+    expect(mocks.ensure).toHaveBeenCalledTimes(1);
+    expect(mocks.pdf).toHaveBeenCalledTimes(1);
+
+    panel.rerender(view(false, "baseline-2"));
+    await waitFor(() => expect(onPreview).toHaveBeenLastCalledWith(expect.objectContaining({
+      render: record(), bytes: Uint8Array.from([37, 80, 68, 70]), stale: true,
+    })));
+    expect(mocks.ensure).toHaveBeenCalledTimes(1);
+    expect(mocks.pdf).toHaveBeenCalledTimes(1);
+
+    panel.rerender(view(true, "baseline-2"));
+    await waitFor(() => expect(onPreview).toHaveBeenLastCalledWith(expect.objectContaining({
+      render: record("baseline-2"), loading: false, stale: false,
+    })));
+    expect(mocks.ensure).toHaveBeenCalledTimes(2);
+    expect(mocks.pdf).toHaveBeenCalledTimes(2);
+  });
   it("waits until native font resolution has supplied its bytes before converting", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const view = (fontsReady: boolean) => <QueryClientProvider client={client}><DocxRenderPanel projectId="paper" baselineId="baseline-1" dirty={false} fontsReady={fontsReady} /></QueryClientProvider>;
@@ -60,6 +92,28 @@ describe("saved DOCX render panel", () => {
     panel.update("baseline-2", true);
     expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.stale);
   });
+  it("publishes the embedded preview to the central workspace without a PDF dialog", async () => {
+    const onPreview = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}>
+      <DocxRenderPanel projectId="paper" baselineId="baseline-1" dirty={false} onPreview={onPreview} />
+    </QueryClientProvider>);
+    await waitFor(() => expect(onPreview).toHaveBeenLastCalledWith(expect.objectContaining({
+      projectId: "paper",
+      render: record(),
+      bytes: Uint8Array.from([37, 80, 68, 70]),
+      loading: false,
+      error: null,
+      stale: false,
+    })));
+    expect(mocks.pdf).toHaveBeenCalledWith("paper", record());
+    expect(screen.queryByRole("button", { name: text.open })).not.toBeInTheDocument();
+    expect(screen.queryByText("/opt/soffice")).not.toBeInTheDocument();
+    expect(screen.queryByText("baseline-1")).not.toBeInTheDocument();
+    const close = onPreview.mock.lastCall?.[0].close as (() => void) | undefined;
+    act(() => close?.());
+    await waitFor(() => expect(onPreview).toHaveBeenLastCalledWith(null));
+  });
   it("forces a replacement render when the font revision changes", async () => {
     const panel = mount();
     await waitFor(() => expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.current));
@@ -78,12 +132,14 @@ describe("saved DOCX render panel", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: text.open })).toBeEnabled());
     mocks.ensure.mockRejectedValueOnce(new Error("Conversion failed"));
     panel.update("baseline-2", false);
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Conversion failed"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
+      en.workspace.docxRender.renderFailed,
+    ));
     expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.stale);
     fireEvent.click(screen.getByRole("button", { name: text.open }));
     await waitFor(() => expect(screen.getByTestId("render-pdf")).toHaveTextContent("render-baseline-1"));
     expect(mocks.pdf).toHaveBeenCalledWith("paper", record());
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close PDF preview" }));
     fireEvent.click(screen.getByRole("button", { name: text.refresh }));
     await waitFor(() => expect(mocks.ensure).toHaveBeenLastCalledWith("paper", "baseline-2", "/opt/soffice", true));
     await waitFor(() => expect(screen.getByTestId("docx-render-state")).toHaveTextContent(text.current));
@@ -91,7 +147,7 @@ describe("saved DOCX render panel", () => {
   it("reports missing capability without starting a conversion", async () => {
     mocks.find.mockResolvedValue(null);
     mount();
-    await waitFor(() => expect(screen.getByText(text.unavailable)).toBeVisible());
+    await waitFor(() => expect(screen.getByText(/Install LibreOffice/)).toBeVisible());
     expect(mocks.ensure).not.toHaveBeenCalled();
   });
 });

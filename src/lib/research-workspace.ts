@@ -25,6 +25,7 @@ export interface ResearchWorkspace {
   primaryProjectId: string;
   roots: LinkedResearchRoot[];
   journalProjectId?: string;
+  wordDocuments?: { path: string; workbenchProjectId: string; originalSha256?: string; normalizedSha256?: string }[];
   journalResearch?: { taskId: string; worldVersionId: string; checkId?: string };
   updatedAtMs: number;
 }

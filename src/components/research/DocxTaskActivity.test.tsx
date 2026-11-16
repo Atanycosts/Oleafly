@@ -2,6 +2,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
+import enEditor from "@/i18n/locales/en/editor.json" with { type: "json" };
 import type { DocxActivity } from "@/lib/docx-task-activity";
 const mocks = vi.hoisted(() => ({ list: vi.fn(), load: vi.fn(), bind: vi.fn(), open: vi.fn(), bindProject: vi.fn(), refresh: vi.fn(), projectId: "app" as string | null, tasks: [] as { id: string }[], setRailTab: vi.fn(), minimize: vi.fn(), close: vi.fn(), subscribe: vi.fn(() => () => {}) }));
 vi.mock("@/lib/research-tasks", () => ({ listResearchTasks: mocks.list }));
@@ -52,12 +53,12 @@ describe("document task activity panel", () => {
     render(<DocxTaskActivity projectId="app" workbenchProjectId="paper" sessionId="new-session" />);
     expect(await screen.findByText("Historical original")).toBeInTheDocument();
     expect(screen.getByText("Historical candidate")).toBeInTheDocument();
-    expect(screen.getByText(`${text.work}: work-a, work-b`)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: `${text.source}: task-source · ${text.generation} 3` }));
+    expect(screen.queryByText(/work-a/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: text.source }));
     expect(mocks.open).toHaveBeenCalledWith("task-source", "activity");
     expect(mocks.setRailTab).toHaveBeenCalledWith("research");
     expect(mocks.minimize).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", { name: `${text.group}: group` }));
+    fireEvent.click(screen.getByRole("button", { name: text.group }));
     expect(mocks.open).toHaveBeenLastCalledWith("task-source", "group");
     expect(mocks.setRailTab).toHaveBeenCalledTimes(2);
     expect(mocks.minimize).toHaveBeenCalledTimes(2);
@@ -79,7 +80,7 @@ it("binds the source project before opening details on the first visit from Jour
     finishBinding = () => { mocks.projectId = "app"; mocks.tasks = [{ id: "task-source" }]; resolve(); };
   }));
   render(<DocxActivitySource activity={activity} />);
-  fireEvent.click(screen.getByRole("button", { name: `${text.source}: task-source · ${text.generation} 3` }));
+  fireEvent.click(screen.getByRole("button", { name: text.source }));
   expect(mocks.bindProject).toHaveBeenCalledExactlyOnceWith("app");
   expect(mocks.open).not.toHaveBeenCalled();
   expect(mocks.setRailTab).not.toHaveBeenCalled();
@@ -98,7 +99,7 @@ it("refreshes a missing source task once before opening its group in the current
     finishRefresh = () => { mocks.tasks = [{ id: "task-source" }]; resolve(); };
   }));
   render(<DocxActivitySource activity={activity} />);
-  fireEvent.click(screen.getByRole("button", { name: `${text.group}: group` }));
+  fireEvent.click(screen.getByRole("button", { name: text.group }));
   expect(mocks.bindProject).not.toHaveBeenCalled();
   expect(mocks.refresh).toHaveBeenCalledOnce();
   expect(mocks.open).not.toHaveBeenCalled();
@@ -122,4 +123,115 @@ it("refreshes tasks created after opening and clears the bound label for a new l
   view.rerender(<DocxTaskActivity projectId="app" workbenchProjectId="paper" sessionId="session-two" />);
   expect(screen.queryByRole("button", { name: text.bound })).not.toBeInTheDocument();
   expect(mocks.bind).toHaveBeenCalledOnce();
+});
+
+it("shows the actual operation and saved or checked result retained for a task", async () => {
+  const save: DocxActivity = {
+    ...activity,
+    id: "save",
+    event: {
+      type: "runtime",
+      event: {
+        kind: "operation",
+        operationId: "save-operation",
+        operation: "save",
+        request: { expected_revision: 3 },
+        result: {
+          operation: "save",
+          ok: true,
+          document: { ...activity.document, baselineId: "saved-baseline", sessionRevision: 3, savedRevision: 3 },
+          result: { baselineId: "saved-baseline", revision: 3, sourceSha256: "b".repeat(64) },
+        },
+      },
+    },
+  };
+  const check: DocxActivity = {
+    ...activity,
+    id: "check",
+    event: {
+      type: "runtime",
+      event: {
+        kind: "operation",
+        operationId: "check-operation",
+        operation: "check",
+        request: { template: "world-current" },
+        result: {
+          operation: "check",
+          ok: true,
+          document: { ...activity.document, baselineId: "saved-baseline", sessionRevision: 3, savedRevision: 3 },
+          result: { template: "world-current", check: {
+            check_id: "check-current", baseline_id: "saved-baseline", world_version_id: "world-current",
+            validity: "CURRENT", summary: { findings: 0 },
+          } },
+        },
+      },
+    },
+  };
+  mocks.load.mockResolvedValueOnce({
+    activities: [{ cursor: 1, activity: save }, { cursor: 2, activity: check }],
+    nextCursor: 2,
+    hasMore: false,
+  });
+
+  const { container } = render(<DocxTaskActivity projectId="app" workbenchProjectId="paper" sessionId="live-session" />);
+
+  expect(await screen.findByText(`${enEditor.agentWorkspace.save} · ${text.operationSucceeded}`)).toBeVisible();
+  expect(screen.getByText(`${enEditor.agentWorkspace.check} · ${text.operationSucceeded}`)).toBeVisible();
+  expect(screen.getByText(`${text.events.saved}: 3`)).toBeVisible();
+  expect(screen.getByText(en.docx.checked)).toBeVisible();
+  expect(screen.queryByText(`${en.docx.checked}: ${en.journal.current}`)).toBeNull();
+  expect(container.querySelector('[data-testid="docx-task-operation"][data-operation="save"]')).toMatchObject({
+    dataset: expect.objectContaining({
+      baselineId: "saved-baseline", revision: "3", sourceSha256: "b".repeat(64), outcome: "succeeded",
+    }),
+  });
+  expect(container.querySelector('[data-testid="docx-task-operation"][data-operation="check"]')).toMatchObject({
+    dataset: expect.objectContaining({
+      baselineId: "saved-baseline", checkId: "check-current", worldVersionId: "world-current",
+      validity: "CURRENT", outcome: "succeeded",
+    }),
+  });
+});
+
+it.each([
+  ["saved", enEditor.agentWorkspace.exportSaved],
+  ["cancelled", enEditor.agentWorkspace.exportCancelled],
+  ["download_requested", enEditor.agentWorkspace.downloadRequested],
+] as const)("shows the retained %s export outcome without inferring success from ok", async (status, label) => {
+  const exported: DocxActivity = {
+    ...activity,
+    id: "export",
+    event: {
+      type: "runtime",
+      event: {
+        kind: "operation",
+        operationId: "export-operation",
+        operation: "export",
+        request: { session_id: activity.document.sessionId },
+        result: {
+          operation: "export",
+          ok: true,
+          document: activity.document,
+          result: {
+            result: status === "saved" ? { status, path: "/chosen/paper.docx" } : { status },
+            filename: "paper.docx",
+            sessionId: activity.document.sessionId,
+            sessionRevision: activity.document.sessionRevision,
+            byteLength: 2048,
+          },
+        },
+      },
+    },
+  };
+  mocks.load.mockResolvedValueOnce({ activities: [{ cursor: 1, activity: exported }], nextCursor: 1, hasMore: false });
+
+  render(<DocxTaskActivity projectId="app" workbenchProjectId="paper" sessionId="live-session" />);
+
+  const operation = await screen.findByText(`${enEditor.agentWorkspace.export} · ${label}`);
+  expect(operation).toBeVisible();
+  expect(operation).toHaveAttribute("data-outcome", status);
+  expect(screen.queryByText(`${enEditor.agentWorkspace.export} · ${text.operationSucceeded}`)).not.toBeInTheDocument();
+  if (status !== "saved") {
+    expect(screen.queryByText(`${enEditor.agentWorkspace.export} · ${enEditor.agentWorkspace.exportSaved}`)).not.toBeInTheDocument();
+  }
 });

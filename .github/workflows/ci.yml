@@ -167,8 +167,8 @@ jobs:
       # backlog is reported as (non-blocking) warnings. See biome.json.
       - name: Lint
         run: pnpm lint
-      - name: i18n types and catalogs
-        run: pnpm i18n:types:check && pnpm i18n:validate
+      - name: i18n types and English / Simplified Chinese catalogs
+        run: pnpm i18n:types:check && pnpm i18n:validate --locale zh-Hans
 
       # `pnpm build` runs `tsc -b` (typecheck) then `vite build` (bundle). The
       # frontend build needs no Tectonic sidecar.
@@ -238,8 +238,8 @@ jobs:
         run: pnpm lint
       - name: Check generated translation types
         run: pnpm i18n:types:check
-      - name: Validate translations
-        run: pnpm i18n:validate
+      - name: Validate English and Simplified Chinese translations
+        run: pnpm i18n:validate --locale zh-Hans
       - name: Test dictionary catalogs, Windows download confinement and the Tauri version check
         run: node --test scripts/dictionaries/build-catalog.node-tests.mjs scripts/fetch-language-servers.node-tests.mjs scripts/hunspell.node-tests.mjs scripts/check-tauri-versions.node-tests.mjs scripts/typst/build-toolchain-catalog.node-tests.mjs scripts/stage-windows-vcruntime.node-tests.mjs
       - name: Typecheck and build

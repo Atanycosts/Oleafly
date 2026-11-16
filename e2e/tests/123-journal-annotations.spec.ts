@@ -40,6 +40,12 @@ test("historical journal feedback creates an explicit task and links real busine
     await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m=>m.writeFileContent(${scriptValue(projectId)},'main.tex',${scriptValue(source)}))`);
     await openRailTab(page, "Journal checks");
     const panel = page.getByTestId("journal-checks-panel");
+    const openMoreSources = async () => {
+      const details = page.getByTestId("journal-more-sources");
+      if ((await details.getAttribute("open")) === null) {
+        await details.locator("summary").click();
+      }
+    };
     await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled({ timeout: 30_000 });
     const docx = Buffer.from(zipSync({
       "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
@@ -51,13 +57,16 @@ test("historical journal feedback creates an explicit task and links real busine
     await page.setInputFiles('[role="dialog"] input[type="file"]', [{ name: "manuscript.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: docx }]);
     await page.click('[role="dialog"] button[type="submit"]');
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
+    await openMoreSources();
     await panel.getByText("Import journal sources", { exact: true }).click();
     await page.fill('[role="dialog"] input[id$="-name"]', "Historical journal");
-    await page.fill('[role="dialog"] input[id$="-journal"]', `journal-${projectId}`);
+    await page.getByTestId("journal-import-advanced").locator("summary").click();
+    await page.fill('[data-testid="journal-id-input"]', `journal-${projectId}`);
     const quote = "All manuscript pages must use A4 paper.";
     await page.setInputFiles('[role="dialog"] input[type="file"]', [{ name: "guide.txt", mimeType: "text/plain", buffer: Buffer.from(quote) }]);
     await page.click('[role="dialog"] button[type="submit"]');
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
+    await openMoreSources();
     await panel.getByText("Use this version", { exact: true }).click();
     await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
     await panel.getByText("Run check", { exact: true }).click();

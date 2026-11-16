@@ -16,6 +16,7 @@ export function registerAiToolsets() {
     create: (opts: {
       confirm?: ConfirmFn;
       onImage?: (dataUrl: string) => void;
+      imageSupported?: boolean;
       runId?: () => string | null;
     }) =>
       createOleaflyTools(opts),

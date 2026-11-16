@@ -116,9 +116,8 @@ export function DocxRecoveryHost() {
         <DialogHeader><DialogTitle>{text.title}</DialogTitle><DialogDescription>{text.description}</DialogDescription></DialogHeader>
         {displayedError && <p role="alert" className="break-words text-sm text-destructive">{displayedError}</p>}
         {listing.snapshots.map((candidate) => <section key={candidate.recoveryKey} data-testid="docx-recovery-candidate" data-recovery-key={candidate.recoveryKey} className="space-y-2 rounded border p-3 text-xs">
-          <p className="font-medium">{projects.find((project) => project.id === candidate.appProjectId)?.name ?? candidate.appProjectId}</p>
-          <p>{`${new Date(candidate.updatedAt).toLocaleString()} · r${candidate.revision}`}</p>
-          <p className="break-all text-muted-foreground">{candidate.workbenchProjectId} · {candidate.baseBaselineId}</p>
+          <p className="font-medium">{projects.find((project) => project.id === candidate.appProjectId)?.name ?? t(($) => $.researchTools.workspace.unsavedDocument)}</p>
+          <p>{new Date(candidate.updatedAt).toLocaleString()}</p>
           {needsConfirmation(candidate) && <p className="text-muted-foreground">{text.pendingSaveHelp}</p>}
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={busy} data-testid="docx-recovery-restore" onClick={() => void perform(() => restore(candidate))}>{text.restore}</Button>

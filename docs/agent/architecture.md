@@ -64,6 +64,15 @@ flowchart TD
 - 成员共享已有任务预算，分别记录用量并汇总；恢复或换目标不重置额度。未知用量保持未知，
   reported usage 不包装成精确账单或外部副作用完成保证。
 
+任务事件序号由既有 TaskStore 代次记录的事务计数器统一分配。流式 recorder 为新事件预留序号，
+文本续段保留原序号和创建时间；直接 append 与 DOCX 活动在自己的原事务内取号及写入，保存领域事实保持原子性。
+同序号仅允许相同正文及创建时间的重放，不同事件冲突明确报错；旧库按已有最大序号回填，裁剪不会回退计数器。
+应用分页先 flush transcript，实时界面按序插入晚到事件；底层 TaskStore 查询仍只覆盖当次已提交记录。
+
+任务的明确交付和文件限制优先于通用研究记录指引。禁止额外项目文件的任务通过已有活动、回执及最终回复
+交接，续跑、运行唤醒和预算收尾沿用该限制；允许且需要文件记录的研究任务继续使用原记录目录。
+显式启用的“先审计划”流程仍要求既有 `plan.md`，本轮未改变其审批契约或任务预算。
+
 ## 交流、关注与探索
 
 路由累加点名/回复、显式订阅、实际对象关系和依据变化；语义判断只补充候选接收人与理由，
@@ -222,22 +231,162 @@ Workbench 与 TaskStore 各自提交。补接按任务绑定的库/稿件重扫�
 用户在期刊面板明确选作模板的 `.doc` 或 `.docx` 立即成为该 world 的比较依据。
 旧 Word CFB 文件通过本机 LibreOffice 的独立临时目录和 profile 转为 DOCX，保留原文件字节、规范化字节与转换来源。
 DOCX 入口只接纳 Transitional OOXML；Strict 必须先另存为 Transitional，不产生空快照。
-作者原路径不参与转换写入。模板示例的观察差异与指南明确约束分开返回，不把前者写成出版社认证的违规。
+作者原路径不参与转换写入。模板示例的观察差异与显式建立的结构化约束分开返回。指南只保留原文和位置，
+由用户或 Agent 理解后通过现有组件与决定接口建立要求；固定句式／正则不再生成或确认规则。
 
 [`docx-format.ts`](../../src/lib/docx-format.ts) 复用固定 core 的公开包读取、样式级联、有效段落／run 格式、分节和表格结构。
 原包每个部件及摘要全部保留，未知 XML、扩展命名空间、二进制和关系仍可查询；格式 snapshot 绑定确切源 hash 与引擎版本。
+所有声明样式另以 `style_definitions` 留存，包括未在模板正文使用的样式、继承关系与完整声明；其来源定位到真实
+styles 部件中的 `w:style`。段落与字符样式分别提供有效段落／run 格式，表格、编号及其他类型标为仅声明；
+不把声明表格样式当成已计算的表格布局。同语义／标题级别缺少正文实例时，比较器使用已识别的段落样式定义提供预期格式，
+稿件自己的样式定义不充当正文观察，也不因未使用的字体槽触发下载。
 Workbench 拥有留存、规则、查询及比较，沿现有 source/world/baseline/check/artifact/evidence 保存，不另建文档事实库。
 主窗口按需计算已保存字节的格式，活动编辑窗无需打开；live 查询则从同一编辑 session 导出，并核对 revision。
-实时段落引用通过同会话 canonical tree 路径定位，不靠段落文字或跨文档节点 ID 对齐。
+实时修改使用同会话段落 handle，再解析为活动 tree 中的目标；导出时可能插入属性节点，导出的 canonical 路径只作为
+事实证据，不作为后续写入地址。不靠段落文字或跨文档节点 ID 对齐。
+[`docx-format-reader.ts`](../../src/lib/docx-format-reader.ts) 为同一活动会话提供 overview、paragraphs、styles、objects、nodes
+目录及连续查询；同 revision 的导出与解析共用 Promise，段落与定位索引按需建立并复用，nodes／styles 不建立活动段落目录。
+修改后缓存失效，跨 revision 的未完成读取拒绝返回，不能替换新版本索引。
+分页 `nextQuery` 及文字、记录、节点续读参数携带 `expected_revision`；续读发现版本变化即拒绝旧偏移，
+须从当前文档重新读取，避免用户或 Agent 编辑后静默跳过、重复段落。
+正文、页眉页脚、脚注等文字均可读取；仅有活动 handle 的段落提供可写引用。modelText 直接来自 core 模型，
+字段为 U+FFFC，文字范围采用完整段落的 UTF-16 半开区间。长文字、对象及浅 XML 节点保留精确续读参数，
+按最终 JSON 字符数控制返回大小并留出工具打包余量；原始 XML 路径继续只作证据。
+
+普通聊天与绑定任务的 `read_docx_document` 共用同一活动会话读取器，按需读取段落内容。
+`modelText` 保留原子的模型占位，`displayText` 展开域缓存结果；公式、图片继续保留占位并附对象信息。
+对象带稳定会话引用、完整段落的模型／显示范围、只读标记，以及语义投影是否完整的状态。
+显示串和对象显示范围由同一投影生成，零宽 VML 按 XML 顺序显示。特殊连字符保持单个 UTF-16 位置；
+`w:sym` 沿用 core 的 `(` 文本表示，尚未识别为实际字体字形，不能把该字符当作原稿中的普通左括号。
+[`docx-math.ts`](../../src/lib/docx-math.ts) 在原生 OMML 上生成有界结构投影，保留 `matrix` 的行／列、
+`delimiter` 的起止与分隔符、`nary` 的运算符及上下限；无法投影的节点进入 fallback 和 diagnostics。
+`readableMath` 与 diagnostics 是可读派生视图，`linear` 继续服务现有紧凑语法；`sourceDetails.preserveSource`
+记录源保留属性，与 `complete` 分开。`complete` 只表示本次结构投影未遇到不支持节点或被截断，
+不表示公式语义或 Word 视觉已经验证。普通正文替换仍绕开公式；受控公式写入由 `write_docx_equation` 单独承担，
+不开放图片自动转公式或像素等价承诺。
+
+[`docx-equation-conversion.ts`](../../src/lib/docx-equation-conversion.ts) 将单个 LaTeX 公式正文及显式数学宏上下文
+交给现有本地 Pandoc 服务；独立 MathJax 数学解析核对字母数字顺序和数学字母变体。只在 token 精确对应时修正
+已知 `mathbf` 输出差异，保留 `boldsymbol`；缺失公式、额外正文／对象、转换损失及不支持的投影明确拒绝。
+`eqArr`、函数应用、分段公式与数学字母沿现有 OMML 投影和布局解释，原始 OMML 继续是文档 payload。
+整份文档、算法环境、编号和跨文件命令不进入单公式写入；现有整稿导出另报告已识别的数学失败和结构跳过，
+不能由没有警告推定全部内容无损。期刊文档字体、TeX 字体及 Word 数学字体仍属于各自的实际渲染环境。
+
+[`docx-equations.ts`](../../src/lib/docx-equations.ts) 在既有 `applyAutomationOps` 事务中同时提交公式、书签和
+custom XML 源记录，沿用撤销／重做、保存和恢复。插入使用当前段落模型偏移；替换需要对象引用、revision 及
+OMML 指纹，保留原段落与行内／独立公式位置。原导入公式或外部改动后的公式须显式接管所提供的源码。
+记录随 DOCX 保存 LaTeX、宏及转换摘要，以书签实例和输出指纹区分重复公式并识别过期关联；这些字段是文件数据，
+不能当作执行指令。只有编辑模式开放写入，建议模式的修订公式写入尚未开放。
+Word 文档工具的公式面板和普通聊天、绑定任务共用这条写入路径；保存依旧是独立动作。
+界面只读取当前段落，段落身份按 revision 缓存；无可用光标偏移时明确在段末插入，独立公式要求空段落。
+编辑源码、宏或位置后，文档版本或所选段落变化保留草稿并要求显式刷新。源码预览使用局部宏作用域，
+保留本地 MathJax SVG 的字形引用并经过 SVG 清理；它不替代实际 Word 字体或版面验收。
+正文工具输出的 `next_query` 可直接作为下一次调用参数，先完成当前对象 payload 与对象目录，再推进文本窗口和段落。
+文字窗口、对象信息及 JSON payload 均可续读，携带源会话和 revision；格式目录继续使用自己的 `nextQuery`。
+正文和格式生产端以共享工具预算约束完整回包，避免通用打包器裁掉续读信息。
+绑定任务把完整正文页留存在既有 DOCX operation 活动中，模型输出不重复附加活动全文；旧 Read 记录继续可读。
+
+普通聊天、桌面 MCP 与绑定任务共用 `read_docx_image`。它只接受正文对象附带的准确 route：一张
+DrawingML／VML drawing，或 payload 内恰有一个 embedded-image route 的 field；任意 media path 和外部图片拒绝。
+PNG、JPEG、GIF 像素走工具图片通道，正文 metadata 及任务留存不含 bytes／base64。metadata 绑定当前 document
+身份、source SHA-256、session／revision、object／media part、关系、尺寸和 image SHA-256；读取后与异步哈希后
+分别复核 revision，哈希后还复核 baseline 与 source，session 身份变化也会中止返回。
+`imageReadComplete: true` 只表示图片字节已送达，`contentStatus: "pixels_provided"`；原 drawing／field atom
+仍为 `complete: false`、`contentStatus: "not_inspected"`，因此不证明模型已理解图片。任务沿既有
+`OperationStarted → Operation` 活动链留存 metadata、源身份和 image hash，不保存图片字节。
+普通聊天和 research builtin 在调用 bridge 前按现有模型图片能力拒绝 text-only provider，并引导回正文、
+公式与对象 metadata。
+
+`replace_docx_text_range` 复用现有自动化 `replaceSpan` 事务，要求当前 revision、准确原文和非空 UTF-16 范围。
+当前只允许单一普通文本叶片内部的修改；跨 run／格式、域、公式、图片、注释、超链接、内容控件和修订范围明确拒绝，
+也拒绝拆分代理对。对象前后的普通文字可分别修改，无需整段扁平化。任务修改沿原有操作检查点、恢复、保存及归属链，
+普通聊天使用同一会话边界与撤销历史。原有整段建议的结构限制继续生效。
+实现与机器字段由 [session](../../src/lib/docx-session.ts)、[host](../../src/lib/docx-agent-host.ts)、
+[工具契约](../../packages/ai-tools/src/tools.ts) 及[原生任务桥](../../src-tauri/src/research_tasks/docx.rs) 拥有。
+
+保存始终从现有事务的最终包写出。固定 core 对加载后未改变的 XML part 复用原始解压 entry 字节；
+树、原始 entry 或修复结果改变的 part 继续规范序列化，不另建写入链。ZIP 容器整体及已修改 part 的字节一致性不在此承诺内。
+补丁源码、已安装 ESM／CJS 和重建说明位于 [core 补丁目录](../../patches/docx-core/README.md)。
+
+桌面 `WorkspaceCenter` 持久承载源码、Word 与期刊结果表面，共用标签栏，仅隐藏非活动表面。
+主布局调整时移动既有宿主而不卸载 Word／期刊控制器。Word 会话仍由 `useDocxWorkspaceStore` 和原有 Agent host 拥有，
+关闭请求经过保存／丢弃与任务记录流程。期刊使用一个控制器，将输入选择及检查动作 portal 到左栏，结果渲染在中栏；
+关闭中栏期刊标签不销毁左栏所需控制器。普通界面只呈现可读结果、正文及来源，原始 XML／JSON 沿领域工具读取。
+右栏复用现有助手与文档工具，不另建 Word 聊天运行时。保存版本 PDF 复用原有渲染缓存及 PdfViewer，在同一中栏切换。
+
+材料回看沿同一中栏宿主接入已有 PDF.js、DOCX、Markdown、CodeMirror、图示画布和 HTML 渲染，
+`material-surface.ts` 拥有材料身份、实际字节摘要及局部锚点。`useMaterialViewerStore` 只拥有留存视图与返回表面，
+不接管编辑会话；通用留存对照由 `MaterialVersionStack` 承载。Word 使用 `WordSurface` 单一可见纸面与共用工具栏，
+`WordDocument` 沿公开 Root／Viewport／Content 组合保持内核会话，历史只读 Root 按需加载并保留。
+原稿冻结本次打开前字节，切换显示不重建可编辑实例。资料链保留既有 renderer，返回时保留局部阅读状态。
+`MaterialViewContext` 发布实际查看身份、版本及支持的选区，隐藏材料不覆盖当前上下文。Word 可写身份沿原会话注册表，
+历史锚点不自动升级为可写地址。`useAgentWorkspaceStore` 仅投影真实操作回执与跟随状态，无新领域数据库；
+选定执行流的实际目标驱动导航，用户交互暂停，恢复消费最新目标，后台流不导航。
+Word 的 reveal 入口先同步提交工作稿、正文及外层表面的可见状态，再等待绘制帧并测量、定位和高亮；
+继续使用原会话及版本校验，显示切换不重建编辑会话。
+批注面板由中栏纸边入口展开，收起保留草稿。
+`material_annotations.rs` 复用 TaskStore annotations 和 source 引用，实际大文件写入内容寻址存储；
+普通反馈不启用执行，明确交办才经已有 provider capture、ResearchTask 和输入初始化进入隔离任务。
+任务记录提供准确原件及锚点，handling／result refs 继续由现有协作存储维护，不新增评论数据库。
+HTML 在捕获时留存入口与静态本地依赖，loopback 服务仅提供这份内存快照；iframe 只允许脚本，不共享应用 origin。
+任务 HTML 入口核对当前执行代及成果 hash，回看材料使用整个资源包 hash。内部资源包不作为用户界面产出。
+
+“从模板开始写”沿现有 Workbench 导入入口复制所选模板的准确规范化字节、留存格式快照并绑定 world，
+随后在同一编辑器打开受管稿件。稳定 request ID 恢复同一创建结果，不重置后续编辑或重新绑定；
+模板与作者原件保持只读。此动作产生模板工作副本，示例内容的补写由工作中的模型按实际任务完成。
 
 比较使用对象 kind、语义 role、标题级别和图／表题注上下文。core 的真实节块范围为正文对象提供区域来源，
 有明确语义时按前置内容、正文、参考文献或附录细分；不按节序、XML 路径、对象 ID 或待比较的栏数推断对应。
 一节跨多个区域、角色不明或模板同角色格式混合时保留不确定；无对应模板 profile 的对象明确返回无法判定。
-表格及行／单元格比较相应区域内的稳定格式共性，不按示例行列数逐表配对。所有 finding 保留源对象、模板代表对象及角色／区域依据。
+表格内部对象保留所属表、行列位置及 `tblLook`／`cnfStyle` 条件上下文；表头、数据行、首末列与角单元格分别建立
+格式 profile，表格整体不虚构行位置。不按示例行列数、跨文档表格序号或对象 ID 逐表配对；同作用域的模板值冲突时
+保留无法判定。所有 finding 保留源对象、模板代表对象及角色／区域依据。
+固定 core 目前按单行／单列计算交替带。直接声明或表格样式继承中生效的较大 band size 会标记为覆盖缺口，
+受影响的表内对象或模板候选保留无法判定；原始 XML 可查，不把这些内核观察算作确定的格式一致或差异。
+段落事实包含继承及直接覆盖后的分页控制与 frame 属性，比较区分 frame 是否存在及其具体尺寸和锚定。
 结构保留不等于图形、公式、扩展对象渲染已被解释，也不证明 Word/WPS 分页等价。
 
+普通 Agent、MCP 与任务群共用 `apply_docx_format` 及 `apply_docx_format_batch`。其段落 scope 支持已有字体／段落字段、
+分页控制和精确 font 范围；frame、节、表格、行和单元格 scope 用该段落的所属对象定位，字段由
+[`docx-object-format.ts`](../../packages/ai-tools/src/docx-object-format.ts) 和
+原生任务[工具 schema](../../src-tauri/src/research_tasks/docx.rs) 拥有。
+节修改只作用于所属 section，支持等宽分栏；frame 支持显式属性及删除；嵌套表格取最近祖先。
+一组修改先完成全部规划，再以一次 revision、一次撤销提交，任一目标或范围无效时整组不修改。
+范围与同段多个不相交 font 修改使用 core 的模型偏移，保留字段、符号及未选文字格式。
+包括仅修改东亚字体或分页控制的请求在内，格式写入统一经过 core 的 `surface.applyAutomationOps`，
+沿用查看模式拒绝、建议模式作者及修订支持策略；不直接用底层 tree 提交绕过编辑模式。
+当前 core 没有节、表格、行、单元格格式的建议修订表示；这些对象在建议模式下明确拒绝，须在编辑模式下修改。
+`import_docx_template_styles` 从显式 world 读取并核验准确模板字节，复用 core 的 style/numbering closure 与 fragment merge
+导入所选样式及依赖；相同定义复用，冲突 ID 重新映射，保留稿件原有定义和正文。返回映射值是 style ID，
+须以 styles 查询取得实际 `w:name` 后应用。可解析的源主题字体转字面名称并覆盖旧备用值；无法解析时保留已有字面字体，
+颜色使用存储 fallback；源 docDefaults 与整个 theme
+不迁入，未声明值沿用目标默认，因此应用后须读回有效格式。带资源 relationship 的样式明确拒绝。
+样式导入是可撤销的未保存编辑，继续沿同一 checkpoint/save 归属链；查看与建议模式明确拒绝。
+
 面板和普通 Agent／任务共用保存与复查业务入口，模板检查必须指定 world、baseline 和预期绑定。
-大结果在既有 artifact 中只存一次，check 返回摘要和首屏；snapshot 对象与 finding 支持分页及筛选。
+任务的工作区上下文、定位、字体准备及导出也沿既有 operation intent／result 留存路径记录真实结果，
+保留字体缺失状态和实际导出状态、路径及字节数；这些操作不生成文档编辑恢复检查点。
+host 在副作用开始前校验任务；已经开始的字体准备、导出或定位结果即使遇到取消，仍按原执行代次留存。
+Agent 检查回执只返回版本身份、有效性、计数摘要及准确的 `journal_read` 读取参数；完整 world、规则、覆盖缺口和
+finding 内容保留在 Workbench，按回执分页读取，不把尚未读取的正文概括为通过。
+仅绑定 DOCX 工作副本的任务可沿该显式绑定列出模板、读取显式模板／稿件格式以及所属检查对象和 finding 页，
+无须另建期刊请求；任务、应用项目、稿件与检查身份仍由原生层核对，其他期刊操作继续要求既有领域输入。
+`journal_read` 的模板检查对象保留检查元数据、逐规则结果和覆盖缺口，finding 正文沿同一检查的分页参数读取，
+避免首百条 finding 使整个对象超出工具输出限制；Workbench 留存对象与标注源不因此改写。
+大结果在既有 artifact 中只存一次，check 返回摘要和首屏；snapshot 对象与样式定义分别分页，finding 支持分页及筛选。
+留存对象或格式的单条对象、节点、部件仍过大时，应用投影返回完整响应 JSON 的片段及准确的 `continuation.arguments`；
+JSON 字符偏移与记录分页独立，续读核对完整响应的 hash，格式读取同时核对源 hash，拼接片段可恢复原始响应。
+检查对象的逐规则结果、覆盖缺口与 unsupported 对象身份也沿同一续读完整保留，不把大元数据截断为成功。
+格式页和 JSON 分片均按实际 MCP 文本封装后的序列化字节计算输出预算，与任务回执上限共用常量，
+避免裸 JSON 合限、封装转义后被截断；裁页后的续读位置只计实际交付对象。
+同源快照在重捕获后变化也会拒绝旧续读，Workbench 留存事实和 HTTP 合同不因此改变。
+格式快照默认沿用完整读取；显式有效事实投影在模型页内合并完全相同的属性、区域、证据和语义依据，
+保留每个对象的身份、文字、适用范围、表格上下文及其余有效值。投影版本、准确省略路径和字典字段由
+[`tools.rs`](../../src-tauri/src/journal_workbench/tools.rs) 拥有；仅省略声明和列明的诊断级联输入，原始对象可沿精确完整读取参数回读。
+每个集合的首屏交付全部元数据，后页通过来源、投影版本和完整元数据摘要显式引用首屏；未读首屏、缺失或越界字典引用均不能算覆盖。
+声明型样式仍明确保留未有效解析状态，省略的声明不算已读。超大有效页继续使用上述 JSON 续读，完整与有效响应各自绑定 JSON 摘要。
+旧读取器的留存内容保持原方法身份并继续可查；新模板采用、格式捕获和检查要求当前读取器，旧快照须重新捕获，
+不修改历史证据的方法标签。
 任务同步遇到超大 world/rule 时保留带全文摘要和准确复读参数的引用，界面与模型不能把该引用当成已读全文。
 来源、页合同与覆盖缺口由 [world-contract.json](../../services/research-workbench/contracts/journals/world-contract.json) 拥有，
 应用运行范围由[当前状态](status.md#word-模板读取与格式闭环2026-11-14)维护。
@@ -259,6 +408,8 @@ token 更新候选展示，接受时再以一次 `replaceSpan` 事务替换格�
 同一在途保存固定 request ID、expected baseline、字节与启动修订，失败重试复用原请求。
 导出期间的新编辑保留为未保存。成功保存后不重载编辑器；面板刷新失败与字节保存失败分别呈现。
 期刊检查只对明确保存且仍为当前的 baseline 运行，并核对返回的 baseline/world 身份。
+Agent host 同时核对检查的稿件、source hash 和执行时有效性；等待期间若工作副本改变，要求重新保存和检查。
+任务历史中的检查回执保留执行时有效性及完整领域记录的读取引用，界面显示“已检查”，不据此判断后来版本仍有效。
 关闭、项目离开、刷新和原生退出沿用既有 leave guard、editor mutation owner 与 quit guard，
 未完成会话要求先保存、下载或明确丢弃。
 
@@ -335,6 +486,11 @@ shaped 只表示使用字体字节度量，字体可用不代表稿件正确使�
 任务的隔离源码副本和现有 review/apply 合同继续生效。外部 Word/WPS 同步及可靠跨版本页映射尚待接入。
 已运行与未运行的范围由[状态页](status.md#docx-任务活动与保存归属2026-11-12)维护。
 
+应用工具的调用总期限由 `ApplicationTools` 所有者提供，任务聚合器为调用与期限采用同一所有者。
+DOCX 工具复用 renderer 的既有操作期限，两阶段候选包含展示阶段；不经过 renderer 的活动查询保留默认期限。
+总期限从工具启动计时，renderer 从交接计时，二者不构成统一绝对截止时间；会话关闭及任务预算仍可提前中断调用。
+Word 专用复查使用明确绑定的会话和显式模板 world，期刊任务检查／绑定继续要求留存 journal input。
+
 DOCX 业务事实追加在现有不可变 observation 流中，类型及分页合同由
 [`docx.rs`](../../crates/oleafly-research/src/docx.rs) 和
 [`TaskStore`](../../crates/oleafly-research/src/store/docx.rs) 拥有。稀疏自增游标索引只保存事件引用，
@@ -345,7 +501,9 @@ renderer 先领取仍有效的原生 token，再处理请求，取消、过期�
 候选先持久化再交给既有接受/拒绝界面，同一时刻仍只有一个待审建议。
 
 任务直接格式、应用、保存和复查在 renderer 交接前记录操作 intent，完成后从该记录继承原任务、成员和执行来源。
-任务取消或结束不会抹掉已经提交的实际结果。恢复 checkpoint 保存操作引用与紧凑回执，重开后可补记相同结果；
+已经发出的副作用请求由原生等待任务在原有期限内持有回报通道，外层模型调用取消或超时不提前删除 token；
+只读请求仍随调用方结束清理，claim／validate 继续阻止取消后尚未开始的执行。实际结果沿原 intent 归属留存，
+不由新执行代次接替。恢复 checkpoint 保存操作引用与紧凑回执，重开后可补记相同结果；
 已恢复或已保存的确切字节通过操作 checkpoint 事实连回原操作。Save 的成功事实仍须原生核对 Workbench 的 baseline/source hash，
 checkpoint 自报的 save 不能单独证明保存成功。操作重放幂等；完整格式和检查结果沿领域引用读取，不复制进任务事件。
 
@@ -353,13 +511,16 @@ checkpoint 自报的 save 不能单独证明保存成功。操作重放幂等；
 接受后只记已应用；显式保存固定导出 revision、request 和当时仍存在的候选，再把实际 baseline/source hash 连回。
 原生层向 Workbench 读取确切 baseline 的 hash 核对保存回执。checkpoint 将实际导出字节、当时仍有效的任务来源和待补结果一起原子留存，
 显式保存再固定 request ID、expected baseline、启动修订和来源清单；在途请求未确认前，后台导出不覆盖该快照。
-原生 commit 重放这份确切请求，核对 Workbench 留存 hash 并幂等补齐 Saved，成功响应后由界面明确清除快照。
+任务保存的 operation ID 与启动文档身份在提交前进入同一固定请求。原生 commit 重放这份确切请求，
+核对 Workbench 留存 hash，并在回复 renderer 前幂等补齐实际保存结果及 Saved，成功响应后由界面明确清除快照。
 响应丢失时重启继续重放原请求，不另造 baseline；若当前已有更高版本，只补原保存历史并保留恢复副本，不推进或覆盖当前版本。
 Workbench 的结构化持久结果明确拒绝这份请求时，保留快照供下载并允许明确丢弃，不补 Saved；传输、hash 或补回执失败仍保留固定请求重试。
 确认前禁止丢弃，避免把已经成功但尚未收到响应的保存当成未提交。固定请求尚未确认时，后续编辑保留在会话内，后台 checkpoint 暂不覆盖该固定快照。
 合同由 [`docx_recovery.rs`](../../src-tauri/src/docx_recovery.rs) 拥有，旧版纯字节 checkpoint 仍可读取。
 
 恢复记录通过明确的 Recovered 事实连接旧导出与真实新 session，保留原 proposal 的任务、成员和 work 来源；
+任务绑定仅沿核验过的准确来源与恢复字节推进，连续显式恢复逐次保留来源边；普通重开不接替任务的可写会话。
+原 operation 及其启动身份保持不变，祖先 operation 需要当前绑定建立之前、来自紧邻前一绑定的恢复记录。
 不恢复旧 target，也不比较两个 session 的 revision。原样恢复且尚未继续编辑时，保存直接使用原 checkpoint 字节。
 恢复后首次编辑会撤下这份恢复来源对后续新导出的 Saved 资格，撤销或文本再次相同都不重新认领；历史来源仍可查看。
 这会保守地排除仅编辑其他段落后继续归属的情况，跨编辑保留归属需要后续可靠位置与变更关系支持。

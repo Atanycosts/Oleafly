@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { CodeBlock } from "@/components/ui/code-block";
 import { bindDocxTask, loadDocxTaskActivities, subscribeDocxTaskActivity, type DocxActivity } from "@/lib/docx-task-activity";
 import { listResearchTasks, type ResearchTask } from "@/lib/research-tasks";
 import { useResearchTasksStore } from "@/store/research-tasks";
 import { useSettingsStore } from "@/store/settings";
 import { useDocxWorkspaceStore } from "@/store/docx-workspace";
+
+function resultRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+}
 
 async function openDocxTaskSource(projectId: string, taskId: string, tab: "activity" | "group") {
   const store = useResearchTasksStore.getState();
@@ -22,10 +25,8 @@ export function DocxActivitySource({ activity }: { activity: DocxActivity }) {
   const text = t(($) => $.researchTools.docx.taskActivity, { returnObjects: true });
   const origin = activity.origin;
   return <div className="space-y-1 text-[0.6875rem] text-muted-foreground">
-    <button type="button" className="text-primary underline" onClick={() => void openDocxTaskSource(activity.document.appProjectId, origin.taskId, "activity")}>{text.source}: {origin.taskId} · {text.generation} {origin.generation}</button>
-    {origin.groupId && <button type="button" className="block text-primary underline" onClick={() => void openDocxTaskSource(activity.document.appProjectId, origin.taskId, "group")}>{text.group}: {origin.groupId}</button>}
-    {origin.memberId && <p>{text.member}: {origin.memberId} · {origin.executionId}</p>}
-    {origin.workIds.length > 0 && <p>{text.work}: {origin.workIds.join(", ")}</p>}
+    <button type="button" className="text-primary underline" onClick={() => void openDocxTaskSource(activity.document.appProjectId, origin.taskId, "activity")}>{text.source}</button>
+    {origin.groupId && <button type="button" className="block text-primary underline" onClick={() => void openDocxTaskSource(activity.document.appProjectId, origin.taskId, "group")}>{text.group}</button>}
   </div>;
 }
 
@@ -33,7 +34,18 @@ export function DocxTaskActivity({ projectId, workbenchProjectId, sessionId }: {
   projectId: string; workbenchProjectId: string; sessionId: string | null;
 }) {
   const { t } = useTranslation("researchTools");
-  const text = t(($) => $.researchTools.docx.taskActivity, { returnObjects: true });
+  const { t: tEditor } = useTranslation("editor");
+  const docxText = t(($) => $.researchTools.docx, { returnObjects: true });
+  const text = docxText.taskActivity;
+  const editorText = tEditor(($) => $.editor.agentWorkspace, { returnObjects: true });
+  const operationLabels: Record<string, string> = {
+    read: editorText.read, read_format: editorText.readFormat, replace_range: editorText.edit,
+    format: editorText.format,
+    format_batch: editorText.format, import_styles: editorText.importStyles,
+    apply: editorText.edit, save: editorText.save, check: editorText.check,
+    reveal: editorText.reveal, capture: editorText.read, propose: editorText.propose,
+    prepare_fonts: editorText.prepare_fonts, export: editorText.export,
+  };
   const [tasks, setTasks] = useState<ResearchTask[]>([]);
   const [selected, setSelected] = useState("");
   const [binding, setBinding] = useState(false);
@@ -99,20 +111,64 @@ export function DocxTaskActivity({ projectId, workbenchProjectId, sessionId }: {
     {bound && bound.sessionId === sessionId && <button type="button" className="block text-primary underline" onClick={() => void openDocxTaskSource(projectId, bound.taskId, "activity")}>{text.bound}</button>}
     {error && <p role="alert" className="break-words text-destructive">{error}</p>}
     <div className="max-h-72 space-y-3 overflow-y-auto">
-      {activities.map((activity) => <article key={activity.id} className="space-y-1 border-t pt-2" data-testid="docx-task-activity">
-        <DocxActivitySource activity={activity} />
-        <p>{activity.event.type === "operationCheckpoint" ? text.events[activity.event.phase]
-          : activity.event.type === "runtime" && activity.event.event.kind === "operation"
-            ? `${text.events.operation} · ${activity.event.event.operation} · ${activity.event.event.result.ok ? text.operationSucceeded : text.operationFailed}`
-            : text.events[activity.event.type === "runtime" ? activity.event.event.kind : activity.event.outcome.kind]}{` · r${activity.document.sessionRevision}`}</p>
-        {activity.event.type === "operationCheckpoint" && <p className="break-all text-muted-foreground">{activity.event.operationId} · {activity.event.contentSha256}</p>}
-        {activity.event.type === "runtime" && activity.event.event.kind === "operation" && <details><summary>{text.source}</summary><CodeBlock code={JSON.stringify(activity.event.event.result, null, 2)} preClassName="whitespace-pre-wrap break-all" /></details>}
-        {activity.event.type === "runtime" && activity.event.event.kind === "proposed" && <>
-          <blockquote className="whitespace-pre-wrap border-l-2 pl-2 text-muted-foreground">{activity.event.event.target.original}</blockquote>
-          <p className="whitespace-pre-wrap">{activity.event.event.proposed}</p>
-        </>}
-        {activity.event.type === "outcome" && activity.event.outcome.kind === "saved" && <p className="break-all text-muted-foreground">{activity.document.baselineId} · {activity.event.outcome.contentSha256}</p>}
-      </article>)}
+      {activities.map((activity) => {
+        if (activity.event.type === "runtime" && activity.event.event.kind === "operationStarted") return (
+          <article key={activity.id} className="space-y-1 border-t pt-2" data-testid="docx-task-activity">
+            <DocxActivitySource activity={activity} />
+            <p data-testid="docx-task-operation" data-operation={activity.event.event.operation} data-outcome="started">
+              {operationLabels[activity.event.event.operation] ?? text.events.operation} · {text.events.operationStarted}
+            </p>
+          </article>
+        );
+        if (activity.event.type === "runtime" && activity.event.event.kind === "operation") {
+          const event = activity.event.event;
+          const receipt = resultRecord(event.result);
+          const result = resultRecord(receipt.result);
+          const document = resultRecord(receipt.document);
+          const check = resultRecord(result.check);
+          const succeeded = receipt.ok === true;
+          let outcome = succeeded ? "succeeded" : "failed";
+          let stateLabel = succeeded ? text.operationSucceeded : text.operationFailed;
+          if (succeeded && event.operation === "export") {
+            const status = resultRecord(result.result).status;
+            stateLabel = status === "saved" ? editorText.exportSaved : status === "cancelled" ? editorText.exportCancelled : status === "download_requested" ? editorText.downloadRequested : editorText.receiptAvailable;
+            outcome = typeof status === "string" ? status : "available";
+          }
+          const baselineId = event.operation === "save"
+            ? typeof result.baselineId === "string" ? result.baselineId : undefined
+            : event.operation === "check"
+              ? typeof check.baseline_id === "string" ? check.baseline_id : undefined
+              : undefined;
+          const revision = event.operation === "save" && typeof result.revision === "number" ? result.revision : undefined;
+          const sourceSha256 = event.operation === "save" && typeof result.sourceSha256 === "string" ? result.sourceSha256 : undefined;
+          const validity = event.operation === "check" && typeof check.validity === "string" ? check.validity : undefined;
+          const checkId = event.operation === "check" && typeof check.check_id === "string" ? check.check_id : undefined;
+          const worldVersionId = event.operation === "check" && typeof check.world_version_id === "string" ? check.world_version_id : undefined;
+          return <article key={activity.id} className="space-y-1 border-t pt-2" data-testid="docx-task-activity">
+            <DocxActivitySource activity={activity} />
+            <p data-testid="docx-task-operation" data-operation={event.operation}
+              data-outcome={outcome} data-baseline-id={baselineId}
+              data-revision={revision} data-source-sha256={sourceSha256} data-validity={validity}
+              data-check-id={checkId} data-world-version-id={worldVersionId}
+              data-session-revision={typeof document.sessionRevision === "number" ? document.sessionRevision : undefined}>
+              {operationLabels[event.operation] ?? text.events.operation} · {stateLabel}
+            </p>
+            {event.operation === "save" && succeeded && <p>{text.events.saved}{revision === undefined ? "" : `: ${revision}`}</p>}
+            {event.operation === "check" && succeeded && <p>
+              {docxText.checked}
+            </p>}
+          </article>;
+        }
+        return <article key={activity.id} className="space-y-1 border-t pt-2" data-testid="docx-task-activity">
+          <DocxActivitySource activity={activity} />
+          <p>{activity.event.type === "operationCheckpoint" ? text.events[activity.event.phase]
+            : text.events[activity.event.type === "runtime" ? activity.event.event.kind : activity.event.outcome.kind]}</p>
+          {activity.event.type === "runtime" && activity.event.event.kind === "proposed" && <>
+            <blockquote className="whitespace-pre-wrap border-l-2 pl-2 text-muted-foreground">{activity.event.event.target.original}</blockquote>
+            <p className="whitespace-pre-wrap">{activity.event.event.proposed}</p>
+          </>}
+        </article>;
+      })}
     </div>
     {!activities.length && <p className="text-muted-foreground">{text.empty}</p>}
     <Button size="sm" variant="ghost" onClick={() => { void refresh(); void refreshTasks(); }}>{hasMore ? text.more : text.refresh}</Button>

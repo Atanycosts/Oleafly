@@ -51,6 +51,7 @@ import { CollabShareSlot, CollabToolbarSlot, ShareDialogHost } from "@/component
 import "./top-toolbar.css";
 import { engineErrorMessage, useFilesStore } from "@/store/files";
 import { useCompileStore } from "@/store/compile";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import { useProjectColorsStore } from "@/store/project-colors";
 import { useSaveAsTemplateStore } from "@/store/save-as-template";
 import { DEFAULT_BOOK_COLOR } from "@/components/library/Book";
@@ -282,6 +283,7 @@ export function TopToolbar() {
   const { t } = useTranslation(["common", "shell", "library"]);
   const projectName = useFilesStore((s) => s.projectName);
   const projectId = useFilesStore((s) => s.projectId);
+  const sourceSurface = useWorkspaceSurfaceStore((s) => s.active === "files");
   const detached = usePreviewDetachedStore((s) => s.projectId === projectId && projectId !== null);
   const projects = useFilesStore((s) => s.projects);
   const projectColors = useProjectColorsStore((s) => s.colors);
@@ -639,7 +641,7 @@ export function TopToolbar() {
       </div>
       <span data-toolbar-part="title-minimum" aria-hidden className="pointer-events-none invisible absolute w-[10ch] text-sm" />
       </div>
-      {projectId && <div data-toolbar-part="views" data-testid="toolbar-views" className="col-start-2 row-start-1 shrink-0">
+      {projectId && sourceSurface && <div data-toolbar-part="views" data-testid="toolbar-views" className="col-start-2 row-start-1 shrink-0">
         <ViewModeSwitch viewMode={viewMode} setViewMode={(mode) => {
           if (detached && (mode === "pdf" || mode === "split")) void reattachPreviewWindow();
           setViewMode(mode);
@@ -651,20 +653,20 @@ export function TopToolbar() {
       <div data-toolbar-part="actions" data-tauri-drag-region
         className={cn("flex w-max shrink-0 items-center gap-1", toolbarLayout.stacked && "col-span-3 row-start-2 justify-self-end px-2")}>
         <CollabToolbarSlot />
-        <div data-toolbar-item="compile" className="flex w-max shrink-0 items-center gap-1">
+        {sourceSurface && <div data-toolbar-item="compile" className="flex w-max shrink-0 items-center gap-1">
           <CompileControls iconOnly={toolbarLayout.iconOnly} />
-        </div>
-        {projectId ? (
+        </div>}
+        {projectId && sourceSurface ? (
           <Suspense fallback={null}>
             <OverleafSyncButton />
           </Suspense>
         ) : null}
-        {engineError && <Tooltip label={engineErrorMessage(engineError)}>
+        {sourceSurface && engineError && <Tooltip label={engineErrorMessage(engineError)}>
           <span data-toolbar-item="engine-error" className="flex size-7 shrink-0 items-center justify-center text-destructive">
             <AlertTriangle className="size-4" /><span className="sr-only">{engineErrorMessage(engineError)}</span>
           </span>
         </Tooltip>}
-        <ToolbarAction name="export" order={TOOLBAR_OVERFLOW.export} hidden={hideExport}>
+        {sourceSurface && <ToolbarAction name="export" order={TOOLBAR_OVERFLOW.export} hidden={hideExport}>
         <DropdownMenu open={dlOpen} onOpenChange={setExportMenuOpen}>
           <Tooltip label={t(($) => $.shell.toolbar.export)}>
             <DropdownMenuTrigger asChild>
@@ -682,7 +684,7 @@ export function TopToolbar() {
           </DropdownMenuContent>
         </DropdownMenu>
 
-        </ToolbarAction>
+        </ToolbarAction>}
         <ToolbarAction name="fork" order={TOOLBAR_OVERFLOW.fork} hidden={hideFork}>
           <Tooltip label={t(($) => $.shell.toolbar.forkProject)}>
             <Button variant="ghost" size="icon" aria-label={t(($) => $.shell.toolbar.forkProject)}
@@ -697,7 +699,7 @@ export function TopToolbar() {
         <CollabShareSlot />
         {workspaceHidden && <ToolbarAction name="sidebar"><SidebarCollapseToggle /></ToolbarAction>}
         <WorkspaceDockControls overflow={toolbarLayout.overflow} onFork={showForkDialog} layoutControl={layoutControl}>
-          {hideExport && <DropdownMenuSub onOpenChange={(open) => { if (open) prepareExportMenu(); }}>
+          {sourceSurface && hideExport && <DropdownMenuSub onOpenChange={(open) => { if (open) prepareExportMenu(); }}>
             <DropdownMenuSubTrigger><Download className="mr-2 size-4" />{t(($) => $.shell.toolbar.export)}</DropdownMenuSubTrigger>
             <DropdownMenuPortal><DropdownMenuSubContent className="w-60">{exportMenuItems}</DropdownMenuSubContent></DropdownMenuPortal>
           </DropdownMenuSub>}
