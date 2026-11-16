@@ -48,6 +48,49 @@ fn scope() -> WorkbenchScope {
 }
 
 #[test]
+fn check_objects_page_template_findings_without_changing_retained_content() {
+    let original = json!({
+        "check_id":"check-a", "project_id":"paper", "world_version_id":"w1",
+        "summary":{"cannot_determine":1},
+        "rule_results":[{"rule_id":"rule-a","verdict":"cannot_determine"}],
+        "coverage_gaps":[{"code":"unsupported_frame"}], "limitations":["Not certified"],
+        "template_comparison":{
+            "total":100, "findings_artifact_version_id":"findings-a",
+            "finding_summary":{"cannot_determine":100}, "unsupported":[{"code":"unsupported_frame"}],
+            "findings":[{"source_text":"x".repeat(600_000)}],
+            "has_more":true, "next_offset":100
+        }
+    });
+    let result = check_object(original.clone());
+    assert!(serde_json::to_vec(&result).unwrap().len() < 4096);
+    for name in ["summary", "rule_results", "coverage_gaps", "limitations"] {
+        assert_eq!(result[name], original[name]);
+    }
+    let comparison = &result["template_comparison"];
+    assert!(comparison.get("findings").is_none());
+    assert!(comparison.get("has_more").is_none());
+    assert!(comparison.get("next_offset").is_none());
+    for name in [
+        "total",
+        "finding_summary",
+        "findings_artifact_version_id",
+        "unsupported",
+    ] {
+        assert_eq!(comparison[name], original["template_comparison"][name]);
+    }
+    assert_eq!(
+        result["findingsRead"],
+        json!({"tool":"journal_read","arguments":{
+            "operation":"findings","check_id":"check-a","offset":0,"limit":20
+        }})
+    );
+    assert_eq!(result["detail"], "findings_paged");
+    assert!(original["template_comparison"].get("findings").is_some());
+    let legacy = json!({"check_id":"legacy","rule_results":[{"findings":["original"]}]});
+    assert_eq!(check_object(legacy.clone()), legacy);
+}
+
+#[test]
 fn repeated_coverage_keeps_each_property_locator_and_distinct_conflict() {
     let gaps = json!([
         {"code":"missing","message":"Not established","property":"width","locator":"line:1"},

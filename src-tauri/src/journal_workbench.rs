@@ -4,6 +4,7 @@ pub(crate) mod normalization;
 pub(crate) mod render;
 pub(crate) mod sync;
 pub(crate) mod tools;
+pub(crate) mod word;
 
 use crate::proc::NoConsole;
 use serde::{Deserialize, Serialize};

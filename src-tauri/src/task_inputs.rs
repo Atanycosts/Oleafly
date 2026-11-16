@@ -1,4 +1,5 @@
 //! Captured application inputs, retained beside the task store rather than in agent workspaces.
+pub mod material;
 pub mod pdf;
 
 use oleafly_research::{
@@ -173,7 +174,7 @@ fn save(path: &Path, inputs: &Inputs) -> Result<(), String> {
         &serde_json::to_vec_pretty(inputs).map_err(|e| e.to_string())?,
     )
 }
-fn project_manifest(
+pub(crate) fn project_manifest(
     project_id: &str,
     main_document: Option<&str>,
 ) -> Result<oleafly_core::ProjectManifest, String> {
@@ -386,6 +387,7 @@ fn prepare_in(root: &Path, context: &TaskRunContext) -> Result<(), String> {
             &serde_json::to_string_pretty(input).map_err(|e| e.to_string())?,
         )?;
     }
+    material::prepare(root, context)?;
     inputs.prepared_workspaces.push(workspace);
     save(&path, &inputs)
 }

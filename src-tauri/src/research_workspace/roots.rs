@@ -144,6 +144,7 @@ fn empty_workspace(project_id: &str) -> ResearchWorkspace {
         primary_project_id: project_id.to_string(),
         roots: Vec::new(),
         journal_project_id: None,
+        word_documents: Vec::new(),
         journal_research: None,
         updated_at_ms: now_ms(),
     }
@@ -352,6 +353,58 @@ pub(crate) fn set_journal_project(
     workspace.updated_at_ms = now_ms();
     write_workspace_to(&path, &workspace)?;
     Ok(workspace)
+}
+
+pub(crate) fn set_word_document(
+    project_id: &str,
+    path: String,
+    workbench_project_id: String,
+    original_sha256: String,
+    normalized_sha256: String,
+) -> Result<ResearchWorkspace, String> {
+    let _guard = mutation_lock()
+        .lock()
+        .map_err(|_| "research workspace lock is unavailable".to_string())?;
+    let store_path = workspace_path(project_id)?;
+    let mut workspace = read_workspace_from(&store_path, project_id)?;
+    link_word_document(
+        &mut workspace,
+        path,
+        workbench_project_id,
+        original_sha256,
+        normalized_sha256,
+    );
+    write_workspace_to(&store_path, &workspace)?;
+    Ok(workspace)
+}
+
+fn link_word_document(
+    workspace: &mut ResearchWorkspace,
+    path: String,
+    workbench_project_id: String,
+    original_sha256: String,
+    normalized_sha256: String,
+) {
+    if let Some(document) = workspace
+        .word_documents
+        .iter_mut()
+        .find(|item| item.path == path)
+    {
+        document.workbench_project_id = workbench_project_id.clone();
+        document.original_sha256 = Some(original_sha256);
+        document.normalized_sha256 = Some(normalized_sha256);
+    } else {
+        workspace
+            .word_documents
+            .push(super::model::WordDocumentLink {
+                path,
+                workbench_project_id: workbench_project_id.clone(),
+                original_sha256: Some(original_sha256),
+                normalized_sha256: Some(normalized_sha256),
+            });
+    }
+    workspace.journal_project_id = Some(workbench_project_id);
+    workspace.updated_at_ms = now_ms();
 }
 
 pub(crate) fn set_journal_research_task(
@@ -930,4 +983,73 @@ pub(super) fn remove_root_for_test(
     root_id: &str,
 ) -> Result<ResearchWorkspace, String> {
     remove_root_from(path, project_id, root_id)
+}
+
+#[cfg(test)]
+mod word_document_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_workspace_keeps_independent_word_copies_after_reload_and_reselection() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("project.json");
+        std::fs::write(&path, r#"{"version":1,"primaryProjectId":"paper","roots":[],"journalProjectId":"prior","updatedAtMs":1}"#).unwrap();
+        let mut workspace = read_workspace_from(&path, "paper").unwrap();
+        assert!(workspace.word_documents.is_empty());
+        link_word_document(
+            &mut workspace,
+            "en/paper.docx".into(),
+            "retained-en".into(),
+            "en-original".into(),
+            "en-normalized".into(),
+        );
+        link_word_document(
+            &mut workspace,
+            "zh/批注.docx".into(),
+            "retained-zh".into(),
+            "zh-original".into(),
+            "zh-normalized".into(),
+        );
+        write_workspace_to(&path, &workspace).unwrap();
+        let mut reloaded = read_workspace_from(&path, "paper").unwrap();
+        assert_eq!(reloaded, workspace);
+        link_word_document(
+            &mut reloaded,
+            "en/paper.docx".into(),
+            "retained-en".into(),
+            "en-original".into(),
+            "en-normalized".into(),
+        );
+        assert_eq!(reloaded.word_documents.len(), 2);
+        assert_eq!(reloaded.journal_project_id.as_deref(), Some("retained-en"));
+        assert_eq!(
+            reloaded.word_documents[1].workbench_project_id,
+            "retained-zh"
+        );
+        assert_eq!(
+            reloaded.word_documents[1].original_sha256.as_deref(),
+            Some("zh-original")
+        );
+        assert_eq!(
+            reloaded.word_documents[1].normalized_sha256.as_deref(),
+            Some("zh-normalized")
+        );
+    }
+
+    #[test]
+    fn word_hash_fields_are_optional_for_existing_workspaces() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("project.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"primaryProjectId":"paper","roots":[],"wordDocuments":[{"path":"paper.docx","workbenchProjectId":"retained"}],"updatedAtMs":1}"#,
+        )
+        .unwrap();
+
+        let workspace = read_workspace_from(&path, "paper").unwrap();
+
+        assert_eq!(workspace.word_documents.len(), 1);
+        assert_eq!(workspace.word_documents[0].original_sha256, None);
+        assert_eq!(workspace.word_documents[0].normalized_sha256, None);
+    }
 }

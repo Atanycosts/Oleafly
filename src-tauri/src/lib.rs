@@ -68,6 +68,7 @@ mod linked_removal;
 mod literature;
 #[allow(dead_code)]
 mod logsafe;
+mod material_annotations;
 mod mathpix;
 mod mcp;
 mod menu;
@@ -535,6 +536,7 @@ pub fn run() {
             journal_workbench::render::journal_docx_render,
             journal_workbench::render::journal_docx_pdf,
             journal_workbench::journal_workbench_link,
+            journal_workbench::word::journal_word_open,
             journal_workbench::journal_research_create,
             journal_workbench::journal_research_result,
             journal_workbench::annotations::journal_annotation_object,
@@ -555,6 +557,9 @@ pub fn run() {
             research_tasks::research_task_list,
             research_tasks::research_task_create,
             task_inputs::research_task_create_with_inputs,
+            material_annotations::material_annotation_save,
+            material_annotations::material_annotation_read,
+            material_annotations::material_annotation_request,
             task_inputs::pdf::research_pdf_selection_save,
             task_inputs::pdf::research_pdf_selection_read,
             task_inputs::pdf::research_pdf_selections,
@@ -596,6 +601,7 @@ pub fn run() {
             research_tasks::pdf_pages::research_pdf_pages_result,
             research_tasks::docx::research_docx_result,
             research_tasks::docx::research_docx_request_claim,
+            research_tasks::docx::research_docx_request_validate,
             research_tasks::docx::research_docx_bind_task,
             research_tasks::docx::research_docx_activities,
             research_tasks::docx::research_docx_activity_settle,
@@ -1024,6 +1030,10 @@ pub fn run() {
             notebook_toolchain::install_notebook_tool,
             notebook_toolchain::remove_notebook_tool,
             notebook_toolchain::open_compiled_html,
+            notebook_toolchain::read_html_preview,
+            notebook_toolchain::read_task_html_preview,
+            notebook_toolchain::restore_html_preview,
+            notebook_toolchain::close_html_preview,
             typst_watch::typst_watch_start,
             typst_watch::typst_watch_compile,
             typst_watch::typst_watch_stop,

@@ -32,6 +32,23 @@ fn object_read(kind: &str, id: &Value, version: &Value) -> Value {
     }})
 }
 
+pub(super) fn check_object(mut check: Value) -> Value {
+    if let Some(comparison) = check
+        .get_mut("template_comparison")
+        .and_then(Value::as_object_mut)
+    {
+        comparison.remove("findings");
+        comparison.remove("has_more");
+        comparison.remove("next_offset");
+        check["findingsRead"] = json!({"tool":"journal_read","arguments":{
+            "operation":"findings","check_id":check["check_id"],"offset":0,"limit":20
+        }});
+        check["detail"] = json!("findings_paged");
+        check["readBoundary"] = json!("Check metadata, rule results, coverage and limitations are included. Template findings remain retained; page findingsRead before judging omitted findings.");
+    }
+    check
+}
+
 fn coverage_summary(gaps: &Value) -> Value {
     let Some(gaps) = gaps.as_array() else {
         return gaps.clone();

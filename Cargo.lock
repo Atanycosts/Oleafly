@@ -6102,6 +6102,7 @@ dependencies = [
  "fs4",
  "futures-util",
  "gtk",
+ "html5ever 0.40.1",
  "icu_properties",
  "keyring-core",
  "libc",
@@ -9437,11 +9438,16 @@ dependencies = [
 name = "tauri-plugin-playwright"
 version = "0.4.1"
 dependencies = [
+ "block2",
  "cairo-rs",
  "gio",
  "glib",
  "gtk",
  "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
  "serde",
  "serde_json",
  "tauri",

@@ -679,7 +679,31 @@ async fn eval_js<R: Runtime>(
     }
 }
 
-/// Take a screenshot by loading html2canvas in the webview and rendering to PNG.
+/// Capture this app's WebKit pixels without screen-recording permission.
+#[cfg(target_os = "macos")]
+async fn take_screenshot<R: Runtime>(
+    app: &Arc<AppHandle<R>>,
+    _pending: &PendingResults,
+    window_label: &str,
+    path: Option<String>,
+) -> Response {
+    match crate::webview_capture::screenshot(app, window_label).await {
+        Ok(bytes) => {
+            if let Some(path) = path {
+                match tokio::fs::write(&path, &bytes).await {
+                    Ok(()) => Response::ok(serde_json::json!({ "path": path, "size": bytes.len() })),
+                    Err(error) => Response::err(format!("write file: {error}")),
+                }
+            } else {
+                Response::ok(serde_json::json!({ "base64": crate::native_capture::base64_encode(&bytes), "size": bytes.len() }))
+            }
+        }
+        Err(error) => Response::err(error),
+    }
+}
+
+/// Take a webview screenshot through SVG on other platforms.
+#[cfg(not(target_os = "macos"))]
 async fn take_screenshot<R: Runtime>(
     app: &Arc<AppHandle<R>>,
     pending: &PendingResults,
@@ -819,6 +843,7 @@ async fn take_native_screenshot<R: Runtime>(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     const TABLE: [u8; 256] = {
         let mut t = [255u8; 256];

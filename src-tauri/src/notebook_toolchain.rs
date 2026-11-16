@@ -643,9 +643,934 @@ pub async fn open_compiled_html(project_id: String) -> Result<(), String> {
         .map_err(|error| format!("Oleafly could not open the HTML output: {error}"))
 }
 
+const HTML_BUNDLE_LIMIT: usize = 64 * 1024 * 1024;
+static HTML_PREVIEWS: OnceLock<Mutex<BTreeMap<String, tokio::task::JoinHandle<()>>>> =
+    OnceLock::new();
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HtmlBundle {
+    version: u8,
+    entry: String,
+    files: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HtmlPreviewSnapshot {
+    url: String,
+    bundle: String,
+    revision: String,
+    path: String,
+}
+
+fn html_resource_type(path: &str) -> Option<&'static str> {
+    match Path::new(path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "html" | "htm" => Some("text/html; charset=utf-8"),
+        "css" => Some("text/css; charset=utf-8"),
+        "js" | "mjs" => Some("text/javascript; charset=utf-8"),
+        "json" | "map" => Some("application/json"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "svg" => Some("image/svg+xml"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "avif" => Some("image/avif"),
+        "ico" => Some("image/x-icon"),
+        "woff" => Some("font/woff"),
+        "woff2" => Some("font/woff2"),
+        "ttf" => Some("font/ttf"),
+        "otf" => Some("font/otf"),
+        "wasm" => Some("application/wasm"),
+        "mp4" => Some("video/mp4"),
+        "webm" => Some("video/webm"),
+        "mp3" => Some("audio/mpeg"),
+        "ogg" => Some("audio/ogg"),
+        "csv" | "tsv" | "txt" => Some("text/plain; charset=utf-8"),
+        _ => None,
+    }
+}
+
+fn encode_html_path(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-_.~".contains(byte) {
+                (*byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+fn decode_html_path(value: &str) -> Option<String> {
+    let mut bytes = Vec::new();
+    let mut input = value.bytes();
+    while let Some(byte) = input.next() {
+        if byte == b'%' {
+            let pair = [input.next()?, input.next()?];
+            bytes.push(u8::from_str_radix(std::str::from_utf8(&pair).ok()?, 16).ok()?);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn valid_html_resource(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\\')
+        && !path.contains('\0')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && !part.starts_with('.'))
+        && !Path::new(path).is_absolute()
+        && !path.contains(':')
+}
+
+fn html_local_references(text: &str) -> Vec<String> {
+    use std::cell::RefCell;
+
+    use html5ever::tokenizer::{
+        states::RawKind, BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer,
+    };
+
+    #[derive(Default)]
+    struct References {
+        values: RefCell<Vec<String>>,
+        inline: RefCell<Option<(html5ever::LocalName, String)>>,
+    }
+
+    impl References {
+        fn finish_inline(&self) {
+            if let Some((_, text)) = self.inline.borrow_mut().take() {
+                self.values
+                    .borrow_mut()
+                    .extend(code_local_references(&text));
+            }
+        }
+    }
+
+    impl TokenSink for References {
+        type Handle = ();
+
+        fn process_token(&self, token: Token, _: u64) -> TokenSinkResult<()> {
+            match token {
+                Token::TagToken(tag) if tag.kind == TagKind::StartTag => {
+                    for attr in tag.attrs {
+                        match attr.name.local.as_ref() {
+                            "src" | "href" | "poster" => {
+                                self.values.borrow_mut().push(attr.value.to_string());
+                            }
+                            "style" => self
+                                .values
+                                .borrow_mut()
+                                .extend(code_local_references(&attr.value)),
+                            _ => {}
+                        }
+                    }
+                    let raw = match tag.name.as_ref() {
+                        "script" => Some(RawKind::ScriptData),
+                        "style" | "xmp" | "iframe" | "noembed" | "noframes" => {
+                            Some(RawKind::Rawtext)
+                        }
+                        "title" | "textarea" => Some(RawKind::Rcdata),
+                        "plaintext" => return TokenSinkResult::Plaintext,
+                        _ => None,
+                    };
+                    if matches!(tag.name.as_ref(), "script" | "style") {
+                        *self.inline.borrow_mut() = Some((tag.name, String::new()));
+                    }
+                    if let Some(raw) = raw {
+                        return TokenSinkResult::RawData(raw);
+                    }
+                }
+                Token::TagToken(tag) if tag.kind == TagKind::EndTag => {
+                    let closes_inline = self
+                        .inline
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(name, _)| *name == tag.name);
+                    if closes_inline {
+                        self.finish_inline();
+                    }
+                }
+                Token::CharacterTokens(text) => {
+                    if let Some((_, inline)) = self.inline.borrow_mut().as_mut() {
+                        inline.push_str(&text);
+                    }
+                }
+                _ => {}
+            }
+            TokenSinkResult::Continue
+        }
+
+        fn end(&self) {
+            self.finish_inline();
+        }
+    }
+
+    let tokenizer = Tokenizer::new(References::default(), Default::default());
+    let input = BufferQueue::default();
+    input.push_back(text.into());
+    let _ = tokenizer.feed(&input);
+    tokenizer.end();
+    tokenizer.sink.values.into_inner()
+}
+
+fn code_local_references(text: &str) -> Vec<String> {
+    let mut references = Vec::new();
+    let mut chars = text.char_indices();
+    while let Some((start, quote)) = chars.next() {
+        if quote == '\'' || quote == '"' || quote == '`' {
+            let mut end = None;
+            for (index, next) in chars.by_ref() {
+                if next == quote {
+                    end = Some(index);
+                    break;
+                }
+            }
+            if let Some(end) = end {
+                let prefix = text[..start].trim_end();
+                let local = [
+                    "from", "import", "import(", "fetch(", "url(", "@import", "new URL(",
+                ]
+                .iter()
+                .any(|marker| prefix.ends_with(marker));
+                if local {
+                    references.push(text[start + quote.len_utf8()..end].to_string());
+                }
+            }
+        }
+    }
+    for part in text.split("url(").skip(1) {
+        if let Some((value, _)) = part.split_once(')') {
+            references.push(value.trim().trim_matches(['\'', '"']).to_string());
+        }
+    }
+    references
+}
+
+fn resolve_html_dependency(owner: &str, reference: &str) -> Option<String> {
+    let reference = reference.split(['?', '#']).next()?.trim();
+    if reference.is_empty()
+        || reference.starts_with('/')
+        || reference.contains(':')
+        || reference.contains('\\')
+    {
+        return None;
+    }
+    let reference = decode_html_path(reference)?;
+    let parent = owner
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    let mut parts: Vec<&str> = parent.split('/').filter(|part| !part.is_empty()).collect();
+    for part in reference.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part if part.starts_with('.') => return None,
+            part => parts.push(part),
+        }
+    }
+    let path = parts.join("/");
+    valid_html_resource(&path).then_some(path)
+}
+
+fn capture_html_bundle(project_id: &str, path: Option<&str>) -> Result<String, String> {
+    let (root, html) = if let Some(path) = path {
+        if !valid_html_resource(path)
+            || !Path::new(path)
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| {
+                    matches!(extension.to_ascii_lowercase().as_str(), "html" | "htm")
+                })
+        {
+            return Err("Choose an HTML file inside this project".into());
+        }
+        let project = crate::paths::project_dir(project_id)?;
+        let html = project
+            .join(path)
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !html.starts_with(&project) || !html.is_file() {
+            return Err("HTML file escapes the project".into());
+        }
+        (project, html)
+    } else {
+        let html = compiled_html(project_id)?
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let root = crate::paths::existing_build_dir(project_id)?
+            .ok_or("No HTML output")?
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !html.starts_with(&root) {
+            return Err("HTML output escapes its build directory".into());
+        }
+        (root, html)
+    };
+    capture_html_bundle_at(&root, &html)
+}
+
+fn capture_html_bundle_at(root: &Path, html: &Path) -> Result<String, String> {
+    fn collect(
+        root: &Path,
+        relative: &str,
+        files: &mut BTreeMap<String, String>,
+        total: &mut usize,
+    ) -> Result<(), String> {
+        use base64::Engine;
+        if files.contains_key(relative) {
+            return Ok(());
+        }
+        let path = root.join(relative);
+        let resolved = path.canonicalize().map_err(|error| error.to_string())?;
+        if !resolved.starts_with(root)
+            || !resolved
+                .strip_prefix(root)
+                .ok()
+                .and_then(Path::to_str)
+                .is_some_and(|path| valid_html_resource(&path.replace('\\', "/")))
+        {
+            return Err("HTML resource escapes its resource root".into());
+        }
+        let size = std::fs::metadata(&resolved)
+            .map_err(|error| error.to_string())?
+            .len();
+        if size > HTML_BUNDLE_LIMIT as u64 || *total + size as usize > HTML_BUNDLE_LIMIT {
+            return Err("HTML resources exceed 64 MiB".into());
+        }
+        let bytes = std::fs::read(resolved).map_err(|error| error.to_string())?;
+        *total += bytes.len();
+        files.insert(
+            relative.to_string(),
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        );
+        if matches!(
+            html_resource_type(relative),
+            Some(
+                "text/html; charset=utf-8"
+                    | "text/css; charset=utf-8"
+                    | "text/javascript; charset=utf-8"
+            )
+        ) {
+            let text = String::from_utf8_lossy(&bytes);
+            let references = if html_resource_type(relative) == Some("text/html; charset=utf-8") {
+                html_local_references(&text)
+            } else {
+                code_local_references(&text)
+            };
+            for reference in references {
+                if let Some(dependency) = resolve_html_dependency(relative, &reference) {
+                    if html_resource_type(&dependency).is_some() && root.join(&dependency).is_file()
+                    {
+                        collect(root, &dependency, files, total)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut files = BTreeMap::new();
+    let entry = html
+        .strip_prefix(root)
+        .map_err(|_| "HTML entry escapes its resource root")?
+        .to_string_lossy()
+        .replace('\\', "/");
+    if !valid_html_resource(&entry) {
+        return Err("HTML entry is outside the public resource scope".into());
+    }
+    collect(root, &entry, &mut files, &mut 0)?;
+    if !files.contains_key(&entry) {
+        return Err("HTML entry is unavailable".into());
+    }
+    serde_json::to_string(&HtmlBundle {
+        version: 1,
+        entry,
+        files,
+    })
+    .map_err(|error| error.to_string())
+}
+
+const HTML_SELECTION_BRIDGE: &str = r#"<script>(()=>{const send=()=>{const s=getSelection();const q=s?.toString()||'';let e=s?.anchorNode;if(e?.nodeType!==1)e=e?.parentElement;const p=[];while(e&&e!==document.documentElement){let i=1,n=e;while((n=n.previousElementSibling))if(n.tagName===e.tagName)i++;p.unshift(e.tagName.toLowerCase()+':nth-of-type('+i+')');e=e.parentElement}parent.postMessage({type:'oleafly-html-selection',selector:'html>'+p.join('>'),quote:q},'*')};document.addEventListener('selectionchange',send);document.addEventListener('mouseup',send);for(const type of ['pointerdown','wheel','keydown','beforeinput'])document.addEventListener(type,event=>{if(event.isTrusted)parent.postMessage({type:'oleafly-html-interaction'},'*')},{capture:true,passive:true});addEventListener('message',event=>{if(event.source!==parent||event.data?.type!=='oleafly-html-anchor')return;try{const e=document.querySelector(event.data.selector);if(e){e.style.outline='2px solid #6366f1';e.scrollIntoView({block:'center'})}}catch{}})})();</script>"#;
+
+async fn serve_html_bundle(bundle: String) -> Result<HtmlPreviewSnapshot, String> {
+    use axum::{
+        body::Body,
+        http::{Request, Response, StatusCode},
+        Router,
+    };
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    if bundle.len() > HTML_BUNDLE_LIMIT * 2 {
+        return Err("HTML bundle is too large".into());
+    }
+    let parsed: HtmlBundle = serde_json::from_str(&bundle).map_err(|error| error.to_string())?;
+    if parsed.version != 1
+        || !valid_html_resource(&parsed.entry)
+        || !parsed.files.contains_key(&parsed.entry)
+    {
+        return Err("Invalid HTML bundle entry".into());
+    }
+    let mut files = BTreeMap::new();
+    let mut total = 0;
+    for (path, encoded) in parsed.files {
+        if !valid_html_resource(&path) || html_resource_type(&path).is_none() {
+            return Err("Invalid HTML resource path".into());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| error.to_string())?;
+        total += bytes.len();
+        if total > HTML_BUNDLE_LIMIT {
+            return Err("HTML bundle is too large".into());
+        }
+        files.insert(path, bytes);
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|error| error.to_string())?;
+    let address = listener.local_addr().map_err(|error| error.to_string())?;
+    let token = format!("{:032x}", rand::random::<u128>());
+    let prefix = format!("/{token}/");
+    let origin = format!("http://{address}");
+    let url = format!(
+        "{origin}{prefix}{}",
+        parsed
+            .entry
+            .split('/')
+            .map(encode_html_path)
+            .collect::<Vec<_>>()
+            .join("/")
+    );
+    let files = std::sync::Arc::new(files);
+    let csp = format!("default-src 'none'; script-src {origin} 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; style-src {origin} 'unsafe-inline'; img-src {origin} data: blob:; font-src {origin} data:; media-src {origin} blob:; connect-src {origin} data: blob:; worker-src {origin} blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts");
+    let app = Router::new().fallback(move |request: Request<Body>| {
+        let files = files.clone();
+        let prefix = prefix.clone();
+        let csp = csp.clone();
+        async move {
+            let path = request.uri().path().strip_prefix(&prefix).unwrap_or("");
+            let decoded = decode_html_path(path).unwrap_or_default();
+            let Some(bytes) = files.get(&decoded) else {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::empty())
+                    .unwrap();
+            };
+            let media_type = html_resource_type(&decoded).unwrap();
+            let body = if media_type.starts_with("text/html") {
+                let mut html = String::from_utf8_lossy(bytes).into_owned();
+                let lower = html.to_ascii_lowercase();
+                let insert = lower
+                    .find("</head>")
+                    .or_else(|| lower.find("<body"))
+                    .unwrap_or(html.len());
+                html.insert_str(insert, HTML_SELECTION_BRIDGE);
+                html.into_bytes()
+            } else {
+                bytes.clone()
+            };
+            Response::builder()
+                .header("Content-Type", media_type)
+                .header("Content-Security-Policy", csp)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Cache-Control", "no-store")
+                .header("X-Content-Type-Options", "nosniff")
+                .body(Body::from(body))
+                .unwrap()
+        }
+    });
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    HTML_PREVIEWS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(url.clone(), task);
+    Ok(HtmlPreviewSnapshot {
+        url,
+        revision: format!("{:x}", Sha256::digest(bundle.as_bytes())),
+        bundle,
+        path: parsed.entry,
+    })
+}
+
+#[tauri::command]
+pub async fn read_html_preview(
+    project_id: String,
+    path: Option<String>,
+) -> Result<HtmlPreviewSnapshot, String> {
+    let bundle = blocking(move || capture_html_bundle(&project_id, path.as_deref())).await?;
+    serve_html_bundle(bundle).await
+}
+
+fn capture_task_html_bundle(
+    task: &oleafly_research::model::ResearchTask,
+    path: &str,
+    execution_generation: u64,
+    expected_sha256: &str,
+) -> Result<String, String> {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    if task.execution_generation != execution_generation {
+        return Err("The requested artifact generation is no longer retained.".into());
+    }
+    if !valid_html_resource(path)
+        || !Path::new(path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| {
+                matches!(extension.to_ascii_lowercase().as_str(), "html" | "htm")
+            })
+    {
+        return Err("Choose an HTML result inside the task workspace.".into());
+    }
+    let result = task
+        .result
+        .as_ref()
+        .ok_or("This task has no saved result to preview.")?;
+    let reviewed = result
+        .changed_files
+        .iter()
+        .find(|change| change.path == path)
+        .and_then(|change| change.after_sha256.as_deref())
+        .ok_or("That HTML result has no reviewed file hash.")?;
+    if reviewed != expected_sha256 {
+        return Err("The requested HTML result does not match its reviewed version.".into());
+    }
+    let isolation = task
+        .isolation
+        .as_ref()
+        .ok_or("This task has no saved workspace to preview.")?;
+    let root = Path::new(&isolation.execution_root)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let html = root
+        .join(path)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !html.starts_with(&root) {
+        return Err("HTML result escapes the task workspace.".into());
+    }
+    let bundle = capture_html_bundle_at(&root, &html)?;
+    let captured: HtmlBundle = serde_json::from_str(&bundle).map_err(|error| error.to_string())?;
+    for (resource, encoded) in &captured.files {
+        let expected = match result
+            .changed_files
+            .iter()
+            .find(|change| change.path == *resource)
+        {
+            Some(change) => change.after_sha256.as_deref(),
+            None => isolation
+                .baseline
+                .iter()
+                .find(|entry| entry.path == *resource)
+                .map(|entry| entry.sha256.as_str()),
+        }
+        .ok_or_else(|| format!("HTML resource has no recorded task version: {resource}"))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| error.to_string())?;
+        if format!("{:x}", Sha256::digest(&bytes)) != expected {
+            return Err(format!(
+                "The saved HTML resource changed after the task finished: {resource}"
+            ));
+        }
+    }
+    Ok(bundle)
+}
+
+#[tauri::command]
+pub async fn read_task_html_preview(
+    tasks_state: tauri::State<'_, crate::research_tasks::ResearchTaskState>,
+    task_id: String,
+    path: String,
+    execution_generation: u64,
+    expected_sha256: String,
+) -> Result<HtmlPreviewSnapshot, String> {
+    let state = tasks_state.inner().clone();
+    let bundle = blocking(move || {
+        let task = state.store()?.require(&task_id)?;
+        capture_task_html_bundle(&task, &path, execution_generation, &expected_sha256)
+    })
+    .await?;
+    serve_html_bundle(bundle).await
+}
+
+#[tauri::command]
+pub async fn restore_html_preview(bundle: String) -> Result<HtmlPreviewSnapshot, String> {
+    serve_html_bundle(bundle).await
+}
+
+#[tauri::command]
+pub fn close_html_preview(url: String) -> Result<(), String> {
+    if let Some(task) = HTML_PREVIEWS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(&url)
+    {
+        task.abort();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn html_preview_serves_frozen_resources_and_rejects_other_paths() {
+        use base64::Engine;
+        let encode = |value: &str| base64::engine::general_purpose::STANDARD.encode(value);
+        let bundle = serde_json::to_string(&HtmlBundle { version: 1, entry: "report.html".into(), files: BTreeMap::from([
+            ("report.html".into(), encode("<link href='assets/style.css'><button onclick='this.textContent=42'>Run</button>")),
+            ("assets/style.css".into(), encode("body{color:red}")),
+        ]) }).unwrap();
+        let preview = serve_html_bundle(bundle.clone()).await.unwrap();
+        assert_eq!(preview.bundle, bundle);
+        let response = reqwest::get(&preview.url).await.unwrap();
+        let policy = response
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(policy.contains("sandbox allow-scripts"));
+        assert!(!policy.contains("allow-same-origin"));
+        assert!(response
+            .text()
+            .await
+            .unwrap()
+            .contains("oleafly-html-selection"));
+        let css = preview.url.replace("report.html", "assets/style.css");
+        assert_eq!(
+            reqwest::get(css).await.unwrap().text().await.unwrap(),
+            "body{color:red}"
+        );
+        assert_eq!(
+            reqwest::get(preview.url.replace("report.html", ".private/input.txt"))
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+        close_html_preview(preview.url).unwrap();
+    }
+
+    #[tokio::test]
+    async fn html_capture_serves_attributes_and_recursive_static_dependencies() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("assets/nested")).unwrap();
+        std::fs::create_dir(root.join(".private")).unwrap();
+        let resources = [
+            (
+                "assets/chart.js",
+                "import data from './nested/module.js'; import './side.js'; import('./lazy.js'); fetch('../data.json'); new URL('./marker.svg', import.meta.url);",
+            ),
+            ("assets/nested/module.js", "export { value } from '../reexport.js';"),
+            ("assets/reexport.js", "export const value = 42;"),
+            ("assets/side.js", "export const value = 42;"),
+            ("assets/lazy.js", "export default 42;"),
+            ("data.json", "{\"value\":42}"),
+            ("assets/marker.svg", "<svg></svg>"),
+            (
+                "assets/style.css",
+                "@import './nested/theme.css'; body { background: url(background.svg); }",
+            ),
+            ("assets/background.svg", "<svg></svg>"),
+            (
+                "assets/nested/theme.css",
+                "@font-face { src: url(../font.woff2); }",
+            ),
+            ("assets/font.woff2", "font fixture"),
+            ("assets/poster.png", "poster fixture"),
+            ("assets/inline.png", "inline fixture"),
+            ("assets/embedded.png", "embedded fixture"),
+            ("assets/a&b.svg", "<svg></svg>"),
+            ("inline.json", "{\"inline\":true}"),
+            (
+                "assets/nested/detail.html",
+                "<script src='../detail.js'></script><p>Details</p>",
+            ),
+            ("assets/detail.js", "console.log('details');"),
+        ];
+        for (path, bytes) in resources {
+            std::fs::write(root.join(path), bytes).unwrap();
+        }
+        for path in ["unrelated.txt", "comment.js", ".private/input.txt"] {
+            std::fs::write(root.join(path), "not a captured dependency").unwrap();
+        }
+
+        for script in [
+            r#"<script src="assets/chart.js"></script>"#,
+            r#"<SCRIPT SRC="assets/chart.js"></SCRIPT>"#,
+            "<script src  = \n 'assets/chart.js'></script>",
+            "<script src=assets/chart.js></script>",
+        ] {
+            let html = format!(
+                r#"<h1>Here's the report</h1>{script}
+<LINK HREF = "assets/style.css"><video POSTER='assets/poster.png'></video>
+<img src="assets/a&amp;b.svg"><p title="unrelated.txt" style="background:url('assets/inline.png')">Report</p>
+<style>p {{ background: url(assets/embedded.png); }}</style>
+<script>if (1 < 2) {{ fetch('inline.json'); }}</script>
+<a href='assets/nested/detail.html'>Details</a>
+<!-- <script src="comment.js"></script> -->
+<textarea><script src="comment.js"></script></textarea>
+<img src='.private/input.txt'><img src='../outside.txt'>
+<script src='https://remote.test/chart.js'></script>"#
+            );
+            std::fs::write(root.join("report.html"), &html).unwrap();
+            let bundle = capture_html_bundle_at(&root, &root.join("report.html")).unwrap();
+            let captured: HtmlBundle = serde_json::from_str(&bundle).unwrap();
+            let mut expected: Vec<_> = resources.iter().map(|(path, _)| *path).collect();
+            expected.push("report.html");
+            expected.sort_unstable();
+            assert_eq!(
+                captured
+                    .files
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                expected,
+                "{script}"
+            );
+
+            let preview = serve_html_bundle(bundle).await.unwrap();
+            let response = reqwest::get(&preview.url).await.unwrap();
+            assert_eq!(response.status(), 200);
+            assert!(response.text().await.unwrap().contains("Here's the report"));
+            for (path, bytes) in resources {
+                let response = reqwest::get(preview.url.replace("report.html", path))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), 200, "{path}: {script}");
+                let body = response.text().await.unwrap();
+                if path.ends_with(".html") {
+                    assert!(body.contains(bytes), "{path}: {script}");
+                    assert!(body.contains("oleafly-html-selection"));
+                } else {
+                    assert_eq!(body, bytes, "{path}: {script}");
+                }
+            }
+            for path in [
+                "unrelated.txt",
+                "comment.js",
+                ".private/input.txt",
+                "outside.txt",
+            ] {
+                assert_eq!(
+                    reqwest::get(preview.url.replace("report.html", path))
+                        .await
+                        .unwrap()
+                        .status(),
+                    404,
+                    "{path}: {script}"
+                );
+            }
+            close_html_preview(preview.url).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn html_capture_rejects_dependencies_linked_outside_the_resource_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("public");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(temp.path().join("outside.js"), "private fixture").unwrap();
+        std::os::unix::fs::symlink(temp.path().join("outside.js"), root.join("linked.js")).unwrap();
+        std::fs::write(
+            root.join("report.html"),
+            "<h1>Here's the report</h1><script SRC = 'linked.js'></script>",
+        )
+        .unwrap();
+        assert!(capture_html_bundle_at(&root, &root.join("report.html"))
+            .unwrap_err()
+            .contains("escapes its resource root"));
+    }
+
+    #[test]
+    fn html_task_preview_pins_generation_hash_and_execution_resources() {
+        use base64::Engine;
+        use oleafly_research::model::{
+            ResearchTaskDraft, TaskFileChange, TaskFileChangeKind, TaskIsolation,
+            TaskIsolationKind, TaskResultMetadata,
+        };
+        use sha2::{Digest, Sha256};
+        let temp = tempfile::tempdir().unwrap();
+        let execution = temp.path().join("execution");
+        let original = temp.path().join("original");
+        std::fs::create_dir_all(execution.join("assets")).unwrap();
+        std::fs::create_dir_all(original.join("assets")).unwrap();
+        let html = "<link href='assets/style.css'><p>Task result</p>";
+        std::fs::write(execution.join("report.HTML"), html).unwrap();
+        std::fs::write(execution.join("assets/style.css"), "task version").unwrap();
+        std::fs::write(original.join("assets/style.css"), "current project version").unwrap();
+        let hash = format!("{:x}", Sha256::digest(html.as_bytes()));
+        let store = oleafly_research::store::TaskStore::new(temp.path().join("store")).unwrap();
+        let mut task = store
+            .create(ResearchTaskDraft {
+                project_id: "paper".into(),
+                title: "HTML".into(),
+                prompt: "HTML".into(),
+                runtime_id: "fixture".into(),
+                agent_id: "fixture".into(),
+                model_id: "fixture".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        task.execution_generation = 3;
+        task.isolation = Some(TaskIsolation {
+            kind: TaskIsolationKind::StagedProject,
+            execution_root: execution.to_string_lossy().into_owned(),
+            baseline_root: original.to_string_lossy().into_owned(),
+            source_revision: "base".into(),
+            baseline_hash: "base".into(),
+            baseline: vec![oleafly_research::model::ManifestEntry {
+                path: "assets/style.css".into(),
+                sha256: format!("{:x}", Sha256::digest(b"task version")),
+                size: 12,
+                resolved_link: false,
+            }],
+            allowed_paths: vec!["report.HTML".into()],
+            created_at: 0,
+            skipped: vec![],
+            initial_git_status: None,
+            initial_git_status_complete: None,
+        });
+        task.result = Some(TaskResultMetadata {
+            summary: "done".into(),
+            changed_files: vec![TaskFileChange {
+                path: "report.HTML".into(),
+                kind: TaskFileChangeKind::Added,
+                before_sha256: None,
+                after_sha256: Some(hash.clone()),
+                before_size: None,
+                after_size: Some(html.len() as u64),
+            }],
+            artifacts: vec![],
+            native_session_id: None,
+            input_tokens: None,
+            output_tokens: None,
+        });
+        let bundle = capture_task_html_bundle(&task, "report.HTML", 3, &hash).unwrap();
+        let captured: HtmlBundle = serde_json::from_str(&bundle).unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&captured.files["assets/style.css"])
+                .unwrap(),
+            b"task version"
+        );
+        assert!(capture_task_html_bundle(&task, "report.HTML", 2, &hash).is_err());
+        assert!(capture_task_html_bundle(&task, "report.HTML", 3, "wrong").is_err());
+        assert!(capture_task_html_bundle(&task, "../original/report.HTML", 3, &hash).is_err());
+        assert!(capture_task_html_bundle(&task, "unrecorded.html", 3, &hash).is_err());
+        std::fs::write(execution.join("assets/style.css"), "tampered CSS").unwrap();
+        assert!(capture_task_html_bundle(&task, "report.HTML", 3, &hash)
+            .unwrap_err()
+            .contains("assets/style.css"));
+        std::fs::write(execution.join("assets/style.css"), "task version").unwrap();
+        let css_baseline = task.isolation.as_mut().unwrap().baseline.pop().unwrap();
+        assert!(capture_task_html_bundle(&task, "report.HTML", 3, &hash)
+            .unwrap_err()
+            .contains("no recorded task version"));
+        task.isolation.as_mut().unwrap().baseline.push(css_baseline);
+        task.result
+            .as_mut()
+            .unwrap()
+            .changed_files
+            .push(TaskFileChange {
+                path: "assets/style.css".into(),
+                kind: TaskFileChangeKind::Modified,
+                before_sha256: None,
+                after_sha256: Some(format!("{:x}", Sha256::digest(b"updated CSS"))),
+                before_size: None,
+                after_size: Some(11),
+            });
+        assert!(capture_task_html_bundle(&task, "report.HTML", 3, &hash).is_err());
+        std::fs::write(execution.join("assets/style.css"), "updated CSS").unwrap();
+        assert!(capture_task_html_bundle(&task, "report.HTML", 3, &hash).is_ok());
+        task.result
+            .as_mut()
+            .unwrap()
+            .changed_files
+            .last_mut()
+            .unwrap()
+            .after_sha256 = None;
+        assert!(capture_task_html_bundle(&task, "report.HTML", 3, &hash)
+            .unwrap_err()
+            .contains("no recorded task version"));
+        task.result.as_mut().unwrap().changed_files.pop();
+        std::fs::write(execution.join("assets/style.css"), "task version").unwrap();
+        std::fs::write(execution.join("report.HTML"), "changed").unwrap();
+        assert!(capture_task_html_bundle(&task, "report.HTML", 3, &hash).is_err());
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&captured.files["report.HTML"])
+                .unwrap(),
+            html.as_bytes()
+        );
+    }
+
+    #[test]
+    fn html_dependencies_follow_only_static_local_references() {
+        let refs = html_local_references(
+            r#"<link href="assets/a.css"><script src='assets/a.js'></script><p title="unrelated.txt">x</p>"#,
+        );
+        assert_eq!(refs, vec!["assets/a.css", "assets/a.js"]);
+        assert_eq!(
+            resolve_html_dependency("reports/a.html", "../figures/p.png?v=1"),
+            Some("figures/p.png".into())
+        );
+        assert_eq!(
+            resolve_html_dependency("reports/a.html", "../../secret.json"),
+            None
+        );
+        assert_eq!(
+            resolve_html_dependency("a.html", "https://remote.test/a.js"),
+            None
+        );
+        assert_eq!(
+            code_local_references(
+                "import x from './lib.js'; fetch('data.json'); const unused='notes.txt';"
+            ),
+            vec!["./lib.js", "data.json"]
+        );
+    }
+
+    #[tokio::test]
+    async fn html_restore_rejects_paths_outside_the_captured_bundle() {
+        let bundle = serde_json::to_string(&HtmlBundle {
+            version: 1,
+            entry: "../private.html".into(),
+            files: BTreeMap::from([("../private.html".into(), "AA==".into())]),
+        })
+        .unwrap();
+        assert!(serve_html_bundle(bundle).await.is_err());
+        assert!(!valid_html_resource(".private/a.html"));
+        assert!(!valid_html_resource("assets/../../a.js"));
+        assert_eq!(
+            decode_html_path("assets/a%20b.js"),
+            Some("assets/a b.js".into())
+        );
+    }
 
     #[cfg(unix)]
     #[test]

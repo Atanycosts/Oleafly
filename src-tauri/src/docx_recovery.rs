@@ -1,8 +1,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use oleafly_research::{
     docx::{
-        DocxActivity, DocxDocumentIdentity, DocxOperationCheckpoint, DocxOperationCheckpointPhase,
-        DocxProposalOutcome,
+        is_docx_checkpoint_operation, DocxActivity, DocxDocumentIdentity, DocxOperationCheckpoint,
+        DocxOperationCheckpointPhase, DocxProposalOutcome,
     },
     scheduler::ResearchTaskState,
     store::TaskStore,
@@ -64,6 +64,15 @@ pub struct DocxRecoveryPendingSave {
     reason: String,
     request_id: String,
     revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operation: Option<DocxRecoverySaveOperation>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocxRecoverySaveOperation {
+    operation_id: String,
+    document: DocxDocumentIdentity,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -172,10 +181,6 @@ fn validate_id(value: &str, label: &str) -> Result<(), String> {
         return Err(format!("{label} must be a non-empty string"));
     }
     Ok(())
-}
-
-fn known_operation(value: &str) -> bool {
-    matches!(value, "read_format" | "format" | "apply" | "save" | "check")
 }
 
 fn recovery_key_for(
@@ -305,7 +310,7 @@ fn validate_task_state(metadata: &DocxRecoveryMetadata) -> Result<(), String> {
                 .result
                 .get("operation")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(known_operation)
+                .is_some_and(is_docx_checkpoint_operation)
             || !operation.result["ok"].is_boolean()
         {
             return Err("A checkpoint operation has no valid actual result.".into());
@@ -335,6 +340,34 @@ fn validate_task_state(metadata: &DocxRecoveryMetadata) -> Result<(), String> {
         {
             return Err("The fixed DOCX save does not match its checkpoint.".into());
         }
+        if let Some(operation) = &save.operation {
+            validate_id(&operation.operation_id, "operationId")?;
+            if operation.document != state.document {
+                return Err(
+                    "The save operation does not identify its fixed exported document.".into(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_pending_save_operation(
+    store: &TaskStore,
+    metadata: &DocxRecoveryMetadata,
+) -> Result<(), String> {
+    if let Some(operation) = metadata
+        .task_state
+        .as_ref()
+        .and_then(|state| state.pending_save.as_ref())
+        .and_then(|save| save.operation.as_ref())
+    {
+        store.docx_save_operation_intent(
+            &metadata.app_project_id,
+            &metadata.workbench_project_id,
+            &operation.operation_id,
+            &operation.document,
+        )?;
     }
     Ok(())
 }
@@ -381,10 +414,7 @@ fn replay_operations(
             operation.document.clone(),
             operation.result.clone(),
         )?;
-        let current_session = operation.document.session_id == state.document.session_id;
-        if operation_kind != Some("read_format")
-            && (current_session || phase == DocxOperationCheckpointPhase::Saved)
-        {
+        if operation_kind != Some("read_format") {
             store.record_docx_operation_checkpoint(
                 &metadata.app_project_id,
                 &metadata.workbench_project_id,
@@ -628,6 +658,7 @@ pub async fn docx_recovery_save(
         let metadata = save_at(&root, request)?;
         if metadata.task_state.is_some() {
             let store = task_store(&root)?;
+            verify_pending_save_operation(&store, &metadata)?;
             replay_receipts(&store, &metadata)?;
             replay_operations(
                 &store,
@@ -687,7 +718,7 @@ fn resume_at(
         None,
     )?;
     verified_sources(store, metadata)?;
-    state
+    let activities = state
         .applied
         .iter()
         .map(|source| {
@@ -703,7 +734,31 @@ fn resume_at(
                 },
             )
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let proposal_ids = state
+        .applied
+        .iter()
+        .map(|source| source.proposal_id.clone())
+        .collect::<Vec<_>>();
+    let operation_ids = state
+        .operations
+        .iter()
+        .filter(|operation| {
+            operation.result["operation"]
+                .as_str()
+                .is_some_and(|kind| kind != "save" && kind != "read_format")
+        })
+        .map(|operation| operation.operation_id.clone())
+        .collect::<Vec<_>>();
+    store.recover_docx_task_bindings(
+        &request.recovery_key,
+        &request.content_sha256,
+        &state.document,
+        document,
+        &proposal_ids,
+        &operation_ids,
+    )?;
+    Ok(activities)
 }
 
 #[tauri::command]
@@ -744,6 +799,7 @@ pub async fn docx_recovery_commit(
         .as_ref()
         .ok_or("This checkpoint has no fixed save request.")?;
     let store = state.store()?;
+    verify_pending_save_operation(&store, metadata)?;
     replay_receipts(&store, metadata)?;
     replay_operations(
         &store,
@@ -830,11 +886,38 @@ fn finish_commit(
         .pending_save
         .as_ref()
         .ok_or("This checkpoint has no fixed save request.")?;
+    verify_pending_save_operation(store, metadata)?;
     let mut document = task.document.clone();
     document.baseline_id = baseline_id.clone();
     document.source_sha256 = hash.clone();
     document.saved_revision =
         i64::try_from(save.revision).map_err(|_| "DOCX save revision is out of range.")?;
+    if let Some(operation) = &save.operation {
+        store.finish_docx_operation(
+            &metadata.app_project_id,
+            &metadata.workbench_project_id,
+            &operation.operation_id,
+            document.clone(),
+            serde_json::json!({
+                "operation":"save","ok":true,"document":document,
+                "result":{"baselineId":baseline_id,"sourceSha256":hash,"revision":save.revision,
+                    "document":{"sessionId":document.session_id,"baselineId":baseline_id,
+                        "sessionRevision":save.revision,"savedRevision":save.revision,"dirty":false}},
+            }),
+        )?;
+        store.record_docx_operation_checkpoint(
+            &metadata.app_project_id,
+            &metadata.workbench_project_id,
+            DocxOperationCheckpoint {
+                operation_id: &operation.operation_id,
+                phase: DocxOperationCheckpointPhase::Saved,
+                recovery_key: &metadata.recovery_key,
+                content_sha256: &metadata.content_sha256,
+                from_document: document.clone(),
+                request_id: Some(&save.request_id),
+            },
+        )?;
+    }
     for source in &task.applied {
         store.record_docx_proposal_outcome(
             &metadata.app_project_id,
@@ -995,6 +1078,7 @@ mod tests {
                 reason: "User saved".into(),
                 request_id: "fixed-save".into(),
                 revision: 4,
+                operation: None,
             }),
         });
         request
@@ -1004,6 +1088,7 @@ mod tests {
         store: &TaskStore,
         proposal: &DocxActivity,
         document: &DocxDocumentIdentity,
+        operation: &str,
     ) -> DocxRecoveryOperation {
         let operation_id = store
             .record_docx_activity(
@@ -1012,15 +1097,31 @@ mod tests {
                 proposal.origin.generation,
                 document.clone(),
                 DocxRuntimeEvent::OperationStarted {
-                    operation: "format".into(),
-                    request: serde_json::json!({"paragraph_ref":"p1","format":{"font":{"bold":true}}}),
+                    operation: operation.into(),
+                    request: match operation {
+                        "format_batch" => serde_json::json!({"operations":[{"paragraph_ref":"p1","font":{"size":24}}],"expected_revision":3}),
+                        "import_styles" => serde_json::json!({"world_version_id":"world-1","style_ids":["Title"],"expected_revision":3}),
+                        "replace_range" => serde_json::json!({"paragraph_ref":"p1","expected_revision":3,"range":{"start":0,"end":8},"expected_text":"Original","replacement":"Replacement"}),
+                        "write_equation" => serde_json::json!({"paragraph_ref":"p1","expected_revision":3,"latex":"\\mathbb{R}^d","macros":"","object_ref":"math-1","expected_fingerprint":"original-equation"}),
+                        _ => serde_json::json!({"paragraph_ref":"p1","format":{"font":{"bold":true}}}),
+                    },
                 },
             )
             .unwrap()
             .id;
+        let payload = match operation {
+            "write_equation" => {
+                serde_json::json!({"ok":true,"revision":document.session_revision,"changed":true,"warnings":["Bold alphabet corrected"],"sourceHash":"f".repeat(64)})
+            }
+            "replace_range" => {
+                serde_json::json!({"ok":true,"revision":document.session_revision,"changed":true,"document":{"sessionId":document.session_id,"baselineId":document.baseline_id,"sessionRevision":document.session_revision,"savedRevision":document.saved_revision,"dirty":true}})
+            }
+            _ => serde_json::json!({"ok":true,"revision":document.session_revision,"changed":true,
+                "styleIdMap":if operation == "import_styles" { serde_json::json!({"Title":"TitlePasted"}) } else { serde_json::Value::Null }}),
+        };
         let result = serde_json::json!({
-            "operation":"format","ok":true,"document":document,
-            "result":{"ok":true,"revision":document.session_revision,"changed":true},
+            "operation":operation,"ok":true,"document":document,
+            "result":payload,
         });
         DocxRecoveryOperation {
             operation_id,
@@ -1099,6 +1200,12 @@ mod tests {
         assert_eq!(activities.len(), 1);
         assert_eq!(activities[0].document, restored);
         assert_eq!(activities[0].origin, proposal.origin);
+        assert_eq!(
+            store
+                .docx_task_binding("app-project", &proposal.origin.task_id)
+                .unwrap(),
+            Some(restored.clone())
+        );
         assert!(matches!(
             activities[0].event,
             DocxActivityEvent::Outcome {
@@ -1119,99 +1226,364 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_replay_finishes_operations_and_ties_them_to_recovered_and_saved_bytes() {
+    fn operation_only_checkpoint_resume_rebinds_the_task_to_the_new_session() {
         let root = tempfile::tempdir().unwrap();
         let (store, proposal, document) = task_fixture(root.path());
-        let operation = recovery_operation(&store, &proposal, &document);
+        let operation = recovery_operation(&store, &proposal, &document, "format");
         let mut request = task_request(document.clone(), &proposal, false);
-        request
-            .task_state
-            .as_mut()
-            .unwrap()
-            .operations
-            .push(operation.clone());
-        let recovered_metadata = save_at(root.path(), request).unwrap();
-        let clear = DocxRecoveryClearRequest {
-            recovery_key: recovered_metadata.recovery_key.clone(),
-            content_sha256: recovered_metadata.content_sha256.clone(),
-        };
-        let mut restored = document.clone();
-        restored.session_id = "restored".into();
+        let state = request.task_state.as_mut().unwrap();
+        state.applied.clear();
+        state.receipts.clear();
+        state.operations.push(operation);
+        let metadata = save_at(root.path(), request).unwrap();
+        let mut restored = document;
+        restored.session_id = "operation-recovered".into();
         restored.session_revision = 0;
         restored.saved_revision = -1;
-        resume_at(root.path(), &store, &clear, restored).unwrap();
-        assert!(store
-            .docx_task_activities("app-project", &proposal.origin.task_id, 0, 50)
-            .unwrap()
-            .activities
-            .iter()
-            .any(
-                |entry| matches!(&entry.activity.event, DocxActivityEvent::Runtime {
-                    event: DocxRuntimeEvent::Operation { ref operation_id, .. }
-                } if operation_id.as_deref() == Some(&operation.operation_id))
-            ));
 
-        let mut request = task_request(document.clone(), &proposal, true);
-        request
-            .task_state
-            .as_mut()
-            .unwrap()
-            .operations
-            .push(operation.clone());
-        let metadata = save_at(root.path(), request).unwrap();
-        replay_receipts(&store, &metadata).unwrap();
-        finish_commit(
+        resume_at(
+            root.path(),
             &store,
-            &metadata,
-            "baseline-saved".into(),
-            metadata.content_sha256.clone(),
-        )
-        .unwrap();
-        finish_commit(
-            &store,
-            &metadata,
-            "baseline-saved".into(),
-            metadata.content_sha256.clone(),
+            &DocxRecoveryClearRequest {
+                recovery_key: metadata.recovery_key,
+                content_sha256: metadata.content_sha256,
+            },
+            restored.clone(),
         )
         .unwrap();
 
-        let history = store
+        assert_eq!(
+            store
+                .docx_task_binding("app-project", &proposal.origin.task_id)
+                .unwrap(),
+            Some(restored)
+        );
+    }
+
+    #[test]
+    fn proposal_checkpoint_resumes_twice_through_its_actual_session_edges() {
+        let root = tempfile::tempdir().unwrap();
+        let (store, proposal, original) = task_fixture(root.path());
+        let first = save_at(
+            root.path(),
+            task_request(original.clone(), &proposal, false),
+        )
+        .unwrap();
+        let first_request = DocxRecoveryClearRequest {
+            recovery_key: first.recovery_key.clone(),
+            content_sha256: first.content_sha256.clone(),
+        };
+        let mut middle = original.clone();
+        middle.session_id = "middle-session".into();
+        middle.session_revision = 0;
+        middle.saved_revision = -1;
+        let recovered = resume_at(root.path(), &store, &first_request, middle.clone()).unwrap();
+        assert_eq!(recovered[0].origin, proposal.origin);
+        assert_eq!(
+            store
+                .docx_task_binding("app-project", &proposal.origin.task_id)
+                .unwrap(),
+            Some(middle.clone())
+        );
+
+        let mut second = task_request(middle.clone(), &proposal, false);
+        second.revision = 0;
+        second.task_state.as_mut().unwrap().receipts.clear();
+        let second = save_at(root.path(), second).unwrap();
+        let second_request = DocxRecoveryClearRequest {
+            recovery_key: second.recovery_key.clone(),
+            content_sha256: second.content_sha256.clone(),
+        };
+        let mut latest = middle.clone();
+        latest.session_id = "latest-session".into();
+        let reopened = task_store(root.path()).unwrap();
+        let result = resume_at(root.path(), &reopened, &second_request, latest.clone()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].origin, proposal.origin);
+        assert!(matches!(&result[0].event, DocxActivityEvent::Outcome {
+            outcome: DocxProposalOutcome::Recovered { recovery_key, content_sha256, from_document }
+        } if recovery_key == &second.recovery_key && content_sha256 == &second.content_sha256 && from_document.as_ref() == &middle));
+        assert_eq!(
+            reopened
+                .docx_task_binding("app-project", &proposal.origin.task_id)
+                .unwrap(),
+            Some(latest.clone())
+        );
+        assert_eq!(
+            resume_at(root.path(), &reopened, &second_request, latest.clone()).unwrap(),
+            result
+        );
+        assert!(reopened
+            .record_docx_activity(
+                "app-project",
+                &proposal.origin.task_id,
+                proposal.origin.generation,
+                latest,
+                DocxRuntimeEvent::Proposed {
+                    target: match &proposal.event {
+                        DocxActivityEvent::Runtime {
+                            event: DocxRuntimeEvent::Proposed { target, .. },
+                        } => target.clone(),
+                        _ => unreachable!(),
+                    },
+                    proposed: "Old target must not move".into(),
+                },
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn operation_only_checkpoint_resumes_twice_without_rewriting_its_original_operation() {
+        let root = tempfile::tempdir().unwrap();
+        let (store, proposal, original) = task_fixture(root.path());
+        let operation = recovery_operation(&store, &proposal, &original, "format");
+        let mut first = task_request(original.clone(), &proposal, false);
+        let state = first.task_state.as_mut().unwrap();
+        state.applied.clear();
+        state.receipts.clear();
+        state.operations.push(operation.clone());
+        let first = save_at(root.path(), first).unwrap();
+        let mut middle = original.clone();
+        middle.session_id = "middle-operation-session".into();
+        middle.session_revision = 0;
+        middle.saved_revision = -1;
+        resume_at(
+            root.path(),
+            &store,
+            &DocxRecoveryClearRequest {
+                recovery_key: first.recovery_key,
+                content_sha256: first.content_sha256,
+            },
+            middle.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .docx_task_binding("app-project", &proposal.origin.task_id)
+                .unwrap(),
+            Some(middle.clone())
+        );
+
+        let mut second = task_request(middle.clone(), &proposal, false);
+        second.revision = 0;
+        let state = second.task_state.as_mut().unwrap();
+        state.applied.clear();
+        state.receipts.clear();
+        state.operations.push(operation.clone());
+        let second = save_at(root.path(), second).unwrap();
+        let second_request = DocxRecoveryClearRequest {
+            recovery_key: second.recovery_key.clone(),
+            content_sha256: second.content_sha256.clone(),
+        };
+        let mut latest = middle.clone();
+        latest.session_id = "latest-operation-session".into();
+        let reopened = task_store(root.path()).unwrap();
+        resume_at(root.path(), &reopened, &second_request, latest.clone()).unwrap();
+        assert_eq!(
+            reopened
+                .docx_task_binding("app-project", &proposal.origin.task_id)
+                .unwrap(),
+            Some(latest.clone())
+        );
+        resume_at(root.path(), &reopened, &second_request, latest).unwrap();
+        let history = reopened
             .docx_task_activities("app-project", &proposal.origin.task_id, 0, 50)
             .unwrap();
-        let checkpoints = history
+        let results = history.activities.iter().filter(|entry| matches!(&entry.activity.event,
+            DocxActivityEvent::Runtime { event: DocxRuntimeEvent::Operation { operation_id: Some(id), .. } } if id == &operation.operation_id
+        )).collect::<Vec<_>>();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].activity.document, operation.document);
+        assert_eq!(results[0].activity.origin, proposal.origin);
+        let recovered_sources = history
             .activities
             .iter()
             .filter_map(|entry| match &entry.activity.event {
                 DocxActivityEvent::OperationCheckpoint {
                     operation_id,
-                    phase,
+                    phase: DocxOperationCheckpointPhase::Recovered,
                     recovery_key,
                     content_sha256,
                     from_document,
-                    request_id,
-                } if operation_id == &operation.operation_id => Some((
-                    *phase,
-                    recovery_key,
-                    content_sha256,
-                    from_document,
-                    request_id,
-                )),
+                    ..
+                } if operation_id == &operation.operation_id => {
+                    assert_eq!(entry.activity.origin, proposal.origin);
+                    assert_eq!(entry.activity.document, operation.document);
+                    assert_eq!(recovery_key, &second.recovery_key);
+                    assert_eq!(content_sha256, &second.content_sha256);
+                    Some(from_document.as_ref().clone())
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(checkpoints.len(), 2);
-        for (phase, recovery_key, content_sha256, from_document, request_id) in &checkpoints {
-            assert_eq!(recovery_key.as_str(), metadata.recovery_key);
-            assert_eq!(content_sha256.as_str(), metadata.content_sha256);
-            assert_eq!(
-                from_document.as_ref(),
-                &metadata.task_state.as_ref().unwrap().document
+        assert_eq!(recovered_sources, vec![original, middle]);
+    }
+
+    #[test]
+    fn checkpoint_replay_finishes_operations_and_ties_them_to_recovered_and_saved_bytes() {
+        for kind in [
+            "format",
+            "format_batch",
+            "import_styles",
+            "replace_range",
+            "write_equation",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (store, proposal, document) = task_fixture(root.path());
+            let operation = recovery_operation(&store, &proposal, &document, kind);
+            let mut request = task_request(document.clone(), &proposal, false);
+            request
+                .task_state
+                .as_mut()
+                .unwrap()
+                .operations
+                .push(operation.clone());
+            let recovered_metadata = save_at(root.path(), request).unwrap();
+            let snapshot = read_at(
+                root.path(),
+                DocxRecoveryReadRequest {
+                    recovery_key: recovered_metadata.recovery_key.clone(),
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(snapshot.metadata, recovered_metadata);
+            let clear = DocxRecoveryClearRequest {
+                recovery_key: recovered_metadata.recovery_key.clone(),
+                content_sha256: recovered_metadata.content_sha256.clone(),
+            };
+            let mut restored = document.clone();
+            restored.session_id = "restored".into();
+            restored.session_revision = 0;
+            restored.saved_revision = -1;
+            resume_at(root.path(), &store, &clear, restored).unwrap();
+            assert!(store
+                .docx_task_activities("app-project", &proposal.origin.task_id, 0, 50)
+                .unwrap()
+                .activities
+                .iter()
+                .any(
+                    |entry| entry.activity.origin == proposal.origin && matches!(&entry.activity.event, DocxActivityEvent::Runtime {
+                    event: DocxRuntimeEvent::Operation { operation_id, operation: actual_kind, result, .. }
+                } if operation_id.as_deref() == Some(&operation.operation_id) && actual_kind == kind && result == &operation.result)
+                ));
+
+            let mut request = task_request(document.clone(), &proposal, true);
+            request
+                .task_state
+                .as_mut()
+                .unwrap()
+                .operations
+                .push(operation.clone());
+            let metadata = save_at(root.path(), request).unwrap();
+            replay_receipts(&store, &metadata).unwrap();
+            assert!(
+                finish_commit(&store, &metadata, "baseline-saved".into(), "f".repeat(64),).is_err()
             );
-            match phase {
-                DocxOperationCheckpointPhase::Recovered => assert!(request_id.is_none()),
-                DocxOperationCheckpointPhase::Saved => {
-                    assert_eq!(request_id.as_deref(), Some("fixed-save"))
+            finish_commit(
+                &store,
+                &metadata,
+                "baseline-saved".into(),
+                metadata.content_sha256.clone(),
+            )
+            .unwrap();
+            finish_commit(
+                &store,
+                &metadata,
+                "baseline-saved".into(),
+                metadata.content_sha256.clone(),
+            )
+            .unwrap();
+
+            let history = store
+                .docx_task_activities("app-project", &proposal.origin.task_id, 0, 50)
+                .unwrap();
+            let checkpoints = history
+                .activities
+                .iter()
+                .filter_map(|entry| match &entry.activity.event {
+                    DocxActivityEvent::OperationCheckpoint {
+                        operation_id,
+                        phase,
+                        recovery_key,
+                        content_sha256,
+                        from_document,
+                        request_id,
+                    } if operation_id == &operation.operation_id => Some((
+                        *phase,
+                        recovery_key,
+                        content_sha256,
+                        from_document,
+                        request_id,
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(checkpoints.len(), 2);
+            for (phase, recovery_key, content_sha256, from_document, request_id) in &checkpoints {
+                assert_eq!(recovery_key.as_str(), metadata.recovery_key);
+                assert_eq!(content_sha256.as_str(), metadata.content_sha256);
+                assert_eq!(
+                    from_document.as_ref(),
+                    &metadata.task_state.as_ref().unwrap().document
+                );
+                match phase {
+                    DocxOperationCheckpointPhase::Recovered => assert!(request_id.is_none()),
+                    DocxOperationCheckpointPhase::Saved => {
+                        assert_eq!(request_id.as_deref(), Some("fixed-save"))
+                    }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_rejects_unknown_operations_and_preserves_actual_result_boundaries() {
+        for kind in [
+            "format_batch",
+            "import_styles",
+            "replace_range",
+            "write_equation",
+        ] {
+            for invalid in [
+                "operation",
+                "non_checkpoint_operation",
+                "ok",
+                "document",
+                "session",
+                "revision",
+            ] {
+                let root = tempfile::tempdir().unwrap();
+                let (store, proposal, document) = task_fixture(root.path());
+                let mut operation = recovery_operation(&store, &proposal, &document, kind);
+                match invalid {
+                    "operation" => operation.result["operation"] = "unsupported_operation".into(),
+                    "non_checkpoint_operation" => operation.result["operation"] = "context".into(),
+                    "ok" => operation.result["ok"] = "true".into(),
+                    "document" => {
+                        operation.result["document"]["sourceSha256"] = "b".repeat(64).into()
+                    }
+                    "session" => {
+                        operation.document.session_id = "another-session".into();
+                        operation.document.source_sha256 = "b".repeat(64);
+                        operation.result["document"] =
+                            serde_json::to_value(&operation.document).unwrap();
+                    }
+                    "revision" => {
+                        operation.document.session_revision += 1;
+                        operation.result["document"] =
+                            serde_json::to_value(&operation.document).unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+                let mut request = task_request(document, &proposal, false);
+                request
+                    .task_state
+                    .as_mut()
+                    .unwrap()
+                    .operations
+                    .push(operation);
+                assert!(save_at(root.path(), request).is_err(), "{kind}: {invalid}");
             }
         }
     }
@@ -1249,53 +1621,245 @@ mod tests {
 
     #[test]
     fn recovered_session_keeps_original_operation_documents_and_links_the_save() {
+        for kind in ["format", "replace_range", "write_equation"] {
+            let root = tempfile::tempdir().unwrap();
+            let (store, proposal, document) = task_fixture(root.path());
+            let operation = recovery_operation(&store, &proposal, &document, kind);
+            let mut first = task_request(document.clone(), &proposal, false);
+            let state = first.task_state.as_mut().unwrap();
+            state.applied.clear();
+            state.receipts.clear();
+            state.operations.push(operation.clone());
+            let first = save_at(root.path(), first).unwrap();
+            let mut restored = document;
+            restored.session_id = "restored".into();
+            restored.session_revision = 0;
+            restored.saved_revision = -1;
+            resume_at(
+                root.path(),
+                &store,
+                &DocxRecoveryClearRequest {
+                    recovery_key: first.recovery_key,
+                    content_sha256: first.content_sha256,
+                },
+                restored.clone(),
+            )
+            .unwrap();
+            let mut request = task_request(restored.clone(), &proposal, true);
+            request.revision = 0;
+            let state = request.task_state.as_mut().unwrap();
+            state.applied.clear();
+            state.receipts.clear();
+            state.pending_save.as_mut().unwrap().revision = 0;
+            state.operations.push(operation.clone());
+            let metadata = save_at(root.path(), request).unwrap();
+            let reopened = read_at(
+                root.path(),
+                DocxRecoveryReadRequest {
+                    recovery_key: metadata.recovery_key.clone(),
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(reopened.metadata, metadata);
+            replay_operations(
+                &store,
+                &metadata,
+                DocxOperationCheckpointPhase::Recovered,
+                None,
+            )
+            .unwrap();
+            replay_receipts(&store, &metadata).unwrap();
+            let saved = finish_commit(
+                &store,
+                &metadata,
+                "baseline-saved".into(),
+                metadata.content_sha256.clone(),
+            )
+            .unwrap();
+            assert_eq!(saved.baseline_id, "baseline-saved");
+            assert_eq!(saved.source_sha256, metadata.content_sha256);
+            assert_eq!(saved.revision, 0);
+
+            let store = task_store(root.path()).unwrap();
+            let history = store
+                .docx_task_activities("app-project", &proposal.origin.task_id, 0, 50)
+                .unwrap();
+            let actual = history
+                .activities
+                .iter()
+                .find(|entry| {
+                    matches!(&entry.activity.event,
+                        DocxActivityEvent::Runtime { event: DocxRuntimeEvent::Operation { operation_id, .. } }
+                            if operation_id.as_deref() == Some(&operation.operation_id))
+                })
+                .unwrap();
+            assert_eq!(actual.activity.origin, proposal.origin);
+            assert_eq!(actual.activity.document, operation.document);
+            let DocxActivityEvent::Runtime {
+                event:
+                    DocxRuntimeEvent::Operation {
+                        operation: retained_kind,
+                        request,
+                        result,
+                        ..
+                    },
+            } = &actual.activity.event
+            else {
+                panic!("expected the actual operation result");
+            };
+            assert_eq!(retained_kind, kind);
+            assert_eq!(request["paragraph_ref"], "p1");
+            assert_eq!(result, &operation.result);
+            match kind {
+                "replace_range" => {
+                    assert_eq!(request["expected_text"], "Original");
+                    assert_eq!(request["replacement"], "Replacement");
+                    assert_eq!(request["range"], serde_json::json!({"start":0,"end":8}));
+                }
+                "write_equation" => {
+                    assert_eq!(request["latex"], "\\mathbb{R}^d");
+                    assert_eq!(request["expected_fingerprint"], "original-equation");
+                }
+                _ => {}
+            }
+            let phases = history
+                .activities
+                .iter()
+                .filter_map(|entry| match &entry.activity.event {
+                    DocxActivityEvent::OperationCheckpoint {
+                        operation_id,
+                        phase,
+                        ..
+                    } if operation_id == &operation.operation_id => Some(*phase),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                phases,
+                vec![
+                    DocxOperationCheckpointPhase::Recovered,
+                    DocxOperationCheckpointPhase::Recovered,
+                    DocxOperationCheckpointPhase::Saved
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_save_operation_survives_commit_before_the_host_receipt() {
         let root = tempfile::tempdir().unwrap();
         let (store, proposal, document) = task_fixture(root.path());
-        let operation = recovery_operation(&store, &proposal, &document);
-        let mut restored = document;
-        restored.session_id = "restored".into();
-        restored.session_revision = 0;
-        restored.saved_revision = -1;
-        let mut request = task_request(restored.clone(), &proposal, true);
-        request.revision = 0;
-        let state = request.task_state.as_mut().unwrap();
-        state.applied.clear();
-        state.receipts.clear();
-        state.pending_save.as_mut().unwrap().revision = 0;
-        state.operations.push(operation.clone());
+        let intent = store.record_docx_activity(
+            "app-project", &proposal.origin.task_id, proposal.origin.generation, document.clone(),
+            DocxRuntimeEvent::OperationStarted {
+                operation: "save".into(),
+                request: serde_json::json!({"session_id":document.session_id,"expected_revision":4}),
+            },
+        ).unwrap();
+        let mut request = task_request(document.clone(), &proposal, true);
+        request
+            .task_state
+            .as_mut()
+            .unwrap()
+            .pending_save
+            .as_mut()
+            .unwrap()
+            .operation = Some(DocxRecoverySaveOperation {
+            operation_id: intent.id.clone(),
+            document,
+        });
         let metadata = save_at(root.path(), request).unwrap();
-        replay_operations(
-            &store,
-            &metadata,
-            DocxOperationCheckpointPhase::Recovered,
-            None,
-        )
-        .unwrap();
+        verify_pending_save_operation(&store, &metadata).unwrap();
         replay_receipts(&store, &metadata).unwrap();
-        finish_commit(
-            &store,
-            &metadata,
-            "baseline-saved".into(),
-            metadata.content_sha256.clone(),
-        )
-        .unwrap();
-
-        let history = store
+        store.request_cancel(&proposal.origin.task_id).unwrap();
+        assert!(finish_commit(&store, &metadata, "saved-baseline".into(), "f".repeat(64)).is_err());
+        let reopened = task_store(root.path()).unwrap();
+        let stored = load_stored_at(root.path(), &metadata.recovery_key)
+            .unwrap()
+            .unwrap();
+        for _ in 0..2 {
+            finish_commit(
+                &reopened,
+                &stored.metadata,
+                "saved-baseline".into(),
+                metadata.content_sha256.clone(),
+            )
+            .unwrap();
+        }
+        let history = reopened
             .docx_task_activities("app-project", &proposal.origin.task_id, 0, 50)
             .unwrap();
-        let phases = history
+        let operations = history
             .activities
             .iter()
-            .filter_map(|entry| match &entry.activity.event {
-                DocxActivityEvent::OperationCheckpoint {
-                    operation_id,
-                    phase,
-                    ..
-                } if operation_id == &operation.operation_id => Some(*phase),
-                _ => None,
+            .filter(|entry| {
+                matches!(
+                    &entry.activity.event, DocxActivityEvent::Runtime {
+                        event: DocxRuntimeEvent::Operation { operation_id: Some(id), .. }
+                    } if id == &intent.id
+                )
             })
             .collect::<Vec<_>>();
-        assert_eq!(phases, vec![DocxOperationCheckpointPhase::Saved]);
+        assert_eq!(operations.len(), 1);
+        let completed = &operations[0].activity;
+        assert_eq!(completed.origin, intent.origin);
+        assert_eq!(completed.document.saved_revision, 4);
+        assert_eq!(completed.document.session_revision, 4);
+        assert_eq!(completed.document.source_sha256, metadata.content_sha256);
+        let mut live = completed.document.clone();
+        live.session_revision = 5;
+        let late = reopened.finish_docx_operation(
+            "app-project", "workbench-project", &intent.id, live.clone(),
+            serde_json::json!({"operation":"save","ok":true,"document":live,
+                "result":{"baselineId":"saved-baseline","sourceSha256":metadata.content_sha256,"revision":4,
+                    "formatStatus":"failed","formatError":"The later format derivation failed",
+                    "document":{"sessionId":live.session_id,"baselineId":"saved-baseline",
+                        "sessionRevision":5,"savedRevision":4,"dirty":true}}}),
+        ).unwrap();
+        assert_eq!(&late, completed);
+    }
+
+    #[test]
+    fn fixed_save_rejects_a_different_operation_or_exported_document() {
+        let root = tempfile::tempdir().unwrap();
+        let (store, proposal, document) = task_fixture(root.path());
+        let format = recovery_operation(&store, &proposal, &document, "format");
+        let mut request = task_request(document.clone(), &proposal, true);
+        request
+            .task_state
+            .as_mut()
+            .unwrap()
+            .pending_save
+            .as_mut()
+            .unwrap()
+            .operation = Some(DocxRecoverySaveOperation {
+            operation_id: format.operation_id,
+            document: document.clone(),
+        });
+        let metadata = save_at(root.path(), request).unwrap();
+        assert!(verify_pending_save_operation(&store, &metadata).is_err());
+        let mut mismatched = metadata.clone();
+        mismatched
+            .task_state
+            .as_mut()
+            .unwrap()
+            .pending_save
+            .as_mut()
+            .unwrap()
+            .operation
+            .as_mut()
+            .unwrap()
+            .document
+            .session_revision = 5;
+        assert!(validate_task_state(&mismatched).is_err());
+        assert!(finish_commit(
+            &store,
+            &metadata,
+            "saved-baseline".into(),
+            metadata.content_sha256.clone()
+        )
+        .is_err());
     }
 
     #[test]
@@ -1351,6 +1915,7 @@ mod tests {
                 reason: "User saved".into(),
                 request_id: "fixed-save".into(),
                 revision: 4,
+                operation: None,
             }),
         });
         let metadata = save_at(root.path(), request).unwrap();

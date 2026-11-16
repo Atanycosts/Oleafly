@@ -24,6 +24,12 @@ fn workspace_metadata_round_trips() {
         version: 1,
         primary_project_id: "project-one".into(),
         journal_project_id: Some("project-manuscript".into()),
+        word_documents: vec![super::model::WordDocumentLink {
+            path: "英文稿/manuscript.docx".into(),
+            workbench_project_id: "project-manuscript".into(),
+            original_sha256: Some("a".repeat(64)),
+            normalized_sha256: Some("b".repeat(64)),
+        }],
         journal_research: Some(super::model::JournalResearchLink {
             task_id: "task-journal".into(),
             world_version_id: "world-source".into(),
@@ -226,6 +232,7 @@ fn resolver_rejects_symlink_traversal_and_task_writes() {
         version: 1,
         primary_project_id: project_id.into(),
         journal_project_id: None,
+        word_documents: Vec::new(),
         journal_research: None,
         roots: vec![LinkedResearchRoot {
             id: "root-a".into(),
@@ -287,6 +294,7 @@ fn removing_metadata_never_removes_source_files() {
         version: 1,
         primary_project_id: "project-one".into(),
         journal_project_id: Some("project-manuscript".into()),
+        word_documents: Vec::new(),
         journal_research: None,
         roots: vec![LinkedResearchRoot {
             id: "root-a".into(),

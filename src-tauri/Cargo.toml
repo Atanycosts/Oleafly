@@ -79,6 +79,8 @@ async-trait = "0.1"
 keyring-core = "1"
 ring = "0.17"
 roxmltree = "0.20"
+# Capture static HTML preview dependencies using HTML attribute tokenization.
+html5ever = "0.40.1"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 argon2 = "0.5"
 aes = { version = "0.9", features = ["zeroize"] }

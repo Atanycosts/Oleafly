@@ -116,6 +116,16 @@ struct TaskApplicationTools {
     docx: Arc<dyn ApplicationTools>,
 }
 
+impl TaskApplicationTools {
+    fn owner(&self, name: &str) -> &dyn ApplicationTools {
+        if self.docx.definitions().iter().any(|tool| tool.name == name) {
+            self.docx.as_ref()
+        } else {
+            self.journal.as_ref()
+        }
+    }
+}
+
 impl ApplicationTools for TaskApplicationTools {
     fn definitions(&self) -> Vec<oleafly_research::mcp::protocol::ToolMeta> {
         let mut definitions = self.journal.definitions();
@@ -128,11 +138,19 @@ impl ApplicationTools for TaskApplicationTools {
         name: String,
         args: Value,
     ) -> oleafly_research::scheduler::TaskRuntimeFuture<Value> {
-        if self.docx.definitions().iter().any(|tool| tool.name == name) {
-            self.docx.call(name, args)
-        } else {
-            self.journal.call(name, args)
-        }
+        self.owner(&name).call(name, args)
+    }
+
+    fn call_content(
+        &self,
+        name: String,
+        args: Value,
+    ) -> oleafly_research::scheduler::TaskRuntimeFuture<Value> {
+        self.owner(&name).call_content(name, args)
+    }
+
+    fn call_timeout(&self, name: &str) -> std::time::Duration {
+        self.owner(name).call_timeout(name)
     }
 }
 
