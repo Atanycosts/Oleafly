@@ -1,7 +1,6 @@
 import type { TauriPage } from "@srsholmes/tauri-playwright";
 import { test, expect, reloadNativePage } from "../fixtures";
 import {
-  chooseAppSelectOption,
   createBlankProject,
   createProjectFromTemplate,
   editorSource,
@@ -183,19 +182,28 @@ async function chooseSettingsOption(
 ): Promise<void> {
   const trigger = `[aria-label=${JSON.stringify(triggerLabel)}]`;
   // Radix keeps a closing Select portal mounted briefly for its exit
-  // animation. Wait for that portal to leave before opening the next control.
+  // animation. Two adjacent selects can contain identically named options
+  // (for example both dialect and dictionary expose "English (UK)"), so a
+  // page-wide option selector can click the stale portal from the previous
+  // control. Scope the choice to the currently open listbox.
+  const option = `[role="listbox"][data-state="open"] [role="option"][data-label=${JSON.stringify(optionLabel)}]`;
   await page.waitForFunction(
     `!document.querySelector('[role="listbox"][data-state="closed"]')`,
     8_000,
   );
-  // GTK's native bridge can emit a click without the pointer-down event that
-  // Radix Select uses to open. The shared helper sends the complete sequence.
-  await chooseAppSelectOption(
-    page,
-    trigger,
-    { attribute: "data-label", value: optionLabel },
+  await page.focus(trigger);
+  // Radix Select and Settings both react to Escape. Use the trigger's
+  // accessible Enter path so a click bridge that omits pointer-down cannot
+  // leave the portal closed and let a retry dismiss the whole Settings modal.
+  await page.press(trigger, "Enter");
+  await page.waitForFunction(
+    `!!document.querySelector(${JSON.stringify(option)})`,
     8_000,
   );
+  await page.evaluate(
+    `document.querySelector(${JSON.stringify(option)})?.scrollIntoView({ block: "nearest" })`,
+  );
+  await page.click(option);
   await page.waitForFunction(
     `document.querySelector(${JSON.stringify(trigger)})?.textContent?.includes(${JSON.stringify(optionLabel)}) === true`,
     8_000,

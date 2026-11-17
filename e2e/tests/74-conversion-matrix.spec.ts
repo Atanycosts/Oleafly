@@ -160,12 +160,6 @@ test.describe("LaTeX project exports (registry routes)", () => {
     ).toBeVisible({ timeout: 180_000 });
     expect(existsSync(refusedDocx)).toBe(false);
 
-    const html = join(scratch, "paper.html");
-    await exportAndWait(tauriPage, "Export as HTML (MathML)", html);
-    const htmlSource = readFileSync(html, "utf8");
-    expect(htmlSource).toContain("<math");
-    expect(htmlSource).toContain("Introduction");
-
     const md = join(scratch, "paper.md");
     await exportAndWait(tauriPage, "Export as Markdown (.md)", md);
     const mdSource = readFileSync(md, "utf8");
@@ -178,6 +172,12 @@ test.describe("LaTeX project exports (registry routes)", () => {
     await replaceEditorSource(tauriPage, losslessSource);
     const compiled = await compileAndProbe(tauriPage);
     expect(compiled.text).toContain("LOSSLESS-CONVERSION-MATRIX");
+
+    const html = join(scratch, "lossless-paper.html");
+    await exportAndWait(tauriPage, "Export as HTML (MathML)", html);
+    const htmlSource = readFileSync(html, "utf8");
+    expect(htmlSource).toContain("<math");
+    expect(htmlSource).toContain("Introduction");
 
     const losslessDocx = join(scratch, "lossless-paper.docx");
     await exportAndWait(tauriPage, "Export as Word (.docx)", losslessDocx);
