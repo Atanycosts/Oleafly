@@ -950,6 +950,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   }
 
   async function download() {
+    setError(null);
     try {
       const editor = editorRef.current;
       const session = sessionRef.current;

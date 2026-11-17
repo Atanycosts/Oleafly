@@ -2040,6 +2040,31 @@ it("keeps the working copy dirty when a download export is unready and permits a
   expect(harness.text("first")).toBe("Unsaved download");
 });
 
+it("clears a failed download and retries without saving the working copy", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  await renderReady(harness);
+  act(() => harness.edit("first", "Unsaved download retry"));
+  mocks.downloadCopy.mockRejectedValueOnce(new Error("disk unavailable"));
+  const download = screen.getByRole("button", { name: text.download });
+
+  fireEvent.click(download);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Error: disk unavailable");
+  expect(mocks.downloadCopy).toHaveBeenCalledExactlyOnceWith(
+    new Uint8Array([80, 75, 5, 6]),
+    SOURCE.filename,
+  );
+  expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+
+  fireEvent.click(download);
+  await waitFor(() => expect(mocks.downloadCopy).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  expect(mocks.downloadCopy.mock.calls[1]).toEqual(mocks.downloadCopy.mock.calls[0]);
+  expect(mocks.saveBaseline).not.toHaveBeenCalled();
+  expect(mocks.commitRecovery).not.toHaveBeenCalled();
+  expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+  expect(harness.text("first")).toBe("Unsaved download retry");
+});
+
 it("keeps a committed document saved when recovery cleanup fails and does not offer another baseline commit", async () => {
   const harness = sessionHarness([paragraph("first", "Original")]);
   mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 1 });
