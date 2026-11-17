@@ -223,6 +223,7 @@ describe("figure tools in a Typst project", () => {
     expect(onImage).toHaveBeenCalledWith("data:image/png;base64,UE5H");
     expect(host.setLastFigurePreview).toHaveBeenCalledWith({
       pngDataUrl: "data:image/png;base64,UE5H",
+      projectId: "proj",
     });
     expect(result).toEqual({ success: true, has_image: true, errors: [], warnings: [] });
   });
