@@ -744,6 +744,68 @@ describe("hand-written code survives canvas edits", () => {
     expect(out).toBe(["flowchart TD", "  subgraph S [Side]", "    A --> B", "    D", "  end", "  B --> C"].join("\n"));
     expect(await mermaidParse(out)).toBe(true);
   });
+
+  it("keeps group and top-level additions after a subgraph closed at end of file", async () => {
+    const source = ["flowchart TD", "  subgraph S [Side]", "    A"].join("\n");
+    const { model: m, extras } = read(source);
+    const group = m.nodes.find((n) => n.id === "S");
+    if (!group) throw new Error("missing group");
+    const added = {
+      ...m,
+      nodes: [
+        ...m.nodes,
+        node({ id: "D", x: group.x + 30, y: group.y + 30, w: 10, h: 10 }),
+        node({ id: "X", label: "Top", x: 3000, y: 3000 }),
+      ],
+    };
+    const out = modelToMermaid(added, { extras });
+    expect(out).toBe(
+      ["flowchart TD", "  subgraph S [Side]", "    A", "    D", "  end", "  X[Top]"].join("\n"),
+    );
+    expect(await mermaidParse(out)).toBe(true);
+    expect((await mermaidDb(out)).groups).toEqual([{ id: "S", label: "Side", members: ["A", "D"] }]);
+  });
+
+  it("keeps nested and top-level additions after subgraphs closed at end of file", async () => {
+    const source = [
+      "flowchart TD",
+      "  subgraph Outer [Outer]",
+      "    subgraph Inner [Inner]",
+      "      A",
+    ].join("\n");
+    const { model: m, extras } = read(source);
+    const outer = m.nodes.find((n) => n.id === "Outer");
+    const inner = m.nodes.find((n) => n.id === "Inner");
+    if (!outer || !inner) throw new Error("missing nested groups");
+    const added = {
+      ...m,
+      nodes: [
+        ...m.nodes,
+        node({ id: "D", x: inner.x + 30, y: inner.y + 30, w: 10, h: 10 }),
+        node({ id: "E", x: outer.x + outer.w - 10, y: outer.y + 10, w: 5, h: 5 }),
+        node({ id: "X", label: "Top", x: 5000, y: 5000 }),
+      ],
+    };
+    const out = modelToMermaid(added, { extras });
+    expect(out).toBe(
+      [
+        "flowchart TD",
+        "  subgraph Outer [Outer]",
+        "    subgraph Inner [Inner]",
+        "      A",
+        "      D",
+        "    end",
+        "    E",
+        "  end",
+        "  X[Top]",
+      ].join("\n"),
+    );
+    expect(await mermaidParse(out)).toBe(true);
+    expect((await mermaidDb(out)).groups).toEqual([
+      { id: "Inner", label: "Inner", members: ["A", "D"] },
+      { id: "Outer", label: "Outer", members: ["E", "Inner"] },
+    ]);
+  });
 });
 
 describe("layout", () => {

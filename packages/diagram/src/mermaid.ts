@@ -2889,12 +2889,12 @@ function writeGraphItem(inc: IncrementalWrite, item: MermaidItem, piece: Piece, 
   else patchGraph(inc, item, piece, vertices, links);
 }
 
-function writeEndItem(inc: IncrementalWrite, item: MermaidItem, piece: Piece, indent: string, id: string): void {
+function writeEndItem(inc: IncrementalWrite, text: string, piece: Piece, indent: string, id: string): void {
   const inner = indent + inc.unit;
   for (const n of inc.freshNodes) {
     if (inc.parents.get(n.id) === id) inc.pieces.splice(-1, 0, { lead: `\n${inner}`, text: declFor(inc.w, n), links: [] });
   }
-  piece.text = item.text;
+  piece.text = text;
 }
 
 function writeStyleItem(inc: IncrementalWrite, item: MermaidItem, piece: Piece, index: number, id: string): void {
@@ -2928,7 +2928,7 @@ function writeItem(inc: IncrementalWrite, item: MermaidItem, index: number): voi
       break;
     }
     case "end":
-      writeEndItem(inc, item, piece, indent, id);
+      writeEndItem(inc, item.text, piece, indent, id);
       break;
     case "style":
       writeStyleItem(inc, item, piece, index, id);
@@ -2950,14 +2950,38 @@ function writeItem(inc: IncrementalWrite, item: MermaidItem, index: number): voi
   }
 }
 
-function appendNewLines(inc: IncrementalWrite, owned: Set<string>): void {
+function pendingNewLines(inc: IncrementalWrite, owned: Set<string>): Piece[] {
   const { w, unit } = inc;
-  const add = (text: string, links: string[] = []) => inc.pieces.push({ lead: `\n${unit}`, text, links });
+  const lines: Piece[] = [];
+  const add = (text: string, links: string[] = []) => lines.push({ lead: `\n${unit}`, text, links });
   for (const n of inc.freshNodes) if (!inc.parents.has(n.id)) add(declFor(w, n));
   for (const n of w.model.nodes) if (!owned.has(n.id) && w.snapNodes.has(n.id) && declChanged(w, n.id)) add(declFor(w, n));
   for (const e of w.model.edges) {
     if (inc.emitted.has(e.id) || !w.nodes.has(e.source) || !w.nodes.has(e.target)) continue;
     add(edgeLine(w, e), [e.id]);
+  }
+  return lines;
+}
+
+function openSubgraphs(items: MermaidItem[]): MermaidItem[] {
+  const open: MermaidItem[] = [];
+  for (const item of items) {
+    if (item.kind === "subgraph") open.push(item);
+    else if (item.kind === "end") open.pop();
+  }
+  return open;
+}
+
+function appendOpenSubgraphs(inc: IncrementalWrite, open: MermaidItem[], outside: boolean): void {
+  const added = inc.freshNodes.some((n) => open.some((item) => inc.parents.get(n.id) === item.ids[0]));
+  if (!outside && !added) return;
+  for (let i = open.length - 1; i >= 0; i--) {
+    const item = open[i];
+    const id = item.ids[0] ?? "";
+    const indent = indentOf(item.lead) ?? inc.unit.repeat(item.depth + 1);
+    const piece: Piece = { lead: `\n${indent}`, text: "", links: [] };
+    inc.pieces.push(piece);
+    writeEndItem(inc, "end", piece, indent, id);
   }
 }
 
@@ -2994,7 +3018,9 @@ function writeIncremental(w: Writer, extras: MermaidExtras, parents: Map<string,
   };
   const pendingStyles = w.model.nodes.filter((n) => styleChanged(w, n.id) && !lastStyle.has(n.id));
   extras.items.forEach((item, index) => writeItem(inc, item, index));
-  appendNewLines(inc, owned);
+  const newLines = pendingNewLines(inc, owned);
+  appendOpenSubgraphs(inc, openSubgraphs(extras.items), newLines.length > 0);
+  inc.pieces.push(...newLines);
   appendNewStyles(inc, pendingStyles);
   const covered = resolveLinkStyles(w, inc.pieces, "keep");
   const dashed = dashedLine(w, inc.pieces, covered);
