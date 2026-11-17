@@ -117,6 +117,50 @@ describe("live DOCX format reader", () => {
     expect(f.openFacts).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves attribute selectors while continuing a raw node page", async () => {
+    const f = fixture(p("Text"));
+    const first = await f.read({
+      kind: "nodes",
+      part: "/word/styles.xml",
+      namespaceUri: W,
+      localName: "style",
+      attribute: { namespaceUri: W, localName: "type", value: "paragraph" },
+      limit: 1,
+    });
+    expect(first.nextQuery).toMatchObject({
+      kind: "nodes",
+      part: "/word/styles.xml",
+      namespace_uri: W,
+      local_name: "style",
+      attribute: { namespace_uri: W, local_name: "type", value: "paragraph" },
+      offset: 1,
+      limit: 1,
+      expected_revision: first.revision,
+    });
+    const continuation = first.nextQuery as Record<string, unknown>;
+    const attribute = continuation.attribute as Record<string, unknown>;
+    const second = await f.read({
+      kind: "nodes",
+      part: String(continuation.part),
+      namespaceUri: String(continuation.namespace_uri),
+      localName: String(continuation.local_name),
+      attribute: {
+        namespaceUri: String(attribute.namespace_uri),
+        localName: String(attribute.local_name),
+        value: String(attribute.value),
+      },
+      offset: Number(continuation.offset),
+      limit: Number(continuation.limit),
+      expectedRevision: Number(continuation.expected_revision),
+    });
+    const styleIds = [first, second].flatMap((result) => result.nodes ?? []).map((record) => {
+      const node = record.node as { attributes?: { localName: string; value: string }[] };
+      return node.attributes?.find((entry) => entry.localName === "styleId")?.value;
+    });
+    expect(styleIds).toEqual(["Base", "Unused"]);
+    expect(second.nextQuery).toBeNull();
+  });
+
   it("reuses the live paragraph directory across pages and rebuilds it after mutation", async () => {
     const f = fixture(p("First") + p("Second"));
     const list = vi.spyOn(f.session, "listParagraphs");
@@ -332,6 +376,35 @@ describe("live DOCX format reader", () => {
     const focused = await f.read({ paragraphRef: refs[2] });
     expect(focused.objects).toHaveLength(2);
     expect(focused.objects?.every((item) => item.paragraphRef === refs[2])).toBe(true);
+  });
+
+  it("returns bounded direct formatting and object text for an oversized live paragraph", async () => {
+    const text = "A".repeat(1200);
+    const f = fixture(p(text, "<w:keepNext/>", "<w:b/>"));
+    const listed = await f.read({ kind: "paragraphs", text: "A", limit: 1, textLimit: 20 });
+    const focused = await f.read({ paragraphRef: String(listed.paragraphs?.[0].paragraphRef), textLimit: 100 });
+    expect(focused.paragraph).toMatchObject({
+      paragraphRef: listed.paragraphs?.[0].paragraphRef,
+      text: "A".repeat(1000),
+      textTruncated: true,
+      textLength: text.length,
+      paragraph: { keepNext: true },
+      readText: { kind: "paragraphs", paragraph_ref: listed.paragraphs?.[0].paragraphRef, text_offset: 0, limit: 1, expected_revision: focused.revision },
+    });
+    const paragraph = focused.objects?.find((object) => object.kind === "paragraph");
+    const run = focused.objects?.find((object) => object.kind === "run");
+    expect(paragraph).toMatchObject({
+      text: "A".repeat(100),
+      textTruncated: true,
+      textLength: text.length,
+      readText: { object_id: paragraph?.object_id, text_offset: 0, text_limit: 100, limit: 1, expected_revision: focused.revision },
+    });
+    expect(run).toMatchObject({
+      text: "A".repeat(100),
+      textTruncated: true,
+      textLength: text.length,
+      readText: { object_id: paragraph?.object_id, text_offset: 0, text_limit: 100, limit: 1, expected_revision: focused.revision },
+    });
   });
 
   it("reads model fields without inventing snapshot offsets and leaves missing model interfaces read-only", async () => {

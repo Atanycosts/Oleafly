@@ -99,7 +99,8 @@ describe("DOCX content-bound format facts", () => {
       p("No frame") +
       p("Inherited fixed frame", "Framed") +
       p("Explicit equivalent frame", "Framed", "", '<w:framePr w:w="5000" w:h="1000" w:hRule="exact" w:hAnchor="page" w:vAnchor="margin" w:x="0" w:y="0" w:hSpace="0" w:vSpace="0" w:anchorLock="0"/>') +
-      p("Inherited automatic frame", "DefaultFrame"),
+      p("Inherited automatic frame", "DefaultFrame") +
+      p("Aligned frame", "Framed", "", '<w:framePr w:w="5000" w:h="1000" w:hRule="exact" w:hAnchor="margin" w:vAnchor="page" w:xAlign="center" w:yAlign="bottom" w:wrap="notBeside" w:hSpace="100" w:vSpace="200" w:anchorLock="1" w:dropCap="drop" w:lines="3"/>'),
       styles,
     ));
     const paragraphs = facts.snapshot.objects.filter((object) => object.kind === "paragraph");
@@ -121,6 +122,20 @@ describe("DOCX content-bound format facts", () => {
         anchorLock: false,
       },
     });
+    expect(group(paragraphs[4], "paragraph").frame).toMatchObject({
+      xPt: 0,
+      yPt: 0,
+      hAnchor: "margin",
+      vAnchor: "page",
+      xAlign: "center",
+      yAlign: "bottom",
+      wrap: "notBeside",
+      hSpacePt: 0,
+      vSpacePt: 10,
+      anchorLock: true,
+      dropCap: "drop",
+      lines: 3,
+    });
     const definition = facts.snapshot.style_definitions?.find((style) => style.style_id === "Framed");
     expect(definition?.properties.paragraph).toMatchObject({
       framePresent: true,
@@ -129,14 +144,14 @@ describe("DOCX content-bound format facts", () => {
   });
 
   it("propagates positional table scope and explicit conditional-style evidence", async () => {
-    const table = `<w:tbl><w:tblPr><w:tblLook w:firstRow="1" w:firstColumn="1" w:noHBand="1" w:noVBand="1"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:trPr><w:cnfStyle w:val="100000000000"/></w:trPr><w:tc><w:tcPr><w:cnfStyle w:val="100000000000"/></w:tcPr>${p("Header A")}</w:tc><w:tc>${p("Header B")}</w:tc></w:tr><w:tr><w:tc>${p("Body A")}</w:tc><w:tc>${p("Body B")}</w:tc></w:tr></w:tbl>`;
+    const table = `<w:tbl><w:tblPr><w:tblLook w:firstRow="1" w:lastRow="1" w:firstColumn="1" w:lastColumn="1" w:noHBand="1" w:noVBand="1"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:trPr><w:cnfStyle w:val="100000000000"/></w:trPr><w:tc><w:tcPr><w:cnfStyle w:val="100000000000"/></w:tcPr>${p("Header A")}</w:tc><w:tc>${p("Header B")}</w:tc></w:tr><w:tr><w:tc>${p("Body A")}</w:tc><w:tc>${p("Body B")}</w:tc></w:tr></w:tbl>`;
     const facts = await openDocxFormatFacts(docx(table));
     const tableObject = facts.snapshot.objects.find((object) => object.kind === "table");
     expect(tableObject?.table_context).toBeUndefined();
     const rows = facts.snapshot.objects.filter((object) => object.kind === "tr");
     expect(rows.map((row) => row.table_context)).toMatchObject([
       { table_object_id: tableObject?.object_id, row_index: 0, row_count: 2, conditions: ["firstRow"] },
-      { table_object_id: tableObject?.object_id, row_index: 1, row_count: 2, conditions: [] },
+      { table_object_id: tableObject?.object_id, row_index: 1, row_count: 2, conditions: ["lastRow"] },
     ]);
     expect(rows.every((row) => row.table_context && !("column_index" in row.table_context))).toBe(true);
     const header = facts.snapshot.objects.find((object) => object.text === "Header A");
@@ -154,7 +169,12 @@ describe("DOCX content-bound format facts", () => {
     expect(facts.snapshot.objects.find((object) => object.text === "Header B")?.table_context).toMatchObject({
       row_index: 0,
       column_index: 1,
-      conditions: ["firstRow"],
+      conditions: ["lastCol", "firstRow", "neCell"],
+    });
+    expect(facts.snapshot.objects.find((object) => object.kind === "run" && object.text === "Body B")?.table_context).toMatchObject({
+      row_index: 1,
+      column_index: 1,
+      conditions: ["lastCol", "lastRow", "seCell"],
     });
   });
 
@@ -249,6 +269,23 @@ describe("DOCX content-bound format facts", () => {
     expect(group(run, "script_usage")).toMatchObject({ latin: true, east_asian: true });
     const themeOnly = await openDocxFormatFacts(docx(p("主题 Theme"), styles));
     expect(group(runs(themeOnly.snapshot.objects)[0], "run")).toMatchObject({ fontFamily: "Theme Body", fontFamilyEastAsia: "Theme Body CJK" });
+  });
+
+  it("selects the default character style and reports complex and fallback script usage", async () => {
+    const styles = '<w:style w:type="character" w:default="1" w:styleId="DefaultChar"><w:name w:val="Default Paragraph Font"/></w:style><w:style w:type="character" w:styleId="ComplexChar"><w:name w:val="Complex Script"/><w:rPr><w:rFonts w:cs="Complex Face"/></w:rPr></w:style>';
+    const facts = await openDocxFormatFacts(docx(
+      p("Latin") + p("العربية", "", '<w:rStyle w:val="ComplexChar"/>') + p("Հայերեն", "", '<w:rStyle w:val="ComplexChar"/>'),
+      styles,
+    ));
+    const [latin, arabic, armenian] = runs(facts.snapshot.objects);
+    expect([latin, arabic, armenian].map((run) => run.style_id)).toEqual(["DefaultChar", "ComplexChar", "ComplexChar"]);
+    expect(group(latin, "script_usage")).toMatchObject({ latin: true, east_asian: false, complex: false, other: false });
+    expect(group(arabic, "script_usage")).toMatchObject({ latin: false, east_asian: false, complex: true, other: false });
+    expect(group(armenian, "script_usage")).toMatchObject({ latin: false, east_asian: false, complex: false, other: true });
+    expect(group(arabic, "run")).toMatchObject({ complexLane: { fontFamily: "Complex Face" } });
+    expect(arabic.evidence.character_style_chain).toEqual([
+      { style_id: "ComplexChar", name: "Complex Script", based_on: null, type: "character" },
+    ]);
   });
 
   it("keeps unknown roles uncertain and supports explicit role evidence without reading node ids", async () => {
@@ -423,6 +460,14 @@ describe("DOCX content-bound format facts", () => {
     expect(raw).toMatchObject({ kind: "part", format: "bytes", data: binary, source_sha256: facts.snapshot.source_sha256 });
     if (raw.kind === "part" && raw.format === "bytes") raw.data[0] = 91;
     expect(facts.query({ kind: "part", part: "/custom/opaque.bin", format: "bytes" })).toMatchObject({ data: binary });
+    const sourceText = facts.query({ kind: "part", part: "/custom/item.xml", format: "text" });
+    expect(sourceText).toMatchObject({ kind: "part", format: "text", data: '<e:root xmlns:e="urn:else" e:attr="42"/>', source_sha256: facts.snapshot.source_sha256 });
+    expect(facts.query({ kind: "part", part: "/custom/item.xml", format: "tree" })).toMatchObject({
+      kind: "part",
+      format: "tree",
+      data: { namespaceUri: "urn:else", localName: "root", attributes: [expect.objectContaining({ localName: "attr", value: "42" })] },
+    });
+    expect(() => facts.query({ kind: "part", part: "/custom/missing.bin", format: "text" })).toThrow("Unknown DOCX part");
     const queried = facts.query({ kind: "nodes", namespace_uri: "urn:custom", attribute: { namespace_uri: "urn:custom", local_name: "flag", value: "original" } });
     expect(queried.kind).toBe("nodes");
     if (queried.kind === "nodes") {
