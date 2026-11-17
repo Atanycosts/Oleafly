@@ -457,7 +457,13 @@ cargo deny --workspace --all-features --config src-tauri/deny.toml check  # Rust
 
 The two audit commands require registry/network access. CI records their
 results when its workflow runs. An offline local run cannot certify that the
-dependency graph is advisory-free. `node --test scripts/local-checks.node-tests.mjs`
+dependency graph is advisory-free. The workspace patches Harper 2.10.0 to use
+zip 9 and replaces Chrono with Jiff in server mail timestamps and the Linux
+trash adapter. The retained upstream versions keep spelling rules and trash
+behavior stable; their source pins, licenses and downstream changes are recorded
+in [`vendor/harper-core/README.oleafly.md`](../vendor/harper-core/README.oleafly.md)
+and [`vendor/trash/README.oleafly.md`](../vendor/trash/README.oleafly.md).
+`node --test scripts/local-checks.node-tests.mjs`
 verifies local check selection and failure propagation with stubbed tools and
 temporary Git repositories; it starts no real build or test suite.
 

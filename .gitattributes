@@ -12,6 +12,10 @@
 *.tar.gz binary
 *.zip binary
 
+# Keep published dictionary, rule and fixture bytes intact in these downstream patches.
+vendor/harper-core/** -text whitespace=-blank-at-eol,-blank-at-eof
+vendor/trash/** -text whitespace=-blank-at-eol,-blank-at-eof
+
 # Parsed with "\n"-based markers by scripts/fetch-language-servers.node-tests.mjs.
 .github/workflows/*.yml text eol=lf
 
