@@ -242,6 +242,10 @@ pub(crate) fn arguments_with(
         }
         args.push(path.as_os_str().to_os_string());
     }
+    // Mount destinations create parents in bubblewrap's synthetic root. Seal
+    // those parents without changing the explicitly writable child mounts.
+    args.push("--remount-ro".into());
+    args.push("/".into());
     args.push("--".into());
     args.push(request.program.as_os_str().to_os_string());
     args.extend(request.args.iter().cloned());

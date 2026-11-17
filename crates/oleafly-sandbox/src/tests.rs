@@ -191,8 +191,15 @@ fn linux_bwrap_arguments_are_unchanged_for_a_fixed_spec() {
     assert_eq!(&args[mount + 6..mount + 9], ["--bind", &home, &home]);
     let program = Path::new("/bin/sh").canonicalize().unwrap();
     assert_eq!(
-        &args[args.len() - 4..],
-        ["--", &program.to_string_lossy(), "-c", "true"]
+        &args[args.len() - 6..],
+        [
+            "--remount-ro",
+            "/",
+            "--",
+            &program.to_string_lossy(),
+            "-c",
+            "true"
+        ]
     );
     assert!(args[8..mount]
         .chunks(3)
@@ -377,6 +384,56 @@ fn run_sh(spec: &SandboxSpec, script: &str) -> (i32, String) {
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     (output.status.code().unwrap_or(-1), text)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn runtime_mount_parents_are_read_only_while_explicit_write_grants_still_work() {
+    if availability() != Availability::Available {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let project = tempfile::tempdir().unwrap();
+    let runtime = project.path().join(".venv");
+    std::fs::create_dir_all(runtime.join("bin")).unwrap();
+    let executable = runtime.join("bin/task-runtime");
+    std::fs::write(&executable, "#!/bin/sh\nprintf 'runtime-ready\\n'\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut spec = fixture.spec(false);
+    spec.read_only = vec![runtime.clone()];
+    spec.read_write = vec![spec.workspace.clone()];
+    spec.env.insert(
+        "TASK_RUNTIME".into(),
+        runtime.to_string_lossy().into_owned(),
+    );
+    let (code, output) = run_sh(
+        &spec,
+        r#"set -eu
+"$TASK_RUNTIME/bin/task-runtime"
+if printf forbidden > "$TASK_RUNTIME/../outside.txt"; then exit 1; fi
+if mkdir "$TASK_RUNTIME/../outside-dir"; then exit 1; fi
+printf result > result.txt
+printf state > "$HOME/runtime-state.txt"
+printf temporary > "$TMPDIR/runtime-temp.txt"
+"#,
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("runtime-ready"), "{output}");
+    assert!(!project.path().join("outside.txt").exists());
+    assert!(!project.path().join("outside-dir").exists());
+    for (path, expected) in [
+        (spec.workspace.join("result.txt"), "result"),
+        (fixture.real_home().join("runtime-state.txt"), "state"),
+        (
+            fixture.real_home().join("tmp/runtime-temp.txt"),
+            "temporary",
+        ),
+    ] {
+        assert_eq!(std::fs::read_to_string(path).unwrap(), expected);
+    }
 }
 
 #[cfg(unix)]
