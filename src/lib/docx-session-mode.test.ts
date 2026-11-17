@@ -102,6 +102,41 @@ it.each(objectFormats)("refuses untrackable object formats in suggesting mode: %
   } finally { fixture.dispose(); }
 });
 
+it.each(["view", "suggest"] as const)("refuses a mixed font and object batch atomically in %s mode", (mode) => {
+  const fixture = mounted(mode);
+  try {
+    const before = fixture.surface.save();
+    const result = fixture.session.formatBatch?.([
+      { target: fixture.paragraph, font: { bold: true } },
+      {
+        target: fixture.paragraph,
+        objectFormat: { kind: "table", table: { headerRowCount: 1 } },
+      },
+    ], 0);
+
+    if (mode === "view") {
+      expect(result).toEqual({
+        ok: false,
+        code: "transaction-refused",
+        message: "the document store refused the transaction",
+        revision: 0,
+        changed: false,
+      });
+    } else {
+      expect(result).toEqual({
+        ok: false,
+        code: "unsupported-target",
+        message:
+          "Section and table object formatting cannot be recorded as a suggested revision. Switch to editing mode to apply it.",
+        revision: 0,
+        changed: false,
+      });
+    }
+    expect(fixture.session.revision()).toBe(0);
+    expect(fixture.surface.save()).toEqual(before);
+  } finally { fixture.dispose(); }
+});
+
 it("records paragraph controls and East Asian font with the suggesting author's revisions", () => {
   const fixture = mounted("suggest");
   try {

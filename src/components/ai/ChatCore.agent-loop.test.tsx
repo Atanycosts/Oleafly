@@ -5953,7 +5953,7 @@ describe("ChatCore approval cancellation and project isolation", () => {
       expect(rendered.queryByRole("alertdialog", { name: "Confirm AI edit" })).toBeNull();
 
       const latestProjectSave = () =>
-        saveMessages.mock.calls.findLast(
+        [...saveMessages.mock.calls].reverse().find(
           ([chatId, , opts]) => chatId === "chat-1" && opts?.projectId === firstProject,
         );
       await waitFor(() => {

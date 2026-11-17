@@ -895,6 +895,60 @@ describe("DOCX business tools", () => {
     })).toMatchObject({ template: "world-v7", check: { check_id: "check-7" } });
   });
 
+  it("validates save and template-check inputs and authorization before calling their hosts", async () => {
+    const saveDocument = vi.fn(async () => {
+      throw new Error("Save host must not run");
+    });
+    const checkTemplate = vi.fn(async () => {
+      throw new Error("Check host must not run");
+    });
+    const api = host({ saveDocument, checkTemplate });
+    const tools = createDocxTools(api);
+
+    for (const revision of [-1, 1.5, undefined]) {
+      expect(await tools.save_docx_document.execute({
+        session_id: "s1", expected_revision: revision,
+      })).toEqual({
+        error: "expected_revision must be the non-negative session revision to save.",
+      });
+    }
+    expect(await tools.check_docx_template.execute({
+      session_id: "s1", template: " \t ",
+    })).toEqual({
+      error: "template must be an explicit world version ID.",
+    });
+    expect(saveDocument).not.toHaveBeenCalled();
+    expect(checkTemplate).not.toHaveBeenCalled();
+
+    const blocked = createDocxTools(api, { mutationAllowed: () => false });
+    expect(await blocked.save_docx_document.execute({
+      session_id: "s1", expected_revision: 2,
+    })).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(await blocked.check_docx_template.execute({
+      session_id: "s1", template: "world-v7",
+    })).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = createDocxTools(api, { signal: controller.signal });
+    expect(await aborted.save_docx_document.execute({
+      session_id: "s1", expected_revision: 2,
+    })).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(await aborted.check_docx_template.execute({
+      session_id: "s1", template: "world-v7",
+    })).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(saveDocument).not.toHaveBeenCalled();
+    expect(checkTemplate).not.toHaveBeenCalled();
+  });
+
   it("returns unavailable capabilities instead of inventing a fallback", async () => {
     const tools = createDocxTools(host());
     for (const [run, error] of [

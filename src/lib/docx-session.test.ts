@@ -74,6 +74,23 @@ function syntheticDocx(paragraphs: readonly string[], styles?: string): Uint8Arr
   });
 }
 
+function withFootnote(bytes: Uint8Array): Uint8Array {
+  const parts = unzipSync(bytes);
+  parts["word/footnotes.xml"] = strToU8(
+    `<?xml version="1.0"?><w:footnotes xmlns:w="${WORD_NS}"><w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote><w:footnote w:id="1"><w:p><w:r><w:t>Footnote text.</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+  );
+  parts["word/_rels/document.xml.rels"] = strToU8(
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="footnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/></Relationships>`,
+  );
+  parts["[Content_Types].xml"] = strToU8(
+    new TextDecoder().decode(parts["[Content_Types].xml"]).replace(
+      "</Types>",
+      '<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/></Types>',
+    ),
+  );
+  return zipSync(parts);
+}
+
 function open(body: string | readonly string[]): AutomationHost {
   const paragraphs = typeof body === "string" ? [body] : body;
   const opened = createServerAutomationHost(syntheticDocx(paragraphs));
@@ -92,7 +109,10 @@ function treeParagraph(body: string | readonly string[]): OoxmlParagraphNode {
   return paragraph;
 }
 
-function editorSession(bytes: Uint8Array) {
+function editorSession(
+  bytes: Uint8Array,
+  options: { readonly rejectTransactionReason?: string } = {},
+) {
   const opened = openTreeSession(bytes);
   if (!opened.ok) throw new Error(`The synthetic DOCX did not open: ${opened.reason}`);
   const tree: TreeDocxSessionView = opened.session;
@@ -125,6 +145,14 @@ function editorSession(bytes: Uint8Array) {
           rejected: true,
           opCount: 0,
           reason: "planned operation refused",
+        };
+      }
+      if (options.rejectTransactionReason !== undefined) {
+        return {
+          committed: false,
+          rejected: true,
+          opCount: operations.length,
+          reason: options.rejectTransactionReason,
         };
       }
       return tree.applyTreeOps(operations);
@@ -301,6 +329,31 @@ describe("DOCX paragraph adapter over the real core", () => {
       expect(fixture.session.importTemplateStyles?.(new Uint8Array([80, 75]), ["Normal"], 0))
         .toMatchObject({ ok: false, code: "invalid-format", changed: false, revision: 0,
           message: expect.stringContaining("The template DOCX could not be read") });
+      expect(fixture.save()).toEqual(before);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
+  it("leaves the document byte-identical when the live tree rejects a formatting transaction", () => {
+    const fixture = editorSession(syntheticDocx(["Original."]), {
+      rejectTransactionReason: "The live tree is read-only.",
+    });
+    try {
+      const paragraph = fixture.session.listParagraphs()[0];
+      const before = fixture.save();
+
+      expect(fixture.session.formatParagraph?.(paragraph.handle, 0, {
+        font: { bold: true },
+      })).toEqual({
+        ok: false,
+        code: "transaction-refused",
+        message: "the document store refused the transaction",
+        revision: 0,
+        changed: false,
+      });
+      expect(fixture.treeBatches).toHaveLength(1);
+      expect(fixture.tree.packageRevision()).toBe(0);
       expect(fixture.save()).toEqual(before);
     } finally {
       fixture.session.dispose();
@@ -545,6 +598,36 @@ describe("DOCX paragraph adapter over the real core", () => {
       { start: 7, end: 8 },
       { start: 8, end: 9 },
     ]);
+  });
+
+  it("projects a footnote reference as one non-editable note atom in its model and display window", () => {
+    const fixture = editorSession(withFootnote(syntheticDocx([
+      '<w:p><w:r><w:t xml:space="preserve">Before </w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r><w:r><w:t xml:space="preserve"> after</w:t></w:r></w:p>',
+    ])));
+    try {
+      const paragraph = fixture.session.listParagraphs()[0];
+      const semantics = fixture.session.readParagraph(paragraph.handle);
+
+      expect(semantics.modelText).toBe("Before \uFFFC after");
+      expect(semantics.displayText).toBe("Before \uFFFC after");
+      expect(semantics.atoms).toMatchObject([
+        {
+          kind: "note",
+          modelRange: { start: 7, end: 8 },
+          displayRange: { start: 7, end: 8 },
+          displayText: "\uFFFC",
+          readable: true,
+          complete: true,
+          editable: false,
+        },
+      ]);
+      expect(semantics.editableRanges).toEqual([
+        { start: 0, end: 7 },
+        { start: 8, end: 14 },
+      ]);
+    } finally {
+      fixture.session.dispose();
+    }
   });
 
   it("keeps drawing node references stable when earlier text changes", () => {
@@ -835,6 +918,23 @@ describe("DOCX paragraph adapter over the real core", () => {
       changed: false,
     });
     expect(session.listParagraphs()[0].text).toBe("A ￼");
+  });
+
+  it("does not assign a host-only field atom across an ambiguous multi-placeholder window", () => {
+    const host = open(
+      '<w:p><w:r><w:t>A</w:t></w:r><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath><w:fldSimple w:instr="PAGE"><w:r><w:t>7</w:t></w:r></w:fldSimple><w:r><w:t>B</w:t></w:r></w:p>',
+    );
+    const session = createDocxHostSession(host);
+    try {
+      const paragraph = session.listParagraphs()[0];
+      const semantics = session.readParagraph(paragraph.handle);
+
+      expect(semantics.modelText).toBe("A\uFFFC\uFFFCB");
+      expect(semantics.atoms).toEqual([]);
+      expect(semantics.editableRanges).toEqual([]);
+    } finally {
+      session.dispose();
+    }
   });
 
   it("returns no paragraphs for an empty body", () => {
@@ -1277,6 +1377,33 @@ describe("DOCX paragraph adapter over the real core", () => {
     expect(host.revision()).toBe(0);
   });
 
+  it("refuses object formatting in a host-only batch without changing the document", () => {
+    const host = open([
+      '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>',
+    ]);
+    const session = createDocxHostSession(host);
+    const paragraph = session.listParagraphs()[0];
+    const before = host.save();
+    expect(before.ok).toBe(true);
+    if (!before.ok) throw new Error(before.error.message);
+
+    expect(session.formatBatch?.([
+      {
+        target: paragraph.handle,
+        objectFormat: { kind: "table", table: { headerRowCount: 1 } },
+      },
+    ], 0)).toEqual({
+      ok: false,
+      code: "unsupported-target",
+      message: "Section and table formatting require a live editor tree session.",
+      revision: 0,
+      changed: false,
+    });
+    expect(host.revision()).toBe(0);
+    const after = host.save();
+    expect(after).toEqual(before);
+  });
+
   it("routes object formatting through the live tree session", () => {
     const fixture = editorSession(syntheticDocx(
       ['<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'],
@@ -1515,6 +1642,32 @@ describe("DOCX target safety", () => {
 });
 
 describe("DOCX session and typed failures", () => {
+  it("returns no locator or target for a paragraph handle invalidated by deletion", () => {
+    const fixture = editorSession(syntheticDocx(["First.", "Deleted."]));
+    try {
+      const paragraph = fixture.session.listParagraphs()[1];
+      const nodeId = paragraph.paraId
+        ? fixture.tree.nodeIdOf(paragraph.paraId)
+        : null;
+      expect(nodeId).not.toBeNull();
+      expect(fixture.session.paragraphLocator?.(paragraph.handle)).not.toBeNull();
+
+      expect(fixture.tree.applyTreeOps([
+        { op: "deleteBlock", blockId: nodeId! },
+      ])).toEqual({ committed: true, rejected: false, opCount: 1 });
+      expect(fixture.tree.packageRevision()).toBe(1);
+      expect(fixture.session.paragraphLocator?.(paragraph.handle)).toBeNull();
+      expect(() => fixture.session.captureTarget(paragraph.handle)).toThrow(
+        "The paragraph is not present in this DOCX document.",
+      );
+      expect(fixture.session.listParagraphs().map((entry) => entry.text)).toEqual([
+        "First.",
+      ]);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
   it("omits an absent paragraph id from list and target identities", () => {
     const document = { kind: "document", ref: "document:test:1" } as AutomationHandle<"document">;
     const body = { kind: "body", ref: "body:test:1" } as AutomationHandle<"body">;

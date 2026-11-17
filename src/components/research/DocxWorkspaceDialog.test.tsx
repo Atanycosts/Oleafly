@@ -295,7 +295,7 @@ async function renderReady(harness: ReturnType<typeof sessionHarness>, onSaved =
   );
   const view = render(tree);
   if (waitForSession) await waitFor(() => expect(mocks.createSession).toHaveBeenCalled());
-  return { onClose, onSaved, rerender: () => view.rerender(tree) };
+  return { onClose, onSaved, rerender: () => view.rerender(tree), unmount: view.unmount };
 }
 
 beforeEach(() => {
@@ -604,6 +604,32 @@ it("rejects a reveal when the live revision changes before its next frame", asyn
   } finally { requestFrame.mockRestore(); }
 });
 
+it("rejects a pending reveal when the working session closes before its frame", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  const view = await renderReady(harness);
+  const registration = mocks.registerAgentSession.mock.calls[0][0];
+  let nextFrame: FrameRequestCallback | undefined;
+  const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    nextFrame = callback;
+    return 1;
+  });
+  try {
+    let navigation!: Promise<void>;
+    act(() => {
+      navigation = registration.reveal({ paragraphRef: "first", expectedRevision: 0 });
+    });
+    expect(nextFrame).toBeTypeOf("function");
+    view.unmount();
+    await act(async () => {
+      nextFrame?.(0);
+      await expect(navigation).rejects.toThrow("closed before navigation completed");
+    });
+    expect(harness.session.dispose).toHaveBeenCalledOnce();
+    expect(mocks.editor.scrollToAnchor).not.toHaveBeenCalled();
+    expect(mocks.editor.highlightAnchor).not.toHaveBeenCalled();
+  } finally { requestFrame.mockRestore(); }
+});
+
 it("marks saved check evidence stale after a user edit without rewriting the result", async () => {
   const harness = sessionHarness([paragraph("first", "Original")]);
   const checked = { baseline_id: INITIAL_BASELINE, world_version_id: WORLD_VERSION, validity: "CURRENT" };
@@ -620,6 +646,50 @@ it("marks saved check evidence stale after a user edit without rewriting the res
   act(() => harness.edit("first", "Changed since check"));
   expect(screen.getByTestId("docx-check-validity")).toHaveTextContent(en.journal.stale);
   expect(checked.validity).toBe("CURRENT");
+});
+
+it("retries a failed saved-version check only after the user asks again", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  const checked = {
+    baseline_id: INITIAL_BASELINE,
+    world_version_id: WORLD_VERSION,
+    validity: "CURRENT",
+  } satisfies Partial<JournalCheck>;
+  const boundProject = {
+    ...PROJECT,
+    binding: {
+      binding_id: "binding-current",
+      baseline_id: INITIAL_BASELINE,
+      world_version_id: WORLD_VERSION,
+    },
+  };
+  let checkAttempts = 0;
+  mocks.journalRequest.mockImplementation(async (path: string) => {
+    if (path === "/api/state") return { projects: [boundProject] };
+    if (path === "/api/check") {
+      checkAttempts += 1;
+      if (checkAttempts === 1) throw new Error("Checker unavailable");
+      return checked;
+    }
+    throw new Error(`Unexpected request ${path}`);
+  });
+  const view = await renderReady(harness);
+  fireEvent.click(screen.getByRole("button", { name: text.check }));
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Checker unavailable"));
+  expect(screen.getByRole("button", { name: text.check })).toBeEnabled();
+  expect(screen.queryByTestId("docx-check-validity")).not.toBeInTheDocument();
+  expect(view.onSaved).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole("button", { name: text.check }));
+  await waitFor(() => expect(screen.getByTestId("docx-check-validity")).toHaveTextContent(en.journal.current));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(mocks.journalRequest.mock.calls.map(([path]) => path)).toEqual([
+    "/api/state",
+    "/api/check",
+    "/api/state",
+    "/api/check",
+  ]);
+  expect(view.onSaved).toHaveBeenCalledOnce();
 });
 
 it("shows useful font progress without exposing shaping internals", async () => {
@@ -669,6 +739,35 @@ it("refreshes fonts in the existing edited session without changing its dirty st
   expect(mocks.editorDocument).toBe(bytes);
   expect(harness.text("first")).toBe("Unsaved edit");
   expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+});
+
+it("keeps the edited session and retries a failed font refresh", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  await renderReady(harness);
+  const bytes = mocks.editorDocument;
+  act(() => harness.edit("first", "Unsaved edit"));
+  fireEvent.click(screen.getByRole("button", { name: en.workspace.documentTools }));
+  const refresh = screen.getByTestId("docx-font-refresh");
+  mocks.editor.setFonts.mockImplementationOnce(async () => {
+    mocks.fontOptions?.onError(new Error("font read failed"));
+  });
+  fireEvent.click(refresh);
+  await waitFor(() => expect(screen.getAllByRole("alert").some(
+    (alert) => alert.textContent?.includes(`${text.fontError}: Error: font read failed`),
+  )).toBe(true));
+  await waitFor(() => expect(refresh).toBeEnabled());
+
+  mocks.editor.setFonts.mockImplementationOnce(async () => {
+    mocks.fontOptions?.onStatus({ probed: true, missing: [], aliases: [] });
+  });
+  fireEvent.click(refresh);
+  await waitFor(() => expect(mocks.editor.setFonts).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.getByTestId("docx-fonts-panel")).toHaveTextContent(en.docx.fonts.noneMissing));
+  expect(mocks.editorDocument).toBe(bytes);
+  expect(mocks.createSession).toHaveBeenCalledOnce();
+  expect(harness.text("first")).toBe("Unsaved edit");
+  expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+  expect(mocks.editorSave).not.toHaveBeenCalled();
 });
 
 it("regenerates the saved PDF after refreshing fonts without saving or remounting the edited document", async () => {
@@ -1007,6 +1106,51 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     expect(mocks.clearRecovery).toHaveBeenCalledOnce();
   });
 
+  it("cancels an in-flight Agent save and retries from a fresh export", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    let finishExport!: (bytes: ArrayBuffer) => void;
+    mocks.editorSave.mockReturnValueOnce(new Promise((resolve) => { finishExport = resolve; }));
+    mocks.commitRecovery.mockResolvedValueOnce({
+      baselineId: SAVED_BASELINE,
+      revision: 1,
+      sourceSha256: "d".repeat(64),
+    });
+    const view = await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    act(() => harness.edit("first", "Save after cancelling"));
+
+    const controller = new AbortController();
+    let cancelled!: Promise<DocxSaveResult>;
+    act(() => {
+      cancelled = registration.save({ expectedRevision: 1, signal: controller.signal });
+    });
+    await waitFor(() => expect(mocks.editorSave).toHaveBeenCalledOnce());
+    controller.abort();
+    await act(async () => {
+      finishExport(Uint8Array.from([80, 75, 1, 2]).buffer);
+      await expect(cancelled).rejects.toThrow("cancelled before the fixed save");
+    });
+    expect(mocks.prepareSave).not.toHaveBeenCalled();
+    expect(mocks.commitRecovery).not.toHaveBeenCalled();
+    expect(view.onSaved).not.toHaveBeenCalled();
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+
+    let saved!: DocxSaveResult;
+    await act(async () => {
+      saved = await registration.save({ expectedRevision: 1 });
+    });
+    expect(saved).toMatchObject({
+      baselineId: SAVED_BASELINE,
+      revision: 1,
+      document: { sessionRevision: 1, savedRevision: 1, dirty: false },
+    });
+    expect(mocks.editorSave).toHaveBeenCalledTimes(2);
+    expect(mocks.prepareSave).toHaveBeenCalledOnce();
+    expect(mocks.commitRecovery).toHaveBeenCalledOnce();
+    expect(view.onSaved).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved);
+  });
+
   it("uses the newly committed baseline for the next recovery snapshot", async () => {
     const harness = sessionHarness([paragraph("first", "Original paragraph")]);
     mocks.saveBaseline
@@ -1069,6 +1213,26 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  it("allows another workspace to navigate without prompting or closing this document", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    const { onClose } = await renderReady(harness);
+    act(() => harness.edit("first", "Unsaved text"));
+
+    let allowed = false;
+    await act(async () => {
+      allowed = await projectLeaveAllowed({
+        projectId: "other-app-project",
+        reason: "switch",
+        targetProjectId: "other-document",
+      });
+    });
+    expect(allowed).toBe(true);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+    expect(harness.text("first")).toBe("Unsaved text");
+  });
+
   it("clears the latest recovery snapshot before confirmed discard closes the working copy", async () => {
     const harness = sessionHarness([paragraph("first", "Original paragraph")]);
     const recoveryBytes = Uint8Array.from([80, 75, 9, 9]);
@@ -1107,6 +1271,43 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
       },
       recoveryBytes,
     );
+  });
+
+  it("keeps unsaved work open when recovery changes during discard and retries", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    mocks.readRecovery.mockResolvedValue(recovery);
+    mocks.clearRecovery.mockResolvedValueOnce(false);
+    const { onClose } = await renderReady(harness);
+    act(() => harness.edit("first", "Unsaved text retained after discard failure"));
+    await act(async () => {
+      expect(await projectLeaveAllowed({
+        projectId: "app-project",
+        reason: "close",
+        targetProjectId: null,
+      })).toBe(false);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: text.discard }));
+    await waitFor(() => expect(screen.getByRole("alert", { hidden: true })).toHaveTextContent(
+      "DOCX recovery snapshot changed before it could be discarded.",
+    ));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+    expect(mocks.clearRecovery).toHaveBeenCalledWith({
+      appProjectId: "app-project",
+      workbenchProjectId: PROJECT.project_id,
+      baseBaselineId: INITIAL_BASELINE,
+      sourceSha256: SOURCE.source_sha256,
+    }, recovery.bytes);
+    expect(mocks.discardRecovery).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("button", { name: text.discard })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: text.discard }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(mocks.readRecovery).toHaveBeenCalledTimes(2);
+    expect(mocks.clearRecovery).toHaveBeenCalledTimes(2);
+    expect(harness.text("first")).toBe("Unsaved text retained after discard failure");
   });
 
   it("blocks discard while an Agent save exports from an already-open close prompt", async () => {
@@ -1424,6 +1625,23 @@ it("withdraws an unaccepted task proposal before explicitly closing its working 
   await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   expect(mocks.settleActivity).toHaveBeenCalledWith("app-project", PROJECT.project_id, "proposal-1", expect.anything(), { kind: "withdrawn" });
   expect(mocks.applySuggestion).not.toHaveBeenCalled();
+});
+
+it("withdraws accepted task work before discarding and closing the working copy", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  const { onClose } = await renderReady(harness);
+  applyTask(harness);
+  await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledOnce());
+
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  fireEvent.click(screen.getByRole("button", { name: text.discard }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  expect(mocks.settleActivity.mock.calls.map((call) => call[4].kind)).toEqual([
+    "applied",
+    "withdrawn",
+  ]);
+  expect(mocks.applySuggestion).toHaveBeenCalledOnce();
+  expect(harness.text("first")).toBe("Task candidate");
 });
 
 function taskRecovery(): DocxRecoverySnapshot {

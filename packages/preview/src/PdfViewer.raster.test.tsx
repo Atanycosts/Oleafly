@@ -299,10 +299,10 @@ describe("PdfViewer subscriptions", () => {
     document.body.append(pane);
     const addScrollListener = vi.spyOn(pane, "addEventListener");
     const removeScrollListener = vi.spyOn(pane, "removeEventListener");
-    let view: ReturnType<typeof render> | null = null;
+    let unmount: (() => void) | null = null;
 
     try {
-      view = render(
+      const view = render(
         <PdfViewer
           data={new Uint8Array([1])}
           documentIdentity="doc-1"
@@ -311,6 +311,7 @@ describe("PdfViewer subscriptions", () => {
         />,
         { container: pane },
       );
+      unmount = view.unmount;
       const renderer = view.getByTestId("pdf-renderer");
       await waitFor(() => expect(renderer.dataset.pdfState).toBe("ready"));
       expect(observers).toHaveLength(1);
@@ -336,7 +337,7 @@ describe("PdfViewer subscriptions", () => {
           && typeof options === "object" && options.passive === true)
         .map(([, listener]) => listener);
       view.unmount();
-      view = null;
+      unmount = null;
 
       const removedHandlers = new Set(
         removeScrollListener.mock.calls
@@ -351,7 +352,7 @@ describe("PdfViewer subscriptions", () => {
         observers.every((observer) => observer.disconnect.mock.calls.length > 0),
       ).toBe(true);
     } finally {
-      view?.unmount();
+      unmount?.();
       pane.remove();
     }
   });
