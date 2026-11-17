@@ -9,7 +9,8 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import pymupdf
 import pytest
@@ -264,7 +265,7 @@ def test_libreoffice_render_stages_fonts_and_persists_matching_pdf_font_names(
             for argument in command
             if argument.startswith("-env:UserInstallation=")
         )
-        private_profile = Path(unquote(urlparse(profile_uri).path))
+        private_profile = Path(url2pathname(urlparse(profile_uri).path))
         staged_font = private_profile / "user/fonts" / f"{font_digest}.ttf"
         assert staged_font.read_bytes() == font_bytes
         private_profile_seen = True

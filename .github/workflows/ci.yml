@@ -61,6 +61,25 @@ jobs:
       - name: Install Workbench development dependencies
         run: python -m pip install -e ".[dev,fixture-building]"
 
+      - name: Install PDF inspection tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils
+          pdfinfo -v
+
+      - name: Install PDF inspection tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install poppler --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $pdfinfo = Get-ChildItem "$env:ProgramData\chocolatey\lib\poppler" -Filter pdfinfo.exe -Recurse | Select-Object -First 1
+          if (-not $pdfinfo) { throw 'Poppler did not provide pdfinfo.exe' }
+          $pdfinfo.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $pdfinfo.FullName -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Check Python formatting and lint
         run: |
           python -m ruff format --check --no-cache .
