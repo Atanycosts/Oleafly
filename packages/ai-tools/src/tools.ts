@@ -10,7 +10,9 @@ import type { TypstFigureRender } from "./typst-figure";
 import { DOCX_OBJECT_FORMAT_SCHEMAS, docxObjectFormatMutation, type DocxObjectFormatMutation } from "./docx-object-format";
 
 export type FigureEngine = "latex" | "typst";
-export type FigurePreview = { pdfBytes: Uint8Array } | { pngDataUrl: string };
+export type FigurePreview =
+  | { pdfBytes: Uint8Array; projectId?: string }
+  | { pngDataUrl: string; projectId?: string };
 
 export interface IndexDefView {
   kind: string;
@@ -1669,6 +1671,8 @@ export function createOleaflyTools(
         additionalProperties: false,
       },
       execute: async (input) => {
+        const projectId = pid();
+        if (!projectId) return { error: "No project open" };
         if (!host.getAiPdfCaptureEnabled()) {
           return {
             error:
@@ -1680,6 +1684,9 @@ export function createOleaflyTools(
         if (!bytes) return { error: "No PDF available. Run compile first (and ensure it succeeds)." };
         try {
           const { pages: pageTexts, numPages } = await extractPdfText(bytes);
+          if (pid() !== projectId || !mutationAllowed()) {
+            return { error: "The open project changed before PDF page verification finished." };
+          }
           if (!numPages) return { error: "PDF has no pages." };
           const maxPages = Math.min(6, Math.max(1, Math.floor(Number(input.max_pages) || 4)));
           let selected: number[];
@@ -1702,12 +1709,16 @@ export function createOleaflyTools(
           }
           const images: { page: number; dataUrl: string }[] = [];
           for (const page of selected) {
+            let dataUrl: string | null = null;
             try {
-              const dataUrl = await host.pdfToPng(bytes, page, 1.5);
-              images.push({ page, dataUrl });
+              dataUrl = await host.pdfToPng(bytes, page, 1.5);
             } catch {
               /* skip failed page raster */
             }
+            if (pid() !== projectId || !mutationAllowed()) {
+              return { error: "The open project changed before PDF page verification finished." };
+            }
+            if (dataUrl) images.push({ page, dataUrl });
           }
           if (onImage) {
             for (const img of images) onImage(img.dataUrl);
@@ -1867,8 +1878,20 @@ export function createDocxTools(
       execute: async (input: Record<string, unknown>) => {
         if (!host.prepareFonts) return { unavailable: true, error: "Word font preparation is unavailable." };
         if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
-        try { return await host.prepareFonts(optionalString(input, "session_id")); }
-        catch (error) { return unavailableOrError(error); }
+        const sessionId = optionalString(input, "session_id");
+        if (opts?.confirm && !(await opts.confirm({
+          tool: "prepare_docx_fonts",
+          summary: sessionId
+            ? `Refresh fonts for DOCX session ${sessionId}`
+            : "Refresh fonts for the active Word working copy",
+          ...(sessionId ? { path: `DOCX#${sessionId}` } : {}),
+        }))) return declined("prepare_docx_fonts");
+        if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+        try {
+          const result = await host.prepareFonts(sessionId);
+          if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+          return result;
+        } catch (error) { return unavailableOrError(error); }
       },
     },
     export_docx_document: {
@@ -1877,8 +1900,20 @@ export function createDocxTools(
       execute: async (input: Record<string, unknown>) => {
         if (!host.exportDocument) return { unavailable: true, error: "Word export is unavailable." };
         if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
-        try { return await host.exportDocument(optionalString(input, "session_id")); }
-        catch (error) { return unavailableOrError(error); }
+        const sessionId = optionalString(input, "session_id");
+        if (opts?.confirm && !(await opts.confirm({
+          tool: "export_docx_document",
+          summary: sessionId
+            ? `Export DOCX session ${sessionId}`
+            : "Export the active Word working copy",
+          ...(sessionId ? { path: `DOCX#${sessionId}` } : {}),
+        }))) return declined("export_docx_document");
+        if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+        try {
+          const result = await host.exportDocument(sessionId);
+          if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
+          return result;
+        } catch (error) { return unavailableOrError(error); }
       },
     },
     list_docx_documents: {
@@ -1992,6 +2027,7 @@ export function createDocxTools(
         if (opts.imageSupported === false) {
           return { error: "The active model does not accept image input. Use read_docx_document for text, math and drawing metadata." };
         }
+        if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
         try {
           const paragraphRef = stringField(input, "paragraph_ref");
           const objectRef = stringField(input, "object_ref");
@@ -2008,6 +2044,7 @@ export function createDocxTools(
             expectedRevision,
           };
           const result = await host.readImage(sessionId, request);
+          if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
           const image = docxImageForTool(result, request, sessionId);
           opts.onImage(image.dataUrl);
           return image.metadata;
@@ -2067,7 +2104,7 @@ export function createDocxTools(
             message: "The user declined this change.", declined: true as const,
             status: "declined" as const, tool: "replace_docx_text_range",
           };
-          if (!mutationAllowed()) return cancelled();
+          if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
           return await host.replaceTextRange(request, context);
         } catch (error) {
           return { error: String(error) };
@@ -2244,7 +2281,7 @@ export function createDocxTools(
               tool: "apply_docx_suggestion",
             };
           }
-          if (!mutationAllowed()) return cancelled();
+          if (!mutationAllowed() || context?.signal?.aborted) return cancelled();
           await host.inspectTarget(targetId);
           return await host.applySuggestion(
             {
@@ -2747,14 +2784,23 @@ export function createFigureTools(
   const { pid, mutationAllowed, prepareMutation } = mutationGuards(host, opts?.mutationAllowed);
   const figureEngine = (): FigureEngine | null =>
     host.getFigureEngine ? host.getFigureEngine() : "latex";
+  const requestActive = (projectId: string) => pid() === projectId && mutationAllowed();
+  const requestInterrupted = () => ({
+    error: "The open project changed or the figure request was cancelled before completion.",
+  });
+  const previewForProject = (projectId: string): FigurePreview | null => {
+    const preview = getLastFigurePreview();
+    return !preview?.projectId || preview.projectId === projectId ? preview : null;
+  };
 
   const previewTypst = async (id: string, code: string) => {
     if (!host.renderTypstFigure) return { error: TYPST_RENDERER_MISSING };
     try {
       const { typstPreviewOutcome, typstPreviewSource } = await import("./typst-figure");
       const render = await host.renderTypstFigure(id, typstPreviewSource(code));
+      if (!requestActive(id)) return requestInterrupted();
       const { pngDataUrl, result } = typstPreviewOutcome(render);
-      setLastFigurePreview(pngDataUrl ? { pngDataUrl } : null);
+      setLastFigurePreview(pngDataUrl ? { pngDataUrl, projectId: id } : null);
       if (pngDataUrl && onImage) onImage(pngDataUrl);
       return result;
     } catch (e) {
@@ -2818,20 +2864,23 @@ export function createFigureTools(
         try {
           const source = buildStandaloneDoc({ code, packages, libraries });
           const result = await compileIsolated(id, source);
+          if (!requestActive(id)) return requestInterrupted();
           let bytes: Uint8Array | null = null;
+          let previewImageDataUrl: string | null = null;
           if (result.has_pdf) {
             bytes = new Uint8Array(await readIsolatedPdf(id));
-            setLastFigurePreview({ pdfBytes: bytes });
-          } else {
-            setLastFigurePreview(null);
+            if (!requestActive(id)) return requestInterrupted();
           }
           if (bytes && onImage) {
             try {
-              onImage(await pdfPageToPng(bytes, 1, 2));
+              previewImageDataUrl = await pdfPageToPng(bytes, 1, 2);
             } catch {
               /* rendering is best-effort; text refine still works */
             }
+            if (!requestActive(id)) return requestInterrupted();
           }
+          setLastFigurePreview(bytes ? { pdfBytes: bytes, projectId: id } : null);
+          if (previewImageDataUrl) onImage?.(previewImageDataUrl);
           return {
             success: result.ok,
             errors: result.errors,
@@ -2877,7 +2926,8 @@ export function createFigureTools(
           engine === "typst"
             ? await typstFigureText(id, { code, caption, label, raw })
             : figureLatex(code, caption, label, raw);
-        const png = await previewImage(getLastFigurePreview(), pdfPageToPng);
+        const png = await previewImage(previewForProject(id), pdfPageToPng);
+        if (!requestActive(id)) return requestInterrupted();
         if (
           confirm &&
           !(await confirm({
@@ -2944,6 +2994,7 @@ export function createFigureTools(
         if (!id) return { error: "No project open" };
         try {
           const bytes = new Uint8Array(await readProjectBytes(id, path));
+          if (!requestActive(id)) return requestInterrupted();
           if (bytes.byteLength > MAX_IMAGE_BYTES) {
             return { error: `Image exceeds the ${MAX_IMAGE_BYTES / (1024 * 1024)} MiB limit.` };
           }

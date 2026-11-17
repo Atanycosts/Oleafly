@@ -418,6 +418,31 @@ describe("replace_in_file", () => {
   });
 });
 
+describe("file structure changes during approval", () => {
+  it.each([
+    ["create_file", { path: "new.tex" }],
+    ["rename_file", { from: "a.tex", to: "b.tex" }],
+    ["delete_file", { path: "a.tex" }],
+    ["set_main_doc", { path: "a.tex" }],
+  ] as const)("%s does not touch the old project after a switch", async (name, input) => {
+    const getProjectId = vi.fn(() => "proj");
+    const { host } = makeHost({}, { getProjectId });
+    const confirm = vi.fn<ConfirmFn>(async () => {
+      getProjectId.mockReturnValue("other");
+      return true;
+    });
+
+    expect(await createOleaflyTools(host, { confirm })[name].execute(input)).toEqual({
+      error: "Error: Project changed or the external request was cancelled before mutation.",
+    });
+    expect(host.createFile).not.toHaveBeenCalled();
+    expect(host.renameFile).not.toHaveBeenCalled();
+    expect(host.deleteFile).not.toHaveBeenCalled();
+    expect(host.setMainDoc).not.toHaveBeenCalled();
+    expect(host.prepareExternalMutation).not.toHaveBeenCalled();
+  });
+});
+
 describe("create_file", () => {
   it("creates a file, refreshes the tree, and defaults to a file", async () => {
     const confirm = vi.fn<ConfirmFn>(async () => true);
