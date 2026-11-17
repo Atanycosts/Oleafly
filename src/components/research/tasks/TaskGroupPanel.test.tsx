@@ -254,6 +254,22 @@ describe("TaskGroupPanel", () => {
   expect(view.queryByText("Check evidence")).toBeNull();
   expect(view.getByText("create")).toBeTruthy();
  });
+ it("keeps the creation form unavailable until a failed bootstrap retry succeeds", async () => {
+  api.loadTaskGroup.mockReset()
+    .mockRejectedValueOnce(new Error("Group unavailable"))
+    .mockResolvedValueOnce(snapshot());
+  const callback = vi.fn();
+  const view = testing.render(<Panel task={task} agents={agents} onSnapshot={callback} />);
+  await testing.waitFor(() => expect(view.getByText("Group unavailable")).toBeTruthy());
+  expect(view.queryByText("create")).toBeNull();
+  expect(callback).toHaveBeenCalledWith(null);
+
+  testing.fireEvent.click(view.getByText("refresh"));
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+  expect(view.queryByText("Group unavailable")).toBeNull();
+  expect(api.loadTaskGroup).toHaveBeenCalledTimes(2);
+  expect(callback).toHaveBeenLastCalledWith(snapshot());
+ });
  it("does not replace an ACP coordinator with a built-in member", async () => {
   const view = testing.render(<Panel task={{ ...task, runtimeId: "acp" }} agents={agents} />);
   await testing.waitFor(() => expect(view.getByText("acpUnsupported")).toBeTruthy());
@@ -320,6 +336,71 @@ describe("TaskGroupPanel", () => {
     kind: "path",
     value: "notes.md",
   }, false));
+ });
+
+ it("preserves a failed message draft and clears it only after an explicit retry succeeds", async () => {
+  api.loadTaskGroup.mockResolvedValue(snapshot());
+  api.sendGroupMessage
+    .mockRejectedValueOnce(new Error("Message send failed"))
+    .mockResolvedValueOnce(undefined);
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+  const message = view.getByLabelText("message") as HTMLTextAreaElement;
+  const requestWork = view.getByLabelText("requestWork") as HTMLInputElement;
+  testing.fireEvent.change(message, { target: { value: "Retry this request" } });
+  testing.fireEvent.click(requestWork);
+  testing.fireEvent.click(view.getByText("send"));
+
+  await testing.waitFor(() => expect(view.getByText("Message send failed")).toBeTruthy());
+  expect(message.value).toBe("Retry this request");
+  expect(requestWork.checked).toBe(true);
+  expect((view.getByText("send") as HTMLButtonElement).disabled).toBe(false);
+  expect(api.loadTaskGroupMessages).not.toHaveBeenCalled();
+
+  testing.fireEvent.click(view.getByText("send"));
+  await testing.waitFor(() => expect(api.sendGroupMessage).toHaveBeenCalledTimes(2));
+  await testing.waitFor(() => expect(message.value).toBe(""));
+  expect(requestWork.checked).toBe(false);
+  expect(view.queryByText("Message send failed")).toBeNull();
+  expect(api.sendGroupMessage.mock.calls).toEqual([
+    ["p1", "g1", {
+      body: "Retry this request",
+      recipients: [],
+      replyTo: null,
+      requestWork: true,
+      object: null,
+    }],
+    ["p1", "g1", {
+      body: "Retry this request",
+      recipients: [],
+      replyTo: null,
+      requestWork: true,
+      object: null,
+    }],
+  ]);
+ });
+
+ it("does not clear or refresh a new task when a previous scope's send completes late", async () => {
+  let finishSend!: () => void;
+  api.loadTaskGroup.mockReset()
+    .mockResolvedValueOnce(snapshot())
+    .mockResolvedValueOnce(null);
+  api.sendGroupMessage.mockReturnValueOnce(new Promise<void>(done => { finishSend = done; }));
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+  testing.fireEvent.change(view.getByLabelText("message"), { target: { value: "Late send" } });
+  testing.fireEvent.click(view.getByText("send"));
+  await testing.waitFor(() => expect(api.sendGroupMessage).toHaveBeenCalledOnce());
+
+  view.rerender(<Panel task={{ ...task, id: "t2", projectId: "p2" }} agents={agents} />);
+  await testing.waitFor(() => expect(api.loadTaskGroup).toHaveBeenCalledWith("p2", "t2"));
+  await testing.waitFor(() => expect(view.getByText("create")).toBeTruthy());
+  await testing.act(async () => finishSend());
+
+  expect(view.queryByText("Late send")).toBeNull();
+  expect(view.queryByRole("alert")).toBeNull();
+  expect(view.getByText("create")).toBeTruthy();
+  expect(api.loadTaskGroupMessages).not.toHaveBeenCalled();
  });
 
  it("shares the loaded snapshot and shows the source and result message once", async () => {
@@ -604,6 +685,56 @@ describe("TaskGroupPanel", () => {
   expect(testing.within(writerAttention).getByText(/file budget\.csv · v2/)).toBeTruthy();
   expect(testing.within(writerAttention).queryByText("attentionRead")).toBeNull();
   expect(view.queryByText("file hidden.md · v1")).toBeNull();
+ });
+
+ it("inspects an event outside the loaded window once and keeps it in the work detail", async () => {
+  const loaded = attributedSnapshot();
+  loaded.events = [];
+  const event = { ...eventRecord(2), id: "e2" };
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupEvent.mockResolvedValue(event);
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-w2");
+
+  testing.fireEvent.click(testing.within(work).getByText("sourceInspect"));
+  await testing.waitFor(() => expect(api.loadTaskGroupEvent).toHaveBeenCalledWith("p1", "t1", "g1", "e2"));
+  await testing.waitFor(() => expect(testing.within(
+    view.getByTestId("work-w2"),
+  ).getByText(/Event 2/)).toBeTruthy());
+  expect(testing.within(view.getByTestId("work-w2")).queryByText("sourceInspect")).toBeNull();
+  expect(api.loadTaskGroupEvent).toHaveBeenCalledOnce();
+ });
+
+ it("clears an event inspection error after the user retries the exact lookup", async () => {
+  const loaded = attributedSnapshot();
+  loaded.events = [];
+  const event = { ...eventRecord(2), id: "e2" };
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupEvent
+    .mockRejectedValueOnce(new Error("Event lookup failed"))
+    .mockResolvedValueOnce(event);
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-w2");
+
+  testing.fireEvent.click(testing.within(work).getByText("sourceInspect"));
+  await testing.waitFor(() => expect(api.loadTaskGroupEvent).toHaveBeenCalledWith("p1", "t1", "g1", "e2"));
+  await testing.waitFor(() => expect(view.getByText("Event lookup failed")).toBeTruthy());
+  await testing.waitFor(() => expect((
+    testing.within(view.getByTestId("work-w2")).getByText("sourceInspect") as HTMLButtonElement
+  ).disabled).toBe(false));
+
+  testing.fireEvent.click(testing.within(view.getByTestId("work-w2")).getByText("sourceInspect"));
+  await testing.waitFor(() => expect(api.loadTaskGroupEvent).toHaveBeenCalledTimes(2));
+  await testing.waitFor(() => expect(testing.within(
+    view.getByTestId("work-w2"),
+  ).getByText(/Event 2/)).toBeTruthy());
+
+  expect(view.queryByText("Event lookup failed")).toBeNull();
+  expect(view.queryByRole("alert")).toBeNull();
+  expect(api.loadTaskGroupEvent.mock.calls).toEqual([
+    ["p1", "t1", "g1", "e2"],
+    ["p1", "t1", "g1", "e2"],
+  ]);
  });
 
  it("shows the retained content and reason for responsibility-based participation", async () => {

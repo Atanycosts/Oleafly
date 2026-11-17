@@ -327,6 +327,26 @@ Dvo\v{r}\'ak \výsledek \αβ`,
     });
   });
 
+  it("does not report ordinary cross-file macro redefinitions as duplicate targets", () => {
+    const value = snapshot({
+      "main.tex": String.raw`\newcommand{\shared}{First}
+\shared`,
+      "style.tex": String.raw`\renewcommand{\shared}{Second}`,
+    });
+
+    expect(
+      value.definitions.filter(
+        (definition) =>
+          definition.kind === "macro" && definition.name === "shared",
+      ),
+    ).toHaveLength(2);
+    expect(
+      value.diagnostics.filter(
+        (diagnostic) => diagnostic.code === "duplicate-definition",
+      ),
+    ).toEqual([]);
+  });
+
   it("keeps LaTeX and Typst labels in separate namespaces", () => {
     const value = snapshot(MIXED_ENGINE_LABELS);
 
@@ -1043,6 +1063,39 @@ ta}`;
     ).toBe(accepted);
   });
 
+  it("accepts a current partial snapshot but rejects an identity-mismatched envelope", () => {
+    const older = snapshot({
+      "main.tex": String.raw`\section{Previous}`,
+    });
+    const current = snapshot({
+      "main.typ": "= Recovered <ok>\n#let broken = (\n/* open",
+    }, ["main.typ"], 2);
+
+    expect(current.status).toBe("partial");
+    expect(
+      acceptedProjectSnapshot(
+        {
+          status: "success",
+          identity: current.identity,
+          data: older,
+          stale: false,
+        },
+        "project",
+      ),
+    ).toBeNull();
+    expect(
+      acceptedProjectSnapshot(
+        {
+          status: "partial",
+          identity: current.identity,
+          data: current,
+          stale: false,
+        },
+        "project",
+      ),
+    ).toBe(current);
+  });
+
   it("uses a bounded masked active-file fallback without scanning background raw buffers", () => {
     const accepted = snapshot({
       "main.tex": String.raw`\ref{stable}`,
@@ -1364,6 +1417,56 @@ ta}`;
       expect(second?.requestGeneration).toBeGreaterThan(
         first?.requestGeneration ?? 0,
       );
+    } finally {
+      useIndexStore.getState().reset();
+      useFilesStore.setState({
+        projectId: null,
+        activePath: null,
+        files: {},
+      });
+    }
+  });
+
+  it("uses the active files-store buffer only while it still matches accepted analysis", () => {
+    const source = String.raw`\section{Current}`;
+    const accepted = snapshot({ "main.tex": source });
+    try {
+      useFilesStore.setState({
+        projectId: "project",
+        activePath: "main.tex",
+        files: {
+          "main.tex": { content: source, dirty: false },
+        },
+      });
+      useIndexStore.setState({
+        texts: { "main.tex": source },
+        intelligenceState: {
+          status: "success",
+          identity: accepted.identity,
+          data: accepted,
+          stale: false,
+        },
+      });
+      expect(currentProjectIntelligence()).toEqual({
+        path: "main.tex",
+        snapshot: accepted,
+      });
+
+      useFilesStore.setState({
+        files: {
+          "main.tex": { content: `${source}\nDraft`, dirty: true },
+        },
+      });
+      expect(currentProjectIntelligence()).toBeNull();
+
+      useFilesStore.setState({
+        activePath: "other.tex",
+        files: {
+          "main.tex": { content: source, dirty: false },
+          "other.tex": { content: source, dirty: false },
+        },
+      });
+      expect(currentProjectIntelligence()).toBeNull();
     } finally {
       useIndexStore.getState().reset();
       useFilesStore.setState({
