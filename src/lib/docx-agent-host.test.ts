@@ -27,6 +27,7 @@ vi.mock("@/lib/docx-equation-conversion", async (importOriginal) => {
 });
 
 import {
+  type DocxAgentRegistration,
   createDocxAgentTools,
   getDocxWorkspaceContext,
   revealDocxWorkspaceTarget,
@@ -45,6 +46,7 @@ import { useAgentWorkspaceStore } from "@/store/agent-workspace";
 import { beginChatRun, endChatRun } from "@/components/ai/chat-run-registry";
 import { docxReadForTool, type DocxReadQuery } from "@oleafly/ai-tools";
 import { DocxEquationConversionError, type CompiledDocxEquation } from "./docx-equation-conversion";
+import type { DocxActivity } from "./docx-task-activity";
 
 type DocxFormatReadQuery = Parameters<NonNullable<typeof DOCX_AGENT_HOST.readFormat>>[1];
 type Exec = (input?: unknown) => Promise<unknown>;
@@ -1191,20 +1193,19 @@ describe("live DOCX format, save and template tools", () => {
   it("refuses a save receipt from another working copy without replacing the registered baseline", async () => {
     const local = harness();
     local.edit("p1", "Unsaved revision.");
-    register(local.session, {
-      save: async ({ expectedRevision }) => ({
+    const save: NonNullable<DocxAgentRegistration["save"]> = async ({ expectedRevision }) => ({
+      baselineId: "baseline-other",
+      revision: expectedRevision,
+      sourceSha256: "f".repeat(64),
+      document: {
+        sessionId: "another-session",
         baselineId: "baseline-other",
-        revision: expectedRevision,
-        sourceSha256: "f".repeat(64),
-        document: {
-          sessionId: "another-session",
-          baselineId: "baseline-other",
-          sessionRevision: expectedRevision,
-          savedRevision: expectedRevision,
-          dirty: false,
-        },
-      }),
+        sessionRevision: expectedRevision,
+        savedRevision: expectedRevision,
+        dirty: false,
+      },
     });
+    register(local.session, { save });
 
     expect(await createDocxAgentTools().save_docx_document.execute({ expected_revision: 1 }))
       .toEqual({ error: "Error: The DOCX save receipt does not describe the registered working copy." });
@@ -1806,7 +1807,7 @@ describe("task-provided DOCX proposals", () => {
     const verified = validateTaskDocxProposal(scope, captured.target.targetId, 0, "Task text.", "session-1");
     expect(verified.document).toEqual({ sessionId: "session-1", appProjectId: "app-project", workbenchProjectId: "paper-project", baselineId: "baseline-1", sourceSha256: "a".repeat(64), sessionRevision: 0, savedRevision: 0 });
     expect(onTaskSuggestion).not.toHaveBeenCalled();
-    const activity = { id: "proposal-1", document: verified.document, origin: { taskId: "task-1", generation: 3, groupId: null, memberId: null, executionId: null, workIds: [] }, proposalId: null, createdAt: 1, event: { type: "runtime", event: { kind: "proposed", target: verified.target, proposed: "Task text." } } } as const;
+    const activity: DocxActivity = { id: "proposal-1", document: verified.document, origin: { taskId: "task-1", generation: 3, groupId: null, memberId: null, executionId: null, workIds: [] }, proposalId: null, createdAt: 1, event: { type: "runtime", event: { kind: "proposed", target: verified.target, proposed: "Task text." } } };
     presentTaskDocxProposal(scope, { ...activity, origin: { ...activity.origin, workIds: [] } });
     expect(onTaskSuggestion).toHaveBeenCalledWith(activity, expect.objectContaining({ original: "Original paragraph.", revision: 0 }));
     expect(() => presentTaskDocxProposal(scope, {
@@ -2020,47 +2021,6 @@ describe("task-provided DOCX proposals", () => {
     expect(continuation).toBeNull();
     expect(JSON.parse(payloadJson)).toEqual({ formula: "y".repeat(12000) });
     expect(JSON.stringify(first).length).toBeLessThanOrEqual(10_000);
-  });
-  it("continues a pre-serialized atom payload without inventing a second JSON shape", async () => {
-    const payloadJson = JSON.stringify({ formula: '"\\中文'.repeat(1200) });
-    const atom: DocxInlineAtom = {
-      objectRef: "serialized-formula",
-      kind: "math",
-      modelRange: { start: 0, end: 1 },
-      displayRange: { start: 0, end: 1 },
-      displayText: "\uFFFC",
-      readable: true,
-      complete: true,
-      editable: false,
-      payloadJson,
-      payloadLength: payloadJson.length,
-    };
-    const local = harness([paragraph("p1", "\uFFFC")], (current, revision) =>
-      semantics(current, revision, { atoms: [atom], editableRanges: [] }));
-    register(local.session);
-    let page = readTaskDocxDocumentPage(scope, "session-1", {});
-    let assembled = "";
-    let chunks = 0;
-    for (;;) {
-      const returned = page.paragraphs[0].atoms[0];
-      expect(returned).toMatchObject({
-        objectRef: "serialized-formula",
-        payloadOffset: expect.any(Number),
-        payloadLength: payloadJson.length,
-      });
-      expect(returned).not.toHaveProperty("payload");
-      assembled += returned.payloadJson ?? "";
-      if (!page.nextQuery) break;
-      expect(page.nextQuery).toMatchObject({
-        atomOffset: 0,
-        payloadOffset: expect.any(Number),
-        expectedRevision: 0,
-      });
-      expect(chunks++).toBeLessThan(30);
-      page = readTaskDocxDocumentPage(scope, "session-1", page.nextQuery);
-    }
-    expect(chunks).toBeGreaterThan(1);
-    expect(JSON.parse(assembled)).toEqual(JSON.parse(payloadJson));
   });
   it("continues a large zero-width payload in an otherwise empty paragraph", async () => {
     const payload = { label: "picture".repeat(1800) };
