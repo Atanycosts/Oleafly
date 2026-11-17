@@ -232,6 +232,81 @@ function malformed(result: AutomationOperationResult): AutomationBatchResponse {
 }
 
 describe("DOCX paragraph adapter over the real core", () => {
+  it("recognizes an applied suggestion and clears that state after a later edit", () => {
+    const fixture = editorSession(syntheticDocx(["Original."]));
+    try {
+      const paragraph = fixture.session.listParagraphs()[0].handle;
+      const target = fixture.session.captureTarget(paragraph);
+      expect(fixture.session.isSuggestionApplied(target, "Revised.")).toBe(false);
+      expect(fixture.session.applySuggestion(target, "Revised.")).toMatchObject({ ok: true, changed: true });
+      expect(fixture.session.isSuggestionApplied(target, "Revised.")).toBe(true);
+      const updated = fixture.session.captureTarget(paragraph);
+      expect(fixture.session.applySuggestion(updated, "Later manual edit.")).toMatchObject({ ok: true, changed: true });
+      expect(fixture.session.isSuggestionApplied(target, "Revised.")).toBe(false);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
+  it("does not classify a complex paragraph as an applied whole-paragraph suggestion", () => {
+    const fixture = editorSession(syntheticDocx([
+      '<w:p><w:hyperlink><w:r><w:t>Linked text.</w:t></w:r></w:hyperlink></w:p>',
+    ]));
+    try {
+      const paragraph = fixture.session.listParagraphs()[0];
+      const target = fixture.session.captureTarget(paragraph.handle);
+      expect(fixture.session.isSuggestionApplied(target, paragraph.text)).toBe(false);
+      expect(fixture.session.applySuggestion(target, "Plain replacement.")).toMatchObject({
+        ok: false, changed: false, code: "unsupported-target", revision: 0,
+      });
+      expect(fixture.session.listParagraphs()[0].text).toBe(paragraph.text);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
+  it.each([
+    { start: -1, end: 1 },
+    { start: 0, end: 0 },
+    { start: 3, end: 2 },
+    { start: 0, end: 100 },
+    { start: 0.5, end: 2 },
+    { start: 2, end: 3 },
+    { start: 1, end: 2 },
+  ])("rejects an invalid or split-surrogate replacement range without changing bytes: %j", (modelRange) => {
+    const fixture = editorSession(syntheticDocx(["A😀B"]));
+    try {
+      const paragraph = fixture.session.listParagraphs()[0];
+      const before = fixture.save();
+      expect(fixture.session.replaceParagraphRange({
+        paragraphRef: paragraph.handle.ref, expectedRevision: 0, modelRange,
+        expectedText: paragraph.text.slice(modelRange.start, modelRange.end), text: "Replacement",
+      })).toMatchObject({ ok: false, code: "invalid-range", changed: false, revision: 0 });
+      expect(fixture.save()).toEqual(before);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
+  it("refuses an empty formatting batch and a stale or unreadable template before changing the package", () => {
+    const fixture = editorSession(syntheticDocx(["Original."]));
+    try {
+      const before = fixture.save();
+      expect(fixture.session.formatBatch?.([], 0)).toMatchObject({
+        ok: false, code: "invalid-format", changed: false, revision: 0,
+      });
+      expect(fixture.session.importTemplateStyles?.(before, ["Normal"], 1)).toMatchObject({
+        ok: false, code: "stale-target", changed: false, revision: 0,
+      });
+      expect(fixture.session.importTemplateStyles?.(new Uint8Array([80, 75]), ["Normal"], 0))
+        .toMatchObject({ ok: false, code: "invalid-format", changed: false, revision: 0,
+          message: expect.stringContaining("The template DOCX could not be read") });
+      expect(fixture.save()).toEqual(before);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
   it("lists paragraph handles without reading their content", () => {
     const fixture = editorSession(syntheticDocx([
       "First paragraph.",

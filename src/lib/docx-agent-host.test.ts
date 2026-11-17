@@ -36,12 +36,14 @@ import {
   runTaskDocxOperation,
   readTaskDocxDocumentPage,
   readTaskDocxImage,
+  settleTaskDocxOperation,
+  subscribeDocxAgentSessions,
   unregisterDocxAgentSession,
   updateDocxAgentSession,
 } from "./docx-agent-host";
 import { useAgentWorkspaceStore } from "@/store/agent-workspace";
 import { beginChatRun, endChatRun } from "@/components/ai/chat-run-registry";
-import { docxReadForTool } from "@oleafly/ai-tools";
+import { docxReadForTool, type DocxReadQuery } from "@oleafly/ai-tools";
 import { DocxEquationConversionError, type CompiledDocxEquation } from "./docx-equation-conversion";
 
 type DocxFormatReadQuery = Parameters<NonNullable<typeof DOCX_AGENT_HOST.readFormat>>[1];
@@ -209,6 +211,47 @@ beforeEach(() => {
 });
 
 describe("Word workspace context and execution feedback", () => {
+  it("notifies session observers about edits and saved baselines, then removes a closed active session", async () => {
+    const local = harness();
+    const listener = vi.fn();
+    const unsubscribe = subscribeDocxAgentSessions(listener);
+    register(local.session);
+    expect(listener).toHaveBeenCalledTimes(1);
+    local.edit("p1", "Unsaved edit.");
+    expect(listener).toHaveBeenCalledTimes(2);
+    updateDocxAgentSession("session-1", { baselineId: "saved-edit", savedRevision: 1 });
+    expect(listener).toHaveBeenCalledTimes(3);
+
+    const second = harness([paragraph("p2", "Second working copy.")]);
+    register(second.session, { sessionId: "session-2", filename: "second.docx" });
+    expect((await DOCX_AGENT_HOST.readDocument()).document.sessionId).toBe("session-2");
+    unregisterDocxAgentSession("session-2");
+    expect((await DOCX_AGENT_HOST.readDocument()).document).toMatchObject({
+      sessionId: "session-1", baselineId: "saved-edit", sessionRevision: 1, dirty: false,
+    });
+    const calls = listener.mock.calls.length;
+    second.edit("p2", "Closed session edit.");
+    expect(listener).toHaveBeenCalledTimes(calls);
+    unsubscribe();
+    local.edit("p1", "Later edit.");
+    expect(listener).toHaveBeenCalledTimes(calls);
+  });
+
+  it("settles a recorded task operation only in its original project and working copy", async () => {
+    const recorded = vi.fn(async () => {});
+    register(harness().session, { onTaskOperationRecorded: recorded });
+    const scope = { projectId: "app-project", workbenchProjectId: "paper-project" };
+    await settleTaskDocxOperation(scope, "committed-operation", "session-1");
+    expect(recorded).toHaveBeenCalledExactlyOnceWith("committed-operation");
+    await expect(settleTaskDocxOperation(
+      { ...scope, workbenchProjectId: "other-paper" }, "committed-operation", "session-1",
+    )).rejects.toThrow("unavailable or ambiguous");
+    unregisterDocxAgentSession("session-1");
+    await expect(settleTaskDocxOperation(scope, "committed-operation", "session-1"))
+      .rejects.toThrow("unavailable or ambiguous");
+    expect(recorded).toHaveBeenCalledOnce();
+  });
+
   it("resolves the engine paragraph ID only when context is requested and refuses stale or reference selections", () => {
     const local = harness();
     const readParagraphs = vi.spyOn(local.session, "listParagraphs");
@@ -328,6 +371,27 @@ describe("Word workspace context and execution feedback", () => {
 });
 
 describe("active DOCX Agent host", () => {
+  it.each<{ query: DocxReadQuery; error: string }>([
+    { query: { offset: -1 }, error: "offset must be a non-negative integer" },
+    { query: { limit: 51 }, error: "one to fifty DOCX paragraphs" },
+    { query: { textOffset: 0 }, error: "textOffset and textLimit must be supplied together" },
+    { query: { textOffset: -1, textLimit: 10 }, error: "textOffset must be a non-negative UTF-16 offset" },
+    { query: { textOffset: 0, textLimit: 8001 }, error: "one to eight thousand UTF-16 units" },
+    { query: { atomOffset: -1 }, error: "atomOffset must be a non-negative atom index" },
+    { query: { payloadOffset: -1 }, error: "payloadOffset must be a non-negative UTF-16 offset" },
+    { query: { atomOffset: 0 }, error: "atomOffset requires textOffset and textLimit" },
+    { query: { payloadOffset: 0 }, error: "payloadOffset requires atomOffset" },
+    { query: { expectedRevision: -1 }, error: "expectedRevision must be a non-negative integer" },
+    { query: { offset: 1, textOffset: 0, textLimit: 10 }, error: "does not identify an existing paragraph" },
+  ])("rejects a malformed read continuation before reading paragraph content: $query", async ({ query, error }) => {
+    const local = harness();
+    const read = vi.spyOn(local.session, "readParagraph");
+    register(local.session);
+    await expect(DOCX_AGENT_HOST.readDocument(query)).rejects.toThrow(error);
+    expect(read).not.toHaveBeenCalled();
+    expect(local.session.revision()).toBe(0);
+  });
+
   it("keeps a fresh recovered session dirty until it has a saved session revision", async () => {
     const local = harness([paragraph("p1", "Recovered unsaved text.")]);
     register(local.session, { savedRevision: -1 });
@@ -672,6 +736,97 @@ function retainedTemplateCheck(
 }
 
 describe("live DOCX format, save and template tools", () => {
+  it.each([
+    ["apply_docx_format", "format", { paragraph_ref: "p1", expected_revision: 0, scope: "cell", cell: { fill: "D9EAF7" } }],
+    ["apply_docx_format_batch", "format_batch", { expected_revision: 0, operations: [{ paragraph_ref: "p1", font: { bold: true } }] }],
+    ["import_docx_template_styles", "import_styles", { expected_revision: 0, template: "world-selected", style_ids: ["Title"] }],
+    ["replace_docx_text_range", "replace_range", { paragraph_ref: "p1", expected_revision: 0, range: { start: 0, end: 8 }, expected_text: "Original", replacement: "Revised" }],
+    ["write_docx_equation", "write_equation", { paragraph_ref: "p1", expected_revision: 0, latex: "x^2", offset: 0 }],
+  ] as const)("reports a successful ordinary %s against the actual edited session", async (name, operation, input) => {
+    const local = harness();
+    const mutate = () => {
+      local.edit("p1", "Edited working copy.");
+      return { ok: true as const, changed: true, revision: local.session.revision() };
+    };
+    const formatObject = vi.fn<NonNullable<DocxSession["formatObject"]>>(mutate);
+    const formatBatch = vi.fn<NonNullable<DocxSession["formatBatch"]>>(mutate);
+    const importTemplateStyles = vi.fn<NonNullable<DocxSession["importTemplateStyles"]>>(() => ({
+      ...mutate(), styleIdMap: { Title: "ImportedTitle" }, themePolicy: "literal-source-fonts-and-stored-color-fallbacks",
+    }));
+    const writeEquation = vi.fn<NonNullable<DocxSession["writeEquation"]>>(mutate);
+    const replaceParagraphRange = local.session.replaceParagraphRange;
+    Object.assign(local.session, { formatObject, formatBatch, importTemplateStyles, writeEquation });
+    mocks.templateSource.mockResolvedValue({ bytes: new Uint8Array([80, 75]), sourceSha256: "f".repeat(64) });
+    mocks.compileDocxEquation.mockResolvedValue(compiledEquation());
+    register(local.session);
+    const tools = createDocxAgentTools({ runId: () => "external-edit" });
+    const result = await (tools[name].execute as Exec)(input);
+    expect(result).toMatchObject({ ok: true, document: { sessionRevision: 1, savedRevision: 0, dirty: true } });
+    expect(useAgentWorkspaceStore.getState().operations.at(-1)).toMatchObject({
+      operation, phase: "succeeded", origin: { kind: "external", flowId: "external-edit" },
+      target: { sessionId: "session-1", sessionRevision: 1 },
+    });
+    expect(local.session.revision()).toBe(1);
+    if (name === "apply_docx_format") {
+      expect(formatObject).toHaveBeenCalledExactlyOnceWith(
+        paragraph("p1", "Original paragraph.").handle, 0, { kind: "cell", cell: { fill: "D9EAF7" } },
+      );
+    } else if (name === "apply_docx_format_batch") {
+      expect(formatBatch).toHaveBeenCalledExactlyOnceWith([
+        { target: paragraph("p1", "Original paragraph.").handle, font: { bold: true } },
+      ], 0);
+    } else if (name === "import_docx_template_styles") {
+      expect(importTemplateStyles).toHaveBeenCalledExactlyOnceWith(new Uint8Array([80, 75]), ["Title"], 0);
+    } else if (name === "replace_docx_text_range") {
+      expect(replaceParagraphRange).toHaveBeenCalledExactlyOnceWith({
+        paragraphRef: "p1", expectedRevision: 0, modelRange: { start: 0, end: 8 },
+        expectedText: "Original", text: "Revised",
+      });
+      expect(local.session.listParagraphs()[0].text).toBe("Revised paragraph.");
+    } else {
+      expect(writeEquation).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        paragraphRef: "p1", expectedRevision: 0, latex: "x^2", offset: 0,
+      }), compiledEquation());
+    }
+  });
+
+  it("reports a failed ordinary object format without claiming the working copy changed", async () => {
+    const local = harness();
+    local.session.formatObject = vi.fn(() => ({ ok: false as const, changed: false,
+      revision: 0, code: "transaction-refused", message: "The document is open for viewing." }));
+    register(local.session);
+    expect(await createDocxAgentTools().apply_docx_format.execute({
+      paragraph_ref: "p1", expected_revision: 0, scope: "cell", cell: { fill: "D9EAF7" },
+    })).toMatchObject({ ok: false, changed: false, document: { sessionRevision: 0, dirty: false } });
+    expect(useAgentWorkspaceStore.getState().operations.at(-1)).toMatchObject({
+      operation: "format", phase: "failed", error: "The document is open for viewing.",
+    });
+    expect(local.session.revision()).toBe(0);
+  });
+
+  it.each([
+    ["prepare_docx_fonts", "prepare_fonts", "prepareFonts"],
+    ["export_docx_document", "export", "exportDocument"],
+  ] as const)("records the real %s callback result and failure without changing the document", async (name, operation, callback) => {
+    const local = harness();
+    const prepareOrExport = vi.fn().mockResolvedValueOnce({ status: "completed", artifact: "retained-result" })
+      .mockRejectedValueOnce(new Error("The retained source is unavailable."));
+    register(local.session, { [callback]: prepareOrExport });
+    const tools = createDocxAgentTools();
+    expect(await (tools[name].execute as Exec)({ session_id: "session-1" }))
+      .toEqual({ status: "completed", artifact: "retained-result" });
+    expect(useAgentWorkspaceStore.getState().operations.at(-1)).toMatchObject({
+      operation, phase: "succeeded", result: { artifact: "retained-result" },
+    });
+    expect(await (tools[name].execute as Exec)({ session_id: "session-1" }))
+      .toMatchObject({ error: expect.stringContaining("The retained source is unavailable.") });
+    expect(useAgentWorkspaceStore.getState().operations.at(-1)).toMatchObject({
+      operation, phase: "failed", error: expect.stringContaining("The retained source is unavailable."),
+    });
+    expect(local.session.revision()).toBe(0);
+    expect(prepareOrExport).toHaveBeenCalledTimes(2);
+  });
+
   it("resolves the complete batch before any edit and checkpoints one actual task transaction", async () => {
     const local = harness([paragraph("p1", "One"), paragraph("p2", "Two")]);
     const checkpoint = vi.fn(async () => {});
