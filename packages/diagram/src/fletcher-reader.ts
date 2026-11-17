@@ -1272,10 +1272,15 @@ function statementStart(statement: SyntaxNode): number {
   return previous?.name === "Hash" && previous.to === statement.from ? previous.from : statement.from;
 }
 
-function fletcherImportStatement(context: Context, node: SyntaxNode): boolean {
-  if (node.name !== "ModuleImport") return false;
+function fletcherImportVersion(context: Context, node: SyntaxNode): string | null {
+  if (node.name !== "ModuleImport") return null;
   const path = stringValue(context, node.getChild("Str"));
-  return (path ?? "").startsWith("@preview/fletcher:");
+  const prefix = "@preview/fletcher:";
+  return path?.startsWith(prefix) ? path.slice(prefix.length).split("/")[0] || null : null;
+}
+
+function fletcherImportStatement(context: Context, node: SyntaxNode): boolean {
+  return fletcherImportVersion(context, node) !== null;
 }
 
 function importIsCovered(context: Context, node: SyntaxNode): boolean {
@@ -1402,18 +1407,24 @@ type HintLines = ReturnType<typeof hintLines>;
 const NODE_OMITTABLE = new Set(["width", "height", "radius", "shape", "layer", "corner-radius"]);
 const EDGE_OMITTABLE = new Set(["label-side", "label-pos", "corner-radius", "dash", "bend"]);
 
-function importCuts(context: Context, top: SyntaxNode, start: number): { cuts: { from: number; to: number }[]; imports: string[] } {
+function importCuts(
+  context: Context,
+  top: SyntaxNode,
+  start: number,
+): { cuts: { from: number; to: number }[]; imports: string[]; sourceVersion: string | null } {
   const cuts: { from: number; to: number }[] = [];
   const imports: string[] = [];
+  let sourceVersion: string | null = null;
   for (let child = top.firstChild; child; child = child.nextSibling) {
     if (child.from >= start) break;
     if (!fletcherImportStatement(context, child)) continue;
+    sourceVersion ??= fletcherImportVersion(context, child);
     const from = statementStart(child);
     const to = context.source[child.to] === "\n" ? child.to + 1 : child.to;
     cuts.push({ from, to });
     if (!importIsCovered(context, child)) imports.push(context.source.slice(from, child.to));
   }
-  return { cuts, imports };
+  return { cuts, imports, sourceVersion };
 }
 
 function diagramWrapper(
@@ -1634,7 +1645,7 @@ export function readFletcher(parser: Parser, source: string, options: DiagramRea
   }
   const statement = topStatement(diagram, top);
   const start = statementStart(statement);
-  const { cuts, imports } = importCuts(context, top, start);
+  const { cuts, imports, sourceVersion } = importCuts(context, top, start);
   const before = withoutMarkLines(cutRanges(source, 0, start, cuts));
   const after = withoutMarkLines(source.slice(statement.to));
   if (before.trim() || after.trim()) note(context, "kept", "outsideCode");
@@ -1642,6 +1653,7 @@ export function readFletcher(parser: Parser, source: string, options: DiagramRea
   let background = wrapper.background;
 
   const extras: FletcherExtras = {
+    ...(sourceVersion ? { sourceVersion } : {}),
     imports,
     before,
     after,

@@ -615,6 +615,27 @@ describe("readFletcher on hand-written code", () => {
     expect(result.extras?.imports).toEqual(['#import "@preview/fletcher:0.5.1" as fletcher: diagram, node, edge']);
   });
 
+  it("preserves a hand-written Fletcher version unless an explicit version overrides it", () => {
+    const source = [
+      '#import "@preview/fletcher:0.5.1": diagram, node, edge',
+      "#diagram(node((0, 0), [A], name: <a>))",
+    ].join("\n");
+    const result = read(source);
+    expect(result.extras?.sourceVersion).toBe("0.5.1");
+    const preserved = modelToFletcher(result.model as DiagramModel, { extras: result.extras });
+    expect(preserved.split("\n")[0]).toBe('#import "@preview/fletcher:0.5.1": diagram, node, edge, shapes');
+    const overridden = modelToFletcher(result.model as DiagramModel, {
+      extras: result.extras,
+      typstVersion: "0.12.0",
+    });
+    expect(overridden.split("\n")[0]).toBe('#import "@preview/fletcher:0.5.5": diagram, node, edge, shapes');
+    const latest = modelToFletcher(result.model as DiagramModel, {
+      extras: result.extras,
+      typstVersion: null,
+    });
+    expect(latest.split("\n")[0]).toBe('#import "@preview/fletcher:0.5.8": diagram, node, edge, shapes');
+  });
+
   it("reports code that has no fletcher diagram", () => {
     const result = read("= Heading\nSome text.");
     expect(result.model).toBeNull();
