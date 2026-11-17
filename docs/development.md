@@ -469,12 +469,20 @@ the `src/main.tsx` bootstrap and the e2e-only probes.
 When a frontend or Rust coverage report was generated, CI uploads it even if
 the preceding test or coverage gate failed, retaining it for one day. A failed
 gate still fails the job; the report lets contributors locate the uncovered code.
+The frontend test/coverage job runs independently of the frontend build job.
+Browser and native E2E jobs depend on the build, so a coverage failure remains
+visible without suppressing integration results. SonarCloud waits for the
+coverage job and the Rust job before downloading their reports.
 
-The Linux browser-harness job installs Python 3.12 and the Workbench environment
-at `services/research-workbench/.venv`, matching the existing Word harness
-launchers. It installs LibreOffice Writer and selects `/usr/bin/soffice` for
-the DOCX save/check/PDF scenario. These checks use synthetic documents, real
-Workbench HTTP and the production React editor with scripted Tauri commands.
+The browser-harness and native desktop E2E jobs share the
+[`workbench-runtime` action](../.github/actions/workbench-runtime/action.yml).
+It installs Python 3.12 and the Workbench environment at
+`services/research-workbench/.venv`, then passes its absolute interpreter path
+to the packaged application. It installs LibreOffice for each runner platform
+and passes the executable path for DOCX save/check/PDF scenarios. Browser
+harness checks use synthetic documents, real Workbench HTTP and the production
+React editor with scripted Tauri commands. The native jobs run those business
+operations through the packaged app.
 Private-manuscript and real-model acceptance remain opt-in and are not enabled
 by this job.
 

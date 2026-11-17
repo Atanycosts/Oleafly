@@ -76,6 +76,7 @@ test("native tasks propose DOCX changes and retain user decisions with exact sav
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
     await panel.getByText("Edit DOCX working copy", { exact: true }).click();
     await expect.poll(() => live(page).then((read) => read.paragraphs[0]?.text, () => null), { timeout: 90_000 }).toBe(ORIGINAL);
+    await page.getByTestId("docx-workspace").getByRole("button", { name: "Document tools", exact: true }).click();
     const initial = await live(page);
     const manuscript = initial.document.workbenchProjectId;
     const records: { task: ResearchTask; proposed: DocxActivity; saved: DocxActivity; group: GroupSnapshot | null }[] = [];
@@ -146,7 +147,7 @@ test("native tasks propose DOCX changes and retain user decisions with exact sav
       await clickButton(page, '[data-testid="docx-suggestion"]', "Accept");
       await expect.poll(async () => (await live(page)).paragraphs[0].text).toBe(replacement);
       await expect.poll(async () => (await history(page, projectId, manuscript)).activities.some(({ activity }) => activity.proposalId === proposed.id && activity.event.type === "outcome" && activity.event.outcome.kind === "applied")).toBe(true);
-      await clickButton(page, '[data-testid="docx-workspace"]', "Save manuscript version");
+      await clickButton(page, '[data-testid="docx-workspace"]', "Save version");
       await expect.poll(() => live(page).then((read) => read.document.dirty), { timeout: 90_000 }).toBe(false);
       await expect.poll(async () => (await history(page, projectId, manuscript)).activities.some(({ activity }) => activity.proposalId === proposed.id && activity.event.type === "outcome" && activity.event.outcome.kind === "saved"), { timeout: 20_000 }).toBe(true);
       const saved = (await history(page, projectId, manuscript)).activities.map((entry) => entry.activity).find((activity) => activity.proposalId === proposed.id && activity.event.type === "outcome" && activity.event.outcome.kind === "saved")!;
@@ -181,10 +182,10 @@ test("native tasks propose DOCX changes and retain user decisions with exact sav
     await expect(page.getByTestId("task-docx-observations")).toContainText(saved.document.baselineId);
     await page.screenshot({ path: testInfo.outputPath("task-history-navigation.png") });
     await page.evaluate(`window.__oleaflyE2EImport('/src/store/research-tasks.ts').then(m => m.useResearchTasksStore.getState().setDetailOpen(false))`);
-    await page.evaluate(`(() => { const resume = Array.from(document.querySelectorAll('button')).find(button => button.textContent.startsWith('Resume DOCX working copy')); if (!resume) throw new Error('DOCX resume button missing'); resume.click(); })()`);
+    await page.getByTestId("workspace-word-tab").getByRole("button", { name: "DOCX task fixture", exact: true }).click();
     await expect(page.getByTestId("docx-workspace")).toBeVisible();
     expect((await live(page)).document.sessionId).toBe(initial.document.sessionId);
-    await clickButton(page, '[data-testid="docx-workspace"]', "Close");
+    await page.getByTestId("docx-workspace").getByRole("button", { name: "Close", exact: true }).click();
     await expect(page.getByTestId("docx-workspace")).toHaveCount(0);
     expect((await history(page, projectId, manuscript)).activities.some(({ activity }) => activity.id === records[0].proposed.id)).toBe(true);
     await openRailTab(page, "Journal checks");
