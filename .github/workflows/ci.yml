@@ -405,6 +405,10 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.8.7
 
+      - name: Test vendored trash date conversion
+        run: >-
+          cargo test --manifest-path vendor/trash/Cargo.toml --locked --lib deletion_time::
+
       - name: Test with coverage
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: |

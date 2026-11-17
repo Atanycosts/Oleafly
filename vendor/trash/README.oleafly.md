@@ -19,3 +19,7 @@ features and also enables `tzdb-bundle-always`, so fixed `America/New_York` norm
 cases do not depend on the machine's time zone or system tzdb. The Windows and macOS implementations
 are unchanged. Keep this patch until upstream supports a maintained, non-`chrono` Linux date
 implementation without losing `DeletionDate` metadata.
+
+The crate is excluded from the application's workspace. Its own `Cargo.lock` resolves the
+patched test dependencies. CI runs the three `deletion_time::` tests through its manifest
+to check normal times, daylight-saving folds and rejected gaps.
