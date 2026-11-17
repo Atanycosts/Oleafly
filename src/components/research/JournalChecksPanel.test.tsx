@@ -18,6 +18,8 @@ const api = vi.hoisted(() => ({
   target: vi.fn(),
   templateImport: vi.fn(),
   templateCheck: vi.fn(),
+  ensureProvider: vi.fn(),
+  handoff: vi.fn(),
   references: [] as JournalObjectReference[],
   openTargets: [] as Array<(target: AnnotationTarget) => void>,
 }));
@@ -33,6 +35,10 @@ vi.mock("@/lib/docx-template-client", async (original) => ({
   ...await original<typeof import("@/lib/docx-template-client")>(),
   importJournalTemplate: api.templateImport,
   checkJournalTemplate: api.templateCheck,
+}));
+vi.mock("@/features/assistant-handoff", () => ({
+  ensureAiProviderOrOpenSettings: api.ensureProvider,
+  handoffToAssistant: api.handoff,
 }));
 vi.mock("./JournalAnnotations", () => ({ JournalAnnotations: ({ reference, onOpenTarget }: {
   reference: JournalObjectReference;
@@ -123,6 +129,7 @@ beforeEach(() => {
   api.invoke.mockResolvedValue({ journalProjectId: "template-draft" });
   api.templateImport.mockResolvedValue(world);
   api.templateCheck.mockResolvedValue(checked("world-current", "check-template"));
+  api.ensureProvider.mockResolvedValue(true);
   api.request.mockImplementation(async (path: string) => {
     const url = new URL(path, "http://workbench");
     if (url.pathname === "/api/state") return { worlds: [world, { ...world, version_id: "world-old", version_ordinal: 1 }], projects: [{ project_id: "manuscript", name: "Retained manuscript", baseline_id: "baseline", binding: { binding_id: "binding", baseline_id: "baseline", world_version_id: "world-current" }, latest_check: checked("world-current", "check-current") }] };
@@ -236,6 +243,67 @@ it("recovers from a failed Journal runtime connection with the entered Python pa
   expect(api.connect).toHaveBeenLastCalledWith("/opt/oleafly/python");
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue("manuscript");
+});
+
+it("hands a reviewed check to the assistant as an editable request after provider setup", async () => {
+  api.ensureProvider.mockResolvedValueOnce(false);
+  render(<JournalWorkspaceHarness />);
+  const ask = await screen.findByRole("button", { name: text.askAgent });
+  await waitFor(() => expect(ask).toBeEnabled());
+  fireEvent.click(ask);
+  await waitFor(() => expect(ask).toBeEnabled());
+  expect(api.ensureProvider).toHaveBeenCalledOnce();
+  expect(api.request.mock.calls.some(([path]) => String(path).startsWith("/api/review?"))).toBe(false);
+  expect(api.handoff).not.toHaveBeenCalled();
+
+  fireEvent.click(ask);
+  await waitFor(() => expect(api.handoff).toHaveBeenCalledOnce());
+  expect(api.request).toHaveBeenCalledWith("/api/review?version_id=world-current");
+  expect(api.handoff).toHaveBeenCalledWith(expect.stringContaining(world.journal_name), { autoSend: false });
+});
+
+it.each(["provider setup", "retained review"] as const)("discards an assistant handoff pending at $0 when another manuscript opens", async (stage) => {
+  const pending = deferred<JournalReview>();
+  const provider = deferred<boolean>();
+  if (stage === "provider setup") api.ensureProvider.mockReturnValueOnce(provider.promise);
+  const secondWorld: JournalWorld = { ...world, version_id: "second-world", journal_id: "second-journal", journal_name: "Second journal" };
+  const secondCheck: JournalCheck = { ...checked(secondWorld.version_id, "second-check"), project_id: "second-manuscript", baseline_id: "second-baseline", world: secondWorld };
+  const second: JournalProject = { project_id: "second-manuscript", name: "Second manuscript", baseline_id: "second-baseline",
+    binding: { binding_id: "second-binding", baseline_id: "second-baseline", world_version_id: secondWorld.version_id }, latest_check: secondCheck };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/world" && url.searchParams.get("version_id") === secondWorld.version_id) return secondWorld;
+    if (url.pathname === "/api/history" && url.searchParams.get("project_id") === second.project_id) return { checks: [secondCheck] };
+    if (url.pathname === "/api/review") return url.searchParams.get("version_id") === world.version_id
+      ? pending.promise : { world_version_id: secondWorld.version_id, fragments: [], rule_links: [] };
+    const response = await originalRequest(path, payload);
+    if (url.pathname === "/api/state") return { ...response, projects: [...response.projects, second], worlds: [...response.worlds, secondWorld] };
+    return response;
+  });
+  render(<JournalWorkspaceHarness />);
+  const ask = await screen.findByRole("button", { name: text.askAgent });
+  await waitFor(() => expect(ask).toBeEnabled());
+  fireEvent.click(ask);
+  if (stage === "retained review") {
+    await waitFor(() => expect(api.request).toHaveBeenCalledWith("/api/review?version_id=world-current"));
+  } else {
+    await waitFor(() => expect(api.ensureProvider).toHaveBeenCalledOnce());
+  }
+  act(() => useDocxWorkspaceStore.getState().open({ appProjectId: "paper", project: second, world: secondWorld, onSaved: async () => {} }));
+  await screen.findByRole("heading", { name: secondWorld.journal_name });
+  await act(async () => {
+    provider.resolve(true);
+    pending.resolve({ world_version_id: world.version_id, fragments: [fragment], rule_links: [] });
+  });
+  expect(api.handoff).not.toHaveBeenCalled();
+  if (stage === "provider setup") expect(api.request).not.toHaveBeenCalledWith("/api/review?version_id=world-current");
+
+  await waitFor(() => expect(ask).toBeEnabled());
+  fireEvent.click(ask);
+  await waitFor(() => expect(api.handoff).toHaveBeenCalledOnce());
+  expect(api.handoff).toHaveBeenCalledWith(expect.stringContaining(secondWorld.journal_name), { autoSend: false });
 });
 
 it("shows readable template comparison details in the center", async () => {

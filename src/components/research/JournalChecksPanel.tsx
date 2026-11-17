@@ -822,11 +822,12 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 size="sm"
                 disabled={busy || !visibleCheck}
                 onClick={() =>
-                  void perform(async () => {
-                    if (!visibleCheck || !(await ensureAiProviderOrOpenSettings())) return;
+                  void perform(async (sequence) => {
+                    if (!visibleCheck || !(await ensureAiProviderOrOpenSettings()) || sequence !== loadSequence.current) return;
                     const source = await journalRequest<JournalReview>(
                       journalQuery("/api/review", { version_id: visibleCheck.world_version_id }),
                     );
+                    if (sequence !== loadSequence.current) return;
                     handoffToAssistant(
                       journalAnalysisPrompt(visibleCheck, source, i18n.resolvedLanguage ?? i18n.language),
                       { autoSend: false },

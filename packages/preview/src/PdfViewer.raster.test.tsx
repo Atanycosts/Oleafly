@@ -512,6 +512,54 @@ describe("PdfViewer reloads", () => {
     expect(baseCanvases(wrap(1))).toEqual([fresh.canvas]);
   });
 
+  it("cancels an in-flight raster from the old document when the source changes", async () => {
+    harness.deferRenders = true;
+    const { view, renderer, wrap } = await openViewer(1, 1, "doc-1");
+    await waitFor(() =>
+      expect(
+        harness.renderCalls.some(
+          (call) => call.documentId === 1 && call.pageNumber === 1,
+        ),
+      ).toBe(true),
+    );
+    const stale = harness.renderCalls.find(
+      (call) => call.documentId === 1 && call.pageNumber === 1,
+    )!;
+    expect(stale.canvas.isConnected).toBe(false);
+
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        documentIdentity="doc-2"
+        scale={1}
+        expectText={false}
+      />,
+    );
+    await waitFor(() =>
+      expect(renderer.dataset.pdfDocumentIdentity).toBe("doc-2"),
+    );
+    expect(stale.cancelled).toBe(true);
+    expect(stale.canvas.isConnected).toBe(false);
+    expect(stale.canvas.width).toBe(0);
+
+    await waitFor(() =>
+      expect(
+        harness.renderCalls.some(
+          (call) => call.documentId === 2 && call.pageNumber === 1,
+        ),
+      ).toBe(true),
+    );
+    const fresh = harness.renderCalls.find(
+      (call) => call.documentId === 2 && call.pageNumber === 1,
+    )!;
+    expect(fresh.canvas.isConnected).toBe(false);
+
+    await act(async () => fresh.resolve());
+    await waitFor(() => expect(fresh.canvas.isConnected).toBe(true));
+    expect(stale.canvas.isConnected).toBe(false);
+    expect(baseCanvases(wrap(1))).toEqual([fresh.canvas]);
+  });
+
   it("lays a reloaded document out with the previous page sizes until its own arrive", async () => {
     const { view, wrap, renderer } = await openViewer(1, 1, "doc-1");
     await waitFor(() => expect(wrap(2).dataset.pdfGeometry).toBe("exact"));
