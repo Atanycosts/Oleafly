@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { TaskObservation, TaskObservationView, TaskTranscriptEvent } from "@/lib/research-tasks";
-import { TaskObservations } from "./TaskObservations";
+import { TaskObservations, TaskSourceRead } from "./TaskObservations";
+import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 
 const native = vi.hoisted(() => ({ observations: vi.fn(), source: vi.fn() }));
 vi.mock("@/lib/research-tasks", () => ({
@@ -12,6 +13,73 @@ vi.mock("@/lib/research-tasks", () => ({
 vi.mock("@/lib/docx-task-activity", () => ({ subscribeDocxTaskActivity: () => () => {} }));
 
 beforeEach(() => vi.resetAllMocks());
+const labels = en.tasks.observations;
+
+function observationPage(events: TaskTranscriptEvent[], nextSequence: number, hasMore = false): TaskObservationView {
+  return {
+    summary: {
+      taskId: "task-a", projectId: "paper", executionGeneration: 2, status: "running",
+      goal: "Review evidence", successCriteria: [], runtime: null, usage: null, baseline: null,
+      changedFiles: [], changedFileCount: 0, evidence: null, coverageGaps: [],
+    },
+    page: { events, nextSequence, throughSequence: nextSequence, hasMore },
+  };
+}
+
+function toolRead(sequence: number): TaskTranscriptEvent {
+  return {
+    taskId: "task-a", executionGeneration: 2, sequence, createdAt: sequence,
+    event: { kind: "observation", observation: { type: "toolExecution", callId: `call-${sequence}`, name: "read_file", status: "done", inputSha256: "input", outputSha256: "output", skillId: null, skillInstructionsSha256: null, source: null } },
+  };
+}
+
+it("retries a failed observation page from its retained cursor without duplicating earlier calls", async () => {
+  const first = observationPage([toolRead(1)], 1, true);
+  const second = observationPage([toolRead(2)], 2);
+  native.observations.mockResolvedValueOnce(first).mockRejectedValueOnce(new Error("Page temporarily unavailable")).mockResolvedValueOnce(second);
+  const onOpenCall = vi.fn();
+  render(<TaskObservations taskId="task-a" generation={2} revision={1} availableCalls={new Set(["call-1", "call-2"])} onOpenCall={onOpenCall} onReview={vi.fn()} onChecks={vi.fn()} />);
+  const more = await screen.findByRole("button", { name: labels.more });
+  fireEvent.click(screen.getByText("Observation records and source locators"));
+  fireEvent.click(more);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Page temporarily unavailable");
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(screen.getAllByRole("button", { name: labels.openCall })).toHaveLength(2));
+  expect(native.observations.mock.calls).toEqual([["task-a", 2, 0], ["task-a", 2, 1], ["task-a", 2, 1]]);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: labels.more })).not.toBeInTheDocument();
+  fireEvent.click(screen.getAllByRole("button", { name: labels.openCall })[1]);
+  expect(onOpenCall).toHaveBeenCalledExactlyOnceWith("call-2");
+});
+
+it("ignores a late page result after the observation view unmounts", async () => {
+  let resolvePage!: (value: TaskObservationView) => void;
+  native.observations.mockResolvedValueOnce(observationPage([toolRead(1)], 1, true)).mockReturnValueOnce(new Promise<TaskObservationView>((resolve) => { resolvePage = resolve; }));
+  const old = render(<TaskObservations taskId="task-a" generation={2} revision={1} availableCalls={new Set()} onOpenCall={vi.fn()} onReview={vi.fn()} onChecks={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: labels.more }));
+  await waitFor(() => expect(native.observations).toHaveBeenCalledTimes(2));
+  old.unmount();
+  native.observations.mockResolvedValueOnce(observationPage([toolRead(3)], 3));
+  render(<TaskObservations taskId="task-a" generation={3} revision={1} availableCalls={new Set()} onOpenCall={vi.fn()} onReview={vi.fn()} onChecks={vi.fn()} />);
+  await screen.findByText("#3 · call-3");
+  await act(async () => resolvePage(observationPage([toolRead(2)], 2)));
+  expect(screen.queryByText("#2 · call-2")).not.toBeInTheDocument();
+  expect(screen.getByText("#3 · call-3")).toBeInTheDocument();
+});
+
+it.each([false, undefined])("explains source retention %s and retries an unavailable recorded range", async (snapshotRetained) => {
+  const source = { path: "source.txt", fileSha256: "retained-hash", offset: 20, endOffset: 30, truncated: true, snapshotRetained };
+  native.source.mockRejectedValueOnce(new Error("Recorded bytes unavailable")).mockResolvedValueOnce({ text: "" });
+  render(<TaskSourceRead taskId="task-a" generation={2} row={toolRead(9)} source={source} />);
+  expect(screen.getByText(snapshotRetained === false ? labels.sourceNotArchived : labels.sourceRetentionUnknown)).toBeInTheDocument();
+  const read = screen.getByRole("button", { name: "Read recorded source range" });
+  fireEvent.click(read);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Recorded bytes unavailable");
+  fireEvent.click(read);
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  expect(native.source.mock.calls).toEqual([["task-a", 2, 9], ["task-a", 2, 9]]);
+  expect(document.querySelector("pre")).toBeEmptyDOMElement();
+});
 
 it("shows retained member executions and each request's actual tools and context sizes", async () => {
   const row = (sequence: number, observation: TaskObservation): TaskTranscriptEvent => ({
