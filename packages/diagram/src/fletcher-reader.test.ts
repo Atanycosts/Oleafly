@@ -749,6 +749,37 @@ describe("readFletcher uncommon forms", () => {
     expect(noteCodes(result.notes)).toContain("danglingEdge");
   });
 
+  it("reads styled edge labels as content and preserves their source", () => {
+    const source = [
+      '#import "@preview/fletcher:0.5.8": diagram, node, edge',
+      "#diagram(",
+      "  node((0, 0), [A], name: <a>),",
+      "  node((2, 0), [B], name: <b>),",
+      '  edge(<a>, <b>, "->", text(size: 9pt, fill: red)[*important* label]),',
+      ")",
+    ].join("\n");
+    const result = read(source);
+    const model = result.model as DiagramModel;
+    expect(model.edges[0].label).toBe("*important* label");
+    expect(noteCodes(result.notes)).toContain("formattedLabels");
+    expect(result.extras?.edges[model.edges[0].id].text).toContain(
+      'text(size: 9pt, fill: red)[*important* label]',
+    );
+    expect(modelToFletcher(model, { extras: result.extras })).toContain(
+      'edge(<a>, <b>, "->", text(size: 9pt, fill: red)[*important* label]),',
+    );
+  });
+
+  it("keeps unsupported math items with a notice and their source order", () => {
+    const source = ["#diagram(", "  node((0, 0), [A], name: <a>),", "  $x + y$,", ")"].join("\n");
+    const result = read(source);
+    expect(result.model?.nodes.map((n) => n.id)).toEqual(["a"]);
+    expect(result.extras?.items).toEqual(["$x + y$"]);
+    expect(result.extras?.order).toEqual(["n:a", "i:$x + y$"]);
+    expect(result.notes).toContainEqual({ kind: "kept", code: "mathMode" });
+    expect(modelToFletcher(result.model as DiagramModel, { extras: result.extras })).toContain("  $x + y$,");
+  });
+
   it("attaches a bent edge to the side its last bend faces", () => {
     const source = [
       "#diagram(",

@@ -1161,6 +1161,12 @@ function edgeArrow(edge: ParsedEdge): EdgeArrow {
 }
 
 function applyEdgeLabel(context: Context, model: DiagEdge, labelNode: SyntaxNode): void {
+  const styled = textCallLabel(context, labelNode);
+  if (styled) {
+    model.label = styled.label;
+    note(context, "approximated", "formattedLabels");
+    return;
+  }
   const label = contentText(context, labelNode);
   model.label = label.text;
   if (!label.plain) note(context, "approximated", "formattedLabels");
