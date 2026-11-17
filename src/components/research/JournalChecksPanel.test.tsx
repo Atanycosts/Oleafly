@@ -1094,6 +1094,59 @@ it("edits an exact font requirement as text and sends its name without numeric c
   await waitFor(() => expect(api.request).toHaveBeenCalledWith("/api/revise", { version_id: "world-current", rule_id: "font-rule", expected: "PT Serif", reason: "Reviewed the journal guide" }));
 });
 
+it.each([
+  { property: "left_margin_twips", unit: "twips", initial: 1440, entered: "0", expected: 0, min: "0" },
+  { property: "body_font_size_halfpoints", unit: "half_points", initial: 24, entered: "14.5", expected: 29, min: "0.01" },
+  { property: "body_line_spacing_twips", unit: "spacing_twips", initial: 240, entered: "18", expected: 360, min: "0.01" },
+] as const)("revises $property from its displayed physical unit without changing the source rule", async ({ property, unit, initial, entered, expected, min }) => {
+  const numericRule: JournalRule = { ...rule, rule_id: "physical-rule", property, unit, expected: initial, basis_status: "confirmed" };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (path === "/api/revise") return { ...world, version_id: "world-revised" };
+    const response = await originalRequest(path, payload);
+    if (new URL(path, "http://workbench").pathname === "/api/world") return { ...response, rules: [numericRule] };
+    return response;
+  });
+  render(<JournalWorkspaceHarness />);
+  const name = text.properties[property as keyof typeof text.properties];
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(name) }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByText(text.reviseRequirement));
+  const input = within(dialog).getByRole("spinbutton");
+  expect(input).toHaveAttribute("min", min);
+  fireEvent.change(input, { target: { value: entered } });
+  fireEvent.change(within(dialog).getByLabelText(text.decisionReason), { target: { value: "Applied the reviewed physical layout requirement" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.saveRevision }));
+
+  await waitFor(() => expect(api.request).toHaveBeenCalledWith("/api/revise", {
+    version_id: world.version_id, rule_id: numericRule.rule_id, expected,
+    reason: "Applied the reviewed physical layout requirement",
+  }));
+  expect(numericRule.expected).toBe(initial);
+  expect(numericRule.evidence).toEqual(rule.evidence);
+});
+
+it("explains an unchanged version comparison and closes it without revising a requirement", async () => {
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (new URL(path, "http://workbench").pathname === "/api/diff") {
+      return { scope_changed: false, journal_changed: false, changes: [{ property: rule.property, before: rule, after: rule, status: "unchanged" }] } satisfies JournalDiff;
+    }
+    return originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await screen.findByRole("button", { name: text.compareVersions }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(text.noRuleChanges)).toBeInTheDocument();
+  expect(within(dialog).queryByText(text.scopeChanged)).not.toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(api.request.mock.calls.some(([path]) => path === "/api/revise")).toBe(false);
+  expect(screen.getByTestId("journal-world-select")).toHaveValue(world.version_id);
+});
+
 function capturedFile(name: string, content: string) {
   const file = new File([content], name);
   file.arrayBuffer = async () => new TextEncoder().encode(content).buffer;

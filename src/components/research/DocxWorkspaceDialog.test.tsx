@@ -332,7 +332,8 @@ beforeEach(() => {
   mocks.loadPdf.mockResolvedValue(Uint8Array.from([37, 80, 68, 70]));
   mocks.pdfSelection = null;
   mocks.editor.measurement = { measurer: "fixed", resolving: false, producer: undefined };
-  useDocxWorkspaceStore.setState({ request: null, context: null, minimized: false, recoveryOpen: false });
+  useDocxWorkspaceStore.setState({ request: null, context: null, minimized: false, recoveryOpen: false,
+    savedVersion: 0, closeRequested: 0, closingBlocked: false });
   mocks.settleActivity.mockResolvedValue({});
   mocks.bindTask.mockResolvedValue(undefined);
   mocks.retainFormat.mockResolvedValue(undefined);
@@ -615,6 +616,118 @@ it("reads exact live run fonts through the registered format contract", async ()
   expect(second.sourceSha256).toBe(first.sourceSha256);
   expect(mocks.editorSave).toHaveBeenCalledOnce();
   expect(mocks.createSession).toHaveBeenCalledOnce();
+});
+
+it("re-exports format facts after an edit and caches them for the new revision", async () => {
+  const harness = sessionHarness([paragraph("first", "Exact Face")]);
+  mocks.editorSave.mockResolvedValue(exactFontDocx().buffer);
+  await renderReady(harness);
+  const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+  const query = { kind: "objects" as const, objectKind: "run", limit: 10 };
+
+  const initial = await registration.readFormat(query);
+  act(() => harness.edit("first", "Exact Face after edit"));
+  const changed = await registration.readFormat(query);
+  const cached = await registration.readFormat(query);
+
+  expect(initial.document).toMatchObject({ sessionRevision: 0, dirty: false });
+  expect(changed.document).toMatchObject({ sessionRevision: 1, dirty: true });
+  expect(cached.document).toMatchObject({ sessionRevision: 1, dirty: true });
+  expect(cached.sourceSha256).toBe(changed.sourceSha256);
+  expect(mocks.editorSave).toHaveBeenCalledTimes(2);
+});
+
+it("re-exports format facts after a failed snapshot and succeeds on retry", async () => {
+  mocks.editorSave
+    .mockRejectedValueOnce(new Error("format export unavailable"))
+    .mockResolvedValueOnce(exactFontDocx().buffer);
+  await renderReady(sessionHarness([paragraph("first", "Exact Face")]));
+  const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+  const query = { kind: "objects" as const, objectKind: "run", limit: 10 };
+
+  await expect(registration.readFormat(query)).rejects.toThrow(
+    "format export unavailable",
+  );
+  const retry = await registration.readFormat(query);
+  const cached = await registration.readFormat(query);
+
+  expect(retry.objects).toContainEqual(
+    expect.objectContaining({
+      kind: "run",
+      properties: expect.objectContaining({
+        run: expect.objectContaining({ fontFamily: "Exact Face" }),
+      }),
+    }),
+  );
+  expect(cached.sourceSha256).toBe(retry.sourceSha256);
+  expect(mocks.editorSave).toHaveBeenCalledTimes(2);
+});
+
+it("serializes concurrent Agent font preparations without remounting the editor", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  let finishFirst!: () => void;
+  mocks.editor.setFonts
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishFirst = () => {
+            mocks.fontOptions?.onStatus({
+              probed: true,
+              missing: [{ family: "SimSun", weight: 400, style: "normal" }],
+              aliases: [],
+            });
+            resolve();
+          };
+        }),
+    )
+    .mockImplementationOnce(async () => {
+      mocks.fontOptions?.onStatus({
+        probed: true,
+        missing: [],
+        aliases: [],
+      });
+    });
+  await renderReady(harness);
+  const document = mocks.editorDocument;
+  const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+
+  let first!: ReturnType<typeof registration.prepareFonts>;
+  let second!: ReturnType<typeof registration.prepareFonts>;
+  act(() => {
+    first = registration.prepareFonts();
+    second = registration.prepareFonts();
+  });
+  await waitFor(() => expect(mocks.editor.setFonts).toHaveBeenCalledOnce());
+
+  let firstResult!: Awaited<typeof first>;
+  await act(async () => {
+    finishFirst();
+    firstResult = await first;
+  });
+  await waitFor(() => expect(mocks.editor.setFonts).toHaveBeenCalledTimes(2));
+  const secondResult = await second;
+
+  expect(firstResult.status.missing).toEqual([
+    { family: "SimSun", weight: 400, style: "normal" },
+  ]);
+  expect(secondResult.status).toEqual({ probed: true, missing: [], aliases: [] });
+  expect(mocks.editorDocument).toBe(document);
+  expect(harness.text("first")).toBe("Original");
+  expect(mocks.createSession).toHaveBeenCalledOnce();
+});
+
+it("stops an Agent font preparation once its working copy has closed", async () => {
+  const view = await renderReady(
+    sessionHarness([paragraph("first", "Original")]),
+  );
+  const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+
+  view.unmount();
+
+  await expect(registration.prepareFonts()).rejects.toThrow(
+    "closed during font preparation",
+  );
+  expect(mocks.editor.setFonts).not.toHaveBeenCalled();
 });
 
 it("cancels a reveal before or during the next frame without a late scroll", async () => {
@@ -1210,6 +1323,258 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     expect(mocks.commitRecovery).toHaveBeenCalledOnce();
     expect(view.onSaved).toHaveBeenCalledOnce();
     expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved);
+  });
+
+  it("rejects a stale Agent save revision without exporting, then saves the current revision", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    mocks.commitRecovery.mockResolvedValueOnce({
+      baselineId: SAVED_BASELINE,
+      revision: 1,
+      sourceSha256: "d".repeat(64),
+    });
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    act(() => harness.setRevision(1));
+
+    await act(async () => {
+      await expect(registration.save({ expectedRevision: 0 })).rejects.toThrow(
+        "session changed before saving",
+      );
+    });
+    expect(mocks.editorSave).not.toHaveBeenCalled();
+    expect(mocks.saveRecovery).not.toHaveBeenCalled();
+    expect(mocks.commitRecovery).not.toHaveBeenCalled();
+
+    let saved!: DocxSaveResult;
+    await act(async () => {
+      saved = await registration.save({ expectedRevision: 1 });
+    });
+    expect(saved).toMatchObject({
+      baselineId: SAVED_BASELINE,
+      revision: 1,
+      document: { sessionRevision: 1, savedRevision: 1, dirty: false },
+    });
+    expect(mocks.editorSave).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved);
+  });
+
+  it("blocks both visible and host-requested close while an Agent save is exporting", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    let finishExport!: (value: ArrayBuffer) => void;
+    mocks.editorSave.mockImplementationOnce(
+      () => new Promise((resolve) => { finishExport = resolve; }),
+    );
+    mocks.commitRecovery.mockResolvedValueOnce({
+      baselineId: SAVED_BASELINE,
+      revision: 1,
+      sourceSha256: "d".repeat(64),
+    });
+    const view = await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    act(() => harness.edit("first", "Save before closing"));
+
+    let save!: Promise<DocxSaveResult>;
+    act(() => {
+      save = registration.save({ expectedRevision: 1 });
+    });
+    await waitFor(() => expect(mocks.editorSave).toHaveBeenCalledOnce());
+    const close = screen.getByRole("button", { name: en.workspace.closeDocument });
+    expect(close).toBeDisabled();
+    fireEvent.click(close);
+    act(() => useDocxWorkspaceStore.getState().requestClose());
+    expect(view.onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await act(async () => {
+      finishExport(Uint8Array.from([80, 75, 1, 2]).buffer);
+      await save;
+    });
+    await waitFor(() => expect(close).toBeEnabled());
+    expect(useDocxWorkspaceStore.getState().closingBlocked).toBe(false);
+    fireEvent.click(close);
+    expect(view.onClose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps navigation available at the saving revision without changing the frozen export", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    let finishExport!: (value: ArrayBuffer) => void;
+    mocks.editorSave.mockImplementationOnce(
+      () => new Promise((resolve) => { finishExport = resolve; }),
+    );
+    mocks.commitRecovery.mockResolvedValueOnce({
+      baselineId: SAVED_BASELINE,
+      revision: 1,
+      sourceSha256: "d".repeat(64),
+    });
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    act(() => harness.edit("first", "Navigate while saving"));
+    let save!: Promise<DocxSaveResult>;
+    act(() => {
+      save = registration.save({ expectedRevision: 1 });
+    });
+    await waitFor(() => expect(mocks.editorSave).toHaveBeenCalledOnce());
+
+    let frame: FrameRequestCallback | undefined;
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frame = callback;
+      return 1;
+    });
+    try {
+      let navigation!: Promise<void>;
+      act(() => {
+        navigation = registration.reveal({
+          paragraphRef: "first",
+          expectedRevision: 1,
+        });
+      });
+      expect(mocks.editor.scrollToAnchor).not.toHaveBeenCalled();
+      await act(async () => {
+        frame?.(0);
+        await navigation;
+      });
+      expect(mocks.editor.scrollToAnchor).toHaveBeenCalledWith({
+        paraId: "para-first",
+      });
+      expect(mocks.editor.highlightAnchor).toHaveBeenCalledWith({
+        paraId: "para-first",
+      });
+      expect(mocks.prepareSave).not.toHaveBeenCalled();
+      expect(mocks.commitRecovery).not.toHaveBeenCalled();
+    } finally {
+      requestFrame.mockRestore();
+    }
+
+    await act(async () => {
+      finishExport(Uint8Array.from([80, 75, 3, 4]).buffer);
+      await save;
+    });
+    expect(mocks.commitRecovery).toHaveBeenCalledOnce();
+    expect(
+      mocks.prepareSave.mock.calls[0]?.[1],
+    ).toBe(1);
+  });
+
+  it("rejects an Agent save while a saved-version check owns the working copy", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    let finishState!: (state: JournalState) => void;
+    const checked = {
+      baseline_id: INITIAL_BASELINE,
+      world_version_id: WORLD_VERSION,
+      validity: "CURRENT",
+    } satisfies Partial<JournalCheck>;
+    mocks.journalRequest.mockImplementation((path: string) => {
+      if (path === "/api/state") {
+        return new Promise<JournalState>((resolve) => { finishState = resolve; });
+      }
+      if (path === "/api/check") return Promise.resolve(checked);
+      throw new Error(`Unexpected request ${path}`);
+    });
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    fireEvent.click(screen.getByRole("button", { name: text.check }));
+    await waitFor(() =>
+      expect(useDocxWorkspaceStore.getState().closingBlocked).toBe(true),
+    );
+
+    await act(async () => {
+      await expect(registration.save({ expectedRevision: 0 })).rejects.toThrow(
+        "another document operation is pending",
+      );
+    });
+    expect(mocks.editorSave).not.toHaveBeenCalled();
+    expect(mocks.saveRecovery).not.toHaveBeenCalled();
+    expect(mocks.commitRecovery).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishState({
+        worlds: [],
+        projects: [{
+          ...PROJECT,
+          binding: {
+            binding_id: "binding-current",
+            baseline_id: INITIAL_BASELINE,
+            world_version_id: WORLD_VERSION,
+          },
+        }],
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("docx-check-validity")).toHaveTextContent(
+        en.journal.current,
+      ),
+    );
+    expect(useDocxWorkspaceStore.getState().closingBlocked).toBe(false);
+  });
+
+  it("refuses an Agent check while dirty, then checks the newly saved baseline", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    const checked = {
+      baseline_id: SAVED_BASELINE,
+      world_version_id: WORLD_VERSION,
+      validity: "CURRENT",
+    } satisfies Partial<JournalCheck>;
+    mocks.commitRecovery.mockResolvedValueOnce({
+      baselineId: SAVED_BASELINE,
+      revision: 1,
+      sourceSha256: "d".repeat(64),
+    });
+    mocks.journalRequest.mockResolvedValue({
+      worlds: [],
+      projects: [{ ...PROJECT, baseline_id: SAVED_BASELINE }],
+    });
+    mocks.templateCheck.mockResolvedValue(checked);
+    const view = await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    act(() => harness.edit("first", "Check after saving"));
+
+    await act(async () => {
+      await expect(
+        registration.check({ template: WORLD_VERSION }),
+      ).rejects.toThrow("Save the current DOCX working copy");
+    });
+    expect(mocks.journalRequest).not.toHaveBeenCalled();
+    expect(mocks.templateCheck).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await registration.save({ expectedRevision: 1 });
+    });
+    let result: unknown;
+    await act(async () => {
+      result = await registration.check({ template: WORLD_VERSION });
+    });
+
+    expect(result).toEqual({ template: WORLD_VERSION, check: checked });
+    expect(mocks.journalRequest).toHaveBeenCalledExactlyOnceWith("/api/state");
+    expect(mocks.templateCheck).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ baseline_id: SAVED_BASELINE }),
+      WORLD_VERSION,
+      "agent",
+    );
+    expect(view.onSaved).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("docx-check-validity")).toHaveTextContent(
+      en.journal.current,
+    );
+  });
+
+  it("refuses an Agent check when the server has advanced past the open baseline", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    mocks.journalRequest.mockResolvedValue({
+      worlds: [],
+      projects: [{ ...PROJECT, baseline_id: SAVED_BASELINE }],
+    });
+    const view = await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+
+    await act(async () => {
+      await expect(
+        registration.check({ template: WORLD_VERSION }),
+      ).rejects.toThrow(text.newBaseline);
+    });
+
+    expect(mocks.templateCheck).not.toHaveBeenCalled();
+    expect(view.onSaved).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("docx-check-validity")).not.toBeInTheDocument();
   });
 
   it("uses the newly committed baseline for the next recovery snapshot", async () => {

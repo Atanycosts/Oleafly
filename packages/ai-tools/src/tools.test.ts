@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { createFigureTools, createOleaflyTools, type AiToolsHost, type RevealLocationResult } from "./tools";
+import {
+  createDocxTools,
+  createFigureTools,
+  createOleaflyTools,
+  type AiToolsHost,
+  type DocxFormatReadResult,
+  type DocxImageReadHostResult,
+  type DocxToolsHost,
+  type RevealLocationResult,
+} from "./tools";
 
 function makeHost(
   revealLocation?: (target: {
@@ -12,6 +21,63 @@ function makeHost(
     getProjectId: () => "proj",
     ...(revealLocation ? { revealLocation } : {}),
   } as unknown as AiToolsHost;
+}
+
+function makeDocxHost(overrides: Partial<DocxToolsHost>): DocxToolsHost {
+  return overrides as unknown as DocxToolsHost;
+}
+
+function readableFormat(): DocxFormatReadResult {
+  return {
+    document: {
+      sessionId: "s1",
+      baselineId: "b1",
+      sessionRevision: 2,
+      savedRevision: 1,
+      dirty: true,
+      filename: "paper.docx",
+    },
+    sourceSha256: "a".repeat(64),
+    revision: 2,
+    nodes: [{ object_id: "word/document.xml#0.2", kind: "paragraph" }],
+    total: 1,
+    nextOffset: null,
+  };
+}
+
+function docxPng(width = 2, height = 3): Uint8Array {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
+
+function imageResult(): DocxImageReadHostResult {
+  return {
+    revision: 2,
+    objectRef: "drawing-1",
+    part: "word/document.xml",
+    relationshipId: "rId5",
+    mediaPart: "word/media/image1.png",
+    mimeType: "image/png",
+    bytes: docxPng(),
+    imageSha256: "b".repeat(64),
+    document: {
+      sessionId: "s1",
+      sourceSha256: "a".repeat(64),
+      appProjectId: "p1",
+      workbenchProjectId: "paper",
+      title: "Paper",
+      filename: "paper.docx",
+      baselineId: "b1",
+      sessionRevision: 2,
+      savedRevision: 1,
+      dirty: true,
+    },
+    sourceSha256: "a".repeat(64),
+  };
 }
 
 describe("show_location tool", () => {
@@ -332,5 +398,360 @@ describe("load_image in any project", () => {
 
     expect(result).toEqual({ loaded: true, path: "sketch.png", width: 4, height: 3 });
     expect(onImage).toHaveBeenCalledWith(expect.stringMatching(/^data:image\/png;base64,/));
+  });
+});
+
+describe("DOCX host contracts", () => {
+  it("forwards the complete XML node and attribute route for format reads", async () => {
+    const readFormat = vi.fn(async () => readableFormat());
+    const tools = createDocxTools(makeDocxHost({ readFormat }));
+
+    await tools.read_docx_format.execute({
+      session_id: "s1",
+      query: {
+        kind: "nodes",
+        expected_revision: 2,
+        paragraph_ref: "p1",
+        part: "word/document.xml",
+        path: [0, 2, 1],
+        namespace_uri: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+        local_name: "pPr",
+        attribute: {
+          namespace_uri: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+          local_name: "val",
+          value: "keepNext",
+        },
+      },
+    });
+
+    expect(readFormat).toHaveBeenCalledExactlyOnceWith("s1", {
+      kind: "nodes",
+      expectedRevision: 2,
+      paragraphRef: "p1",
+      part: "word/document.xml",
+      path: [0, 2, 1],
+      namespaceUri: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+      localName: "pPr",
+      attribute: {
+        namespaceUri: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+        localName: "val",
+        value: "keepNext",
+      },
+    });
+  });
+
+  it("reports unavailable workspace context and failed document listing as tool results", async () => {
+    const workspaceContext = vi.fn(async () => {
+      throw new Error("context store closed");
+    });
+    const listDocuments = vi.fn(async () => {
+      throw new Error("document index closed");
+    });
+    const tools = createDocxTools(makeDocxHost({ workspaceContext, listDocuments }));
+
+    expect(await tools.get_docx_workspace_context.execute({})).toEqual({
+      error: "Error: context store closed",
+    });
+    expect(await tools.list_docx_documents.execute({})).toEqual({
+      error: "Error: document index closed",
+    });
+  });
+
+  it("refuses format approval when no live reader can produce the before snapshot", async () => {
+    const formatParagraph = vi.fn();
+    const formatBatch = vi.fn();
+    const confirm = vi.fn(async () => true);
+    const tools = createDocxTools(makeDocxHost({ formatParagraph, formatBatch }), { confirm });
+
+    expect(await tools.apply_docx_format.execute({
+      paragraph_ref: "p1",
+      expected_revision: 2,
+      font: { bold: true },
+    })).toEqual({
+      unavailable: true,
+      error: "Format approval requires live DOCX formatting reads.",
+    });
+    expect(await tools.apply_docx_format_batch.execute({
+      expected_revision: 2,
+      operations: [{ paragraph_ref: "p1", font: { bold: true } }],
+    })).toEqual({
+      unavailable: true,
+      error: "Format approval requires live DOCX formatting reads.",
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(formatParagraph).not.toHaveBeenCalled();
+    expect(formatBatch).not.toHaveBeenCalled();
+  });
+
+  it("shows the live overview before a batch format and applies nothing after decline", async () => {
+    const before = readableFormat();
+    const readFormat = vi.fn(async () => before);
+    const formatBatch = vi.fn(async () => ({
+      ok: true as const,
+      changed: true,
+      revision: 3,
+      document: {
+        sessionId: "s1",
+        baselineId: "b1",
+        sessionRevision: 3,
+        savedRevision: 1,
+        dirty: true,
+      },
+    }));
+    const confirm = vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const tools = createDocxTools(makeDocxHost({ readFormat, formatBatch }), { confirm });
+    const input = {
+      expected_revision: 2,
+      operations: [
+        { paragraph_ref: "p1", font: { bold: true } },
+        { paragraph_ref: "p2", paragraph: { keepNext: true } },
+      ],
+    };
+
+    expect(await tools.apply_docx_format_batch.execute(input)).toMatchObject({
+      ok: true,
+      changed: true,
+      revision: 3,
+    });
+    expect(readFormat).toHaveBeenCalledExactlyOnceWith(undefined, { kind: "overview" });
+    expect(confirm).toHaveBeenCalledWith({
+      tool: "apply_docx_format_batch",
+      summary: "Apply 2 DOCX format operations in paper.docx",
+      path: "paper.docx",
+      diff: {
+        path: "paper.docx",
+        oldText: expect.stringContaining('"sourceSha256"'),
+        newText: JSON.stringify([
+          { paragraphRef: "p1", font: { bold: true } },
+          { paragraphRef: "p2", paragraph: { keepNext: true } },
+        ], null, 2),
+      },
+    });
+    expect(formatBatch).toHaveBeenCalledExactlyOnceWith(undefined, 2, [
+      { paragraphRef: "p1", font: { bold: true } },
+      { paragraphRef: "p2", paragraph: { keepNext: true } },
+    ], undefined);
+
+    expect(await tools.apply_docx_format_batch.execute(input)).toMatchObject({
+      declined: true,
+      tool: "apply_docx_format_batch",
+    });
+    expect(formatBatch).toHaveBeenCalledOnce();
+    expect(readFormat).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads an active-session image through the image channel without inventing a session ID", async () => {
+    const readImage = vi.fn(async () => imageResult());
+    const onImage = vi.fn();
+    const tools = createDocxTools(makeDocxHost({ readImage }), {
+      onImage,
+      imageSupported: true,
+    });
+
+    const metadata = await tools.read_docx_image.execute({
+      paragraph_ref: "p1",
+      object_ref: "drawing-1",
+      expected_revision: 2,
+    });
+
+    expect(readImage).toHaveBeenCalledExactlyOnceWith(undefined, {
+      paragraphRef: "p1",
+      objectRef: "drawing-1",
+      expectedRevision: 2,
+    });
+    expect(metadata).toMatchObject({
+      document: { sessionId: "s1", sourceSha256: "a".repeat(64) },
+      sourceSha256: "a".repeat(64),
+      paragraphRef: "p1",
+      objectRef: "drawing-1",
+      revision: 2,
+      width: 2,
+      height: 3,
+    });
+    expect(metadata).not.toHaveProperty("sessionId");
+    expect(onImage).toHaveBeenCalledWith(
+      `data:image/png;base64,${Buffer.from(docxPng()).toString("base64")}`,
+    );
+  });
+
+  it("discards image pixels that complete after the request is cancelled", async () => {
+    const readImage = vi.fn(async () => imageResult());
+    const onImage = vi.fn();
+    const mutationAllowed = vi.fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+    const tools = createDocxTools(makeDocxHost({ readImage }), {
+      onImage,
+      mutationAllowed,
+    });
+
+    expect(await tools.read_docx_image.execute({
+      session_id: "s1",
+      paragraph_ref: "p1",
+      object_ref: "drawing-1",
+      expected_revision: 2,
+    })).toEqual({ error: "The external request was cancelled before mutation." });
+    expect(readImage).toHaveBeenCalledOnce();
+    expect(onImage).not.toHaveBeenCalled();
+  });
+
+  it("refuses pixels whose document identity belongs to another session", async () => {
+    const readImage = vi.fn(async () => ({
+      ...imageResult(),
+      document: { ...imageResult().document, sessionId: "s2" },
+    }));
+    const onImage = vi.fn();
+    const tools = createDocxTools(makeDocxHost({ readImage }), {
+      onImage,
+      imageSupported: true,
+    });
+
+    expect(await tools.read_docx_image.execute({
+      session_id: "s1",
+      paragraph_ref: "p1",
+      object_ref: "drawing-1",
+      expected_revision: 2,
+    })).toMatchObject({
+      error: expect.stringContaining("current document source identity"),
+    });
+    expect(onImage).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported image bytes and images above the pixel limit", async () => {
+    const readImage = vi.fn()
+      .mockResolvedValueOnce({ ...imageResult(), bytes: new Uint8Array([1, 2, 3, 4]) })
+      .mockResolvedValueOnce({ ...imageResult(), bytes: docxPng(8_000, 5_000) });
+    const onImage = vi.fn();
+    const tools = createDocxTools(makeDocxHost({ readImage }), {
+      onImage,
+      imageSupported: true,
+    });
+    const input = {
+      paragraph_ref: "p1",
+      object_ref: "drawing-1",
+      expected_revision: 2,
+    };
+
+    expect(await tools.read_docx_image.execute(input)).toEqual({
+      error: "Error: Only valid PNG, JPEG, and GIF DOCX images are supported.",
+    });
+    expect(await tools.read_docx_image.execute(input)).toMatchObject({
+      error: expect.stringContaining("pixel limit"),
+    });
+    expect(onImage).not.toHaveBeenCalled();
+  });
+});
+
+describe("project-bound asynchronous previews", () => {
+  it("discards PDF page text that arrives after the open project changes", async () => {
+    let finishExtraction!: (value: { pages: string[]; numPages: number }) => void;
+    const getProjectId = vi.fn(() => "proj");
+    const extractPdfText = vi.fn(() => new Promise<{ pages: string[]; numPages: number }>((resolve) => {
+      finishExtraction = resolve;
+    }));
+    const onImage = vi.fn();
+    const tools = createOleaflyTools({
+      getProjectId,
+      getAiPdfCaptureEnabled: vi.fn(() => true),
+      getPdfBytes: vi.fn(() => new Uint8Array([37, 80, 68, 70])),
+      extractPdfText,
+      pdfToPng: vi.fn(),
+    } as unknown as AiToolsHost, { onImage });
+
+    const pending = tools.verify_pdf_pages.execute({ pages: [1] });
+    expect(extractPdfText).toHaveBeenCalledOnce();
+    getProjectId.mockReturnValue("other");
+    finishExtraction({ pages: ["Page from the old project"], numPages: 1 });
+
+    expect(await pending).toEqual({
+      error: "The open project changed before PDF page verification finished.",
+    });
+    expect(onImage).not.toHaveBeenCalled();
+  });
+
+  it("does not retain figure PDF bytes that arrive after the project changes", async () => {
+    let markReadStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      markReadStarted = resolve;
+    });
+    let finishRead!: (bytes: Uint8Array) => void;
+    const getProjectId = vi.fn(() => "proj");
+    const setLastFigurePreview = vi.fn();
+    const host = {
+      getProjectId,
+      getFigureEngine: vi.fn(() => "latex" as const),
+      compileIsolated: vi.fn(async () => ({
+        ok: true,
+        errors: [],
+        has_pdf: true,
+        log: "compiled",
+      })),
+      readIsolatedPdf: vi.fn(() => {
+        markReadStarted();
+        return new Promise<Uint8Array>((resolve) => {
+          finishRead = resolve;
+        });
+      }),
+      pdfToPng: vi.fn(),
+      setLastFigurePreview,
+    } as unknown as AiToolsHost;
+    const onImage = vi.fn();
+    const pending = createFigureTools(host, { onImage }).preview_figure.execute({
+      code: String.raw`\draw (0,0) circle (1);`,
+    });
+
+    await readStarted;
+    getProjectId.mockReturnValue("other");
+    finishRead(new Uint8Array([37, 80, 68, 70]));
+
+    expect(await pending).toEqual({
+      error: "The open project changed or the figure request was cancelled before completion.",
+    });
+    expect(setLastFigurePreview).not.toHaveBeenCalled();
+    expect(onImage).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a figure image rendered after the project changes", async () => {
+    let markRenderStarted!: () => void;
+    const renderStarted = new Promise<void>((resolve) => {
+      markRenderStarted = resolve;
+    });
+    let finishRender!: (dataUrl: string) => void;
+    const getProjectId = vi.fn(() => "proj");
+    const setLastFigurePreview = vi.fn();
+    const host = {
+      getProjectId,
+      getFigureEngine: vi.fn(() => "latex" as const),
+      compileIsolated: vi.fn(async () => ({
+        ok: true,
+        errors: [],
+        has_pdf: true,
+        log: "compiled",
+      })),
+      readIsolatedPdf: vi.fn(async () => new Uint8Array([37, 80, 68, 70])),
+      pdfToPng: vi.fn(() => {
+        markRenderStarted();
+        return new Promise<string>((resolve) => {
+          finishRender = resolve;
+        });
+      }),
+      setLastFigurePreview,
+    } as unknown as AiToolsHost;
+    const onImage = vi.fn();
+    const pending = createFigureTools(host, { onImage }).preview_figure.execute({
+      code: String.raw`\draw (0,0) circle (1);`,
+    });
+
+    await renderStarted;
+    getProjectId.mockReturnValue("other");
+    finishRender("data:image/png;base64,T0xE");
+
+    expect(await pending).toEqual({
+      error: "The open project changed or the figure request was cancelled before completion.",
+    });
+    expect(setLastFigurePreview).not.toHaveBeenCalled();
+    expect(onImage).not.toHaveBeenCalled();
   });
 });
