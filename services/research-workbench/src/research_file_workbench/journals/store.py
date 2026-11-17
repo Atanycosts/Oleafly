@@ -15,6 +15,7 @@ from research_file_workbench.common.json_io import (
     decode_json_object,
     encode_json_object,
 )
+from research_file_workbench.common.sqlite import sqlite_file_uri
 from research_file_workbench.journals.store_bindings import (
     bind_project as bind_project_record,
 )
@@ -144,7 +145,7 @@ class WorldStore:
                 raise WorldStoreError("Writable journal library files must not have hard links")
 
     def _protected_roots(self) -> tuple[Path, ...]:
-        connection = sqlite3.connect(self.database_path.resolve().as_uri() + "?mode=ro", uri=True)
+        connection = sqlite3.connect(sqlite_file_uri(self.database_path, "ro"), uri=True)
         try:
             row = connection.execute("SELECT payload FROM library WHERE singleton=1").fetchone()
             if row is None:
@@ -168,7 +169,7 @@ class WorldStore:
             if not initializing:
                 check_root(self.root, self._protected_roots())
             connection = sqlite3.connect(
-                self.database_path.resolve().as_uri() + "?mode=rw",
+                sqlite_file_uri(self.database_path, "rw"),
                 uri=True,
                 timeout=_BUSY_TIMEOUT_SECONDS,
             )
