@@ -185,10 +185,12 @@ import {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function checkpoint(bytes: Uint8Array, outputRevision: number) {
@@ -1175,6 +1177,54 @@ describe("saving before a compile", () => {
     out_dir: null,
     compile_time_ms: 1,
   };
+
+  it("keeps a replacement compile running when an earlier project's save fails late", async () => {
+    const oldSave = deferred<void>();
+    const currentBuild = deferred<CompileResult>();
+    mocks.saveAllDirty.mockReturnValueOnce(oldSave.promise);
+    const oldCompile = useCompileStore.getState().recompile();
+    await vi.waitFor(() => expect(mocks.saveAllDirty).toHaveBeenCalledOnce());
+
+    useCompileStore.getState().reset();
+    mocks.files.projectId = "replacement";
+    useProjectAnalysisStore.getState().activateProject({ projectId: "replacement", projectRevision: 0, languageServiceGeneration: 0 });
+    mocks.compileProject.mockReturnValueOnce(currentBuild.promise);
+    const currentCompile = useCompileStore.getState().recompile();
+    await vi.waitFor(() => expect(mocks.compileProject).toHaveBeenCalledOnce());
+    const activeIdentity = useCompileStore.getState().lastAttemptIdentity;
+
+    oldSave.reject(new Error("Old project disk is read-only"));
+    await oldCompile;
+    expect(useCompileStore.getState()).toMatchObject({ status: "compiling", phase: "building", failureReason: null, lastAttemptIdentity: activeIdentity });
+    expect(mocks.reportFileSaveFailure).not.toHaveBeenCalled();
+
+    currentBuild.resolve(failedResult);
+    await currentCompile;
+  });
+
+  it("ignores a late build-directory cleanup failure after a replacement compile starts", async () => {
+    const oldCleanup = deferred<void>();
+    const currentBuild = deferred<CompileResult>();
+    mocks.clearBuildDir.mockReturnValueOnce(oldCleanup.promise);
+    const oldCompile = useCompileStore.getState().recompile({ fromScratch: true });
+    await vi.waitFor(() => expect(mocks.clearBuildDir).toHaveBeenCalledOnce());
+
+    useCompileStore.getState().reset();
+    mocks.files.projectId = "replacement";
+    useProjectAnalysisStore.getState().activateProject({ projectId: "replacement", projectRevision: 0, languageServiceGeneration: 0 });
+    mocks.compileProject.mockReturnValueOnce(currentBuild.promise);
+    const currentCompile = useCompileStore.getState().recompile();
+    await vi.waitFor(() => expect(mocks.compileProject).toHaveBeenCalledOnce());
+    const activeIdentity = useCompileStore.getState().lastAttemptIdentity;
+
+    oldCleanup.reject(new Error("Old build directory is unavailable"));
+    await oldCompile;
+    expect(useCompileStore.getState()).toMatchObject({ status: "compiling", phase: "building", lastAttemptIdentity: activeIdentity });
+    expect(mocks.notifyError).not.toHaveBeenCalled();
+
+    currentBuild.resolve(failedResult);
+    await currentCompile;
+  });
 
   it("retries a write that lost a race with an outside edit once, silently", async () => {
     mocks.saveAllDirty
