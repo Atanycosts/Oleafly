@@ -270,6 +270,58 @@ describe("TaskGroupPanel", () => {
   expect(view.getAllByText("Returned evidence").length).toBe(2);
  });
 
+ it("refreshes an unchanged group scope when the task revision changes", async () => {
+  api.loadTaskGroup.mockResolvedValue(snapshot());
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+  api.loadTaskGroupMessages.mockClear();
+
+  view.rerender(<Panel task={{ ...task, updatedAt: 2 }} agents={agents} />);
+
+  await testing.waitFor(() => expect(api.loadTaskGroupMessages).toHaveBeenCalledWith("p1", "t1", "g1", 1));
+  expect(api.loadTaskGroup).toHaveBeenCalledTimes(1);
+ });
+
+ it("updates group status, member pause, and explicit interests", async () => {
+  const loaded = snapshot();
+  loaded.interests = [{ memberId: "m1", kind: "path", value: "notes.md" }];
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupMessages.mockResolvedValue(emptyIncremental(loaded));
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+
+  const status = view.getByLabelText("status") as HTMLSelectElement;
+  testing.fireEvent.change(status, { target: { value: "paused" } });
+  await testing.waitFor(() => expect(api.setTaskGroupStatus).toHaveBeenCalledWith("p1", "g1", "paused"));
+  await testing.waitFor(() => expect(status.disabled).toBe(false));
+
+  const paused = view.getByLabelText("paused") as HTMLInputElement;
+  testing.fireEvent.click(paused);
+  await testing.waitFor(() => expect(api.setGroupMemberPaused).toHaveBeenCalledWith("p1", "g1", "m1", true));
+  await testing.waitFor(() => expect(paused.disabled).toBe(false));
+
+  testing.fireEvent.change(view.getByLabelText("member"), { target: { value: "m1" } });
+  testing.fireEvent.change(view.getByLabelText("interestKind"), { target: { value: "object" } });
+  const interestValue = view.getByLabelText("interestValue");
+  testing.fireEvent.change(interestValue, { target: { value: "draft.md" } });
+  testing.fireEvent.click(view.getByText("addInterest"));
+  await testing.waitFor(() => expect(api.setGroupMemberInterest).toHaveBeenCalledWith("p1", "g1", {
+    memberId: "m1",
+    kind: "object",
+    value: "draft.md",
+  }, true));
+  await testing.waitFor(() => expect((interestValue as HTMLInputElement).disabled).toBe(false));
+  expect((interestValue as HTMLInputElement).value).toBe("");
+
+  const interests = view.getByRole("group", { name: "explicitInterests" });
+  testing.fireEvent.click(testing.within(interests).getByText("remove"));
+  await testing.waitFor(() => expect(api.setGroupMemberInterest).toHaveBeenCalledWith("p1", "g1", {
+    memberId: "m1",
+    kind: "path",
+    value: "notes.md",
+  }, false));
+ });
+
  it("shares the loaded snapshot and shows the source and result message once", async () => {
   const group = snapshot(); api.loadTaskGroup.mockResolvedValue(group);
   const callback = vi.fn();
@@ -683,6 +735,28 @@ describe("TaskGroupPanel", () => {
   await testing.waitFor(() => expect(api.loadTaskGroupExecution).toHaveBeenCalledWith("p1", "t1", "g1", "x1"));
   await testing.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("research_task_observation_call", { taskId: "t1", executionGeneration: 2, callId: "call-read" }));
   expect(testing.within(work).getByText((_, element) => element?.tagName === "PRE" && element.textContent?.includes("historical-read-hash") === true)).toBeTruthy();
+ });
+
+ it("loads and orders an older execution page from the visible cursor", async () => {
+  const loaded = attributedSnapshot();
+  loaded.executions = [executionRecord(101), executionRecord(100)];
+  loaded.executionsHasMore = true;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupExecutionsPage.mockResolvedValue({
+    executions: [executionRecord(99)],
+    hasMore: false,
+  });
+  const callback = vi.fn();
+  const view = testing.render(<Panel task={task} agents={agents} onSnapshot={callback} />);
+  await testing.waitFor(() => expect(view.getByText("loadEarlierExecutions")).toBeTruthy());
+
+  testing.fireEvent.click(view.getByText("loadEarlierExecutions"));
+
+  await testing.waitFor(() => expect(view.getByText(/execution-099 · Reviewer/)).toBeTruthy());
+  expect(api.loadTaskGroupExecutionsPage).toHaveBeenCalledWith("p1", "t1", "g1", 100, "execution-100");
+  const final = callback.mock.calls.at(-1)?.[0] as GroupSnapshot;
+  expect(final.executions.map(execution => execution.startedAt)).toEqual([101, 100, 99]);
+  expect(final.executionsHasMore).toBe(false);
  });
 
  it("merges an empty incremental poll without clearing loaded history", async () => {
