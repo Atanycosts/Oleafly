@@ -43,13 +43,28 @@ test("native system flow retains a delegated task PDF before apply", async ({ ta
     expect(facts.png).toBe(true);
     await openRailTab(page, "Research workspace");
     await page.evaluate(`window.__oleaflyE2EImport('/src/store/research-tasks.ts').then(async m => { await m.useResearchTasksStore.getState().bindProject(${scriptValue(projectId)}); m.useResearchTasksStore.getState().receiveTask(${scriptValue(completed)}); m.useResearchTasksStore.getState().openTaskDetail(${scriptValue(task.id)}, 'output'); })`);
-    await expect(page.locator('section[aria-label="Task compiled PDFs"]')).toBeVisible({ timeout: 20_000 });
-    await page.locator('section[aria-label="Task compiled PDFs"] button').first().click();
-    await expect(page.locator('section[aria-label="Task compiled PDFs"] .pdf-canvas')).toBeVisible({ timeout: 45_000 });
+    const compiledPdfs = page.locator('section[aria-label="Task compiled PDFs"]');
+    await expect(compiledPdfs).toBeVisible({ timeout: 20_000 });
+    await compiledPdfs.locator("button").first().click();
+    await compiledPdfs.getByRole("button", { name: "Open in workspace" }).click();
+    const materialViewer = page.locator('[data-testid="workspace-material-surface"]:not([hidden]) [data-testid="retained-material-viewer"]');
+    await expect(materialViewer).toBeVisible({ timeout: 20_000 });
+    await expect(materialViewer).toContainText("main.tex");
+    await expect.poll(() => page.evaluate<{ kind: string; role: string; revision: string } | null>(
+      `window.__oleaflyE2EImport('/src/store/material-viewer.ts').then(m => {
+        const request = m.useMaterialViewerStore.getState().request;
+        return request ? { kind: request.kind, role: request.role ?? '', revision: request.revision } : null;
+      })`,
+    )).toEqual({ kind: "pdf", role: "result", revision: reference.pdfSha256 });
+    await expect.poll(() => page.evaluate<boolean>(`(() => {
+      const viewer = document.querySelector('[data-testid="workspace-material-surface"]:not([hidden]) [data-testid="retained-material-viewer"]');
+      return !!viewer
+        && !!viewer.querySelector('[data-pdf-scroll-root] canvas[width][height]')
+        && !viewer.closest('[role="dialog"], [role="alertdialog"]');
+    })()`), { timeout: 45_000 }).toBe(true);
     expect(await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m => m.readFileContent(${scriptValue(projectId)}, 'main.tex'))`)).toBe(original);
     const toolResults = server.requestBodies().flatMap(body => (JSON.parse(body).messages ?? []).filter((message: {role?: string}) => message.role === "tool"));
     expect(toolResults.some((message: {content?: unknown}) => JSON.stringify(message.content).includes("pdfSha256"))).toBe(true);
-    await page.locator('[data-testid="research-task-detail"]').press("Escape");
     await page.click('[title="Back to library"]');
     await createBlankProject(page, `A0 unrelated ${Date.now()}`);
     const retained = await page.evaluate<{text: string; hash: string}>(`(async () => { const m = await window.__oleaflyE2EImport('/src/lib/research-tasks.ts'); const bytes = new Uint8Array(await m.readTaskCompiledPdf(${scriptValue(task.id)}, ${completed!.executionGeneration}, ${scriptValue(reference)})); const text = await (await window.__oleaflyE2EImport('/src/lib/pdf-text.ts')).extractPdfText(bytes); const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2,'0')).join(''); return {text: text.pages.join('\\n'), hash}; })()`);

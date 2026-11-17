@@ -4,21 +4,50 @@ import { createBlankProject, openRailTab } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 
-type Message = { role: string; content: unknown };
-function compileReference(request: Record<string, unknown>): TaskCompiledArtifact {
+type Message = { role: string; content: unknown; tool_call_id?: string };
+type CompileFailure = {
+  error: string;
+  compileToolCallId: string | null;
+  compileToolResponse: unknown;
+};
+
+function compileReference(request: Record<string, unknown>): TaskCompiledArtifact | undefined {
   for (const message of request.messages as Message[]) {
     if (message.role !== "tool" || typeof message.content !== "string") continue;
-    const result = JSON.parse(message.content) as { artifact?: TaskCompiledArtifact };
-    if (result.artifact) return result.artifact;
+    try {
+      const result = JSON.parse(message.content) as { artifact?: TaskCompiledArtifact };
+      if (result.artifact) return result.artifact;
+    } catch {
+      // A failed compile can return plain text; compileFailure() preserves it.
+    }
   }
-  throw new Error("The native compile tool returned no retained PDF reference.");
+  return undefined;
+}
+
+function compileFailure(request: Record<string, unknown>): CompileFailure {
+  const toolMessages = (request.messages as Message[]).filter(message => message.role === "tool" && typeof message.content === "string");
+  const compileMessage = toolMessages[2];
+  let response: unknown = compileMessage?.content ?? null;
+  if (typeof response === "string") {
+    try {
+      response = JSON.parse(response);
+    } catch {
+      // Preserve a non-JSON compile response verbatim in the diagnostic.
+    }
+  }
+  return {
+    error: "The native compile tool returned no retained PDF reference.",
+    compileToolCallId: compileMessage?.tool_call_id ?? null,
+    compileToolResponse: response,
+  };
 }
 
 // Scripted model sequencing verifies application delivery, not visual reasoning quality.
-test("native task retains read source through edits and delivers compiled PDF pages", async ({ tauriPage: page }) => {
+test("native task retains read source through edits and delivers compiled PDF pages", async ({ tauriPage: page }, testInfo) => {
   test.setTimeout(240_000);
   const server = await startMockAiServer();
   let usedReference: TaskCompiledArtifact | undefined;
+  let compileDiagnostic: CompileFailure | undefined;
   try {
     if (await page.evaluate<boolean>(`!!document.querySelector('[title="Back to library"]')`)) await page.click('[title="Back to library"]');
     await createBlankProject(page, `Task page images ${Date.now()}`);
@@ -36,13 +65,17 @@ test("native task retains read source through edits and delivers compiled PDF pa
       { name: "discover_tools", args: { query: "task_pdf_pages" } },
       { name: "task_pdf_pages", args: (request) => {
         usedReference = compileReference(request);
+        if (!usedReference) {
+          compileDiagnostic = compileFailure(request);
+          return { reference: null, pages: [1], scale: 1 };
+        }
         return { reference: usedReference, pages: [1], scale: 1 };
       } },
     ], "The retained page image was received; capture alone is not a visual review.");
     const task = await page.evaluate<ResearchTask>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m => { const task = await m.createResearchTask(${scriptValue({ projectId, title: "Retained PDF image delivery", prompt: "Revise and compile this task copy, then request its retained first PDF page image.", runtimeId: "builtin", agentId: "ollama", modelId: "llava", skillIds: [], dependencyIds: [] })}); return m.startResearchTask(task.id); })`);
     await expect.poll(async () => {
       const current = await page.evaluate<ResearchTask>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m => (await m.listResearchTasks(${scriptValue(projectId)})).find(t => t.id === ${scriptValue(task.id)}))`);
-      return current.status;
+      return compileDiagnostic ? JSON.stringify(compileDiagnostic, null, 2) : current.status;
     }, { timeout: 180_000, intervals: [500] }).toBe("awaiting_review");
     expect(usedReference?.taskId).toBe(task.id);
     const requests = server.requestBodies().map(body => JSON.parse(body) as { messages: Message[] });
@@ -65,5 +98,13 @@ test("native task retains read source through edits and delivers compiled PDF pa
     const retainedSource = detail.locator('[data-testid="task-observations"] ol pre');
     await expect(retainedSource).toContainText("\\par ARCHIVED_SOURCE_SENTINEL");
     await expect(retainedSource).not.toContainText("\\par RetainedPageImageEvidence");
-  } finally { await server.close(); }
+  } finally {
+    if (compileDiagnostic) {
+      await testInfo.attach("119-task-compile-failure", {
+        body: JSON.stringify(compileDiagnostic, null, 2),
+        contentType: "application/json",
+      });
+    }
+    await server.close();
+  }
 });

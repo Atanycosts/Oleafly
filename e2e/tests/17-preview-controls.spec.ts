@@ -467,7 +467,7 @@ test("copy log writes the exact visible payload and log scrolling reaches both b
 test("fullscreen controls hide, restore, and exit the preview toolbar", async ({
   tauriPage,
 }) => {
-  await tauriPage.click('[aria-label="Fullscreen preview"]');
+  await activatePreviewControl(tauriPage, "Fullscreen preview");
   await expect(tauriPage.locator('[aria-label="Exit fullscreen"]')).toBeVisible({
     timeout: 10_000,
   });
@@ -475,7 +475,7 @@ test("fullscreen controls hide, restore, and exit the preview toolbar", async ({
   await expect(tauriPage.locator('[aria-label="Show toolbar"]')).toBeVisible();
   await tauriPage.click('[aria-label="Show toolbar"]');
   await expect(tauriPage.locator('[aria-label="Exit fullscreen"]')).toBeVisible();
-  await tauriPage.click('[aria-label="Exit fullscreen"]');
+  await activatePreviewControl(tauriPage, "Exit fullscreen");
   await expect(tauriPage.locator('[aria-label="Fullscreen preview"]')).toBeVisible();
 });
 

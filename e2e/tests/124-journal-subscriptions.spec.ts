@@ -2,7 +2,11 @@ import { strToU8, zipSync } from "fflate";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { GroupSnapshot } from "../../src/lib/task-collaboration";
-import type { JournalAnnotationRequest, JournalObjectReference } from "../../src/lib/journal-workbench";
+import type {
+  JournalAnnotationRequest,
+  JournalComponent,
+  JournalObjectReference,
+} from "../../src/lib/journal-workbench";
 import { test, expect } from "../fixtures";
 import { createBlankProject } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
@@ -37,10 +41,42 @@ test("external journal revision wakes only the subscribed idle member and dedupl
       "_rels/.rels": strToU8('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'),
       "word/document.xml": strToU8('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>REAL-DOCX-JOURNAL-CONTENT</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/><w:cols w:num="1"/></w:sectPr></w:body></w:document>'),
     }));
+    const journalId = `poll-${projectId}`;
+    const quote = "All manuscript pages must use A4 paper.";
+    const requirementComponent: JournalComponent = {
+      schema_version: "journal-rule-component-1.0.0",
+      component_id: "subscription-page-geometry",
+      component_version: "1.0.0",
+      applicability: {
+        journal_ids: [journalId],
+        article_types: ["research_article"],
+        stages: ["initial_submission"],
+        languages: ["en"],
+        basis: "Explicit component for the captured subscription guide.",
+      },
+      sources: [{
+        source_id: "page-size",
+        title: "Guide excerpt",
+        locator: "line:1",
+        quote,
+      }],
+      rules: [{
+        property: "page_width_twips",
+        expected: 11906,
+        unit: "twips",
+        source_refs: ["page-size"],
+      }],
+    };
     const fixture = await page.evaluate<{ reference: JournalObjectReference; requested: JournalAnnotationRequest }>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
       const connection=await j.connectJournalWorkbench();
       const manuscript=await j.journalRequest('/api/projects',{name:'Subscription manuscript',filename:'manuscript.docx',content_base64:${scriptValue(docx.toString("base64"))}});
-      const world=await j.journalRequest('/api/worlds',{journal_id:${scriptValue(`poll-${projectId}`)},journal_name:'Subscription journal',article_type:'research_article',stage:'initial_submission',language:'en',sources:[{name:'guide.txt',kind:'guide_text',content_base64:${scriptValue(Buffer.from("All manuscript pages must use A4 paper.").toString("base64"))}}]});
+      const base=await j.journalRequest('/api/worlds',{journal_id:${scriptValue(journalId)},journal_name:'Subscription journal',article_type:'research_article',stage:'initial_submission',language:'en',sources:[{name:'guide.txt',kind:'guide_text',content_base64:${scriptValue(Buffer.from(quote).toString("base64"))}}]});
+      const world=await j.journalRequest('/api/world-component',{
+        version_id:base.version_id,
+        name:'requirements.json',
+        content_base64:${scriptValue(Buffer.from(JSON.stringify(requirementComponent)).toString("base64"))},
+        decisions:[{property:'page_width_twips',expected:11906,reason:'Operator confirmed A4 width against the captured guide.'}],
+      });
       await j.linkJournalProject(${scriptValue(projectId)},manuscript.project_id);
       await j.journalRequest('/api/bind',{project_id:manuscript.project_id,world_version_id:world.version_id,expected_binding_id:null});
       const check=await j.journalRequest('/api/check',{project_id:manuscript.project_id});

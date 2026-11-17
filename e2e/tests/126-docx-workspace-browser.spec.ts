@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
-import { chromium, expect, test } from "@playwright/test";
+import { chromium, expect, test, type Page } from "@playwright/test";
 import { strToU8, unzipSync, zipSync } from "fflate";
 
 const original = "Target paragraph for a streamed suggestion.";
@@ -15,7 +15,7 @@ function fixture(): Uint8Array {
   return zipSync({
     "[Content_Types].xml": strToU8('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
     "_rels/.rels": strToU8('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'),
-    "word/document.xml": strToU8(`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:body><w:p><w:r><w:t>${original}</w:t></w:r></w:p><w:p><w:r><w:t>${other}</w:t></w:r></w:p><w:p><w:r><w:t>Protected field </w:t></w:r><w:fldSimple w:instr="PAGE"><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p><w:p><m:oMath><m:r><m:t>x+1</m:t></m:r></m:oMath></w:p><w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="5000"/></w:tblGrid><w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>Retained table cell.</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>`),
+    "word/document.xml": strToU8(`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:body><w:p><w:r><w:t>${original}</w:t></w:r></w:p><w:p><w:r><w:t>${other}</w:t></w:r></w:p><w:p><w:r><w:t>Protected field </w:t></w:r><w:fldSimple w:instr="PAGE"><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p><w:p><m:oMath><m:r><m:t>x+1</m:t></m:r></m:oMath></w:p><w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="5000"/></w:tblGrid><w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>Retained table cell.</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>`.replaceAll("<w:r>", '<w:r><w:rPr><w:rFonts w:ascii="Liberation Serif" w:hAnsi="Liberation Serif"/></w:rPr>')),
   });
 }
 
@@ -31,6 +31,107 @@ async function startWorkbench(root: string): Promise<{ child: ChildProcessWithou
     child.on("exit", (code) => reject(new Error(`Workbench exited ${code}: ${errors}`)));
   });
   return { child, url };
+}
+
+async function installBrowserBridge(
+  page: Page,
+  request: (path: string, payload?: any) => Promise<any>,
+  renderer: string | null,
+  requestBytes?: (path: string) => Promise<Uint8Array>,
+) {
+  await page.exposeFunction("docxWorkbenchRequest", request);
+  await page.exposeFunction("docxWorkbenchBytes", requestBytes ?? (() => { throw new Error("PDF bytes were not requested by this acceptance."); }));
+  await page.exposeFunction("docxRenderer", () => renderer);
+  await page.exposeFunction("docxSystemFontFaces", async (requests: { family: string; weight: number; style: string }[]) => {
+    const faces = await Promise.all(requests.filter((face) => face.family === "Liberation Serif").map(async (requested) => {
+      const variant = requested.weight === 700 ? requested.style === "italic" ? "BoldItalic" : "Bold" : requested.style === "italic" ? "Italic" : "Regular";
+      const bytes = await readFile(resolve(`node_modules/@docx-editor.dev/fonts/assets/LiberationSerif-${variant}.ttf`));
+      return { requested, family: "Liberation Serif", postscriptName: `LiberationSerif-${variant}`,
+        weight: requested.weight, style: requested.style, faceIndex: 0,
+        sha256: createHash("sha256").update(bytes).digest("hex"), contentBase64: bytes.toString("base64") };
+    }));
+    return { faces, missing: requests.filter((face) => face.family !== "Liberation Serif") };
+  });
+  await page.addInitScript(() => {
+    let callback = 0;
+    const recoveries = new Map<string, any>();
+    const control = { finish: null as (() => void) | null, canceled: 0, prefix: "Suggested paragraph", selection: " is complete." };
+    Object.assign(window, {
+      __docxTest: control,
+      __TAURI_INTERNALS__: {
+        transformCallback: () => ++callback,
+        unregisterCallback: () => {},
+        invoke: async (command: string, args: any = {}) => {
+          if (command === "journal_workbench_request") return (window as any).docxWorkbenchRequest(args.path, args.payload ?? undefined);
+          if (command === "journal_docx_renderer") return (window as any).docxRenderer();
+          if (command === "journal_docx_render") return (window as any).docxWorkbenchRequest("/api/render-baseline", {
+            project_id: args.projectId, baseline_id: args.baselineId,
+            libreoffice_executable: args.executable,
+            reason: "Refresh the PDF preview of this saved DOCX working-copy version.",
+          });
+          if (command === "journal_docx_pdf") return Array.from(await (window as any).docxWorkbenchBytes(
+            `/api/render?project_id=${encodeURIComponent(args.projectId)}&baseline_id=${encodeURIComponent(args.baselineId)}&bundle_id=${encodeURIComponent(args.bundleId)}&role=pdf&page_number=none`,
+          ));
+          if (command === "docx_recovery_save") {
+            const input = args.request;
+            const bytes = Uint8Array.from(atob(input.contentBase64), (char) => char.charCodeAt(0));
+            const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+            const contentSha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+            const metadata = { appProjectId: input.appProjectId, workbenchProjectId: input.workbenchProjectId,
+              baseBaselineId: input.baseBaselineId, sourceSha256: input.sourceSha256,
+              recoveryKey: input.recoveryKey, revision: input.revision, updatedAt: input.updatedAt,
+              contentSha256, taskState: input.taskState };
+            recoveries.set(input.recoveryKey, { ...metadata, bytesBase64: input.contentBase64 });
+            return metadata;
+          }
+          if (command === "docx_recovery_commit") {
+            const saved = recoveries.get(args.request.recoveryKey);
+            if (!saved || saved.contentSha256 !== args.request.contentSha256 || !saved.taskState.pendingSave) throw new Error("Unknown DOCX recovery commit.");
+            const pending = saved.taskState.pendingSave;
+            const result = await (window as any).docxWorkbenchRequest("/api/baseline", {
+              project_id: pending.projectId, expected_baseline_id: pending.expectedBaselineId,
+              filename: pending.filename, content_base64: saved.bytesBase64,
+              reason: pending.reason, request_id: pending.requestId,
+            });
+            if (result.status !== "APPLIED") throw new Error(`DOCX baseline was not applied: ${result.status}`);
+            return { baselineId: result.result_baseline_id, sourceSha256: saved.contentSha256, revision: saved.revision };
+          }
+          if (command === "docx_recovery_read") return recoveries.get(args.request.recoveryKey) ?? null;
+          if (command === "docx_recovery_list") return { snapshots: [], failures: [] };
+          if (command === "docx_recovery_clear") {
+            const saved = recoveries.get(args.request.recoveryKey);
+            if (saved && saved.contentSha256 !== args.request.contentSha256) return false;
+            recoveries.delete(args.request.recoveryKey);
+            return true;
+          }
+          if (command === "resolve_system_font_faces") return (window as any).docxSystemFontFaces(args.requests);
+          if (command === "research_task_list") return [];
+          if (command === "research_docx_activities") return { activities: [], nextCursor: 0, hasMore: false };
+          if (command === "agent_cancel") { control.canceled++; control.finish?.(); return; }
+          if (command === "agent_stream") {
+            args.onEvent.onmessage({ kind: "textDelta", text: control.prefix });
+            await new Promise<void>((finish) => { control.finish = finish; });
+            args.onEvent.onmessage({ kind: "textDelta", text: control.selection });
+            args.onEvent.onmessage({ kind: "runEnd" });
+            control.finish = null;
+            return;
+          }
+          if (command.startsWith("plugin:")) return 1;
+          throw new Error(`Unexpected DOCX browser acceptance IPC: ${command}`);
+        },
+      },
+    });
+  });
+}
+
+const readLive = (page: Page) => page.evaluate(async () => (window as any).__docxTools.read_docx_document.execute({}));
+
+async function beginSuggestion(page: Page, paragraphRef: string) {
+  await page.evaluate((paragraphRef) => {
+    (window as any).__docxPending = (window as any).__docxTools.suggest_docx_change.execute({
+      paragraph_ref: paragraphRef, instruction: "Improve this sentence.",
+    });
+  }, paragraphRef);
 }
 
 // Actual React editor and Workbench HTTP. Tauri IPC and token generation are scripted.
@@ -59,7 +160,24 @@ test("DOCX live working copy preserves intervention, undo and exact saved checks
       if (!response.ok) throw new Error((await response.json()).error);
       return new Uint8Array(await response.arrayBuffer());
     }
-    const world = await request("/api/worlds", { journal_id: "docx-test", journal_name: "DOCX test journal", article_type: "research_article", stage: "initial_submission", language: "en", sources: [{ name: "guide.txt", kind: "guide_text", content_base64: Buffer.from("All manuscript pages must use A4 paper.").toString("base64") }] });
+    const guideWorld = await request("/api/worlds", { journal_id: "docx-test", journal_name: "DOCX test journal", article_type: "research_article", stage: "initial_submission", language: "en", sources: [{ name: "guide.txt", kind: "guide_text", content_base64: Buffer.from("All manuscript pages must use A4 paper.").toString("base64") }] });
+    const world = await request("/api/world-component", {
+      version_id: guideWorld.version_id,
+      name: "requirements.json",
+      content_base64: Buffer.from(JSON.stringify({
+        schema_version: "journal-rule-component-1.0.0", component_id: "page-size", component_version: "1.0.0",
+        applicability: { journal_ids: ["docx-test"], article_types: ["research_article"], stages: ["initial_submission"], languages: ["en"], basis: "Explicit A4 requirements confirmed against the retained guide." },
+        sources: [{ source_id: "a4", title: "Page-size guidance", locator: "line:1", quote: "All manuscript pages must use A4 paper." }],
+        rules: [
+          { property: "page_width_twips", expected: 11906, unit: "twips", source_refs: ["a4"] },
+          { property: "page_height_twips", expected: 16838, unit: "twips", source_refs: ["a4"] },
+        ],
+      })).toString("base64"),
+      decisions: [
+        { property: "page_width_twips", expected: 11906, reason: "Operator confirmed A4 width from the guide." },
+        { property: "page_height_twips", expected: 16838, reason: "Operator confirmed A4 height from the guide." },
+      ],
+    });
     const project = await request("/api/projects", { name: "Synthetic DOCX working copy", filename: "working-copy.docx", content_base64: Buffer.from(fixture()).toString("base64") });
     await request("/api/bind", { project_id: project.project_id, world_version_id: world.version_id, expected_binding_id: null });
     const initialCheck = await request("/api/check", { project_id: project.project_id });
@@ -72,97 +190,54 @@ test("DOCX live working copy preserves intervention, undo and exact saved checks
     page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
     page.on("response", (response) => { if (response.status() >= 400 && /docx-editor|harfbuzz|\.ttf|\.woff/.test(response.url())) failedAssets.push(response.url()); });
     page.on("response", (response) => { if (response.ok() && /\.wasm|\.ttf|\.otf/.test(response.url())) loadedAssets.push(response.url()); });
-    await page.exposeFunction("docxWorkbenchRequest", request);
-    await page.exposeFunction("docxWorkbenchBytes", requestBytes);
-    await page.exposeFunction("docxRenderer", () => renderer);
-    await page.addInitScript(() => {
-      let callback = 0;
-      const control = { finish: null as (() => void) | null, canceled: 0 };
-      Object.assign(window, {
-        __docxTest: control,
-        __TAURI_INTERNALS__: {
-          transformCallback: () => ++callback,
-          unregisterCallback: () => {},
-          invoke: async (command: string, args: any = {}) => {
-            if (command === "journal_workbench_request") return (window as any).docxWorkbenchRequest(args.path, args.payload ?? undefined);
-            if (command === "journal_docx_renderer") return await (window as any).docxRenderer();
-            if (command === "journal_docx_render") {
-              return (window as any).docxWorkbenchRequest("/api/render-baseline", {
-                project_id: args.projectId,
-                baseline_id: args.baselineId,
-                libreoffice_executable: args.executable,
-                reason: "Refresh the PDF preview of this saved DOCX working-copy version.",
-              });
-            }
-            if (command === "journal_docx_pdf") {
-              const result = await (window as any).docxWorkbenchBytes(
-                `/api/render?project_id=${encodeURIComponent(args.projectId)}&baseline_id=${encodeURIComponent(args.baselineId)}&bundle_id=${encodeURIComponent(args.bundleId)}&role=pdf&page_number=none`,
-              );
-              return Array.from(result);
-            }
-            if (command === "agent_cancel") { control.canceled++; control.finish?.(); return; }
-            if (command === "agent_stream") {
-              args.onEvent.onmessage({ kind: "textDelta", text: "Suggested paragraph" });
-              await new Promise<void>((finish) => { control.finish = finish; });
-              args.onEvent.onmessage({ kind: "textDelta", text: " is complete." });
-              args.onEvent.onmessage({ kind: "runEnd" });
-              control.finish = null;
-              return;
-            }
-            if (command.startsWith("plugin:")) return 1;
-            return null;
-          },
-        },
-      });
-    });
+    await installBrowserBridge(page, request, renderer, requestBytes);
     await page.goto(`${process.env.OLEAFLY_BROWSER_TEST_URL ?? "http://127.0.0.1:1420"}/e2e/docx-workspace-harness.html`);
     try { await expect(page.getByTestId("docx-workspace")).toBeVisible({ timeout: 15000 }); }
     catch (cause) {
       await testInfo.attach("docx-startup-errors", { body: JSON.stringify({ errors, consoleErrors, failedAssets }), contentType: "application/json" });
       throw cause;
     }
-    const liveDocument = await page.evaluate(async () => {
-      return (window as any).__docxTools.read_docx_document.execute({});
-    });
+    await expect.poll(async () => (await readLive(page)).paragraphs?.length).toBe(5);
+    const liveDocument = await readLive(page);
     expect(liveDocument).toMatchObject({ document: { appProjectId: "docx-harness", dirty: false } });
-    const target = page.getByRole("combobox", { name: "Target paragraph", exact: true });
-    await expect(target.locator("option")).toHaveCount(6);
-    await target.selectOption({ label: `1. ${original}` });
-    await page.getByRole("textbox", { name: "Describe the change to this paragraph" }).fill("Improve this sentence.");
-    await page.getByRole("button", { name: "Generate suggestion", exact: true }).click();
+    const originalSession = liveDocument.document.sessionId;
+    await beginSuggestion(page, liveDocument.paragraphs[0].paragraphRef);
     await expect(page.getByTestId("docx-proposed")).toHaveText("Suggested paragraph");
     await expect(page.getByTestId("docx-inline-suggestion")).toBeVisible();
-    const documentParagraphs = page.locator(".docx-paragraph-fragment");
+    const documentParagraphs = page.getByTestId("docx-editor-surface").locator(".docx-paragraph-fragment");
     await documentParagraphs.nth(1).click({ position: { x: 4, y: 8 } });
     await page.keyboard.press("Home");
     await page.keyboard.insertText("USER ");
-    await expect(target).toContainText(`USER ${other}`);
-    await page.getByRole("button", { name: "Minimize", exact: true }).click();
+    await expect.poll(async () => (await readLive(page)).paragraphs[1].text).toBe(`USER ${other}`);
+    await page.getByRole("button", { name: "Source", exact: true }).click();
     await expect(page.getByTestId("docx-workspace")).toBeHidden();
-    await page.getByRole("button", { name: "Resume DOCX working copy", exact: true }).click();
+    await page.getByRole("button", { name: "Word", exact: true }).click();
     await expect(page.getByTestId("docx-workspace")).toBeVisible();
-    await expect(target).toContainText(`USER ${other}`);
+    expect((await readLive(page)).document.sessionId).toBe(originalSession);
+    expect((await readLive(page)).paragraphs[1].text).toBe(`USER ${other}`);
     await expect(page.getByTestId("docx-suggestion")).toContainText("Generating suggestion");
     await testInfo.attach("editor-dom", { body: await page.getByTestId("docx-editor-surface").innerHTML(), contentType: "text/html" });
     await page.evaluate(() => (window as any).__docxTest.finish());
     await expect(page.getByTestId("docx-inline-suggestion").getByRole("button", { name: "Accept", exact: true })).toBeVisible();
+    const generated = await page.evaluate(() => (window as any).__docxPending);
+    expect(generated).toMatchObject({ proposed: "Suggested paragraph is complete." });
     await page.getByTestId("docx-inline-suggestion").getByRole("button", { name: "Accept", exact: true }).click();
-    await expect(target).toContainText("Suggested paragraph is complete.");
+    await expect.poll(async () => (await readLive(page)).paragraphs[0].text).toBe("Suggested paragraph is complete.");
     await page.getByRole("button", { name: /^Undo/ }).click();
-    await expect(target).toContainText(original);
-    await expect(target).toContainText(`USER ${other}`);
+    await expect.poll(async () => (await readLive(page)).paragraphs[0].text).toBe(original);
+    expect((await readLive(page)).paragraphs[1].text).toBe(`USER ${other}`);
     await page.getByRole("button", { name: /^Redo/ }).click();
-    await expect(target).toContainText("Suggested paragraph is complete.");
-    await target.selectOption({ label: "1. Suggested paragraph is complete." });
-    await page.getByRole("button", { name: "Generate suggestion", exact: true }).click();
+    await expect.poll(async () => (await readLive(page)).paragraphs[0].text).toBe("Suggested paragraph is complete.");
+    await beginSuggestion(page, (await readLive(page)).paragraphs[0].paragraphRef);
     await expect(page.getByTestId("docx-proposed")).toHaveText("Suggested paragraph");
     await documentParagraphs.first().click({ position: { x: 4, y: 8 } });
     await page.keyboard.press("Home");
     await page.keyboard.insertText("LOCAL ");
-    await expect(target).toContainText("LOCAL Suggested paragraph is complete.");
+    await expect.poll(async () => (await readLive(page)).paragraphs[0].text).toBe("LOCAL Suggested paragraph is complete.");
     await expect(page.getByTestId("docx-suggestion")).toContainText("Needs a fresh read");
     await expect(page.getByRole("button", { name: "Accept", exact: true })).toHaveCount(0);
     expect(await page.evaluate(() => (window as any).__docxTest.canceled)).toBe(1);
+    expect(await page.evaluate(() => (window as any).__docxPending)).toHaveProperty("error");
     const appliedByAgent = await page.evaluate(async () => {
       const read = await (window as any).__docxTools.read_docx_document.execute({});
       const paragraph = read.paragraphs.find((item: { text: string }) => item.text.includes("USER "));
@@ -174,20 +249,24 @@ test("DOCX live working copy preserves intervention, undo and exact saved checks
       });
     });
     expect(appliedByAgent).toMatchObject({ ok: true, changed: true });
-    await expect(target).toContainText("Agent updated this paragraph after the user's edit.");
-    await page.getByRole("button", { name: "Save manuscript version", exact: true }).click();
-    await expect(page.getByTestId("docx-save-state")).toContainText("Retained DOCX version loaded or saved");
-    await page.getByRole("button", { name: "Bind selected journal and check saved version", exact: true }).click();
-    await expect(page.getByText(/Check saved: CURRENT/)).toBeVisible();
+    await expect.poll(async () => (await readLive(page)).paragraphs[1].text).toBe("Agent updated this paragraph after the user's edit.");
+    await page.getByRole("button", { name: "Save version", exact: true }).click();
+    await expect(page.getByTestId("docx-save-state")).toContainText("All changes saved");
+    await page.getByRole("button", { name: "Check journal format", exact: true }).click();
+    await expect(page.getByText("Journal workspace", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Word", exact: true }).click();
+    await expect(page.getByTestId("docx-workspace")).toBeVisible();
+    await expect(page.getByTestId("docx-check-validity")).toHaveText("Check saved: Current");
     await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy");
     await page.getByRole("button", { name: "Open PDF", exact: true }).click();
     await expect(page.locator("[data-testid=docx-render-preview] [data-pdf-state=ready]")).toBeVisible({ timeout: 30_000 });
     await expect(page.locator("[data-testid=docx-render-preview] .pdf-canvas").first()).toBeVisible();
-    await page.getByTestId("docx-render-preview").getByRole("button", { name: "Close", exact: true }).click();
+    await page.getByRole("button", { name: "Back to document", exact: true }).click();
     const state = await request("/api/state");
     const current = state.projects[0];
     expect(current.baseline_id).not.toBe(project.baseline_id);
     expect(current.latest_check.baseline_id).toBe(current.baseline_id);
+    expect(current.latest_check.summary.compliant).toBe(2);
     const renders = await request(`/api/derived-renders?project_id=${project.project_id}&baseline_id=${current.baseline_id}`);
     expect(renders.derived_renders).toHaveLength(1);
     expect(renders.derived_renders[0].manifest.page_count).toBeGreaterThan(0);
@@ -206,12 +285,15 @@ test("DOCX live working copy preserves intervention, undo and exact saved checks
     await page.screenshot({ path: testInfo.outputPath("docx-workspace.png") });
     await page.getByTestId("docx-workspace").getByRole("button", { name: "Close", exact: true }).click();
     await page.getByRole("button", { name: "Reopen working copy", exact: true }).click();
-    await expect(page.getByText(`Retained baseline: ${current.baseline_id}`, { exact: true })).toBeVisible();
-    await expect(target).toContainText("LOCAL Suggested paragraph is complete.");
-    await expect(target).toContainText("Agent updated this paragraph after the user's edit.");
+    await expect.poll(async () => (await readLive(page)).document?.baselineId).toBe(current.baseline_id);
+    const reopened = await readLive(page);
+    expect(reopened.document.sessionId).not.toBe(originalSession);
+    expect(reopened.paragraphs[0].text).toBe("LOCAL Suggested paragraph is complete.");
+    expect(reopened.paragraphs[1].text).toBe("Agent updated this paragraph after the user's edit.");
     expect(failedAssets).toEqual([]);
     expect(loadedAssets.some((url) => url.includes(".wasm"))).toBe(true);
-    expect(loadedAssets.some((url) => /\.ttf|\.otf/.test(url))).toBe(true);
+    await expect(page.getByTestId("docx-font-state")).toHaveAttribute("data-measurer", "shaped");
+    await expect(page.getByTestId("docx-font-state")).toHaveAttribute("data-resolving", "false");
     expect(errors).toEqual([]);
   } finally {
     await browser.close();
@@ -306,33 +388,7 @@ test("opt-in real DOCX round trip retains objects and refuses unsafe paragraph e
       filename: basename(sourcePath), content_base64: source.toString("base64"),
     });
     report.project = project;
-    await page.exposeFunction("docxWorkbenchRequest", request);
-    await page.addInitScript(() => {
-      let callback = 0;
-      const control = { finish: null as (() => void) | null, canceled: 0, prefix: "REAL-DOCX-AGENT ", selection: "" };
-      Object.assign(window, {
-        __docxTest: control,
-        __TAURI_INTERNALS__: {
-          transformCallback: () => ++callback,
-          unregisterCallback: () => {},
-          invoke: async (command: string, args: any = {}) => {
-            if (command === "journal_workbench_request") return (window as any).docxWorkbenchRequest(args.path, args.payload ?? undefined);
-            if (command === "journal_docx_renderer") return null;
-            if (command === "agent_cancel") { control.canceled++; control.finish?.(); return; }
-            if (command === "agent_stream") {
-              args.onEvent.onmessage({ kind: "textDelta", text: control.prefix });
-              await new Promise<void>((finish) => { control.finish = finish; });
-              args.onEvent.onmessage({ kind: "textDelta", text: control.selection });
-              args.onEvent.onmessage({ kind: "runEnd" });
-              control.finish = null;
-              return;
-            }
-            if (command.startsWith("plugin:")) return 1;
-            throw new Error(`Unexpected real-DOCX test IPC: ${command}`);
-          },
-        },
-      });
-    });
+    await installBrowserBridge(page, request, null);
     const url = `${process.env.OLEAFLY_BROWSER_TEST_URL ?? "http://127.0.0.1:1420"}/e2e/docx-workspace-harness.html`;
     await page.goto(url);
     await expect(page.locator(".docx-paragraph-fragment").first()).toBeVisible({ timeout: 90_000 });
@@ -411,11 +467,10 @@ test("opt-in real DOCX round trip retains objects and refuses unsafe paragraph e
     await expect.poll(async () => (await read()).paragraphs.find((p: RealParagraph) => p.paraId === candidate!.paraId)?.text).toBe(marked);
     stages.push({ stage: "undo-redo", passed: true });
 
-    const target = page.getByRole("combobox", { name: "Target paragraph", exact: true });
-    await target.selectOption(plain.paragraphRef);
-    await page.getByRole("textbox", { name: "Describe the change to this paragraph" }).fill("Keep the paragraph and add the acceptance marker.");
-    await page.evaluate((selection) => { (window as any).__docxTest.selection = selection; }, marked);
-    await page.getByRole("button", { name: "Generate suggestion", exact: true }).click();
+    await page.evaluate((selection) => {
+      Object.assign((window as any).__docxTest, { prefix: "REAL-DOCX-AGENT ", selection });
+    }, marked);
+    await beginSuggestion(page, plain.paragraphRef);
     await expect(page.getByTestId("docx-proposed")).toHaveText("REAL-DOCX-AGENT");
     const fragments = page.locator(".docx-paragraph-fragment").filter({ hasText: "REAL-DOCX-ACCEPTANCE" });
     await fragments.first().click({ position: { x: 4, y: 8 } });
@@ -447,7 +502,7 @@ test("opt-in real DOCX round trip retains objects and refuses unsafe paragraph e
     const afterRefusals = await request("/api/state");
     expect(afterRefusals.projects[0].baseline_id).toBe(retained.result_baseline_id);
 
-    await page.getByRole("button", { name: "Save manuscript version", exact: true }).click();
+    await page.getByRole("button", { name: "Save version", exact: true }).click();
     await expect.poll(async () => (await read()).document?.dirty, { timeout: 60_000 }).toBe(false);
     const savedState = await request("/api/state");
     const savedBaseline = savedState.projects[0].baseline_id;
@@ -464,7 +519,7 @@ test("opt-in real DOCX round trip retains objects and refuses unsafe paragraph e
     await page.screenshot({ path: resolve(root, "edited.png") });
     await page.getByTestId("docx-workspace").getByRole("button", { name: "Close", exact: true }).click();
     await page.getByRole("button", { name: "Reopen working copy", exact: true }).click();
-    await expect(page.getByText(`Retained baseline: ${savedBaseline}`, { exact: true })).toBeVisible({ timeout: 90_000 });
+    await expect.poll(async () => (await read()).document?.baselineId, { timeout: 90_000 }).toBe(savedBaseline);
     await expect(page.locator(".docx-paragraph-fragment").filter({ hasText: "REAL-DOCX-HUMAN REAL-DOCX-ACCEPTANCE" }).first()).toBeVisible({ timeout: 90_000 });
     const reopenedBeforeIntervention = await read();
     if (!reopenedBeforeIntervention.document) {

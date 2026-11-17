@@ -1,5 +1,47 @@
 import { test, expect } from "../fixtures";
 import { openProject, openRailTab } from "../helpers";
+import { scriptValue } from "../script-value";
+
+type AiConfigSnapshot = Record<string, unknown>;
+
+let savedAiConfig: AiConfigSnapshot | null = null;
+
+test.beforeEach(async ({ tauriPage }) => {
+  savedAiConfig = await tauriPage.evaluate<AiConfigSnapshot>(
+    `import("/src/lib/tauri.ts").then(async ({ getConfig, setConfig }) => {
+      const saved = await getConfig();
+      const keyless = {
+        ...saved,
+        ai_provider: "",
+        ai_model: "",
+        ai_api_key: "",
+        ai_keys: {},
+        ai_custom_providers: [],
+      };
+      await setConfig(keyless);
+      window.dispatchEvent(
+        new CustomEvent("oleafly:ai-config-changed", { detail: keyless }),
+      );
+      return saved;
+    })`,
+  );
+});
+
+test.afterEach(async ({ tauriPage }) => {
+  const saved = savedAiConfig;
+  savedAiConfig = null;
+  if (!saved) return;
+  await tauriPage.evaluate(
+    `import("/src/lib/tauri.ts").then(async ({ setConfig }) => {
+      const restored = ${scriptValue(saved)};
+      await setConfig(restored);
+      window.dispatchEvent(
+        new CustomEvent("oleafly:ai-config-changed", { detail: restored }),
+      );
+      return true;
+    })`,
+  );
+});
 
 test("connect-a-provider leads to Settings -> AI", async ({ tauriPage }) => {
   await openProject(tauriPage, "E2E Doc");

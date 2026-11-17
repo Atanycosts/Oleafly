@@ -10,6 +10,7 @@ import {
 import { prepareHarnessI18n } from "./harness-i18n";
 import { useFilesStore } from "/src/store/files";
 import { createOleaflyTools } from "/src/lib/ai-tools";
+import { useWorkspaceSurfaceStore } from "/src/store/workspace-surface";
 import "/src/styles/globals.css";
 
 const DocxWorkspaceDialog = lazy(() => import("/src/components/research/DocxWorkspaceDialog"));
@@ -29,6 +30,7 @@ const fullWorld = selectedWorld
     )
   : null;
 useFilesStore.setState({ projectId: "journal-template-harness" });
+useWorkspaceSurfaceStore.getState().showWord();
 Object.assign(window, { __docxTools: createOleaflyTools() });
 
 const queryClient = new QueryClient({

@@ -233,6 +233,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test retained Word acceptance helpers
+        run: pnpm exec vitest run --config e2e/vitest.config.ts
+
       - name: Test with coverage
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: pnpm test:coverage
@@ -628,9 +631,10 @@ jobs:
     name: E2E app build (macOS)
     needs: [frontend, rust]
     runs-on: macos-15
-    # About 30 minutes with a warm cache, before the shared crates' macOS tests
-    # and clippy were added below.
-    timeout-minutes: 55
+    # A cold run spends about 15 minutes on the shared crates before packaging.
+    # The assembled Word workspace then needs more than the old 38-minute
+    # remainder; retain every check and allow the cold bundle to finish.
+    timeout-minutes: 90
     env:
       # The vite build graph exceeds Node's default ~4GB heap on the 7GB
       # macOS arm64 runners (same setting as release.yml).

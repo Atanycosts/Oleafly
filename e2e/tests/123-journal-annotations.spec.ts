@@ -2,7 +2,12 @@ import { strToU8, zipSync } from "fflate";
 import { writeFileSync } from "node:fs";
 import type { ResearchTask } from "../../src/lib/research-tasks";
 import type { AnnotationContext, TaskAnnotation } from "../../src/lib/task-collaboration";
-import type { JournalAnnotationRequest, JournalObjectReference } from "../../src/lib/journal-workbench";
+import type {
+  JournalAnnotationRequest,
+  JournalComponent,
+  JournalObjectReference,
+  JournalWorld,
+} from "../../src/lib/journal-workbench";
 import { test, expect } from "../fixtures";
 import { createBlankProject, openRailTab } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
@@ -40,12 +45,6 @@ test("historical journal feedback creates an explicit task and links real busine
     await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m=>m.writeFileContent(${scriptValue(projectId)},'main.tex',${scriptValue(source)}))`);
     await openRailTab(page, "Journal checks");
     const panel = page.getByTestId("journal-checks-panel");
-    const openMoreSources = async () => {
-      const details = page.getByTestId("journal-more-sources");
-      if ((await details.getAttribute("open")) === null) {
-        await details.locator("summary").click();
-      }
-    };
     await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled({ timeout: 30_000 });
     const docx = Buffer.from(zipSync({
       "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
@@ -57,20 +56,65 @@ test("historical journal feedback creates an explicit task and links real busine
     await page.setInputFiles('[role="dialog"] input[type="file"]', [{ name: "manuscript.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: docx }]);
     await page.click('[role="dialog"] button[type="submit"]');
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
-    await openMoreSources();
-    await panel.getByText("Import journal sources", { exact: true }).click();
-    await page.fill('[role="dialog"] input[id$="-name"]', "Historical journal");
-    await page.getByTestId("journal-import-advanced").locator("summary").click();
-    await page.fill('[data-testid="journal-id-input"]', `journal-${projectId}`);
     const quote = "All manuscript pages must use A4 paper.";
-    await page.setInputFiles('[role="dialog"] input[type="file"]', [{ name: "guide.txt", mimeType: "text/plain", buffer: Buffer.from(quote) }]);
-    await page.click('[role="dialog"] button[type="submit"]');
-    await expect(page.locator('[role="dialog"]')).toHaveCount(0);
-    await openMoreSources();
-    await panel.getByText("Use this version", { exact: true }).click();
+    const journalId = `journal-fixture-${Date.now()}`;
+    const requirementComponent: JournalComponent = {
+      schema_version: "journal-rule-component-1.0.0",
+      component_id: "historical-page-geometry",
+      component_version: "1.0.0",
+      applicability: {
+        journal_ids: [journalId],
+        article_types: ["research_article"],
+        stages: ["initial_submission"],
+        languages: ["en"],
+        basis: "Explicit component for the captured guide quote.",
+      },
+      sources: [{
+        source_id: "page-size",
+        title: "Guide excerpt",
+        locator: "line:1",
+        quote,
+      }],
+      rules: [
+        { property: "page_width_twips", expected: 11906, unit: "twips", source_refs: ["page-size"] },
+        { property: "page_height_twips", expected: 16838, unit: "twips", source_refs: ["page-size"] },
+      ],
+    };
+    const world = await page.evaluate<JournalWorld>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
+      const base=await j.journalRequest('/api/worlds',{
+        journal_id:${scriptValue(journalId)},
+        journal_name:'Historical journal',
+        article_type:'research_article',
+        stage:'initial_submission',
+        language:'en',
+        sources:[{name:'guide.txt',kind:'guide_text',content_base64:${scriptValue(Buffer.from(quote).toString("base64"))}}],
+      });
+      return j.journalRequest('/api/world-component',{
+        version_id:base.version_id,
+        name:'requirements.json',
+        content_base64:${scriptValue(Buffer.from(JSON.stringify(requirementComponent)).toString("base64"))},
+        decisions:[
+          {property:'page_width_twips',expected:11906,reason:'Operator confirmed A4 width against the captured guide.'},
+          {property:'page_height_twips',expected:16838,reason:'Operator confirmed A4 height against the captured guide.'},
+        ],
+      });
+    })`);
+    await panel.locator('button[aria-label="Refresh journal checks"]').click();
+    await expect.poll(() => page.evaluate<string[]>(`Array.from(
+      document.querySelector('[data-testid="journal-world-select"]')?.options ?? []
+    ).map(option=>option.value)`)).toContain(world.version_id);
+    await page.selectOption('[data-testid="journal-world-select"]', world.version_id);
+    await expect.poll(() => panel.getAttribute("aria-busy")).toBe("false");
+    await page.getByTestId("journal-workspace").getByText("Use this version", { exact: true }).click();
     await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
     await panel.getByText("Run check", { exact: true }).click();
-    await expect(panel.getByText("Violation 2", { exact: true })).toBeVisible();
+    const results = page.getByTestId("journal-workspace").locator('[aria-label="Check results"]');
+    await expect(results).toBeVisible();
+    await expect.poll(() => page.evaluate<string | null>(`(() => {
+      const cards = Array.from(document.querySelectorAll('[aria-label="Check results"] div.grid > div'));
+      const card = cards.find((item) => item.children[0]?.textContent === 'Violation');
+      return card?.children[1]?.textContent ?? null;
+    })()`)).toBe("2");
     const reference = await page.evaluate<JournalObjectReference>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
       const w=await window.__oleaflyE2EImport('/src/lib/research-workspace.ts').then(m=>m.getResearchWorkspace(${scriptValue(projectId)}));
       const state=await j.journalRequest('/api/state'); const p=state.projects.find(p=>p.project_id===w.journalProjectId);

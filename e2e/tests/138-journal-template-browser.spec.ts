@@ -226,20 +226,6 @@ function walk(value: unknown, visit: (item: Record<string, unknown>) => void): v
   for (const child of Object.values(value)) walk(child, visit);
 }
 
-function comparisonFindings(value: unknown): Record<string, unknown>[] {
-  const findings: Record<string, unknown>[] = [];
-  walk(value, (item) => {
-    if (
-      typeof item.object_id === "string" &&
-      typeof item.property_path === "string" &&
-      "observed" in item &&
-      "expected" in item &&
-      typeof item.verdict === "string"
-    ) findings.push(item);
-  });
-  return findings;
-}
-
 function comparisonIdentity(finding: Record<string, unknown>): string {
   return typeof finding.case_id === "string" && finding.case_id
     ? finding.case_id
@@ -651,7 +637,12 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
       world_version_id: world.version_id,
       validity: "CURRENT",
     });
-    const beforeFontFinding = comparisonFindings(beforeCheck.template_comparison).find(
+    const beforeFontFindings = await request<FindingsPage>("/api/docx-query", {
+      target: { check_id: beforeCheck.check_id }, operation: "findings",
+      offset: 0, limit: 1_000, property_path: "run.fontSizePt", role: "body",
+    });
+    expect(beforeFontFindings.has_more).toBe(false);
+    const beforeFontFinding = beforeFontFindings.findings.find(
       (finding) =>
         finding.property_path === "run.fontSizePt" &&
         finding.role === "body" &&
@@ -704,10 +695,12 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
     });
     expect(saved.baselineId).not.toBe(project.baseline_id);
     await expect(page.getByTestId("docx-save-state")).toContainText(
-      "Retained DOCX version loaded or saved",
+      "All changes saved",
       { timeout: 30_000 },
     );
-    await expect(page.locator(`[title="${saved.baselineId}"]`)).toBeVisible({ timeout: 30_000 });
+    await expect.poll(async () => (await page.evaluate(async () =>
+      (window as any).__docxTools.read_docx_document.execute({}),
+    )).document?.baselineId).toBe(saved.baselineId);
 
     stage = "rechecking saved fourteen point baseline";
     await expect.poll(async () => {
@@ -724,7 +717,12 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
       world_version_id: world.version_id,
       validity: "CURRENT",
     });
-    const afterFontFinding = comparisonFindings(afterCheck.template_comparison).find(
+    const afterFontFindings = await request<FindingsPage>("/api/docx-query", {
+      target: { check_id: afterCheck.check_id }, operation: "findings",
+      offset: 0, limit: 1_000, property_path: "run.fontSizePt", role: "body",
+    });
+    expect(afterFontFindings.has_more).toBe(false);
+    const afterFontFinding = afterFontFindings.findings.find(
       (finding) => finding.case_id === beforeFontFinding!.case_id,
     );
     expect(afterFontFinding, JSON.stringify(afterCheck, null, 2)).toBeTruthy();
