@@ -8,7 +8,10 @@ import { useProjectAnalysisStore } from "@/store/project-analysis";
 import { projectFilesystemEpoch } from "@/store/project-index";
 import { useSettingsStore } from "@/store/settings";
 import { useTourStore } from "@/store/tours";
+import { useMaterialAnnotationsStore } from "@/store/material-annotations";
+import { materialBytes, materialRevision } from "@/lib/material-surface";
 import enPreview from "@/i18n/locales/en/preview.json" with { type: "json" };
+import enEditor from "@/i18n/locales/en/editor.json" with { type: "json" };
 
 const mocks = vi.hoisted(() => ({
   tauri: { enabled: true },
@@ -32,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   inverseFromClick: vi.fn(),
   syncTex: { available: false },
   gotoPage: vi.fn(),
+  getTextSelection: vi.fn(),
   viewer: null as null | {
     documentIdentity: string;
     password?: string;
@@ -65,6 +69,7 @@ vi.mock("@/components/pdf/PdfViewer", async () => {
         scrollToPage: vi.fn(),
         findNext: vi.fn(),
         findPrevious: vi.fn(),
+        getTextSelection: mocks.getTextSelection,
       }),
       [],
     );
@@ -185,6 +190,56 @@ beforeEach(() => {
   sessionZoomByProject.clear();
   useTourStore.setState({ activeTourId: null });
   useSettingsStore.setState({ viewMode: "split" });
+  useMaterialAnnotationsStore.getState().close();
+  mocks.getTextSelection.mockReturnValue(null);
+});
+
+describe("PreviewPane material annotations", () => {
+  it("retains a PDF selection with the displayed byte revision and rotation", async () => {
+    await renderPane();
+    const displayed = new Uint8Array([1, 2, 3]);
+    const selection = {
+      documentIdentity: mocks.viewer?.documentIdentity,
+      text: "Selected paragraph",
+      pages: [{ page: 2, rects: [{ x: 0.1, y: 0.2, width: 0.4, height: 0.1 }] }],
+      rotation: 90,
+    };
+    mocks.getTextSelection.mockReturnValue(selection);
+    fireEvent.click(screen.getByRole("button", { name: enPreview.selection.title }));
+    await waitFor(() => expect(useMaterialAnnotationsStore.getState().document).not.toBeNull());
+    const captured = useMaterialAnnotationsStore.getState();
+    expect(captured.document).toMatchObject({ projectId: PROJECT, documentId: "compiled:main.tex", path: "main.tex", title: "main.tex · PDF", kind: "pdf", revision: await materialRevision({ bytes: displayed }) });
+    expect(captured.anchor).toEqual({ kind: "pdf", pages: selection.pages, quote: selection.text, rotation: 90 });
+    const source = captured.document?.source;
+    if (!source || typeof source === "function") throw new Error("The preview must retain its displayed bytes.");
+    act(() => useCompileStore.getState().pdfBytes?.fill(9));
+    expect(await materialBytes(source)).toEqual(displayed);
+  });
+
+  it("uses a whole-document anchor when a selection belongs to an earlier PDF", async () => {
+    await renderPane();
+    mocks.getTextSelection.mockReturnValue({ documentIdentity: "earlier-pdf", text: "Stale text", pages: [{ page: 9, rects: [] }], rotation: 180 });
+    fireEvent.click(screen.getByRole("button", { name: enPreview.selection.title }));
+    await waitFor(() => expect(useMaterialAnnotationsStore.getState().document).not.toBeNull());
+    expect(useMaterialAnnotationsStore.getState().anchor).toEqual({ kind: "whole" });
+  });
+
+  it("annotates the displayed retained page after a replacement PDF fails", async () => {
+    await renderPane();
+    const original = mocks.viewer?.documentIdentity;
+    mocks.firstLoad = "loading";
+    act(() => useCompileStore.setState({ pdfBytes: new Uint8Array([4, 5]), lastCompileCheckpoint: checkpoint(2, 2) as never }));
+    await waitFor(() => expect(mocks.viewer?.documentIdentity).not.toBe(original));
+    loadState("invalid", { message: "New PDF is damaged" });
+    await waitFor(() => expect(mocks.viewer?.documentIdentity).toBe(original));
+    fireEvent.click(screen.getByRole("button", { name: enEditor.materials.annotatePage }));
+    await waitFor(() => expect(useMaterialAnnotationsStore.getState().document).not.toBeNull());
+    const { document, anchor } = useMaterialAnnotationsStore.getState();
+    expect(anchor).toEqual({ kind: "page", page: 1, rects: [] });
+    const source = document?.source;
+    if (!source || typeof source === "function") throw new Error("The preview must retain its displayed bytes.");
+    expect(await materialBytes(source)).toEqual(new Uint8Array([1, 2, 3]));
+  });
 });
 
 describe("PreviewPane image projects", () => {
