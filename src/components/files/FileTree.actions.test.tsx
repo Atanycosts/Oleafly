@@ -480,7 +480,7 @@ describe("FileTree toolbar", () => {
     );
   });
 
-  it("preserves a newer new-file draft while its parent rename is in flight", async () => {
+  it("keeps a blurred new-file draft with its parent while the rename is in flight", async () => {
     const renamedTree = [
       { path: "main.tex", is_dir: false },
       { path: "renamed", is_dir: true },
@@ -528,6 +528,11 @@ describe("FileTree toolbar", () => {
     fireEvent.click(screen.getByRole("button", { name: files.newFileAriaLabel }));
     const draftInput = await screen.findByPlaceholderText(files.newEntry.filePlaceholder);
     fireEvent.change(draftInput, { target: { value: "notes.tex" } });
+    fireEvent.blur(draftInput);
+
+    expect(
+      mocks.invoke.mock.calls.some(([command]) => command === "create_file"),
+    ).toBe(false);
 
     if (!releaseRename) throw new Error("rename request was not started");
     const resolveRename = releaseRename;
@@ -976,6 +981,23 @@ describe("FileTree row actions", () => {
     );
   });
 
+  it("renames a file when its field loses focus", async () => {
+    render(<FileTree />);
+
+    openRowMenu("main.tex");
+    fireEvent.click(await screen.findByText(enCommon.actions.rename));
+    const input = await screen.findByRole("textbox", { name: files.renameAriaLabel });
+    fireEvent.change(input, { target: { value: "paper.tex" } });
+    fireEvent.blur(input);
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "rename_file",
+        expect.objectContaining({ from: "main.tex", to: "paper.tex" }),
+      ),
+    );
+  });
+
   it("abandons a rename on Escape", async () => {
     render(<FileTree />);
 
@@ -1240,5 +1262,39 @@ describe("FileTree conflict dialog", () => {
     await waitFor(() =>
       expect(screen.queryByText(files.conflict.title)).not.toBeInTheDocument(),
     );
+  });
+
+  it("dismisses a pending rename conflict when its source disappears on refresh", async () => {
+    backend({
+      rename_file: {
+        status: "conflict",
+        destination: "notes.tex",
+        suggested_destination: "notes (2).tex",
+        generation: 0,
+      },
+    });
+    render(<FileTree />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: files.moreActions.replace("{{name}}", "main.tex"),
+      }),
+    );
+    fireEvent.click(await screen.findByText(enCommon.actions.rename));
+    const input = await screen.findByRole("textbox", { name: files.renameAriaLabel });
+    fireEvent.change(input, { target: { value: "notes.tex" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("alertdialog", { name: files.conflict.dialogAriaLabel });
+
+    useFilesStore.setState({
+      tree: [{ path: "notes.tex", is_dir: false }],
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+    );
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "rename_file"),
+    ).toHaveLength(1);
   });
 });

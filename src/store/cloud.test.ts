@@ -375,6 +375,53 @@ describe("cloud store", () => {
     await vi.waitFor(() => expect(mocks.cloud.cloudSettingsSync).toHaveBeenCalledTimes(1));
   });
 
+  it("queues a new account's settings behind the old account and discards the old result", async () => {
+    await connected();
+    const oldExchange = deferred<{
+      outcome: "apply";
+      values: Record<string, unknown>;
+      stamp: string;
+    }>();
+    mocks.cloud.cloudSettingsSync
+      .mockReturnValueOnce(oldExchange.promise)
+      .mockResolvedValueOnce({
+        outcome: "apply",
+        values: { general: { language: "ja" } },
+        stamp: "new-settings",
+      });
+    const oldSettings = store.useCloudStore.getState().syncSettings();
+    await vi.waitFor(() => expect(mocks.cloud.cloudSettingsSync).toHaveBeenCalledTimes(1));
+
+    mocks.cloud.cloudState.mockResolvedValue(cloudState({ status: "disconnected", provider: null }));
+    await store.useCloudStore.getState().disconnect();
+    store.useCloudStore.getState().requestSettingsImport();
+    mocks.cloud.cloudConnectBegin.mockResolvedValueOnce({ flowId: "new", authUrl: "https://auth", paste: false });
+    mocks.cloud.cloudConnectWait.mockResolvedValueOnce({ email: "new@uni.edu" });
+    mocks.cloud.cloudState.mockResolvedValue(cloudState({ email: "new@uni.edu" }));
+    await store.useCloudStore.getState().beginConnect("dropbox");
+    await vi.waitFor(() => expect(mocks.cloud.cloudSyncNow).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(store.useCloudStore.getState().syncing).toBe(false));
+
+    const newSettings = store.useCloudStore.getState().syncSettings();
+    expect(mocks.cloud.cloudSettingsSync).toHaveBeenCalledTimes(1);
+    oldExchange.resolve({
+      outcome: "apply",
+      values: { general: { language: "fr" } },
+      stamp: "old-settings",
+    });
+    await oldSettings;
+    await newSettings;
+
+    expect(mocks.cloud.cloudSettingsSync).toHaveBeenCalledTimes(2);
+    expect(mocks.settings.applyCloudSettings).toHaveBeenCalledExactlyOnceWith({
+      general: { language: "ja" },
+    });
+    expect(mocks.cloud.cloudSettingsApplied).toHaveBeenCalledExactlyOnceWith(
+      "new-settings",
+      { general: { language: "fr" } },
+    );
+  });
+
   it("applies settings from Dropbox and records the stamp as a string", async () => {
     await connected();
     let applyingDuringApply: boolean | null = null;
@@ -863,6 +910,33 @@ describe("cloud store", () => {
     );
   });
 
+  it("releases a failed upload replacement and keeps the project retryable", async () => {
+    await connected(cloudState({ projects: [project({ error: UNREADABLE })] }));
+    const failedUpload = deferred<SyncProjectReport>();
+    mocks.cloud.cloudProjectReplaceRemote
+      .mockReturnValueOnce(failedUpload.promise)
+      .mockResolvedValueOnce(projectReport({ uploaded: 2 }));
+    const pending = store.useCloudStore.getState().replaceRemote("thesis");
+    expect(store.useCloudStore.getState().busyProjects).toEqual(["thesis"]);
+
+    failedUpload.resolve(projectReport({ error: NETWORK }));
+    await pending;
+    expect(store.useCloudStore.getState().busyProjects).toEqual([]);
+    expect(store.useCloudStore.getState().state?.projects[0].error).toBe(UNREADABLE);
+    expect(mocks.toast.errorUnique).toHaveBeenCalledWith(
+      "cloud-action",
+      "Couldn't reach Dropbox. Check your connection.",
+    );
+    expect(mocks.toast.successUnique).not.toHaveBeenCalled();
+
+    await store.useCloudStore.getState().replaceRemote("thesis");
+    expect(mocks.cloud.cloudProjectReplaceRemote).toHaveBeenCalledTimes(2);
+    expect(mocks.toast.successUnique).toHaveBeenCalledWith(
+      "cloud-action",
+      "Thesis in your Dropbox now matches this computer.",
+    );
+  });
+
   it("passes the project's unsaved files to hold resolution and reloads what it put back", async () => {
     const files = await openFiles({
       "main.tex": { content: "typing\n", dirty: true },
@@ -1016,6 +1090,30 @@ describe("cloud store", () => {
       "cloud-action",
       expect.stringContaining("Third-party apps & services in your Google Account"),
     );
+  });
+
+  it("keeps the account linked when disconnecting fails and retries without losing it", async () => {
+    await connected();
+    const unlink = deferred<{ remoteRevoked: boolean }>();
+    mocks.cloud.cloudDisconnect.mockReturnValueOnce(unlink.promise);
+    const pending = store.useCloudStore.getState().disconnect();
+    expect(store.useCloudStore.getState().disconnecting).toBe(true);
+
+    unlink.reject(NETWORK);
+    expect(await pending).toBe(false);
+    expect(store.useCloudStore.getState().status).toBe("connected");
+    expect(store.useCloudStore.getState().state?.email).toBe("ada@uni.edu");
+    expect(store.useCloudStore.getState().disconnecting).toBe(false);
+    expect(mocks.cloud.cloudState).toHaveBeenCalledTimes(1);
+    expect(mocks.toast.errorUnique).toHaveBeenCalledWith(
+      "cloud-action",
+      "Couldn't reach Dropbox. Check your connection.",
+    );
+
+    mocks.cloud.cloudState.mockResolvedValue(cloudState({ status: "disconnected", provider: null }));
+    expect(await store.useCloudStore.getState().disconnect()).toBe(true);
+    expect(mocks.cloud.cloudDisconnect).toHaveBeenCalledTimes(2);
+    expect(store.useCloudStore.getState().status).toBe("disconnected");
   });
 
   it("loads the providers once and keeps a load failure to show", async () => {

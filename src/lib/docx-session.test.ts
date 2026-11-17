@@ -1491,6 +1491,100 @@ describe("DOCX paragraph adapter over the real core", () => {
     }
   });
 
+  it("rejects a batch range that splits a surrogate pair before committing an earlier item", () => {
+    const fixture = editorSession(syntheticDocx([
+      "First paragraph.",
+      "A😀B",
+    ]));
+    try {
+      const [first, second] = fixture.session.listParagraphs();
+      const before = fixture.save();
+
+      expect(fixture.session.formatBatch?.([
+        {
+          target: first!.handle,
+          font: { bold: true },
+        },
+        {
+          target: second!.handle,
+          range: { start: 1, end: 2 },
+          font: { italic: true },
+        },
+      ], 0)).toEqual({
+        ok: false,
+        code: "invalid-format",
+        message: "range cannot split a UTF-16 surrogate pair.",
+        revision: 0,
+        changed: false,
+      });
+
+      expect(fixture.treeBatches).toEqual([]);
+      expect(fixture.tree.packageRevision()).toBe(0);
+      expect(fixture.save()).toEqual(before);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
+  it("rejects an invalid East Asian font before committing an earlier batch item", () => {
+    const fixture = editorSession(syntheticDocx([
+      "First paragraph.",
+      "Second paragraph.",
+    ]));
+    try {
+      const [first, second] = fixture.session.listParagraphs();
+      const before = fixture.save();
+
+      expect(fixture.session.formatBatch?.([
+        {
+          target: first!.handle,
+          font: { bold: true },
+        },
+        {
+          target: second!.handle,
+          font: { nameEastAsia: "   " },
+        },
+      ], 0)).toEqual({
+        ok: false,
+        code: "invalid-format",
+        message: "nameEastAsia must be a non-empty font name of at most 128 characters.",
+        revision: 0,
+        changed: false,
+      });
+
+      expect(fixture.treeBatches).toEqual([]);
+      expect(fixture.tree.packageRevision()).toBe(0);
+      expect(fixture.save()).toEqual(before);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
+  it("refuses style imports when the editor has no live tree surface", () => {
+    const editor = {
+      surface: null,
+      exec: () => ({ ok: true }),
+      on: () => () => {},
+      can: () => ({ ok: false }),
+    } as unknown as DocxEditorInstance;
+    const session = createDocxSession(editor);
+    try {
+      expect(session.importTemplateStyles?.(
+        syntheticDocx(["Template paragraph."]),
+        ["Normal"],
+        0,
+      )).toEqual({
+        ok: false,
+        code: "unsupported-target",
+        message: "Style imports require a live editor tree session.",
+        revision: 0,
+        changed: false,
+      });
+    } finally {
+      session.dispose();
+    }
+  });
+
   it("refuses object formatting in a host-only batch without changing the document", () => {
     const host = open([
       '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>',

@@ -5,8 +5,10 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   notifyError: vi.fn(),
+  logError: vi.fn(),
   pickOpenPath: vi.fn(),
   linux: false,
+  windows: false,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -25,8 +27,11 @@ vi.mock("@/lib/utils", async (importOriginal) => ({
   get isLinux() {
     return mocks.linux;
   },
+  get isWindows() {
+    return mocks.windows;
+  },
 }));
-vi.mock("@/lib/log", () => ({ logError: vi.fn() }));
+vi.mock("@/lib/log", () => ({ logError: mocks.logError }));
 vi.mock("@/lib/toast", () => ({
   notifyError: mocks.notifyError,
   toast: {
@@ -122,7 +127,9 @@ const conflict = (destination: string, suggestion: string) => ({
 beforeEach(() => {
   backend();
   mocks.linux = false;
+  mocks.windows = false;
   mocks.notifyError.mockReset();
+  mocks.logError.mockReset();
   mocks.pickOpenPath.mockReset().mockResolvedValue(null);
   useSettingsStore.setState({ hiddenFilePatterns: [] });
   useFilesStore.setState({
@@ -132,6 +139,7 @@ beforeEach(() => {
     openTabs: [],
     activePath: null,
     mainDoc: "main.tex",
+    manifestHome: "library",
     engine: LATEX_ENGINE,
     engineLoaded: true,
   });
@@ -446,6 +454,27 @@ describe("FileTree drag and drop", () => {
     expect(mocks.notifyError).not.toHaveBeenCalled();
   });
 
+  it("on Linux, leaves the tree unchanged when dropped links cannot be read", async () => {
+    mocks.linux = true;
+    const readError = new Error("dropped path data is unavailable");
+    backend({ take_dropped_paths: readError });
+    render(<FileTree />);
+    const data = linkDrop();
+
+    expect(fireEvent.dragOver(row("chapters"), { dataTransfer: data })).toBe(false);
+    fireEvent.drop(row("chapters"), { dataTransfer: data });
+
+    expect(row("chapters")).not.toHaveClass("bg-primary/15");
+    await waitFor(() =>
+      expect(mocks.logError).toHaveBeenCalledWith("read dropped paths", readError),
+    );
+    expect(imports()).toEqual([]);
+    expect(writes()).toEqual([]);
+    expect(renameCalls()).toEqual([]);
+    expect(row("chapters")).toHaveAttribute("aria-expanded", "false");
+    expect(mocks.notifyError).not.toHaveBeenCalled();
+  });
+
   it("elsewhere, leaves a drag that only carries links alone", async () => {
     render(<FileTree />);
     const data = linkDrop();
@@ -532,6 +561,69 @@ describe("FileTree keyboard", () => {
     expect(folder).toHaveAttribute("aria-expanded", "true");
     fireEvent.keyDown(folder, { key: "ArrowLeft" });
     expect(folder).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+describe("FileTree Windows deletion", () => {
+  it("uses Recycle Bin wording and asks again before permanent deletion", async () => {
+    mocks.windows = true;
+    const unavailable = `@oleafly/error:${JSON.stringify({
+      code: "project.trash_unavailable",
+      params: { path: "main.tex" },
+      detail: "no recycle bin",
+    })}`;
+    backend({
+      delete_file: (args: Record<string, unknown>) => {
+        if (!args.permanent) throw unavailable;
+        return undefined;
+      },
+    });
+    useFilesStore.setState({ manifestHome: "device" });
+    const confirm = vi
+      .spyOn(window, "confirm")
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(true);
+    const deleteCalls = () =>
+      mocks.invoke.mock.calls
+        .filter(([command]) => command === "delete_file")
+        .map(([, args]) => args as { path: string; permanent?: boolean });
+    const deleteMain = async () => {
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: files.moreActions.replace("{{name}}", "main.tex"),
+        }),
+      );
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: enCommon.actions.delete }),
+      );
+    };
+    render(<FileTree />);
+
+    await deleteMain();
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(2));
+    expect(confirm).toHaveBeenNthCalledWith(
+      1,
+      files.confirmTrashWindows.replace("{{path}}", "main.tex"),
+    );
+    expect(confirm).toHaveBeenNthCalledWith(
+      2,
+      files.confirmPermanentDeleteWindows.replace("{{path}}", "main.tex"),
+    );
+    expect(deleteCalls()).toEqual([expect.objectContaining({ path: "main.tex" })]);
+
+    await deleteMain();
+    await waitFor(() => expect(deleteCalls()).toHaveLength(3));
+    expect(confirm).toHaveBeenCalledTimes(4);
+    expect(deleteCalls()).toEqual([
+      expect.objectContaining({ path: "main.tex" }),
+      expect.objectContaining({ path: "main.tex" }),
+      expect.objectContaining({ path: "main.tex", permanent: true }),
+    ]);
+    expect(deleteCalls().slice(0, 2).every((call) => !call.permanent)).toBe(true);
+    expect(mocks.notifyError).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 });
 

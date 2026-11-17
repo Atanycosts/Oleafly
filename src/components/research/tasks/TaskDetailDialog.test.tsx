@@ -431,6 +431,23 @@ describe("TaskDetailDialog", () => {
     }
   });
 
+  it("clears an opened retained PDF input when the selected task changes", async () => {
+    const first = task("pdf-first");
+    const second = task("pdf-second");
+    const target: AnnotationTarget = { projectId: first.projectId, taskId: first.id, objectKind: "pdf_selection", objectId: "pdf-object", objectRevision: "sha256:original", path: "main.tex" };
+    annotationMocks.pdf.mockResolvedValue({ annotationId: "child-pdf" });
+    annotationMocks.annotations.mockResolvedValue({ annotations: [{ id: "child-pdf", target }] });
+    const view = render(<TaskDetailDialog {...props(first)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenTarget).toBeDefined());
+    await act(async () => { annotationMocks.props?.onOpenTarget?.(target); });
+    await waitFor(() => expect(page().getByTestId("mock-task-pdf")).toHaveAttribute("data-open-original", "true"));
+
+    view.rerender(<TaskDetailDialog {...props(second)} initialTab="annotations" />);
+
+    await waitFor(() => expect(page().getByTestId("mock-task-pdf")).toHaveAttribute("data-task", second.id));
+    expect(page().getByTestId("mock-task-pdf")).toHaveAttribute("data-open-original", "false");
+  });
+
   it("rejects foreign and malformed references before querying another retained source", async () => {
     const current = task("invalid-reference");
     render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
@@ -627,6 +644,61 @@ describe("TaskDetailDialog", () => {
     expect(within(page().getByTestId("task-annotation-source")).getByRole("alert"))
       .toHaveTextContent("The retained material snapshot is unavailable.");
     expect(materialViewer.open).not.toHaveBeenCalled();
+  });
+
+  it("does not open a retained material whose read finishes after the task changes", async () => {
+    const first = task("material-first");
+    const second = task("material-second");
+    const pending = deferred<{
+      snapshot: {
+        document: { projectId: string; documentId: string; title: string; path: string; kind: "markdown"; revision: string };
+        anchor: { kind: "text"; from: number; to: number; quote: string };
+        sha256: string;
+        mediaType: string;
+        size: number;
+      };
+      bytes: number[];
+    }>();
+    const target: AnnotationTarget = {
+      projectId: first.projectId,
+      taskId: first.id,
+      objectKind: "material",
+      objectId: "file:report.md",
+      objectRevision: "old-sha",
+      path: null,
+    };
+    const annotation = {
+      id: "pending-material-annotation",
+      explicitRequest: true,
+      target,
+      source: { kind: "material_snapshot", content: "{}", sha256: "reference-sha" },
+    };
+    retainedMaterial.read.mockReturnValueOnce(pending.promise);
+    const input = props(first);
+    const view = render(<TaskDetailDialog {...input} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenAnnotationSource).toBeDefined());
+    act(() => { annotationMocks.props?.onOpenAnnotationSource?.(annotation as never); });
+    await waitFor(() => expect(retainedMaterial.read).toHaveBeenCalledWith(first.projectId, annotation.id));
+
+    view.rerender(<TaskDetailDialog {...input} task={second} tasks={[second]} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.group).toHaveBeenLastCalledWith(second.projectId, second.id));
+    await act(async () => {
+      pending.resolve({
+        snapshot: {
+          document: { projectId: first.projectId, documentId: "file:report.md", title: "Report", path: "report.md", kind: "markdown", revision: "old-sha" },
+          anchor: { kind: "text", from: 0, to: 3, quote: "old" },
+          sha256: "old-sha",
+          mediaType: "text/markdown",
+          size: 3,
+        },
+        bytes: [111, 108, 100],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(materialViewer.open).not.toHaveBeenCalled();
+    expect(input.onOpenChange).not.toHaveBeenCalled();
+    expect(page().queryByTestId("task-annotation-source")).not.toBeInTheDocument();
   });
 
   it("scopes an annotation started from a group message to the current task", async () => {
@@ -1191,6 +1263,21 @@ describe("TaskDetailDialog", () => {
       ),
     ).toBeInTheDocument();
     expect(alert.textContent).not.toContain("@oleafly/error:");
+  });
+
+  it("dismisses an operation error from the task header", async () => {
+    const onDismissError = vi.fn();
+    const current = task("operation-error");
+    const input = { ...props(current), error: "The retained source could not be opened.", onDismissError };
+    const view = render(<TaskDetailDialog {...input} />);
+
+    const alert = page().getByRole("alert");
+    expect(alert).toHaveTextContent(input.error);
+    fireEvent.click(within(alert).getByRole("button", { name: enResearchTools.tasks.detail.dismiss }));
+    expect(onDismissError).toHaveBeenCalledOnce();
+
+    view.rerender(<TaskDetailDialog {...input} error={null} />);
+    expect(page().queryByText(input.error)).not.toBeInTheDocument();
   });
 
   it("rejects a file preview that completes after the selected task changes", async () => {

@@ -468,6 +468,37 @@ describe("compile output lifecycle", () => {
     expect(mocks.compileProject).toHaveBeenCalledOnce();
   });
 
+  it("releases intent when no project is open so a later compile can run", async () => {
+    useCompileStore.setState({ checkSyntaxBeforeCompile: false });
+    mocks.files.projectId = null;
+
+    await useCompileStore.getState().recompile();
+
+    expect(useCompileStore.getState()).toMatchObject({ status: "idle", phase: "idle" });
+    expect(mocks.saveAllDirty).not.toHaveBeenCalled();
+    expect(mocks.readProjectSources).not.toHaveBeenCalled();
+    expect(mocks.compileProject).not.toHaveBeenCalled();
+
+    mocks.files.projectId = "project";
+    mocks.compileProject.mockResolvedValue({
+      ok: false,
+      has_pdf: false,
+      output_id: null,
+      output_revision: null,
+      log: "",
+      errors: [],
+      synctex_path: null,
+      out_dir: null,
+      compile_time_ms: 1,
+    });
+
+    await useCompileStore.getState().recompile();
+
+    expect(mocks.saveAllDirty).toHaveBeenCalledOnce();
+    expect(mocks.readProjectSources).toHaveBeenCalledOnce();
+    expect(mocks.compileProject).toHaveBeenCalledOnce();
+  });
+
   it("waits for a loading engine and compiles once it is ready, without a toast", async () => {
     mocks.files.engineLoaded = false;
     mocks.compileProject.mockResolvedValue({ ok: false, has_pdf: false, log: "", errors: [], synctex_path: null, out_dir: null, compile_time_ms: 1 });
@@ -764,6 +795,102 @@ describe("compile output lifecycle", () => {
     expect(state.lastCompiledAt).toBe(123);
     expect(state.lastCompileCheckpoint).toBeNull();
     expect(state.log).toContain("changed before it could be verified");
+    expect(mocks.notifyCompileSucceeded).not.toHaveBeenCalled();
+  });
+
+  it("does not start a build superseded while its source snapshot is pending", async () => {
+    const snapshot = deferred<{
+      texts: Record<string, string>;
+      unreadable: Set<string>;
+    }>();
+    mocks.readProjectSources.mockReturnValueOnce(snapshot.promise);
+
+    const compiling = useCompileStore.getState().recompile();
+    await vi.waitFor(() => expect(mocks.readProjectSources).toHaveBeenCalledOnce());
+
+    const newerBytes = new Uint8Array([8, 8, 8]);
+    const newer = checkpoint(newerBytes, 8);
+    useCompileStore.setState({
+      status: "success",
+      phase: "idle",
+      pdfBytes: newerBytes,
+      log: "newer remote success",
+      lastCompiledAt: newer.completedAt,
+      lastCompileCheckpoint: newer,
+    });
+    snapshot.resolve({
+      texts: { "main.tex": "\\documentclass{article}\n" },
+      unreadable: new Set(),
+    });
+    await compiling;
+
+    expect(useCompileStore.getState()).toEqual(
+      expect.objectContaining({
+        status: "success",
+        pdfBytes: newerBytes,
+        log: "newer remote success",
+        lastCompiledAt: newer.completedAt,
+        lastCompileCheckpoint: newer,
+      }),
+    );
+    expect(mocks.compileProject).not.toHaveBeenCalled();
+
+    mocks.compileProject.mockResolvedValue({
+      ok: false,
+      has_pdf: false,
+      output_id: null,
+      output_revision: null,
+      log: "",
+      errors: [],
+      synctex_path: null,
+      out_dir: null,
+      compile_time_ms: 1,
+    });
+    await useCompileStore.getState().recompile();
+    expect(mocks.compileProject).toHaveBeenCalledOnce();
+  });
+
+  it("drops an older local result before reading its PDF after a remote advance", async () => {
+    const olderBytes = new Uint8Array([1, 2, 3]);
+    const localResult = deferred<CompileResult>();
+    mocks.compileProject.mockReturnValue(localResult.promise);
+
+    const compiling = useCompileStore.getState().recompile();
+    await vi.waitFor(() => expect(mocks.compileProject).toHaveBeenCalledOnce());
+
+    const newerBytes = new Uint8Array([8, 8, 8]);
+    const newer = checkpoint(newerBytes, 8);
+    useCompileStore.setState({
+      status: "success",
+      phase: "idle",
+      pdfBytes: newerBytes,
+      log: "newer remote success",
+      lastCompiledAt: newer.completedAt,
+      lastCompileCheckpoint: newer,
+    });
+    localResult.resolve({
+      ok: true,
+      has_pdf: true,
+      output_id: fingerprintCompileOutput(olderBytes),
+      output_revision: 7,
+      log: "older local success",
+      errors: [],
+      synctex_path: null,
+      out_dir: "/build",
+      compile_time_ms: 1,
+    });
+    await compiling;
+
+    expect(useCompileStore.getState()).toEqual(
+      expect.objectContaining({
+        status: "success",
+        pdfBytes: newerBytes,
+        log: "newer remote success",
+        lastCompiledAt: newer.completedAt,
+        lastCompileCheckpoint: newer,
+      }),
+    );
+    expect(mocks.readCompiledPdf).not.toHaveBeenCalled();
     expect(mocks.notifyCompileSucceeded).not.toHaveBeenCalled();
   });
 
