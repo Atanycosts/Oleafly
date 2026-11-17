@@ -1320,7 +1320,7 @@ jobs:
           if-no-files-found: ignore
 
   e2e-browser-harness:
-    # The four browser-harness specs drive Playwright's own Chromium against
+    # The browser-harness specs drive Playwright's own Chromium against
     # fixture pages that Vite serves from e2e/, with the Tauri bridge mocked
     # inside the page. They need no app build, and every packaged shard skips
     # them, so this lane is where they run now that Windows no longer runs the
@@ -1344,6 +1344,22 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install Python for the Word browser harnesses
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install the Workbench service
+        run: |
+          python -m venv services/research-workbench/.venv
+          services/research-workbench/.venv/bin/python -m pip install -e ./services/research-workbench
+
+      - name: Install the DOCX PDF renderer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer
+          /usr/bin/soffice --version
 
       - name: Cache Playwright browser
         uses: actions/cache@v6
@@ -1369,6 +1385,7 @@ jobs:
       - name: Run the browser-harness specs
         env:
           CI: 1
+          OLEAFLY_LIBREOFFICE: /usr/bin/soffice
         run: bash scripts/e2e-browser-harness.sh
 
       # The compile, click-to-source both ways and the upload. Runs even when

@@ -467,6 +467,14 @@ When a frontend or Rust coverage report was generated, CI uploads it even if
 the preceding test or coverage gate failed, retaining it for one day. A failed
 gate still fails the job; the report lets contributors locate the uncovered code.
 
+The Linux browser-harness job installs Python 3.12 and the Workbench environment
+at `services/research-workbench/.venv`, matching the existing Word harness
+launchers. It installs LibreOffice Writer and selects `/usr/bin/soffice` for
+the DOCX save/check/PDF scenario. These checks use synthetic documents, real
+Workbench HTTP and the production React editor with scripted Tauri commands.
+Private-manuscript and real-model acceptance remain opt-in and are not enabled
+by this job.
+
 ### The Rust toolchain pin
 
 `rust-toolchain.toml` names one Rust version. rustup applies it to every plain
