@@ -54,6 +54,10 @@ pub fn persist_with_retry(attempt: impl FnMut() -> io::Result<()>) -> io::Result
 /// `private`; an existing destination's permissions replace either
 /// afterwards (`keep_permissions`).
 fn staging_file(parent: &Path, destination: &Path, private: bool) -> io::Result<NamedTempFile> {
+    // tempfile's Windows persist calls Win32 directly, so its stored path must
+    // include the extended-length prefix before a long staging name is added.
+    #[cfg(windows)]
+    let parent = &parent.canonicalize()?;
     let name: String = destination
         .file_name()
         .map(|name| name.to_string_lossy().chars().take(64).collect())
@@ -116,6 +120,16 @@ fn sync_parent(parent: &Path) {
 }
 
 fn persist(temporary: NamedTempFile, destination: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    let destination = &{
+        let name = destination.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the destination needs a file name",
+            )
+        })?;
+        parent_of(destination)?.canonicalize()?.join(name)
+    };
     let mut pending = Some(temporary);
     persist_with_retry(|| {
         let file = pending
@@ -195,6 +209,34 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, vec![std::ffi::OsString::from("out.txt")]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_writes_and_copies_support_long_unprefixed_destinations() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = crate::plain_path(root.path())
+            .join("task-artifact-storage-".repeat(4))
+            .join("compiled-artifacts/task-a/0");
+        std::fs::create_dir_all(&parent).unwrap();
+        let stem = format!("{}-{}-{}", "a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let destination = parent.join(format!("{stem}.pdf"));
+        assert!(destination.as_os_str().len() > 260);
+        assert!(!destination.to_string_lossy().starts_with(r"\\?\"));
+
+        write_atomic(&destination, b"%PDF-first").unwrap();
+        let staged = stage_beside(&destination, b"%PDF-replacement").unwrap();
+        commit_staged(staged, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"%PDF-replacement");
+
+        let copied = parent.join(format!("{stem}.copy.pdf"));
+        assert_eq!(copy_atomic(&destination, &copied).unwrap(), 16);
+        assert_eq!(std::fs::read(&copied).unwrap(), b"%PDF-replacement");
+        let private = parent.join(format!("{stem}.json"));
+        write_atomic_private(&private, b"{}").unwrap();
+        write_atomic_private(&private, b"{\"saved\":true}").unwrap();
+        assert_eq!(std::fs::read(&private).unwrap(), b"{\"saved\":true}");
+        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 3);
     }
 
     #[cfg(unix)]
