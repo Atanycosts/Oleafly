@@ -278,6 +278,85 @@ function baseCanvases(wrap: HTMLElement): HTMLCanvasElement[] {
   );
 }
 
+describe("PdfViewer subscriptions", () => {
+  it("removes scroll and resize subscriptions when the source changes and the viewer closes", async () => {
+    const observers: Array<{
+      observe: ReturnType<typeof vi.fn>;
+      disconnect: ReturnType<typeof vi.fn>;
+    }> = [];
+    class MockResizeObserver {
+      observe = vi.fn();
+      disconnect = vi.fn();
+
+      constructor(_callback: ResizeObserverCallback) {
+        observers.push(this);
+      }
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    const pane = document.createElement("div");
+    pane.style.overflowY = "auto";
+    document.body.append(pane);
+    const addScrollListener = vi.spyOn(pane, "addEventListener");
+    const removeScrollListener = vi.spyOn(pane, "removeEventListener");
+    let view: ReturnType<typeof render> | null = null;
+
+    try {
+      view = render(
+        <PdfViewer
+          data={new Uint8Array([1])}
+          documentIdentity="doc-1"
+          scale={1}
+          expectText={false}
+        />,
+        { container: pane },
+      );
+      const renderer = view.getByTestId("pdf-renderer");
+      await waitFor(() => expect(renderer.dataset.pdfState).toBe("ready"));
+      expect(observers).toHaveLength(1);
+      expect(observers[0].observe).toHaveBeenCalledWith(pane);
+
+      view.rerender(
+        <PdfViewer
+          data={new Uint8Array([2])}
+          documentIdentity="doc-2"
+          scale={1}
+          expectText={false}
+        />,
+      );
+      await waitFor(() => {
+        expect(renderer.dataset.pdfDocumentIdentity).toBe("doc-2");
+        expect(renderer.dataset.pdfState).toBe("ready");
+      });
+      expect(observers[0].disconnect).toHaveBeenCalledOnce();
+      expect(observers.length).toBeGreaterThan(1);
+
+      const addedHandlers = addScrollListener.mock.calls
+        .filter(([type, , options]) => type === "scroll"
+          && typeof options === "object" && options.passive === true)
+        .map(([, listener]) => listener);
+      view.unmount();
+      view = null;
+
+      const removedHandlers = new Set(
+        removeScrollListener.mock.calls
+          .filter(([type]) => type === "scroll")
+          .map(([, listener]) => listener),
+      );
+      expect(addedHandlers.length).toBeGreaterThanOrEqual(2);
+      expect(addedHandlers.every((handler) => removedHandlers.has(handler))).toBe(
+        true,
+      );
+      expect(
+        observers.every((observer) => observer.disconnect.mock.calls.length > 0),
+      ).toBe(true);
+    } finally {
+      view?.unmount();
+      pane.remove();
+    }
+  });
+});
+
 describe("PdfViewer raster swaps", () => {
   it("attaches a page's canvas only once its raster has painted", async () => {
     harness.deferRenders = true;

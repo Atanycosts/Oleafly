@@ -620,6 +620,29 @@ describe("hand-written code survives canvas edits", () => {
     expect(modelToMermaid(moved, { extras })).toBe(HAND);
   });
 
+  it("patches several declarations in one statement without shifting later offsets", async () => {
+    const source = [
+      "flowchart TD",
+      "  A[One] & B[Two] --> C[Three]",
+      "  C --> D[Four]",
+    ].join("\n");
+    const { model: m, extras } = read(source);
+    expect(modelToMermaid(m, { extras })).toBe(source);
+
+    const edited = patchNode(patchNode(m, "A", { label: "Uno" }), "B", { label: "Dos" });
+    const output = modelToMermaid(edited, { extras });
+    expect(output).toBe(source.replace("A[One] & B[Two]", "A[Uno] & B[Dos]"));
+    expect(await mermaidParse(output)).toBe(true);
+    expect(
+      readMermaid(output, { hint: m }).model?.nodes.map((n) => [n.id, n.label]),
+    ).toEqual([
+      ["A", "Uno"],
+      ["B", "Dos"],
+      ["C", "Three"],
+      ["D", "Four"],
+    ]);
+  });
+
   it("regenerates only the declaration of a relabeled node", () => {
     const { model: m, extras } = read(HAND);
     const out = modelToMermaid(patchNode(m, "B", { label: "Is it ok?" }), { extras });
@@ -1043,6 +1066,25 @@ describe("mermaidBlocks and mermaidFence", () => {
     const blocks = mermaidBlocks(markdown);
     expect(blocks.map((b) => b.code)).toEqual(["flowchart TD\n  A --> B", "graph LR", "```", "", "open to the end"]);
     for (const block of blocks) expect(markdown.slice(block.from, block.to)).toBe(block.code);
+  });
+
+  it("rejects unsupported fences and never closes inside a four-space-indented line", () => {
+    const markdown = [
+      "    ```mermaid",
+      "ignored because the opening line is indented too far",
+      "    ```",
+      "``mermaid",
+      "ignored because the marker is shorter than three characters",
+      "``",
+      "```mermaid",
+      "flowchart TD",
+      "    ```",
+      "  A --> B",
+      "```",
+    ].join("\n");
+    const [block] = mermaidBlocks(markdown);
+    expect(block?.code).toBe(["flowchart TD", "    ```", "  A --> B"].join("\n"));
+    expect(markdown.slice(block?.from, block?.to)).toBe(block?.code);
   });
 
   it("wraps code in a mermaid fence without trailing newlines", () => {

@@ -184,8 +184,9 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     checkId: visibleCheck?.check_id ?? null,
   });
   const openAnnotationTarget = (target: AnnotationTarget) => {
-    void perform(async () => {
-      setReferencedObject(await loadJournalTarget(target));
+    void perform(async (sequence) => {
+      const object = await loadJournalTarget(target);
+      if (sequence === loadSequence.current) setReferencedObject(object);
     });
   };
 

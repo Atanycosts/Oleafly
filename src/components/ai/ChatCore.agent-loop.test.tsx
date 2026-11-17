@@ -5826,3 +5826,159 @@ describe("ChatCore checkpoints and model checks", () => {
   });
 });
 
+describe("ChatCore approval cancellation and project isolation", () => {
+  function runUntilAbort() {
+    mocks.runAgentHarness.mockImplementationOnce(
+      (options: HarnessOptions & { signal: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          const requestId = `request-${mocks.runs.length + 1}`;
+          options.onRequestId?.(requestId);
+          options.handlers.onStep?.(0);
+          mocks.runs.push({ options, resolve });
+          options.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+  }
+
+  it("cancels an open approval, rejects its tool, and accepts the next chat turn", async () => {
+    runUntilAbort();
+    const { rendered, result } = await beginApprovalCall("ask-for-approval");
+
+    await waitFor(() =>
+      expect(rendered.getByRole("alertdialog", { name: "Confirm AI edit" })).toBeTruthy(),
+    );
+    expect(activeChatRun()?.pendingApproval?.req.tool).toBe("write_file");
+
+    fireEvent.click(rendered.getByRole("button", { name: "Stop" }));
+
+    await expect(result).resolves.toEqual({ approved: false });
+    await waitFor(() =>
+      expect(rendered.queryByRole("alertdialog", { name: "Confirm AI edit" })).toBeNull(),
+    );
+    await waitFor(() => expect(activeChatRun()).toBeNull());
+
+    const stoppedReply = useChatsStore.getState().byId("chat-1")?.messages.at(-1);
+    expect(stoppedReply).toMatchObject({
+      role: "assistant",
+      content: "_Stopped._",
+      toolCalls: [
+        {
+          id: "call-1",
+          name: "write_file",
+          status: "done",
+          approval: "rejected",
+        },
+      ],
+    });
+    expect(stoppedReply?.failed).toBeUndefined();
+
+    submit(rendered, "Try a safer edit");
+    await waitFor(() => expect(mocks.runs).toHaveLength(2));
+    expect(plainTranscript(mocks.runs[1].options.messages).at(-1)).toEqual({
+      role: "user",
+      content: "Try a safer edit",
+    });
+    await act(async () => finishRun(1, "Safer edit complete."));
+    await waitFor(() => expect(activeChatRun()).toBeNull());
+  }, 20_000);
+
+  it("rejects a tool call that arrives after the user stopped the run", async () => {
+    runUntilAbort();
+    const rendered = await renderChat();
+    submit(rendered, "Use write_file");
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+
+    const options = mocks.runs[0].options;
+    fireEvent.click(rendered.getByRole("button", { name: "Stop" }));
+
+    await expect(options.tools.write_file.execute?.({})).resolves.toEqual({
+      approved: false,
+    });
+    expect(rendered.queryByRole("alertdialog", { name: "Confirm AI edit" })).toBeNull();
+
+    await waitFor(() => expect(activeChatRun()).toBeNull());
+    expect(useChatsStore.getState().byId("chat-1")?.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "_Stopped._",
+    });
+  }, 20_000);
+
+  it("switches projects during approval and keeps project B's turn independent", async () => {
+    const firstProject = useFilesStore.getState().projectId;
+    if (!firstProject) throw new Error("initial project missing");
+    runUntilAbort();
+    const { rendered, result } = await beginApprovalCall("ask-for-approval");
+
+    await waitFor(() =>
+      expect(rendered.getByRole("alertdialog", { name: "Confirm AI edit" })).toBeTruthy(),
+    );
+    const firstRun = activeChatRun();
+    expect(firstRun).toMatchObject({
+      projectId: firstProject,
+      chatId: "chat-1",
+    });
+    const saveMessages = vi.spyOn(useChatsStore.getState(), "saveMessages");
+    const secondProject = `${firstProject}-second`;
+    const secondChat: StoredChat = {
+      id: "chat-2",
+      projectId: secondProject,
+      title: "New chat",
+      createdAt: 2,
+      updatedAt: 2,
+      messages: [],
+      headOid: null,
+    };
+
+    try {
+      act(() => {
+        localStorage.setItem(
+          `oleafly.chats.${secondProject}`,
+          JSON.stringify([secondChat]),
+        );
+        useFilesStore.setState({
+          projectId: secondProject,
+          projectName: "Second project",
+        });
+      });
+      await waitFor(() => expect(useChatsStore.getState().projectId).toBe(secondProject));
+      expect(useChatsStore.getState().byId(secondChat.id)).toEqual(secondChat);
+      act(() => useChatsStore.getState().setActive(secondChat.id));
+
+      await expect(result).resolves.toEqual({ approved: false });
+      await waitFor(() => expect(activeChatRun()).toBeNull());
+      expect(rendered.queryByRole("alertdialog", { name: "Confirm AI edit" })).toBeNull();
+
+      const latestProjectSave = () =>
+        saveMessages.mock.calls.findLast(
+          ([chatId, , opts]) => chatId === "chat-1" && opts?.projectId === firstProject,
+        );
+      await waitFor(() => {
+        expect(latestProjectSave()?.[1].at(-1)).toMatchObject({
+          role: "assistant",
+          content: "_Stopped._",
+        });
+      });
+
+      submit(rendered, "Start the second project");
+      await waitFor(() => expect(mocks.runs).toHaveLength(2));
+      expect(activeChatRun()).toMatchObject({
+        projectId: secondProject,
+        chatId: "chat-2",
+      });
+
+      await act(async () => finishRun(1, "Second project complete."));
+      await waitFor(() => expect(activeChatRun()).toBeNull());
+      expect(useChatsStore.getState().byId("chat-2")?.messages.at(-1)).toMatchObject({
+        role: "assistant",
+        content: "Second project complete.",
+      });
+    } finally {
+      saveMessages.mockRestore();
+    }
+  }, 25_000);
+});
+

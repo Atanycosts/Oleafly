@@ -40,7 +40,7 @@ function syntheticDocx(body: string, styles = ""): Uint8Array {
   });
 }
 
-function editorSession(bytes: Uint8Array, rejectTreeOps = false) {
+function editorSession(bytes: Uint8Array, rejectTreeOps = false, editingMode: "edit" | "suggest" = "edit") {
   const opened = openTreeSession(bytes);
   if (!opened.ok) throw new Error(`The synthetic DOCX did not open: ${opened.reason}`);
   const tree = opened.session;
@@ -83,7 +83,7 @@ function editorSession(bytes: Uint8Array, rejectTreeOps = false) {
           }
         : sessionView.applyTreeOps(operations);
     },
-    editingMode: () => "edit" as const,
+    editingMode: () => editingMode,
     collaborationSession: () => null,
     revisionDisplayMode: () => "allMarkup" as const,
     save: () => writeOoxmlPackage(tree.currentPackage()),
@@ -127,6 +127,137 @@ function paragraphHandle(text: string, fixture: ReturnType<typeof editorSession>
 }
 
 describe("DOCX object formatting", () => {
+  it("persists a positioned paragraph frame and removes it without removing paragraph controls", () => {
+    const fixture = editorSession(syntheticDocx(paragraph("Title", "<w:keepNext/><w:keepLines/>")));
+    const target = paragraphHandle("Title", fixture);
+    expect(fixture.session.formatObject!(target, 0, {
+      kind: "frame",
+      frame: {
+        widthTwips: 8000, heightTwips: 600, xTwips: -120, yTwips: 240,
+        horizontalAnchor: "margin", verticalAnchor: "page",
+        horizontalAlignment: "center", verticalAlignment: "top",
+        horizontalSpaceTwips: 0, verticalSpaceTwips: 120,
+        wrap: "notBeside", heightRule: "atLeast",
+      },
+    })).toEqual({ ok: true, changed: true, revision: 1 });
+    const reopened = editorSession(fixture.save());
+    const frame = reopened.xml().match(/<w:framePr\b[^>]*\/>/)?.[0];
+    for (const attribute of [
+      'w:w="8000"', 'w:h="600"', 'w:x="-120"', 'w:y="240"',
+      'w:hAnchor="margin"', 'w:vAnchor="page"', 'w:xAlign="center"', 'w:yAlign="top"',
+      'w:hSpace="0"', 'w:vSpace="120"', 'w:wrap="notBeside"', 'w:hRule="atLeast"',
+    ]) expect(frame).toContain(attribute);
+    expect(reopened.session.formatObject!(paragraphHandle("Title", reopened), 0, {
+      kind: "frame", frame: null,
+    })).toMatchObject({ ok: true, changed: true });
+    expect(reopened.xml()).not.toContain("w:framePr");
+    expect(reopened.xml()).toContain("<w:keepNext/>");
+    expect(reopened.xml()).toContain("<w:keepLines/>");
+    expect(reopened.session.listParagraphs().map((item) => item.text)).toEqual(["Title"]);
+  });
+
+  it("writes zero page margins and equal columns on the final section without changing an earlier section", () => {
+    const fixture = editorSession(syntheticDocx([
+      paragraph("First section", '<w:sectPr><w:cols w:num="2" w:space="360"/></w:sectPr>'),
+      paragraph("Final section"),
+    ].join("")));
+    expect(fixture.session.formatObject!(paragraphHandle("Final section", fixture), 0, {
+      kind: "section",
+      section: {
+        pageWidthTwips: 10000, pageHeightTwips: 15000, orientation: "portrait",
+        marginTopTwips: 0, marginRightTwips: 0, marginBottomTwips: 0, marginLeftTwips: 0,
+        columns: { count: 3, spaceTwips: 0, separator: false },
+      },
+    })).toMatchObject({ ok: true, changed: true, revision: 1 });
+    const xml = editorSession(fixture.save()).xml();
+    expect(xml).toContain('<w:cols w:num="2" w:space="360"/>');
+    expect(xml).toMatch(/<w:cols[^>]*w:num="3"[^>]*w:sep="0"[^>]*w:space="0"/);
+    expect(xml).toMatch(/<w:pgMar[^>]*w:bottom="0"[^>]*w:left="0"[^>]*w:right="0"[^>]*w:top="0"/);
+    expect(xml).toMatch(/<w:pgSz[^>]*w:h="15000"[^>]*w:w="10000"/);
+    expect(xml).not.toContain('w:orient="landscape"');
+  });
+
+  it("changes cell alignment alone without clearing either nested table's shading", () => {
+    const fixture = editorSession(syntheticDocx(nestedTableBody()));
+    expect(fixture.session.formatObject!(paragraphHandle("Nested", fixture), 0, {
+      kind: "cell", cell: { verticalAlignment: "bottom" },
+    })).toMatchObject({ ok: true, changed: true });
+    expect(fixture.batches[0]?.map((operation) => operation.op)).toEqual(["setTableCellVerticalAlignment"]);
+    expect(fixture.xml()).toContain('w:fill="112233"');
+    expect(fixture.xml()).toContain('w:fill="ABCDEF"');
+    expect(fixture.xml().match(/<w:vAlign w:val="bottom"\/>/g)).toHaveLength(2);
+  });
+
+  it("clears repeating header rows with zero while retaining the table grid, style and row height", () => {
+    const fixture = editorSession(syntheticDocx(nestedTableBody(), tableStyle("OuterStyle")));
+    const target = paragraphHandle("Nested", fixture);
+    expect(fixture.session.formatObject!(target, 0, {
+      kind: "table", table: { headerRowCount: 1 },
+    })).toMatchObject({ ok: true, changed: true, revision: 1 });
+    expect(fixture.xml()).toContain('<w:tblHeader w:val="1"/>');
+    expect(fixture.session.formatObject!(target, 1, {
+      kind: "table", table: { headerRowCount: 0 },
+    })).toMatchObject({ ok: true, changed: true, revision: 2 });
+    const xml = editorSession(fixture.save()).xml();
+    expect(xml).not.toContain("w:tblHeader");
+    expect(xml.match(/<w:tblStyle w:val="OuterStyle"\/>/g)).toHaveLength(2);
+    expect(xml).toContain('<w:gridCol w:w="3000"/>');
+    expect(xml).toContain('<w:trHeight w:hRule="exact" w:val="240"/>');
+  });
+
+  it.each([
+    ["missing request", null],
+    ["unknown scope", { kind: "image", image: {} }],
+    ["non-object format", { kind: "table", table: [] }],
+    ["missing frame width", { kind: "frame", frame: {} }],
+    ["oversized frame", { kind: "frame", frame: { widthTwips: 63361 } }],
+    ["negative frame height", { kind: "frame", frame: { widthTwips: 1000, heightTwips: -1 } }],
+    ["oversized frame spacing", { kind: "frame", frame: { widthTwips: 1000, horizontalSpaceTwips: 63361 } }],
+    ["fractional frame position", { kind: "frame", frame: { widthTwips: 1000, xTwips: 1.5 } }],
+    ["unknown frame wrapping", { kind: "frame", frame: { widthTwips: 1000, wrap: "square" } }],
+    ["unknown frame property", { kind: "frame", frame: { widthTwips: 1000, rotation: 90 } }],
+    ["empty section edit", { kind: "section", section: {} }],
+    ["zero paper width", { kind: "section", section: { pageWidthTwips: 0 } }],
+    ["negative page margin", { kind: "section", section: { marginBottomTwips: -1 } }],
+    ["unknown orientation", { kind: "section", section: { orientation: "sideways" } }],
+    ["too many columns", { kind: "section", section: { columns: { count: 46 } } }],
+    ["negative column spacing", { kind: "section", section: { columns: { count: 2, spaceTwips: -1 } } }],
+    ["non-boolean separator", { kind: "section", section: { columns: { count: 2, separator: "false" } } }],
+    ["unknown column property", { kind: "section", section: { columns: { count: 2, widths: [1000, 2000] } } }],
+    ["empty table edit", { kind: "table", table: {} }],
+    ["blank table style", { kind: "table", table: { styleId: " " } }],
+    ["negative header row count", { kind: "table", table: { headerRowCount: -1 } }],
+    ["empty table grid", { kind: "table", table: { columnWidthsTwips: [] } }],
+    ["zero table column width", { kind: "table", table: { columnWidthsTwips: [0] } }],
+    ["unknown row property", { kind: "row", row: { heightTwips: 300, exact: true } }],
+    ["zero row height", { kind: "row", row: { heightTwips: 0 } }],
+    ["empty cell edit", { kind: "cell", cell: {} }],
+    ["invalid cell color", { kind: "cell", cell: { fill: "transparent" } }],
+    ["unknown cell alignment", { kind: "cell", cell: { verticalAlignment: "baseline" } }],
+    ["unknown cell property", { kind: "cell", cell: { padding: 20 } }],
+  ])("refuses %s before opening a write transaction", (_description, input) => {
+    const fixture = editorSession(syntheticDocx(nestedTableBody()));
+    const before = fixture.save();
+    expect(fixture.session.formatObject!(paragraphHandle("Nested", fixture), 0, input as never))
+      .toMatchObject({ ok: false, code: "invalid-format", revision: 0, changed: false });
+    expect(fixture.batches).toEqual([]);
+    expect(fixture.save()).toEqual(before);
+  });
+
+  it.each([
+    { kind: "section", section: { columns: { count: 2 } } },
+    { kind: "table", table: { headerRowCount: 0 } },
+    { kind: "row", row: { heightTwips: 300 } },
+    { kind: "cell", cell: { fill: null } },
+  ] as const)("refuses $kind formatting in suggestion mode without mutating the package", (format) => {
+    const fixture = editorSession(syntheticDocx(nestedTableBody()), false, "suggest");
+    const before = fixture.save();
+    expect(fixture.session.formatObject!(paragraphHandle("Nested", fixture), 0, format))
+      .toMatchObject({ ok: false, code: "unsupported-target", revision: 0, changed: false });
+    expect(fixture.batches).toEqual([]);
+    expect(fixture.save()).toEqual(before);
+  });
+
   it("writes only the section governing the anchor paragraph", () => {
     const fixture = editorSession(syntheticDocx([
       paragraph("First", '<w:sectPr><w:pgSz w:w="10000" w:h="14000"/><w:pgMar w:top="1000" w:right="1000" w:bottom="1000" w:left="1000"/><w:cols w:num="2"/></w:sectPr>'),

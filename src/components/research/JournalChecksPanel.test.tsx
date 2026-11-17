@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { JournalCheck, JournalDiff, JournalFragment, JournalObjectReference, JournalProject, JournalReview, JournalRule, JournalState, JournalWorld } from "@/lib/journal-workbench";
+import type { JournalAnnotationObject, JournalCheck, JournalDiff, JournalFragment, JournalObjectReference, JournalProject, JournalReview, JournalRule, JournalState, JournalWorld } from "@/lib/journal-workbench";
+import type { AnnotationTarget } from "@/lib/task-collaboration";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { useFilesStore } from "@/store/files";
 import { useDocxWorkspaceStore } from "@/store/docx-workspace";
+import { useResearchTasksStore } from "@/store/research-tasks";
 import { useSettingsStore } from "@/store/settings";
 import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 
@@ -17,6 +19,7 @@ const api = vi.hoisted(() => ({
   templateImport: vi.fn(),
   templateCheck: vi.fn(),
   references: [] as JournalObjectReference[],
+  openTargets: [] as Array<(target: AnnotationTarget) => void>,
 }));
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/core")>(), invoke: api.invoke,
@@ -31,8 +34,13 @@ vi.mock("@/lib/docx-template-client", async (original) => ({
   importJournalTemplate: api.templateImport,
   checkJournalTemplate: api.templateCheck,
 }));
-vi.mock("./JournalAnnotations", () => ({ JournalAnnotations: ({ reference }: { reference: JournalObjectReference }) => {
-  api.references.push(reference); return <div data-testid="journal-object-entry">{reference.kind}:{reference.worldVersionId}:{reference.objectId}</div>;
+vi.mock("./JournalAnnotations", () => ({ JournalAnnotations: ({ reference, onOpenTarget }: {
+  reference: JournalObjectReference;
+  onOpenTarget?: (target: AnnotationTarget) => void;
+}) => {
+  api.references.push(reference);
+  if (onOpenTarget) api.openTargets.push(onOpenTarget);
+  return <div data-testid="journal-object-entry">{reference.kind}:{reference.worldVersionId}:{reference.objectId}</div>;
 } }));
 import { JournalChecksPanel, JournalWorkspaceHost } from "./JournalChecksPanel";
 
@@ -52,8 +60,51 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function retainedSource(
+  target: AnnotationTarget,
+  sourceText: string,
+  relatedTaskId = "task-related",
+): JournalAnnotationObject {
+  return {
+    reference: {
+      libraryRoot: "/retained/library",
+      workbenchProjectId: "manuscript",
+      kind: "source",
+      objectId: "guide-fragment",
+      worldVersionId: "world-current",
+      checkId: "check-current",
+    },
+    target,
+    source: {
+      kind: "journal_object",
+      content: JSON.stringify({ object: { ...fragment, text: sourceText } }),
+    },
+    relatedTasks: [{
+      id: relatedTaskId,
+      title: "Related handling task",
+    } as JournalAnnotationObject["relatedTasks"][number]],
+    continuationTaskId: null,
+  };
+}
+
+function sourceTarget(suffix: string): AnnotationTarget {
+  return {
+    projectId: "paper",
+    taskId: "task-related",
+    objectKind: "journal_source",
+    objectId: JSON.stringify({
+      libraryRoot: "/retained/library",
+      manuscriptId: "manuscript",
+      id: suffix,
+    }),
+    objectRevision: "world-current",
+    path: null,
+  };
+}
+
 beforeEach(() => {
-  vi.clearAllMocks(); api.references.length = 0;
+  vi.clearAllMocks(); api.references.length = 0; api.openTargets.length = 0;
+  api.target.mockReset();
   useFilesStore.setState({ projectId: "paper" });
   useDocxWorkspaceStore.getState().close();
   useDocxWorkspaceStore.setState({ savedVersion: 0 });
@@ -169,6 +220,22 @@ it("keeps the sidebar busy state while another surface is shown and releases it 
   view.unmount();
   expect(useWorkspaceSurfaceStore.getState().journalBusy).toBe(false);
   state.resolve({ worlds: [], projects: [] });
+});
+
+it("recovers from a failed Journal runtime connection with the entered Python path", async () => {
+  api.connect.mockRejectedValueOnce(new Error("Journal runtime is unavailable"));
+  render(<JournalWorkspaceHarness />);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Journal runtime is unavailable");
+  const runtime = screen.getByLabelText(text.python);
+  expect(runtime).toHaveValue("");
+  fireEvent.change(runtime, { target: { value: "/opt/oleafly/python" } });
+  fireEvent.click(screen.getByRole("button", { name: text.connect }));
+
+  expect(await screen.findByRole("heading", { name: "Example Journal" })).toBeInTheDocument();
+  expect(api.connect).toHaveBeenLastCalledWith("/opt/oleafly/python");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue("manuscript");
 });
 
 it("shows readable template comparison details in the center", async () => {
@@ -781,6 +848,58 @@ it("anchors a historical check entry to its original library, manuscript and wor
   fireEvent.click(screen.getByRole("button", { name: /Example Journal · v1/ }));
   await waitFor(() => expect(screen.getByTestId("journal-object-entry")).toHaveTextContent("check:world-old:check-old"));
   expect(api.references.at(-1)).toEqual({ libraryRoot: "/retained/library", workbenchProjectId: "manuscript", kind: "check", objectId: "check-old", worldVersionId: "world-old", checkId: "check-old" });
+});
+
+it("keeps the newest retained journal object when an older lookup finishes late", async () => {
+  const older = deferred<JournalAnnotationObject>();
+  const olderTarget = sourceTarget("older-source");
+  const newerTarget = sourceTarget("newer-source");
+  api.target
+    .mockReturnValueOnce(older.promise)
+    .mockResolvedValueOnce(retainedSource(newerTarget, "Newest retained instruction"));
+  render(<JournalWorkspaceHarness />);
+  await waitFor(() => expect(api.openTargets.length).toBeGreaterThan(0));
+  const openTarget = api.openTargets[0];
+  if (!openTarget) throw new Error("Expected a Journal annotation target handler");
+
+  act(() => {
+    openTarget(olderTarget);
+    openTarget(newerTarget);
+  });
+
+  const dialog = await screen.findByRole("dialog");
+  expect(await within(dialog).findByText("Newest retained instruction")).toBeInTheDocument();
+  await act(async () => {
+    older.resolve(retainedSource(olderTarget, "Stale retained instruction"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(within(dialog).getByText("Newest retained instruction")).toBeInTheDocument();
+  expect(within(dialog).queryByText("Stale retained instruction")).not.toBeInTheDocument();
+});
+
+it("opens a retained journal object and navigates to its related work", async () => {
+  const target = sourceTarget("related-source");
+  api.target.mockResolvedValue(retainedSource(target, "Retained source for continuation"));
+  const openTaskDetail = vi.spyOn(useResearchTasksStore.getState(), "openTaskDetail");
+  try {
+    render(<JournalWorkspaceHarness />);
+    await waitFor(() => expect(api.openTargets.length).toBeGreaterThan(0));
+    await waitFor(() => expect(useWorkspaceSurfaceStore.getState().active).toBe("journal"));
+    const openTarget = api.openTargets[0];
+    if (!openTarget) throw new Error("Expected a Journal annotation target handler");
+    act(() => openTarget(target));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Retained source for continuation")).toBeInTheDocument();
+    expect(api.target).toHaveBeenCalledWith(target);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: text.annotations.openTask }));
+
+    expect(openTaskDetail).toHaveBeenCalledWith("task-related", "annotations");
+    expect(useWorkspaceSurfaceStore.getState().active).toBe("files");
+  } finally {
+    openTaskDetail.mockRestore();
+  }
 });
 
 it("offers rule and retained source fragment discussion inside the existing evidence dialog", async () => {

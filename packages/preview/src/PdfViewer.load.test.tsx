@@ -86,6 +86,7 @@ vi.mock("pdfjs-dist", () => {
     readonly width: number;
     readonly height: number;
     readonly userUnit = 1;
+    readonly viewBox: [number, number, number, number];
     readonly rawDims: { pageWidth: number; pageHeight: number; pageX: number; pageY: number };
 
     constructor(
@@ -96,11 +97,20 @@ vi.mock("pdfjs-dist", () => {
       const quarterTurn = rotation % 180 !== 0;
       this.width = (quarterTurn ? spec.height : spec.width) * scale;
       this.height = (quarterTurn ? spec.width : spec.height) * scale;
+      this.viewBox = [0, 0, spec.width, spec.height];
       this.rawDims = { pageWidth: spec.width, pageHeight: spec.height, pageX: 0, pageY: 0 };
     }
 
     clone({ scale = this.scale }: { scale?: number; dontFlip?: boolean } = {}) {
       return new MockViewport(this.spec, scale, this.rotation);
+    }
+
+    convertToViewportPoint(x: number, y: number): number[] {
+      return [x * this.scale, this.height - y * this.scale];
+    }
+
+    convertToPdfPoint(x: number, y: number): number[] {
+      return [x / this.scale, (this.height - y) / this.scale];
     }
   }
 
@@ -207,7 +217,7 @@ vi.mock("pdfjs-dist", () => {
 });
 
 import { PdfViewer, type PdfViewerHandle } from "./PdfViewer";
-import { gotoPdfPage } from "./pdfController";
+import { gotoPdfPage, pageClickToBp, pdfPageText } from "./pdfController";
 import { sharedPdfDocumentOptions } from "./pdfDocumentOptions";
 
 const t = testCatalogTranslator<PreviewMessageKey>("preview");
@@ -302,6 +312,75 @@ describe("PdfViewer loading", () => {
     await navigateManuscript();
     main.unmount();
     expect(await gotoPdfPage(2)).toBe(false);
+  });
+
+  it("serves navigation from the current source PDF and closes the route on unmount", async () => {
+    harness.pages = [page([text("First source")])];
+    const view = render(
+      <PdfViewer
+        data={new Uint8Array([1])}
+        scale={1}
+        documentIdentity="first"
+        t={t}
+      />,
+    );
+    await waitFor(() => expect(renderer().dataset.pdfState).toBe("ready"));
+
+    const firstPage = renderer().querySelector<HTMLElement>("[data-page='1']")!;
+    firstPage.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 612,
+        bottom: 792,
+        width: 612,
+        height: 792,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    expect(
+      pageClickToBp(firstPage, 1, { clientX: 72, clientY: 72 }),
+    ).toEqual({ page: 1, x: 72, y: 72 });
+    await expect(pdfPageText(1)).resolves.toEqual([
+      expect.objectContaining({
+        str: "First source",
+        x: 0,
+        width: 100,
+        height: 1,
+      }),
+    ]);
+
+    harness.pages = [page([text("Second source")])];
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        scale={1}
+        documentIdentity="second"
+        t={t}
+      />,
+    );
+    await waitFor(() => {
+      expect(renderer().dataset.pdfDocumentIdentity).toBe("second");
+      expect(renderer().dataset.pdfState).toBe("ready");
+    });
+    await waitFor(() =>
+      expect(renderer().querySelector(".textLayer")?.textContent).toContain(
+        "Second source",
+      ),
+    );
+
+    await expect(pdfPageText(1)).resolves.toEqual([
+      expect.objectContaining({
+        str: "Second source",
+        x: 0,
+        width: 100,
+        height: 1,
+      }),
+    ]);
+
+    view.unmount();
+    await expect(pdfPageText(1)).resolves.toBeNull();
   });
 
   it("reports the renderer as unavailable when the main-thread fallback cannot start", async () => {
@@ -829,5 +908,57 @@ describe("PdfViewer page rendering failures", () => {
     expect(renderer().querySelector("[data-page='1'] .textLayer")).toBeEmptyDOMElement();
     expect(renderer().querySelector("[data-page='1'] .annotationLayer a")).toBeNull();
     expect(renderer()).not.toHaveTextContent(t("error.firstPage"));
+  });
+
+  it("recovers when a corrected source PDF arrives after a render failure", async () => {
+    harness.pages = [
+      page([text("Broken source")], {
+        renderError: new Error("temporary raster failure"),
+      }),
+    ];
+    const onLoadStateChange = vi.fn();
+    const view = render(
+      <PdfViewer
+        data={new Uint8Array([1])}
+        scale={1}
+        expectText={false}
+        documentIdentity="broken"
+        onLoadStateChange={onLoadStateChange}
+        t={t}
+      />,
+    );
+    await waitFor(() =>
+      expect(renderer()).toHaveTextContent(t("error.firstPage")),
+    );
+
+    harness.pages = [page([text("Recovered source")])];
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        scale={1}
+        expectText={false}
+        documentIdentity="corrected"
+        onLoadStateChange={onLoadStateChange}
+        t={t}
+      />,
+    );
+    await waitFor(() =>
+      expect(renderer().dataset.pdfState).toBe("loading-primary"),
+    );
+    await waitFor(() => {
+      expect(renderer().dataset.pdfDocumentIdentity).toBe("corrected");
+      expect(renderer().dataset.pdfState).toBe("ready");
+    });
+    await waitFor(() =>
+      expect(renderer().querySelector(".textLayer")?.textContent).toContain(
+        "Recovered source",
+      ),
+    );
+
+    expect(renderer()).not.toHaveTextContent(t("error.firstPage"));
+    expect(onLoadStateChange).toHaveBeenLastCalledWith({
+      status: "ready",
+      documentIdentity: "corrected",
+    });
   });
 });

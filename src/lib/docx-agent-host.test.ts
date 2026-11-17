@@ -213,6 +213,42 @@ beforeEach(() => {
 });
 
 describe("Word workspace context and execution feedback", () => {
+  it("advertises only the live session's available operations and keeps other projects out of context", () => {
+    const local = harness();
+    register(local.session);
+    register(harness().session, { sessionId: "foreign-session", appProjectId: "foreign-project" });
+    const readOnlyContext = getDocxWorkspaceContext();
+    expect(readOnlyContext.writable.map((item) => item.sessionId)).toEqual(["session-1"]);
+    expect(readOnlyContext.capabilities).toEqual([{
+      sessionId: "session-1",
+      operations: ["read_docx_document", "capture_docx_target", "apply_docx_suggestion"],
+    }]);
+
+    unregisterDocxAgentSession("session-1");
+    register({
+      ...local.session,
+      readImage: vi.fn(), formatParagraph: vi.fn(), formatBatch: vi.fn(),
+      writeEquation: vi.fn(), importTemplateStyles: vi.fn(),
+    }, {
+      readFormat: vi.fn(), save: vi.fn(), check: vi.fn(), prepareFonts: vi.fn(),
+      exportDocument: vi.fn(), reveal: vi.fn(),
+    });
+    expect(getDocxWorkspaceContext().capabilities).toEqual([{
+      sessionId: "session-1",
+      operations: [
+        "read_docx_document", "capture_docx_target", "apply_docx_suggestion",
+        "read_docx_image", "read_docx_format", "apply_docx_format", "apply_docx_format_batch",
+        "write_docx_equation", "import_docx_template_styles", "save_docx_document",
+        "check_docx_template", "prepare_docx_fonts", "export_docx_document", "reveal_docx_working_copy",
+      ],
+    }]);
+    expect(getDocxWorkspaceContext("foreign-project").writable.map((item) => item.sessionId))
+      .toEqual(["foreign-session"]);
+    expect(getDocxWorkspaceContext("unopened-project")).toMatchObject({
+      viewed: null, writable: [], capabilities: [], selectionWriteTarget: null,
+    });
+  });
+
   it("notifies session observers about edits and saved baselines, then removes a closed active session", async () => {
     const local = harness();
     const listener = vi.fn();
@@ -793,6 +829,47 @@ function retainedTemplateCheck(
 }
 
 describe("live DOCX format, save and template tools", () => {
+  it.each(["paragraph", "object", "batch"] as const)(
+    "refuses a cancelled direct %s format before calling the live session",
+    async (kind) => {
+      const local = harness();
+      const mutate = vi.fn((): DocxApplyResult => ({ ok: true, changed: true, revision: 1 }));
+      Object.assign(local.session, { formatParagraph: mutate, formatObject: mutate, formatBatch: mutate });
+      register(local.session);
+      const controller = new AbortController();
+      controller.abort();
+      const context = { signal: controller.signal };
+      const action = kind === "paragraph"
+        ? DOCX_AGENT_HOST.formatParagraph!("session-1", "p1", 0, { font: { bold: true } }, context)
+        : kind === "object"
+          ? DOCX_AGENT_HOST.formatObject!("session-1", "p1", 0, { kind: "cell", cell: { fill: null } }, context)
+          : DOCX_AGENT_HOST.formatBatch!("session-1", 0, [{ paragraphRef: "p1", font: { bold: true } }], context);
+      await expect(action).rejects.toThrow("cancelled before mutation");
+      expect(mutate).not.toHaveBeenCalled();
+      expect(local.session.revision()).toBe(0);
+    },
+  );
+
+  it("keeps the newer registration intact when an earlier session's save finishes after reopening", async () => {
+    const original = harness();
+    original.edit("p1", "Saved original session.");
+    let finishSave!: (result: Awaited<ReturnType<NonNullable<DocxAgentRegistration["save"]>>>) => void;
+    register(original.session, { save: () => new Promise((resolve) => { finishSave = resolve; }) });
+    const pending = DOCX_AGENT_HOST.saveDocument!("session-1", 1);
+    unregisterDocxAgentSession("session-1");
+    const reopened = harness([paragraph("p1", "Reopened working copy.")]);
+    register(reopened.session, { baselineId: "reopened-baseline", sourceSha256: "f".repeat(64) });
+    finishSave({
+      baselineId: "saved-old-baseline", revision: 1, sourceSha256: "b".repeat(64),
+      document: { sessionId: "session-1", baselineId: "saved-old-baseline", sessionRevision: 1, savedRevision: 1, dirty: false },
+    });
+    await expect(pending).resolves.toMatchObject({ baselineId: "saved-old-baseline", revision: 1 });
+    expect((await DOCX_AGENT_HOST.readDocument()).document).toMatchObject({
+      baselineId: "reopened-baseline", sourceSha256: "f".repeat(64), sessionRevision: 0, savedRevision: 0,
+    });
+    expect(reopened.session.listParagraphs()[0].text).toBe("Reopened working copy.");
+  });
+
   it.each([
     ["apply_docx_format", "format", { paragraph_ref: "p1", expected_revision: 0, scope: "cell", cell: { fill: "D9EAF7" } }],
     ["apply_docx_format_batch", "format_batch", { expected_revision: 0, operations: [{ paragraph_ref: "p1", font: { bold: true } }] }],
@@ -1737,6 +1814,76 @@ describe("live DOCX equation writes", () => {
 
 describe("task-provided DOCX proposals", () => {
   const scope = { projectId: "app-project", workbenchProjectId: "paper-project" };
+  it("measures proposals in UTF-8 bytes and presents only runtime proposals to an available review surface", async () => {
+    const local = harness();
+    register(local.session);
+    const { captureTaskDocxTarget, validateTaskDocxProposal, presentTaskDocxProposal } = await import("./docx-agent-host");
+    const { target } = captureTaskDocxTarget(scope, "session-1", "p1");
+    const accepted = validateTaskDocxProposal(scope, target.targetId, 0, "😀".repeat(8192));
+    expect(accepted.target.original).toBe("Original paragraph.");
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 0, `${"😀".repeat(8192)}a`))
+      .toThrow("exceeds 32 KiB");
+    expect(() => validateTaskDocxProposal(scope, target.targetId, 1, "Candidate"))
+      .toThrow("target revision changed");
+    const activity: DocxActivity = {
+      id: "proposal", document: accepted.document, proposalId: "proposal", createdAt: 1,
+      origin: { taskId: "task-1", generation: 1, groupId: null, memberId: null, executionId: null, workIds: [] },
+      event: { type: "runtime", event: { kind: "proposed", target: accepted.target, proposed: "Candidate" } },
+    };
+    expect(() => presentTaskDocxProposal(scope, { ...activity, event: { type: "outcome", outcome: { kind: "withdrawn" } } }))
+      .toThrow("Only a retained DOCX proposal");
+    expect(() => presentTaskDocxProposal(scope, { ...activity, event: { type: "runtime", event: { kind: "bound" } } }))
+      .toThrow("Only a retained DOCX proposal");
+    expect(() => presentTaskDocxProposal(scope, activity)).toThrow("review surface is unavailable");
+    expect(local.session.applySuggestion).not.toHaveBeenCalled();
+    expect(mocks.runInlineCompletion).not.toHaveBeenCalled();
+  });
+
+  it("reads an already-serialized atom payload across continuations without changing its JSON", () => {
+    const payload = { formula: "中文😀".repeat(4000), source: { complete: true } };
+    const payloadJson = JSON.stringify(payload);
+    const atom = {
+      objectRef: "serialized-math", kind: "math" as const, modelRange: { start: 0, end: 1 },
+      displayRange: { start: 0, end: 1 }, displayText: "\uFFFC", readable: true, complete: true, editable: false as const,
+      payloadJson, payloadLength: payloadJson.length,
+    };
+    const local = harness([paragraph("p1", "\uFFFC")], (current, revision) => semantics(current, revision, {
+      atoms: [atom],
+      editableRanges: [],
+    }));
+    register(local.session);
+    let page = readTaskDocxDocumentPage(scope, "session-1", {});
+    let assembled = "";
+    for (let index = 0; ; index++) {
+      expect(JSON.stringify(docxReadForTool(page)).length).toBeLessThanOrEqual(10_000);
+      const atom = page.paragraphs[0].atoms[0];
+      expect(atom.objectRef).toBe("serialized-math");
+      expect(atom.payloadOffset).toBe(assembled.length);
+      assembled += atom.payloadJson;
+      if (!page.nextQuery) break;
+      expect(index).toBeLessThan(30);
+      expect(atom.payloadContinuation).toEqual(page.nextQuery);
+      page = readTaskDocxDocumentPage(scope, "session-1", page.nextQuery);
+    }
+    expect(assembled).toBe(payloadJson);
+    expect(JSON.parse(assembled)).toEqual(payload);
+    expect(local.session.revision()).toBe(0);
+  });
+
+  it("keeps a one-unit text window on a whole surrogate pair and advances to the next paragraph", () => {
+    const local = harness([paragraph("p1", "A😀Z"), paragraph("p2", "Next paragraph")]);
+    register(local.session);
+    const page = readTaskDocxDocumentPage(scope, "session-1", {
+      offset: 0, textOffset: 2, textLimit: 1, expectedRevision: 0,
+    });
+    expect(page.paragraphs[0]).toMatchObject({ modelText: "😀", modelTextOffset: 1, displayText: "😀" });
+    expect(page.nextQuery).toMatchObject({ offset: 0, textOffset: 3, textLimit: 2, expectedRevision: 0 });
+    const tail = readTaskDocxDocumentPage(scope, "session-1", page.nextQuery!);
+    expect(tail.paragraphs[0].modelText).toBe("Z");
+    expect(tail.nextQuery).toEqual({ sessionId: "session-1", offset: 1, limit: 20, expectedRevision: 0 });
+    expect(readTaskDocxDocumentPage(scope, "session-1", tail.nextQuery!).paragraphs[0].modelText).toBe("Next paragraph");
+  });
+
   it("carries the actual completed operation status in every task envelope", async () => {
     const local = harness();
     const readFormat = vi.fn(async () => readableFormat());

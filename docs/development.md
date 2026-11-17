@@ -196,8 +196,8 @@ existing save/discard flow; it cannot bypass an in-flight save or check.
 Workbench stores continue to own sessions, saved versions and journal records.
 Journal checks uses one controller: it renders manuscript/template selection
 and check actions into the sidebar and displays results in the center.
-Rule evidence, source-library reviews, version comparisons and historical-check
-selection share the controller's request sequence, so a late response cannot
+Rule evidence, retained annotation sources, source-library reviews, version comparisons
+and historical-check selection share the controller's request sequence, so a late response cannot
 replace the details after another manuscript opens from the file tree.
 Submission context and additional requirement sources remain available, while
 internal IDs, JSON import/export, raw XML and developer diagnostics have no
@@ -485,6 +485,10 @@ React editor with scripted Tauri commands. The native jobs run those business
 operations through the packaged app.
 Private-manuscript and real-model acceptance remain opt-in and are not enabled
 by this job.
+The frontend test job separately runs `pnpm exec vitest run --config e2e/vitest.config.ts`
+for the retained Word acceptance helpers, including the independent XML oracle
+and the live-provider relay's fixed forwarding route. These checks use synthetic
+inputs and local HTTP servers; they do not launch an app or call a model.
 
 ### The Rust toolchain pin
 

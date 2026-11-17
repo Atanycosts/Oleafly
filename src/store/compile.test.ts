@@ -155,12 +155,17 @@ import enErrors from "@/i18n/locales/en/errors.json" with { type: "json" };
 import enShell from "@/i18n/locales/en/shell.json" with { type: "json" };
 import { useProjectAvailabilityStore } from "@/store/project-availability";
 import { SaveFlushError } from "@/store/save-flush-error";
-import { installCollabEditorPort } from "@/lib/collab-live-bridge";
+import {
+  installCollabEditorPort,
+  installReviewNotice,
+} from "@/lib/collab-live-bridge";
 import {
   acceptCompileOffer,
   beginCompileRequestIdentity,
+  captureCompileSourceSnapshot,
   clearFolderPause,
   compileSaveFailureReason,
+  compileProjectRevision,
   downloadMissingTypst,
   switchToDefaultTypst,
   installerNotices,
@@ -1007,6 +1012,159 @@ describe("compile output lifecycle", () => {
   });
 });
 
+describe("compile source snapshots", () => {
+  it("captures the current source texts and filesystem epoch", async () => {
+    mocks.files.tree = [
+      { path: "chapters/one.tex", is_dir: false },
+      { path: "main.tex", is_dir: false },
+    ];
+    mocks.files.files = {
+      "chapters/one.tex": {
+        content: "\\chapter{One}\n",
+        dirty: true,
+      },
+      "main.tex": {
+        content: "\\documentclass{article}\n",
+        dirty: false,
+      },
+    };
+    mocks.index.texts = {
+      "chapters/one.tex": "stale index text\n",
+      "main.tex": "\\documentclass{article}\n",
+    };
+    mocks.index.filesystemEpoch = 17;
+
+    await expect(captureCompileSourceSnapshot("project")).resolves.toEqual({
+      fsEpoch: 17,
+      texts: {
+        "chapters/one.tex": "\\chapter{One}\n",
+        "main.tex": "\\documentclass{article}\n",
+      },
+    });
+  });
+
+  it("rejects a snapshot when any source is unreadable", async () => {
+    mocks.readProjectSources.mockResolvedValue({
+      texts: { "main.tex": "\\documentclass{article}\n" },
+      unreadable: new Set(["main.tex"]),
+    });
+
+    await expect(captureCompileSourceSnapshot("project")).resolves.toBeNull();
+  });
+
+  it("rejects a snapshot when the source paths change during the read", async () => {
+    mocks.readProjectSources.mockImplementationOnce(async () => {
+      mocks.files.tree = [
+        { path: "chapters/one.tex", is_dir: false },
+        { path: "main.tex", is_dir: false },
+      ];
+      return {
+        texts: { "main.tex": "\\documentclass{article}\n" },
+        unreadable: new Set<string>(),
+      };
+    });
+
+    await expect(captureCompileSourceSnapshot("project")).resolves.toBeNull();
+  });
+
+  it("rejects a snapshot when the filesystem epoch changes during the read", async () => {
+    mocks.readProjectSources.mockImplementationOnce(async () => {
+      mocks.index.filesystemEpoch++;
+      return {
+        texts: { "main.tex": "\\documentclass{article}\n" },
+        unreadable: new Set<string>(),
+      };
+    });
+
+    await expect(captureCompileSourceSnapshot("project")).resolves.toBeNull();
+  });
+});
+
+describe("queued compiles and stale results", () => {
+  it("runs one queued compile with the highest requested priority", async () => {
+    const first = deferred<typeof compileFailure>();
+    mocks.compileProject
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(compileFailure);
+    const notice = vi.fn();
+    const uninstall = installReviewNotice(notice);
+
+    try {
+      const running = useCompileStore
+        .getState()
+        .recompile({ origin: "automatic" });
+      await vi.waitFor(() =>
+        expect(mocks.compileProject).toHaveBeenCalledOnce(),
+      );
+
+      await useCompileStore
+        .getState()
+        .recompile({ origin: "automatic" });
+      await useCompileStore.getState().recompile({ origin: "agent" });
+      await useCompileStore.getState().recompile({ origin: "explicit" });
+
+      first.resolve(compileFailure);
+      await running;
+      await vi.waitFor(() =>
+        expect(mocks.compileProject).toHaveBeenCalledTimes(2),
+      );
+      await vi.waitFor(() =>
+        expect(useCompileStore.getState().status).toBe("error"),
+      );
+
+      expect(notice).toHaveBeenCalledExactlyOnceWith("project", "compile");
+    } finally {
+      uninstall();
+    }
+  });
+
+  it("clears queued work when the user stops the running compile", async () => {
+    const first = deferred<typeof compileFailure>();
+    mocks.compileProject.mockReturnValueOnce(first.promise);
+    const running = useCompileStore
+      .getState()
+      .recompile({ origin: "automatic" });
+    await vi.waitFor(() =>
+      expect(mocks.compileProject).toHaveBeenCalledOnce(),
+    );
+
+    await useCompileStore.getState().recompile({ origin: "explicit" });
+    await useCompileStore.getState().stopCompile();
+    first.resolve(compileFailure);
+    await running;
+    await new Promise((done) => setTimeout(done, 0));
+
+    expect(mocks.cancelCompile).toHaveBeenCalledOnce();
+    expect(mocks.compileProject).toHaveBeenCalledOnce();
+  });
+
+  it("drops an expired result and its queued rerun after a project switch", async () => {
+    const first = deferred<typeof compileFailure>();
+    mocks.compileProject.mockReturnValueOnce(first.promise);
+    const running = useCompileStore
+      .getState()
+      .recompile({ origin: "automatic" });
+    await vi.waitFor(() =>
+      expect(mocks.compileProject).toHaveBeenCalledOnce(),
+    );
+
+    await useCompileStore.getState().recompile({ origin: "explicit" });
+    mocks.files.projectId = "other-project";
+    first.resolve(compileFailure);
+    await running;
+    await new Promise((done) => setTimeout(done, 0));
+
+    expect(mocks.compileProject).toHaveBeenCalledOnce();
+    expect(useCompileStore.getState()).toMatchObject({
+      status: "idle",
+      phase: "idle",
+      failureReason: "The compile was superseded by a newer project revision.",
+    });
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(mocks.notifyError).not.toHaveBeenCalled();
+  });
+});
+
 describe("saving before a compile", () => {
   const failedResult = {
     ok: false,
@@ -1473,6 +1631,50 @@ describe("restore from the on-disk compile fingerprint", () => {
     expect(useCompileStore.getState().status).toBe("idle");
     expect(useCompileStore.getState().pdfBytes).toBeNull();
   });
+
+  it("rejects a verified PDF when the project changes before it is applied", async () => {
+    const pendingPdf = deferred<ArrayBuffer>();
+    mocks.validateCompileFingerprint.mockResolvedValue(validRecord());
+    mocks.readCompiledPdf.mockReturnValue(pendingPdf.promise);
+
+    const restoring = useCompileStore
+      .getState()
+      .restoreFromDisk("project", "main.tex");
+    await vi.waitFor(() =>
+      expect(mocks.readCompiledPdf).toHaveBeenCalledWith("project"),
+    );
+    mocks.files.projectId = "other-project";
+    pendingPdf.resolve(pdfBuffer());
+
+    await expect(restoring).resolves.toBe(false);
+    expect(useCompileStore.getState()).toMatchObject({
+      status: "idle",
+      pdfBytes: null,
+      lastCompileCheckpoint: null,
+    });
+  });
+
+  it.each([0, 1.5])(
+    "rejects a verified PDF with output revision %s",
+    async (outputRevision) => {
+      mocks.validateCompileFingerprint.mockResolvedValue({
+        ...validRecord(),
+        output_revision: outputRevision,
+      });
+      mocks.readCompiledPdf.mockResolvedValue(pdfBuffer());
+
+      await expect(
+        useCompileStore
+          .getState()
+          .restoreFromDisk("project", "main.tex"),
+      ).resolves.toBe(false);
+      expect(useCompileStore.getState()).toMatchObject({
+        status: "idle",
+        pdfBytes: null,
+        lastCompileCheckpoint: null,
+      });
+    },
+  );
 
   it("never overwrites an existing checkpoint", async () => {
     useCompileStore.setState({
@@ -2753,6 +2955,16 @@ describe("compile request identities", () => {
     expect(first).toMatchObject({ projectId: "project", mainDocument: "main.tex", projectRevision: 0 });
     expect(second).toMatchObject({ projectId: "other", mainDocument: "paper.tex", projectRevision: 0 });
     expect(second.requestGeneration).toBeGreaterThan(first.requestGeneration);
+  });
+
+  it("exposes the active project's current analysis revision", () => {
+    expect(compileProjectRevision("project")).toBe(0);
+    expect(compileProjectRevision("other")).toBe(0);
+
+    useProjectAnalysisStore.getState().setProjectRevision(4);
+
+    expect(compileProjectRevision("project")).toBe(4);
+    expect(compileProjectRevision("other")).toBe(0);
   });
 });
 

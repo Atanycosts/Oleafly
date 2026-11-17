@@ -17,6 +17,7 @@ import enResearchTools from "@/i18n/locales/en/researchTools.json" with { type: 
 import { taskFieldsSince047 } from "./tests/task-fixtures";
 import * as timelineBuilders from "./task-timeline";
 import type { AnnotationTarget, GroupSnapshot } from "@/lib/task-collaboration";
+import type { JournalAnnotationObject } from "@/lib/journal-workbench";
 import type { TaskAnnotationsProps } from "./TaskAnnotations";
 
 let TaskDetailDialog: typeof import("./TaskDetailDialog").TaskDetailDialog;
@@ -49,6 +50,7 @@ const previewMocks = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   approvals: vi.fn(),
   decide: vi.fn(),
+  notifyError: vi.fn(),
 }));
 
 vi.mock("@/lib/research-tasks", () => ({
@@ -77,6 +79,7 @@ vi.mock("@/lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tauri")>()),
   getConfig: previewMocks.config,
 }));
+vi.mock("@/lib/toast", () => ({ notifyError: previewMocks.notifyError }));
 
 vi.mock("@/components/editor/diff/InlineDiffPreview", () => ({
   InlineDiffPreview: ({ oldText, newText }: { oldText: string; newText: string }) => (
@@ -94,13 +97,21 @@ vi.mock("@/lib/material-annotations", async (original) => ({ ...await original<t
 const htmlPreview = vi.hoisted(() => ({ read: vi.fn(), close: vi.fn() }));
 vi.mock("@/lib/notebook-commands", () => ({ readTaskHtmlPreview: htmlPreview.read, closeHtmlPreview: htmlPreview.close }));
 vi.mock("@/store/material-viewer", () => ({ useMaterialViewerStore: { getState: () => materialViewer } }));
-vi.mock("@/lib/journal-workbench", () => ({ loadJournalTarget: journalReference.load }));
+vi.mock(import("@/lib/journal-workbench"), async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/journal-workbench")>(),
+  loadJournalTarget: journalReference.load,
+}));
 vi.mock("@/lib/pdf-selection", () => ({ loadTaskPdfSelection: annotationMocks.pdf }));
 vi.mock("./TaskPdfSelection", () => ({ TaskPdfSelection: ({ taskId, openOriginal }: { taskId: string; openOriginal?: boolean }) => <div data-testid="mock-task-pdf" data-task={taskId} data-open-original={String(openOriginal)} /> }));
 vi.mock("./TaskAnnotations", () => ({
   TaskAnnotations: (props: TaskAnnotationsProps) => { annotationMocks.props = props; return null; },
 }));
-vi.mock("@/lib/task-collaboration", () => ({ loadTaskGroup: annotationMocks.group, loadTaskGroupMessage: annotationMocks.message, loadTaskAnnotations: annotationMocks.annotations }));
+vi.mock(import("@/lib/task-collaboration"), async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/task-collaboration")>(),
+  loadTaskGroup: annotationMocks.group,
+  loadTaskGroupMessage: annotationMocks.message,
+  loadTaskAnnotations: annotationMocks.annotations,
+}));
 
 const markdownDraws = vi.hoisted(() => ({ texts: [] as string[] }));
 
@@ -261,6 +272,54 @@ function props(current: ResearchTask, onCancel = vi.fn(async () => {})) {
   };
 }
 
+function retainedJournalSource(
+  target: AnnotationTarget,
+  sourceText: string,
+): JournalAnnotationObject {
+  const identity = JSON.parse(target.objectId) as {
+    libraryRoot: string;
+    manuscriptId: string;
+    id: string;
+  };
+  return {
+    reference: {
+      libraryRoot: identity.libraryRoot,
+      workbenchProjectId: identity.manuscriptId,
+      kind: "source",
+      objectId: identity.id,
+      worldVersionId: target.objectRevision ?? "",
+      checkId: null,
+    },
+    target,
+    source: {
+      kind: "journal_object",
+      content: JSON.stringify({ object: { text: sourceText } }),
+    },
+    relatedTasks: [],
+    continuationTaskId: null,
+  };
+}
+
+function encodedJournalSourceTarget(
+  projectId: string,
+  taskId: string,
+  objectId: string,
+  objectRevision: string,
+): AnnotationTarget {
+  return {
+    projectId,
+    taskId,
+    objectKind: "journal_source",
+    objectId: JSON.stringify({
+      libraryRoot: "/retained/library",
+      manuscriptId: "manuscript",
+      id: objectId,
+    }),
+    objectRevision,
+    path: null,
+  };
+}
+
 function observedRun(id: string): TaskObservationView {
   const row = (sequence: number, event: TaskRuntimeEvent) => ({ taskId: id, executionGeneration: 1, sequence, event, createdAt: sequence });
   return {
@@ -282,6 +341,7 @@ describe("TaskDetailDialog", () => {
   beforeEach(() => {
     materialViewer.open.mockReset();
     retainedMaterial.read.mockReset();
+    journalReference.load.mockReset();
     htmlPreview.read.mockReset();
     htmlPreview.close.mockReset().mockResolvedValue(undefined);
     previewMocks.file.mockReset();
@@ -307,6 +367,7 @@ describe("TaskDetailDialog", () => {
     previewMocks.cancelRun.mockReset();
     previewMocks.approvals.mockReset().mockResolvedValue([]);
     previewMocks.decide.mockReset();
+    previewMocks.notifyError.mockReset();
   });
 
   afterEach(() => cleanup());
@@ -413,6 +474,47 @@ describe("TaskDetailDialog", () => {
     expect(within(original).queryByText("guide:page-4")).not.toBeInTheDocument();
     expect(journalReference.load).toHaveBeenCalledExactlyOnceWith(target);
     expect(previewMocks.referencedEvents).not.toHaveBeenCalled();
+  });
+
+  it("keeps the newest retained journal reference when an older lookup finishes late", async () => {
+    const current = task("journal-reference-race");
+    const older = deferred<JournalAnnotationObject>();
+    const olderTarget = encodedJournalSourceTarget(
+      current.projectId,
+      current.id,
+      "older-source",
+      "world-old",
+    );
+    const newerTarget = encodedJournalSourceTarget(
+      current.projectId,
+      current.id,
+      "newer-source",
+      "world-current",
+    );
+    journalReference.load
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce(retainedJournalSource(newerTarget, "Newest retained instruction"));
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenTarget).toBeDefined());
+
+    act(() => {
+      annotationMocks.props?.onOpenTarget?.(olderTarget);
+    });
+    await waitFor(() => expect(journalReference.load).toHaveBeenCalledExactlyOnceWith(olderTarget));
+    act(() => {
+      annotationMocks.props?.onOpenTarget?.(newerTarget);
+    });
+
+    const source = page().getByTestId("task-annotation-source");
+    expect(await within(source).findByText("Newest retained instruction")).toBeInTheDocument();
+    await act(async () => {
+      older.resolve(retainedJournalSource(olderTarget, "Stale retained instruction"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(within(source).getByText("Newest retained instruction")).toBeInTheDocument();
+    expect(within(source).queryByText("Stale retained instruction")).not.toBeInTheDocument();
+    expect(journalReference.load.mock.calls.map(([target]) => target)).toEqual([olderTarget, newerTarget]);
   });
 
   it.each([
@@ -670,6 +772,36 @@ describe("TaskDetailDialog", () => {
     fireEvent.click(page().getByRole("button", { name: earlier }));
     expect(await page().findByText("Generation 1 notes")).toBeInTheDocument();
     expect(page().queryByRole("button", { name: earlier })).not.toBeInTheDocument();
+  });
+
+  it("keeps keep-running available for retry after saving it fails", async () => {
+    const current = {
+      ...task("keep-running-retry"),
+      status: "running" as const,
+      result: null,
+      keepRunningAfterQuit: false,
+    };
+    const failure = new Error("The setting could not be saved");
+    previewMocks.keepRunning
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(undefined);
+    render(<TaskDetailDialog {...props(current)} />);
+    const keep = page().getByRole("checkbox", { name: new RegExp(enResearchTools.brief.keepRunning) });
+    await waitFor(() => expect(keep).toBeEnabled());
+
+    fireEvent.click(keep);
+
+    await waitFor(() => expect(previewMocks.notifyError).toHaveBeenCalledWith(
+      "research-task-keep-running",
+      failure,
+      enResearchTools.backgroundHelper.keepRunningFailed,
+    ));
+    await waitFor(() => expect(keep).toBeEnabled());
+    fireEvent.click(keep);
+    await waitFor(() => expect(previewMocks.keepRunning.mock.calls).toEqual([
+      [current.id, true],
+      [current.id, true],
+    ]));
   });
 
   it("drops the earlier activity it loaded when the task starts another run", async () => {
