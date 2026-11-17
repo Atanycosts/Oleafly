@@ -1615,7 +1615,7 @@ describe("live DOCX format, save and template tools", () => {
   it("keeps a pending task format read on its own snapshot across a same-revision save", async () => {
     const local = harness();
     local.edit("p1", "Revision one.");
-    let finishRead!: (result: ReturnType<typeof readableFormat>) => void;
+    let finishRead!: (result: Awaited<ReturnType<NonNullable<DocxAgentRegistration["readFormat"]>>>) => void;
     const readFormat = vi.fn<NonNullable<DocxAgentRegistration["readFormat"]>>(
       () => new Promise((resolve) => { finishRead = resolve; }),
     );

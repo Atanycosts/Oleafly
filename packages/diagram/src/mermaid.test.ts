@@ -192,6 +192,9 @@ interface DbVertex {
   text: string;
   type?: string;
   icon?: string;
+  pos?: string;
+  constraint?: string;
+  classes?: string[];
   styles?: string[];
 }
 interface DbEdge {
@@ -204,16 +207,22 @@ interface DbEdge {
   type?: string;
   style?: string[];
   length?: number;
+  interpolate?: string;
 }
 interface DbSubgraph {
   id: string;
   title: string;
   nodes: string[];
 }
+interface DbClass {
+  id: string;
+  styles: string[];
+}
 interface FlowDb {
   getVertices(): Map<string, DbVertex>;
   getEdges(): DbEdge[];
   getSubGraphs(): DbSubgraph[];
+  getClasses(): Map<string, DbClass>;
   getDirection(): string;
 }
 
@@ -751,6 +760,7 @@ describe("hand-written code survives canvas edits", () => {
     expect(ourDb(read(out).model)).toEqual(oracle);
     expect(direction).toBe("TB");
     const roundTrip = readMermaid(out, { hint: edited }).model;
+    if (!roundTrip) throw new Error("Edited Mermaid did not produce a model");
     expect(roundTrip.edges).toEqual(edited.edges);
     expect([...roundTrip.nodes].sort((a, b) => a.id.localeCompare(b.id))).toEqual(
       [...edited.nodes].sort((a, b) => a.id.localeCompare(b.id)),
@@ -1386,5 +1396,236 @@ describe("reader and writer edge inputs", () => {
       edges: m.edges.filter((e) => e.source !== "B"),
     };
     expect(modelToMermaid(edited, { extras })).toBe("flowchart TD\nA --> B\nC\n  Z[Zed]");
+  });
+});
+
+interface ParserRoundTripCase {
+  name: string;
+  source: string;
+  edit: (m: DiagramModel) => DiagramModel;
+  direction: string;
+  notes: string[];
+  verify: (db: FlowDb) => unknown;
+  expected: unknown;
+}
+
+const PARSER_ROUND_TRIPS: ParserRoundTripCase[] = [
+  {
+    name: "preserves a solid link with circle heads",
+    source: ["flowchart LR", "  A o--o B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "round" }),
+    direction: "LR",
+    notes: ["approximated:mermaidArrowHead"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "round", type: "double_arrow_circle", stroke: "normal", length: 1 },
+  },
+  {
+    name: "preserves a solid link with cross heads",
+    source: ["flowchart LR", "  A x--x B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "blocked" }),
+    direction: "LR",
+    notes: ["approximated:mermaidArrowHead"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "blocked", type: "double_arrow_cross", stroke: "normal", length: 1 },
+  },
+  {
+    name: "preserves a dotted link with cross heads",
+    source: ["flowchart LR", "  A x-.-x B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "rejected" }),
+    direction: "LR",
+    notes: ["approximated:mermaidArrowHead"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "rejected", type: "double_arrow_cross", stroke: "dotted", length: 1 },
+  },
+  {
+    name: "preserves a thick link with arrow heads",
+    source: ["flowchart LR", "  A <==> B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "fast" }),
+    direction: "LR",
+    notes: ["approximated:mermaidThickLink"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "fast", type: "double_arrow_point", stroke: "thick", length: 1 },
+  },
+  {
+    name: "preserves a long dotted link",
+    source: ["flowchart LR", "  A -...-> B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "retry" }),
+    direction: "LR",
+    notes: ["kept:mermaidLinkLength"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "retry", type: "arrow_point", stroke: "dotted", length: 3 },
+  },
+  {
+    name: "preserves a quoted pipe label while editing its separators",
+    source: ["flowchart LR", '  A -->|"left | right, stay"| B'].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "left | right; edited" }),
+    direction: "LR",
+    notes: [],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke };
+    },
+    expected: { text: "left | right; edited", type: "arrow_point", stroke: "normal" },
+  },
+  {
+    name: "preserves data shape and position while relabelling",
+    source: [
+      "flowchart LR",
+      '  A@{ shape: diam, label: "Choice", pos: "b" }',
+      "  A --> B",
+    ].join("\n"),
+    edit: (m) => patchNode(m, "A", { label: "Decision" }),
+    direction: "LR",
+    notes: ["kept:mermaidNodeSetting:pos"],
+    verify: (db) => {
+      const vertex = db.getVertices().get("A");
+      return { text: vertex?.text, type: vertex?.type, pos: vertex?.pos };
+    },
+    expected: { text: "Decision", type: "diam", pos: "b" },
+  },
+  {
+    name: "preserves an approximated data shape and its constraint",
+    source: [
+      "flowchart LR",
+      '  A@{ shape: sm-circ, label: "Start", constraint: "on" }',
+      "  A --> B",
+    ].join("\n"),
+    edit: (m) => patchNode(m, "A", { label: "Begin" }),
+    direction: "LR",
+    notes: ["approximated:mermaidShape:sm-circ", "kept:mermaidNodeSetting:constraint"],
+    verify: (db) => {
+      const vertex = db.getVertices().get("A");
+      return { text: vertex?.text, type: vertex?.type, constraint: vertex?.constraint };
+    },
+    expected: { text: "Begin", type: "sm-circ", constraint: "on" },
+  },
+  {
+    name: "preserves class definitions and assignments while relabelling",
+    source: [
+      "flowchart LR",
+      "  classDef warm fill:#fee2e2,stroke:#991b1b,rx:6",
+      "  A[Start] --> B[End]",
+      "  class A,B warm",
+    ].join("\n"),
+    edit: (m) => patchNode(m, "A", { label: "Begin" }),
+    direction: "LR",
+    notes: ["kept:mermaidClassProperty:rx"],
+    verify: (db) => ({
+      definition: db.getClasses().get("warm")?.styles,
+      a: db.getVertices().get("A")?.classes,
+      b: db.getVertices().get("B")?.classes,
+    }),
+    expected: {
+      definition: ["fill:#fee2e2", "stroke:#991b1b", "rx:6"],
+      a: ["warm"],
+      b: ["warm"],
+    },
+  },
+  {
+    name: "updates mapped style properties and retains unknown style properties",
+    source: ["flowchart LR", "  A --> B", "  style A fill:#fef3c7,opacity:0.4"].join("\n"),
+    edit: (m) => patchNode(m, "A", { fill: "#fde68a" }),
+    direction: "LR",
+    notes: ["kept:mermaidStyleProperty:opacity"],
+    verify: (db) => db.getVertices().get("A")?.styles,
+    expected: ["fill:#fde68a", "opacity:0.4"],
+  },
+  {
+    name: "preserves interpolated link style properties while relabelling",
+    source: [
+      "flowchart LR",
+      "  A --> B",
+      "  B --> C",
+      "  linkStyle 1 interpolate basis stroke:#2563eb,stroke-width:2px",
+    ].join("\n"),
+    edit: (m) => patchEdge(m, "B", "C", { label: "second" }),
+    direction: "LR",
+    notes: [
+      "kept:mermaidLinkStyleProperty:interpolate",
+      "kept:mermaidLinkStyleProperty:stroke",
+      "kept:mermaidLinkStyleProperty:stroke-width",
+    ],
+    verify: (db) => {
+      const edge = db.getEdges()[1];
+      return {
+        text: decodeDb(edge.text),
+        interpolate: edge.interpolate,
+        style: edge.style?.filter((prop) => !prop.startsWith("fill:")),
+      };
+    },
+    expected: {
+      text: "second",
+      interpolate: "basis",
+      style: ["stroke:#2563eb", "stroke-width:2px"],
+    },
+  },
+  {
+    name: "drops a deleted node from class assignments",
+    source: [
+      "flowchart LR",
+      "  classDef hot fill:#fecaca",
+      "  A --> B",
+      "  B --> C",
+      "  class A,B,C hot",
+    ].join("\n"),
+    edit: (m) => ({
+      ...m,
+      nodes: m.nodes.filter((n) => n.id !== "B"),
+      edges: m.edges.filter((e) => e.source !== "B" && e.target !== "B"),
+    }),
+    direction: "LR",
+    notes: [],
+    verify: (db) => ({
+      definition: db.getClasses().get("hot")?.styles,
+      a: db.getVertices().get("A")?.classes,
+      b: db.getVertices().get("B")?.classes,
+      c: db.getVertices().get("C")?.classes,
+    }),
+    expected: {
+      definition: ["fill:#fecaca"],
+      a: ["hot"],
+      b: undefined,
+      c: ["hot"],
+    },
+  },
+];
+
+describe("real Mermaid hand-written parser round trips", () => {
+  it.each(PARSER_ROUND_TRIPS)("$name", async ({ source, edit, direction, notes, verify, expected }) => {
+    expect(await mermaidParse(source)).toBe(true);
+    const parsedSource = read(source);
+    expect(codes(parsedSource.notes)).toEqual(expect.arrayContaining(notes));
+
+    const edited = edit(parsedSource.model);
+    const out = modelToMermaid(edited, { extras: parsedSource.extras });
+    expect(await mermaidParse(out)).toBe(true);
+    expect(verify(await loadMermaidDb(out))).toEqual(expected);
+    const normalized = read(out);
+    expect(codes(normalized.notes)).toEqual(expect.arrayContaining(notes));
+
+    const { direction: oracleDirection, ...oracle } = await mermaidDb(out);
+    expect(ourDb(normalized.model)).toEqual(oracle);
+    expect(oracleDirection).toBe(direction);
+
+    const roundTrip = readMermaid(out, { hint: edited }).model;
+    expect(roundTrip?.edges).toEqual(edited.edges);
+    expect([...(roundTrip?.nodes ?? [])].sort((a, b) => a.id.localeCompare(b.id))).toEqual(
+      [...edited.nodes].sort((a, b) => a.id.localeCompare(b.id)),
+    );
   });
 });
