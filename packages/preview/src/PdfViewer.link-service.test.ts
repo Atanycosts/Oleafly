@@ -11,6 +11,7 @@ let calculatePdfFitScale: typeof import("./PdfViewer").calculatePdfFitScale;
 let prioritizePdfPages: typeof import("./PdfViewer").prioritizePdfPages;
 let selectCurrentPdfPage: typeof import("./PdfViewer").selectCurrentPdfPage;
 
+// The real pdf.js ESM import exceeded 10 seconds on the shared Windows runner.
 beforeAll(async () => {
   // pdf.js creates these browser primitives while its ESM bundle evaluates.
   // The link-service test does not exercise canvas operations, so lightweight
@@ -25,7 +26,7 @@ beforeAll(async () => {
     prioritizePdfPages,
     selectCurrentPdfPage,
   } = await import("./PdfViewer"));
-});
+}, 30_000);
 
 afterEach(() => {
   vi.restoreAllMocks();
