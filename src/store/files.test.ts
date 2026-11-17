@@ -1197,6 +1197,81 @@ describe("closeProject", () => {
   });
 });
 
+describe("disk reloads that finish after a project transition", () => {
+  function deferredRead() {
+    let resolve!: (content: string) => void;
+    const read = new Promise<string>((finish) => {
+      resolve = finish;
+    });
+    mocks.readFileContent.mockImplementationOnce(() => read);
+    return { resolve };
+  }
+
+  function openMain() {
+    useFilesStore.setState({
+      projectId: "project",
+      projectName: "Paper",
+      files: { "main.tex": { content: "old\n", dirty: false } },
+      openTabs: ["main.tex"],
+      activePath: "main.tex",
+    });
+  }
+
+  it("keeps a dirty buffer after the same project closes and reopens", async () => {
+    openMain();
+    primeOpen();
+    const read = deferredRead();
+    const reload = useFilesStore.getState().reloadFromDisk("main.tex");
+
+    await useFilesStore.getState().closeProject();
+    mocks.getProject.mockResolvedValue({
+      ...META,
+      id: "project",
+      name: "Reopened",
+    });
+    await useFilesStore.getState().openProject("project");
+    useFilesStore.setState((state) => ({
+      files: {
+        ...state.files,
+        "main.tex": { content: "fresh mine\n", dirty: true },
+      },
+    }));
+
+    read.resolve("stale disk text\n");
+    await reload;
+
+    expect(useFilesStore.getState()).toMatchObject({
+      projectId: "project",
+      projectName: "Reopened",
+      files: { "main.tex": { content: "fresh mine\n", dirty: true } },
+    });
+  });
+
+  it("keeps the new project's dirty buffer when another project opens", async () => {
+    openMain();
+    primeOpen();
+    const read = deferredRead();
+    const reload = useFilesStore.getState().reloadFromDisk("main.tex");
+
+    await useFilesStore.getState().openProject("opened");
+    useFilesStore.setState((state) => ({
+      files: {
+        ...state.files,
+        "main.tex": { content: "new project mine\n", dirty: true },
+      },
+    }));
+
+    read.resolve("stale project disk text\n");
+    await reload;
+
+    expect(useFilesStore.getState()).toMatchObject({
+      projectId: "opened",
+      projectName: "Opened",
+      files: { "main.tex": { content: "new project mine\n", dirty: true } },
+    });
+  });
+});
+
 describe("setContent", () => {
   it("never marks a file the backend manages as dirty", () => {
     useFilesStore.setState({
@@ -1872,6 +1947,86 @@ describe("folder listings that stop early", () => {
     await useFilesStore.getState().refreshTree();
     expect(useFilesStore.getState().tree).toEqual(WITH_BIB);
     expect(useFilesStore.getState().treeTruncated).toBe(false);
+  });
+
+  it("keeps the newer tree when same-project refreshes finish out of order", async () => {
+    const oldTree = [{ path: "old.tex", is_dir: false }];
+    const newTree = [{ path: "new.tex", is_dir: false }];
+    let resolveOld!: (listing: { entries: typeof oldTree; truncated: boolean }) => void;
+    let resolveNew!: (listing: { entries: typeof newTree; truncated: boolean }) => void;
+    const oldListing = new Promise<{ entries: typeof oldTree; truncated: boolean }>((resolve) => {
+      resolveOld = resolve;
+    });
+    const newListing = new Promise<{ entries: typeof newTree; truncated: boolean }>((resolve) => {
+      resolveNew = resolve;
+    });
+    mocks.listFileTree.mockImplementationOnce(() => oldListing);
+    mocks.listFileTree.mockImplementationOnce(() => newListing);
+
+    const oldRefresh = useFilesStore.getState().refreshTree();
+    const newRefresh = useFilesStore.getState().refreshTree();
+    resolveNew({ entries: newTree, truncated: false });
+    await expect(newRefresh).resolves.toBe(true);
+    expect(useFilesStore.getState().tree).toEqual(newTree);
+
+    resolveOld({ entries: oldTree, truncated: false });
+    await expect(oldRefresh).resolves.toBe(false);
+    expect(useFilesStore.getState().tree).toEqual(newTree);
+  });
+
+  it("ignores a late failure from a superseded same-project refresh", async () => {
+    const missing = `@oleafly/error:${JSON.stringify({
+      code: "project.linked_missing",
+      params: { folder: "project" },
+      detail: null,
+    })}`;
+    let rejectOld!: (error: unknown) => void;
+    const oldListing = new Promise((_resolve, reject) => {
+      rejectOld = reject;
+    });
+    mocks.listFileTree
+      .mockImplementationOnce(() => oldListing)
+      .mockResolvedValueOnce({ entries: WITH_BIB, truncated: false });
+    useProjectAvailabilityStore.getState().reset("project");
+
+    const oldRefresh = useFilesStore.getState().refreshTree();
+    const newRefresh = useFilesStore.getState().refreshTree();
+    await expect(newRefresh).resolves.toBe(true);
+    rejectOld(missing);
+
+    await expect(oldRefresh).resolves.toBe(false);
+    expect(useProjectAvailabilityStore.getState().availability).toBe("ok");
+    expect(useFilesStore.getState().tree).toEqual(WITH_BIB);
+  });
+
+  it("ignores a refresh from before the same project closes and reopens", async () => {
+    let resolveOld!: (listing: { entries: typeof MAIN_ONLY; truncated: boolean }) => void;
+    const oldListing = new Promise<{ entries: typeof MAIN_ONLY; truncated: boolean }>(
+      (resolve) => {
+        resolveOld = resolve;
+      },
+    );
+    mocks.listFileTree.mockImplementationOnce(() => oldListing);
+
+    const oldRefresh = useFilesStore.getState().refreshTree();
+    await useFilesStore.getState().closeProject();
+    primeOpen();
+    mocks.listFiles.mockResolvedValue(WITH_BIB);
+    mocks.getProject.mockResolvedValue({
+      ...META,
+      id: "project",
+      name: "Reopened",
+    });
+    await useFilesStore.getState().openProject("project");
+    expect(useFilesStore.getState().tree).toEqual(WITH_BIB);
+
+    resolveOld({ entries: MAIN_ONLY, truncated: false });
+    await expect(oldRefresh).resolves.toBe(false);
+    expect(useFilesStore.getState()).toMatchObject({
+      projectId: "project",
+      projectName: "Reopened",
+      tree: WITH_BIB,
+    });
   });
 
   it("keeps unreadable entries in the tree", async () => {
@@ -2720,6 +2875,54 @@ describe("creating and renaming projects", () => {
 
     expect(mocks.renameProjectCmd).toHaveBeenCalledWith("project", "Renamed");
     expect(useFilesStore.getState().projectName).toBe("Renamed");
+  });
+
+  it("does not rename a project that opens while the command is pending", async () => {
+    primeOpen();
+    let resolveRename!: (meta: ProjectMeta) => void;
+    const rename = new Promise<ProjectMeta>((resolve) => {
+      resolveRename = resolve;
+    });
+    mocks.renameProjectCmd.mockImplementationOnce(() => rename);
+
+    const pendingRename = useFilesStore.getState().renameProject("Renamed");
+    await useFilesStore.getState().openProject("opened");
+    resolveRename({ ...META, name: "Stale rename" });
+    await pendingRename;
+
+    expect(useFilesStore.getState()).toMatchObject({
+      projectId: "opened",
+      projectName: "Opened",
+    });
+  });
+
+  it("does not rename a project after the same ID is closed and reopened", async () => {
+    let resolveRename!: (meta: ProjectMeta) => void;
+    const rename = new Promise<ProjectMeta>((resolve) => {
+      resolveRename = resolve;
+    });
+    mocks.renameProjectCmd.mockImplementationOnce(() => rename);
+
+    const pendingRename = useFilesStore.getState().renameProject("Renamed");
+    await useFilesStore.getState().closeProject();
+    primeOpen();
+    mocks.getProject.mockResolvedValue({
+      ...META,
+      id: "project",
+      name: "Reopened",
+    });
+    await useFilesStore.getState().openProject("project");
+    resolveRename({
+      ...META,
+      id: "project",
+      name: "Stale rename",
+    });
+    await pendingRename;
+
+    expect(useFilesStore.getState()).toMatchObject({
+      projectId: "project",
+      projectName: "Reopened",
+    });
   });
 
   it("does not rename without an open project", async () => {

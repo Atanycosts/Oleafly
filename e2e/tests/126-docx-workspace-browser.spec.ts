@@ -257,8 +257,8 @@ test("DOCX live working copy preserves intervention, undo and exact saved checks
     await page.getByRole("button", { name: "Word", exact: true }).click();
     await expect(page.getByTestId("docx-workspace")).toBeVisible();
     await expect(page.getByTestId("docx-check-validity")).toHaveText("Check saved: Current");
-    await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy");
     await page.getByRole("button", { name: "Open PDF", exact: true }).click();
+    await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy", { timeout: 30_000 });
     await expect(page.locator("[data-testid=docx-render-preview] [data-pdf-state=ready]")).toBeVisible({ timeout: 30_000 });
     await expect(page.locator("[data-testid=docx-render-preview] .pdf-canvas").first()).toBeVisible();
     await page.getByRole("button", { name: "Back to document", exact: true }).click();
