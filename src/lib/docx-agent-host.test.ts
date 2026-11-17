@@ -792,7 +792,7 @@ describe("live DOCX format, save and template tools", () => {
 
   it("reports a failed ordinary object format without claiming the working copy changed", async () => {
     const local = harness();
-    local.session.formatObject = vi.fn(() => ({ ok: false as const, changed: false,
+    local.session.formatObject = vi.fn<NonNullable<DocxSession["formatObject"]>>(() => ({ ok: false, changed: false,
       revision: 0, code: "transaction-refused", message: "The document is open for viewing." }));
     register(local.session);
     expect(await createDocxAgentTools().apply_docx_format.execute({

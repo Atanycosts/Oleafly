@@ -5,7 +5,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { DocxEditorRef } from "@docx-editor.dev/react";
 import { WordDocument, type WordDocumentRef } from "./WordDocument";
 
-const engine = vi.hoisted(() => ({ editor: null as ReturnType<DocxEditorRef["getEditor"]>, rootProps: vi.fn() }));
+type SavedEditor = Pick<NonNullable<ReturnType<DocxEditorRef["getEditor"]>>, "save">;
+const engine = vi.hoisted(() => ({ editor: null as SavedEditor | null, rootProps: vi.fn() }));
 
 vi.mock("@docx-editor.dev/react", () => ({
   useDocxEditor: () => engine.editor,
@@ -33,14 +34,14 @@ it("provides the public ref before the engine is ready and refreshes it when the
   await expect(ref.current?.save()).resolves.toBeNull();
   const saved = new Uint8Array([80, 75]).buffer;
   const save = vi.fn(async () => saved);
-  engine.editor = { save } as NonNullable<typeof engine.editor>;
+  engine.editor = { save };
   rendered.rerender(<WordDocument ref={ref} title={title} />);
   expect(ref.current?.getEditor()).toBe(engine.editor);
   await expect(ref.current?.save()).resolves.toBe(saved);
   expect(save).toHaveBeenCalledOnce();
   const failure = new Error("Working document could not be serialized");
-  const nextSave = vi.fn().mockRejectedValue(failure);
-  engine.editor = { save: nextSave } as NonNullable<typeof engine.editor>;
+  const nextSave = vi.fn<SavedEditor["save"]>().mockRejectedValue(failure);
+  engine.editor = { save: nextSave };
   rendered.rerender(<WordDocument ref={ref} title={title} />);
   await expect(ref.current?.save()).rejects.toBe(failure);
   expect(save).toHaveBeenCalledOnce();
