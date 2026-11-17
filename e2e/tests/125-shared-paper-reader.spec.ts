@@ -7,11 +7,45 @@ import { createBlankProject, fillTextarea, openRailTab, setEditorContent, waitLo
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 
-type Message = { role: string; content: unknown };
+type ToolCall = { id?: string; function?: { name?: string } };
+type Message = {
+  role: string;
+  content: unknown;
+  tool_call_id?: string;
+  tool_calls?: ToolCall[];
+};
+type CompileToolResult = { value: Record<string, unknown> | null; excerpt: string };
 const MODEL = "gpt/gpt-6.1-sol";
 const PROVIDER = "shared-paper-fixture";
+const COMPILE_ARTIFACT_MISSING = "SHARED_PAPER_COMPILE_ARTIFACT_MISSING";
 const ORIGINAL = "\\documentclass{article}\n\\begin{document}\nValidation is an independent test.\n\\end{document}\n";
 const REVISED = "\\documentclass{article}\n\\begin{document}\nValidation selects the model; test data stay held out. A change from 92 to 91 is a decrease.\n\\end{document}\n";
+
+function compileToolResult(request: Record<string, unknown>): CompileToolResult | null {
+  const messages = request.messages as Message[];
+  const compileCallIds = new Set(messages.flatMap((message) =>
+    message.role === "assistant" && Array.isArray(message.tool_calls)
+      ? message.tool_calls
+        .filter((call) => call.function?.name === "compile" || call.function?.name === "task_compile")
+        .map((call) => call.id)
+        .filter((id): id is string => typeof id === "string")
+      : [],
+  ));
+  const message = [...messages].reverse().find((candidate) =>
+    candidate.role === "tool"
+    && typeof candidate.tool_call_id === "string"
+    && compileCallIds.has(candidate.tool_call_id)
+    && typeof candidate.content === "string",
+  );
+  if (!message || typeof message.content !== "string") return null;
+  try {
+    const value = JSON.parse(message.content) as Record<string, unknown>;
+    const excerpt = JSON.stringify(value, null, 2).slice(0, 12_000);
+    return { value, excerpt };
+  } catch {
+    return { value: null, excerpt: message.content.slice(0, 12_000) };
+  }
+}
 
 function toolResult<T>(request: Record<string, unknown>, field: string): T {
   for (const message of [...request.messages as Message[]].reverse()) {
@@ -88,22 +122,37 @@ test("ordinary chat reads retained paper windows, revises, compiles and reopens 
     await waitLong(page, `!!document.querySelector('[data-pdf-scroll-root] canvas')`, 30_000);
     const manuscriptText = () => page.evaluate<string>(`window.__oleaflyE2EImport('/src/components/pdf/pdfController.ts').then(async m => (await m.pdfPageText(1))?.map(run => run.str).join(' ') ?? '')`);
     expect(await manuscriptText()).toContain("test data stay held out");
-    await page.evaluate(`document.querySelector('[data-tool-name="read_paper"] > button[aria-expanded="false"]')?.click()`);
-    await page.getByText("Open retained PDF", { exact: true }).click();
-    const preview = page.locator('[data-testid="retained-paper-preview"]');
-    await expect(preview).toContainText(first!.pdfReference.pdfSha256);
-    await expect(preview.locator("canvas").first()).toBeVisible({ timeout: 30_000 });
-    expect(await manuscriptText()).toContain("test data stay held out");
-    await page.screenshot({ path: testInfo.outputPath("retained-paper-preview.png") });
-    await page.press("body", "Escape");
-    await expect(preview).toHaveCount(0);
+    const reference = first!.pdfReference;
+    const paperCard = page.locator('[data-tool-name="read_paper"]').first();
+    const header = paperCard.locator('button[aria-expanded]').first();
+    if (await header.getAttribute("aria-expanded") === "false") await header.click();
+    await paperCard.getByRole("button", { name: "Open retained PDF", exact: true }).click();
+    const viewer = page.locator('[data-testid="workspace-material-surface"]:not([hidden]) [data-testid="retained-material-viewer"]');
+    await expect(viewer).toBeVisible({ timeout: 30_000 });
+    await expect(viewer).toContainText(reference.path);
+    await expect.poll(() => page.evaluate<{ kind: string; revision: string } | null>(
+      `window.__oleaflyE2EImport('/src/store/material-viewer.ts').then(m => {
+        const request = m.useMaterialViewerStore.getState().request;
+        return request ? { kind: request.kind, revision: request.revision } : null;
+      })`,
+    )).toEqual({ kind: "pdf", revision: reference.pdfSha256 });
+    await expect.poll(() => page.evaluate<boolean>(`(() => {
+      const viewer = document.querySelector('[data-testid="workspace-material-surface"]:not([hidden]) [data-testid="retained-material-viewer"]');
+      return !!viewer
+        && !!viewer.querySelector('[data-pdf-scroll-root] canvas[width][height]')
+        && !viewer.closest('[role="dialog"], [role="alertdialog"]');
+    })()`), { timeout: 45_000 }).toBe(true);
+    await waitLong(page, `!![...document.querySelectorAll('[data-testid="workspace-material-surface"] .textLayer span')].find(node => node.textContent.includes('VALIDATION_SOURCE_FIRST'))`, 30_000);
+    await page.screenshot({ path: testInfo.outputPath("retained-paper-material-viewer.png") });
+    await viewer.getByRole("button", { name: "Close material", exact: true }).click();
+    await expect(viewer).toHaveCount(0);
     expect(await manuscriptText()).toContain("test data stay held out");
     const mismatch = await page.evaluate<string>(`window.__oleaflyE2EImport('/src/lib/research-literature.ts').then(async m => { try { await m.readRetainedPaperPdf(${scriptValue({ ...first!.pdfReference, pdfSha256: "0".repeat(64) })}); return 'unexpected success'; } catch (error) { return String(error); } })`);
     expect(mismatch).toContain("no longer matches");
   } finally { await server.close(); }
 });
 
-test("single task and task group share the paper reader and retain compiled results without applying to the author project", async ({ tauriPage: page }) => {
+test("single task and task group share the paper reader and retain compiled results without applying to the author project", async ({ tauriPage: page }, testInfo) => {
   test.setTimeout(300_000);
   const server = await startMockAiServer();
   try {
@@ -129,9 +178,8 @@ test("single task and task group share the paper reader and retain compiled resu
         { name: "compile", args: {} },
         { name: "discover_tools", args: { query: "task_pdf_text" } },
         { name: "task_pdf_text", args: (request: Record<string, unknown>) => {
-          const { artifact } = toolResult<{ artifact: TaskCompiledArtifact }>(request, "artifact");
-          references.push(artifact);
-          return { reference: artifact };
+          const artifact = compileToolResult(request)?.value?.artifact as TaskCompiledArtifact | undefined;
+          return artifact ? { reference: artifact } : { error: COMPILE_ARTIFACT_MISSING };
         } },
       ];
       server.setResponder((request) => {
@@ -148,7 +196,18 @@ test("single task and task group share the paper reader and retain compiled resu
       })()`);
       await waitLong(page, `window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m => ['awaiting_review', 'failed'].includes((await m.listResearchTasks(${scriptValue(projectId)})).find(t => t.id === ${scriptValue(task.id)})?.status))`, 150_000);
       const settled = await page.evaluate<ResearchTask>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m => (await m.listResearchTasks(${scriptValue(projectId)})).find(t => t.id === ${scriptValue(task.id)}))`);
-      expect(settled.status, settled.error ?? "task status").toBe("awaiting_review");
+      const taskRequests = server.requestBodies().map(body => JSON.parse(body) as Record<string, unknown>);
+      const compile = compileToolResult(taskRequests.at(-1)!);
+      if (compile) {
+        await testInfo.attach(`shared-paper-compile-result-${group ? "group" : "single"}`, {
+          body: compile.excerpt,
+          contentType: "text/plain",
+        });
+      }
+      expect(settled.status, [settled.error ?? "task status", compile?.excerpt].filter(Boolean).join("\n\n")).toBe("awaiting_review");
+      const artifact = compile?.value?.artifact as TaskCompiledArtifact | undefined;
+      expect(artifact?.taskId, `Compile tool result did not expose a task artifact.\n\n${compile?.excerpt ?? "No matching compile tool response."}`).toBe(task.id);
+      references.push(artifact!);
       const request = server.requestBodies().map(body => JSON.parse(body) as Record<string, unknown>).reverse().find(body => (body.messages as Message[]).some(message => message.role === "tool" && typeof message.content === "string" && "pageCount" in JSON.parse(message.content)))!;
       const paper = toolResult<PaperText>(request, "key");
       expect(paper.text).toContain("HELDOUT_SOURCE_SECOND");
