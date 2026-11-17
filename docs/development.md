@@ -463,6 +463,9 @@ the thresholds in `vitest.config.ts` (98% of lines, 92% of branches, 96% of
 functions and statements). New code needs tests that keep it there. SonarCloud
 counts the same files: `src/` and `packages/`, without tests, `tests/` folders,
 the `src/main.tsx` bootstrap and the e2e-only probes.
+When a frontend or Rust coverage report was generated, CI uploads it even if
+the preceding test or coverage gate failed, retaining it for one day. A failed
+gate still fails the job; the report lets contributors locate the uncovered code.
 
 ### The Rust toolchain pin
 

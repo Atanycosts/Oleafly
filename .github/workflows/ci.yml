@@ -208,7 +208,10 @@ jobs:
         run: pnpm test:coverage
 
       - name: Upload frontend coverage
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        if: >-
+          !cancelled() &&
+          (github.event_name == 'push' || github.event_name == 'pull_request') &&
+          hashFiles('coverage/frontend/lcov.info') != ''
         uses: actions/upload-artifact@v7
         with:
           name: frontend-coverage
@@ -380,7 +383,10 @@ jobs:
           cargo llvm-cov --workspace --all-targets --lcov --output-path coverage/rust/lcov.info
 
       - name: Upload Rust coverage
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        if: >-
+          !cancelled() &&
+          (github.event_name == 'push' || github.event_name == 'pull_request') &&
+          hashFiles('coverage/rust/lcov.info') != ''
         uses: actions/upload-artifact@v7
         with:
           name: rust-coverage
