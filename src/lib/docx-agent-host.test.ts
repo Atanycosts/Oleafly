@@ -401,6 +401,35 @@ describe("active DOCX Agent host", () => {
     updateDocxAgentSession("session-1", { baselineId: "recovered-saved", savedRevision: 0 });
     expect((await DOCX_AGENT_HOST.readDocument()).document).toMatchObject({ baselineId: "recovered-saved", dirty: false });
   });
+
+  it("binds an empty live document through its stable viewed document ID", async () => {
+    const local = harness([]);
+    register(local.session);
+    useAgentWorkspaceStore.getState().publishView({
+      projectId: "app-project",
+      documentId: "docx:paper-project",
+      title: "Paper",
+      kind: "docx",
+      role: "working",
+      revision: "0",
+      sessionRevision: 0,
+    });
+
+    expect(await DOCX_AGENT_HOST.readDocument()).toEqual({
+      document: expect.objectContaining({
+        sessionId: "session-1",
+        sessionRevision: 0,
+        savedRevision: 0,
+        dirty: false,
+      }),
+      paragraphs: [],
+      offset: 0,
+      nextOffset: null,
+      totalParagraphs: 0,
+      nextQuery: null,
+    });
+  });
+
   it("lists and reads the live session while separating it from the saved baseline", async () => {
     const local = harness();
     register(local.session);
@@ -549,6 +578,32 @@ describe("active DOCX Agent host", () => {
       error:
         "Error: The DOCX request was cancelled or its target changed.",
     });
+  });
+
+  it("serializes suggestions and cancels a generation whose original session closes", async () => {
+    const local = harness();
+    register(local.session);
+    let finish!: (value: string) => void;
+    mocks.runInlineCompletion.mockReturnValueOnce(new Promise<string>((resolve) => {
+      finish = resolve;
+    }));
+    const suggest = tool("suggest_docx_change");
+    const pending = suggest({ paragraph_ref: "p1", instruction: "Revise." });
+    await vi.waitFor(() => expect(mocks.runInlineCompletion).toHaveBeenCalledOnce());
+
+    await expect(suggest({ paragraph_ref: "p1", instruction: "Revise again." }))
+      .resolves.toEqual({ error: "Error: A DOCX suggestion is already streaming." });
+    expect(mocks.runInlineCompletion).toHaveBeenCalledOnce();
+
+    unregisterDocxAgentSession("session-1");
+    const reopened = harness([paragraph("p1", "Reopened paragraph.")]);
+    register(reopened.session);
+    finish("Late suggestion.");
+
+    await expect(pending).resolves.toEqual({
+      error: "Error: The DOCX request was cancelled or its target changed.",
+    });
+    expect(reopened.session.applySuggestion).not.toHaveBeenCalled();
   });
 
   it("streams the candidate to the caller and honors cancellation", async () => {
@@ -870,6 +925,17 @@ describe("live DOCX format, save and template tools", () => {
     mocks.templateSource.mockImplementationOnce(async () => { controller.abort(); return { bytes, sourceSha256: "f".repeat(64) }; });
     await expect(DOCX_AGENT_HOST.importTemplateStyles?.("session-1", "world-selected", ["Title"], 1, { signal: controller.signal })).rejects.toThrow("cancelled");
     expect(local.session.importTemplateStyles).toHaveBeenCalledTimes(1);
+
+    const reopened = harness();
+    mocks.templateSource.mockImplementationOnce(async () => {
+      unregisterDocxAgentSession("session-1");
+      register(reopened.session);
+      return { bytes, sourceSha256: "e".repeat(64) };
+    });
+    await expect(DOCX_AGENT_HOST.importTemplateStyles?.(
+      "session-1", "world-selected", ["Title"], 0,
+    )).rejects.toThrow("closed or changed");
+    expect(local.session.importTemplateStyles).toHaveBeenCalledOnce();
   });
 
   it("refuses an old task generation after template loading and preserves a committed edit receipt", async () => {
@@ -975,6 +1041,23 @@ describe("live DOCX format, save and template tools", () => {
       path: "paper.docx#p1",
     }));
     expect(mutationAllowed).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects blank runtime attribution before invoking a formatting mutation", async () => {
+    const local = harness();
+    const formatParagraph = vi.fn((): DocxApplyResult => ({
+      ok: true, changed: true, revision: 1,
+    }));
+    local.session.formatParagraph = formatParagraph;
+    register(local.session);
+
+    expect(await createDocxAgentTools({
+      attribution: { taskId: "task-1", memberId: " " },
+    }).apply_docx_format.execute({
+      paragraph_ref: "p1", expected_revision: 0, font: { bold: true },
+    })).toEqual({ error: "Error: DOCX Agent attribution must use non-empty runtime IDs." });
+    expect(formatParagraph).not.toHaveBeenCalled();
+    expect(local.session.revision()).toBe(0);
   });
 
   it("honors decline and cancellation before changing the live session", async () => {
@@ -1102,6 +1185,64 @@ describe("live DOCX format, save and template tools", () => {
         }
       }
       expect(check).toHaveBeenCalledTimes(scenarios.length);
+    },
+  );
+
+  it("refuses a save receipt from another working copy without replacing the registered baseline", async () => {
+    const local = harness();
+    local.edit("p1", "Unsaved revision.");
+    register(local.session, {
+      save: async ({ expectedRevision }) => ({
+        baselineId: "baseline-other",
+        revision: expectedRevision,
+        sourceSha256: "f".repeat(64),
+        document: {
+          sessionId: "another-session",
+          baselineId: "baseline-other",
+          sessionRevision: expectedRevision,
+          savedRevision: expectedRevision,
+          dirty: false,
+        },
+      }),
+    });
+
+    expect(await createDocxAgentTools().save_docx_document.execute({ expected_revision: 1 }))
+      .toEqual({ error: "Error: The DOCX save receipt does not describe the registered working copy." });
+    expect(await DOCX_AGENT_HOST.listDocuments()).toMatchObject([{
+      sessionId: "session-1",
+      baselineId: "baseline-1",
+      sourceSha256: "a".repeat(64),
+      sessionRevision: 1,
+      savedRevision: 0,
+      dirty: true,
+    }]);
+  });
+
+  it.each(["ordinary", "task"] as const)(
+    "refuses a stale %s save before invoking the native save callback",
+    async (route) => {
+      const local = harness();
+      local.edit("p1", "Newer working copy.");
+      const save = vi.fn(async () => {
+        throw new Error("save callback must not run");
+      });
+      register(local.session, { save });
+      const scope = {
+        projectId: "app-project",
+        workbenchProjectId: "paper-project",
+        operationId: "stale-save-start",
+      };
+
+      if (route === "ordinary") {
+        expect(await createDocxAgentTools().save_docx_document.execute({ expected_revision: 0 }))
+          .toEqual({ error: "Error: DOCX save revision changed: expected 0, current 1." });
+      } else {
+        await expect(runTaskDocxOperation(
+          scope, "session-1", "save", { expectedRevision: 0 },
+        )).rejects.toThrow("DOCX save revision changed: expected 0, current 1");
+      }
+      expect(save).not.toHaveBeenCalled();
+      expect(local.session.revision()).toBe(1);
     },
   );
 
@@ -1287,6 +1428,38 @@ describe("live DOCX format, save and template tools", () => {
       [() => (tools.check_docx_template.execute as Exec)({ template: "world-v7" }),
         "Explicit DOCX template checking is unavailable for this working copy."],
     ] as const) expect(await run()).toEqual({ unavailable: true, error });
+  });
+
+  it("reports unavailable image pixels and refuses a result from another object", async () => {
+    const unavailable = harness();
+    register(unavailable.session);
+    const readImageFromHost = DOCX_AGENT_HOST.readImage;
+    if (!readImageFromHost) throw new Error("DOCX image host is unavailable.");
+    await expect(readImageFromHost("session-1", {
+      paragraphRef: "p1",
+      objectRef: "drawing-1",
+      expectedRevision: 0,
+    })).rejects.toThrow("Live DOCX image reading is unavailable");
+
+    unregisterDocxAgentSession("session-1");
+    const mismatched = harness();
+    register({
+      ...mismatched.session,
+      readImage: vi.fn(() => ({
+        revision: 0,
+        objectRef: "drawing-other",
+        part: "word/document.xml",
+        relationshipId: "rId7",
+        mediaPart: "word/media/image1.png",
+        mimeType: "image/png",
+        bytes: new Uint8Array([1, 2, 3]),
+      })),
+    });
+    await expect(readImageFromHost("session-1", {
+      paragraphRef: "p1",
+      objectRef: "drawing-1",
+      expectedRevision: 0,
+    })).rejects.toThrow("changed while its embedded pixels were being read");
   });
 
   it("binds DOCX image pixels to the current project, session and object revision", async () => {
@@ -1636,6 +1809,11 @@ describe("task-provided DOCX proposals", () => {
     const activity = { id: "proposal-1", document: verified.document, origin: { taskId: "task-1", generation: 3, groupId: null, memberId: null, executionId: null, workIds: [] }, proposalId: null, createdAt: 1, event: { type: "runtime", event: { kind: "proposed", target: verified.target, proposed: "Task text." } } } as const;
     presentTaskDocxProposal(scope, { ...activity, origin: { ...activity.origin, workIds: [] } });
     expect(onTaskSuggestion).toHaveBeenCalledWith(activity, expect.objectContaining({ original: "Original paragraph.", revision: 0 }));
+    expect(() => presentTaskDocxProposal(scope, {
+      ...activity,
+      document: { ...activity.document, baselineId: "another-baseline" },
+    })).toThrow("different working copy");
+    expect(onTaskSuggestion).toHaveBeenCalledOnce();
     expect(mocks.runInlineCompletion).not.toHaveBeenCalled();
     expect(local.session.applySuggestion).not.toHaveBeenCalled();
   });
@@ -1843,6 +2021,47 @@ describe("task-provided DOCX proposals", () => {
     expect(JSON.parse(payloadJson)).toEqual({ formula: "y".repeat(12000) });
     expect(JSON.stringify(first).length).toBeLessThanOrEqual(10_000);
   });
+  it("continues a pre-serialized atom payload without inventing a second JSON shape", async () => {
+    const payloadJson = JSON.stringify({ formula: '"\\中文'.repeat(1200) });
+    const atom: DocxInlineAtom = {
+      objectRef: "serialized-formula",
+      kind: "math",
+      modelRange: { start: 0, end: 1 },
+      displayRange: { start: 0, end: 1 },
+      displayText: "\uFFFC",
+      readable: true,
+      complete: true,
+      editable: false,
+      payloadJson,
+      payloadLength: payloadJson.length,
+    };
+    const local = harness([paragraph("p1", "\uFFFC")], (current, revision) =>
+      semantics(current, revision, { atoms: [atom], editableRanges: [] }));
+    register(local.session);
+    let page = readTaskDocxDocumentPage(scope, "session-1", {});
+    let assembled = "";
+    let chunks = 0;
+    for (;;) {
+      const returned = page.paragraphs[0].atoms[0];
+      expect(returned).toMatchObject({
+        objectRef: "serialized-formula",
+        payloadOffset: expect.any(Number),
+        payloadLength: payloadJson.length,
+      });
+      expect(returned).not.toHaveProperty("payload");
+      assembled += returned.payloadJson ?? "";
+      if (!page.nextQuery) break;
+      expect(page.nextQuery).toMatchObject({
+        atomOffset: 0,
+        payloadOffset: expect.any(Number),
+        expectedRevision: 0,
+      });
+      expect(chunks++).toBeLessThan(30);
+      page = readTaskDocxDocumentPage(scope, "session-1", page.nextQuery);
+    }
+    expect(chunks).toBeGreaterThan(1);
+    expect(JSON.parse(assembled)).toEqual(JSON.parse(payloadJson));
+  });
   it("continues a large zero-width payload in an otherwise empty paragraph", async () => {
     const payload = { label: "picture".repeat(1800) };
     const atom: DocxInlineAtom = {
@@ -2029,6 +2248,56 @@ it("retains a native operation receipt before returning a committed task edit", 
   expect(returned).toBe(false);
   finish();
   expect(await work).toMatchObject({ operation: "format", ok: true, checkpoint: { status: "recorded" } });
+});
+
+it("refuses a checkpointed task edit when beforeCommit replaces its live session", async () => {
+  const original = harness();
+  const originalFormat = vi.fn((): DocxApplyResult => ({
+    ok: true, changed: true, revision: 1,
+  }));
+  original.session.formatParagraph = originalFormat;
+  register(original.session);
+  const replacement = harness([paragraph("p1", "Replacement session.")]);
+
+  await expect(runTaskDocxOperation({
+    projectId: "app-project",
+    workbenchProjectId: "paper-project",
+    operationId: "replaced-session",
+    beforeCommit: async () => {
+      unregisterDocxAgentSession("session-1");
+      register(replacement.session);
+    },
+  }, "session-1", "format", {
+    paragraphRef: "p1", expectedRevision: 0, format: { font: { bold: true } },
+  })).rejects.toThrow("closed or changed before the task operation started");
+  expect(originalFormat).not.toHaveBeenCalled();
+  expect(replacement.session.formatParagraph).toBeUndefined();
+});
+
+it("reports a successful task edit without inventing a checkpoint receipt", async () => {
+  const local = harness();
+  local.session.formatParagraph = vi.fn((): DocxApplyResult => {
+    local.edit("p1", "Original paragraph.");
+    return { ok: true, changed: true, revision: 1 };
+  });
+  register(local.session);
+
+  expect(await runTaskDocxOperation({
+    projectId: "app-project",
+    workbenchProjectId: "paper-project",
+    operationId: "unrecorded-intent",
+  }, "session-1", "format", {
+    paragraphRef: "p1", expectedRevision: 0, format: { font: { bold: true } },
+  })).toMatchObject({
+    operation: "format",
+    ok: true,
+    result: { ok: true, changed: true },
+    checkpoint: {
+      status: "failed",
+      error: "The DOCX operation checkpoint is unavailable.",
+    },
+  });
+  expect(local.session.revision()).toBe(1);
 });
 
 it("reports a checkpoint failure while preserving the actual committed operation result", async () => {
