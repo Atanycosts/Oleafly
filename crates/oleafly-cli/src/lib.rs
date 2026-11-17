@@ -43,6 +43,8 @@ pub use native::executable_name;
 const CONTRACT_NOTICE: &str = "\
 Run `oleafly help json` for the --json contract and `oleafly help exit-codes`
 for what each exit code means.";
+const MAIN_THREAD_NAME: &str = "oleafly-cli-main";
+const MAIN_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -61,7 +63,27 @@ pub struct Cli {
     pub command: Command,
 }
 
+/// Runs command handling on a bounded worker so debug async futures do not
+/// depend on the platform's much smaller main-thread stack.
 pub fn main() -> ExitCode {
+    let main_thread = std::thread::Builder::new()
+        .name(MAIN_THREAD_NAME)
+        .stack_size(MAIN_THREAD_STACK_SIZE)
+        .spawn(main_on_controlled_stack);
+    let main_thread = match main_thread {
+        Ok(main_thread) => main_thread,
+        Err(error) => {
+            human::error(&format!("Oleafly couldn't start: {error}"));
+            return ExitCode::from(Exit::Internal as u8);
+        }
+    };
+    match main_thread.join() {
+        Ok(code) => code,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn main_on_controlled_stack() -> ExitCode {
     oleafly_research::mcp::protocol::set_server_version(crate::version::APP_VERSION);
     if let Some(code) = daemon::reentry() {
         return ExitCode::from(u8::try_from(code).unwrap_or(1));
