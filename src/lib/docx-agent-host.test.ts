@@ -1560,6 +1560,133 @@ describe("live DOCX format, save and template tools", () => {
     expect(save).toHaveBeenNthCalledWith(2, { expectedRevision: 2 });
   });
 
+  it("reads a committed task save's new baseline and source through its original task scope", async () => {
+    const local = harness();
+    local.edit("p1", "Saved revision one.");
+    const save = vi.fn<NonNullable<DocxAgentRegistration["save"]>>(async ({ expectedRevision }) => ({
+      baselineId: "baseline-2",
+      revision: expectedRevision,
+      sourceSha256: "c".repeat(64),
+      document: {
+        sessionId: "session-1",
+        baselineId: "baseline-2",
+        sessionRevision: expectedRevision,
+        savedRevision: expectedRevision,
+        dirty: false,
+      },
+    }));
+    register(local.session, { save });
+    const scope = { projectId: "app-project", workbenchProjectId: "paper-project" };
+    useFilesStore.setState({ projectId: "another-ui-project" });
+
+    await expect(runTaskDocxOperation(
+      { ...scope, operationId: "save-then-read" },
+      "session-1",
+      "save",
+      { expectedRevision: 1 },
+    )).resolves.toMatchObject({
+      operation: "save",
+      ok: true,
+      document: {
+        appProjectId: "app-project",
+        workbenchProjectId: "paper-project",
+        baselineId: "baseline-2",
+        sourceSha256: "c".repeat(64),
+        sessionRevision: 1,
+        savedRevision: 1,
+      },
+    });
+
+    const page = readTaskDocxDocumentPage(scope, "session-1", {});
+    expect(page).toMatchObject({
+      document: {
+        appProjectId: "app-project",
+        workbenchProjectId: "paper-project",
+        baselineId: "baseline-2",
+        sourceSha256: "c".repeat(64),
+        sessionRevision: 1,
+        savedRevision: 1,
+        dirty: false,
+      },
+      paragraphs: [{ paragraphRef: "p1", text: "Saved revision one." }],
+    });
+  });
+
+  it("keeps a pending task format read on its own snapshot across a same-revision save", async () => {
+    const local = harness();
+    local.edit("p1", "Revision one.");
+    let finishRead!: (result: ReturnType<typeof readableFormat>) => void;
+    const readFormat = vi.fn<NonNullable<DocxAgentRegistration["readFormat"]>>(
+      () => new Promise((resolve) => { finishRead = resolve; }),
+    );
+    const save = vi.fn<NonNullable<DocxAgentRegistration["save"]>>(async ({ expectedRevision }) => ({
+      baselineId: "baseline-2",
+      revision: expectedRevision,
+      sourceSha256: "c".repeat(64),
+      document: {
+        sessionId: "session-1",
+        baselineId: "baseline-2",
+        sessionRevision: expectedRevision,
+        savedRevision: expectedRevision,
+        dirty: false,
+      },
+    }));
+    register(local.session, { readFormat, save });
+    const scope = { projectId: "app-project", workbenchProjectId: "paper-project" };
+    const recorded = readableFormat(1, true);
+    const snapshot = {
+      ...recorded,
+      paragraph: { ...recorded.paragraph, text: "Revision one." },
+    };
+    const pendingRead = runTaskDocxOperation(scope, "session-1", "read_format", {
+      query: { paragraphRef: "p1", kind: "paragraphs" },
+    });
+    expect(readFormat).toHaveBeenCalledExactlyOnceWith({
+      paragraphRef: "p1",
+      kind: "paragraphs",
+    });
+
+    const saveDocument = DOCX_AGENT_HOST.saveDocument;
+    if (!saveDocument) throw new Error("The DOCX save host is unavailable.");
+    expect(await saveDocument("session-1", 1)).toMatchObject({
+      baselineId: "baseline-2",
+      revision: 1,
+      sourceSha256: "c".repeat(64),
+    });
+
+    finishRead(snapshot);
+    await expect(pendingRead).resolves.toMatchObject({
+      operation: "read_format",
+      ok: true,
+      document: {
+        sessionId: "session-1",
+        appProjectId: "app-project",
+        workbenchProjectId: "paper-project",
+        baselineId: "baseline-1",
+        sourceSha256: "b".repeat(64),
+        sessionRevision: 1,
+        savedRevision: 0,
+      },
+      result: {
+        document: {
+          baselineId: "baseline-1",
+          sessionRevision: 1,
+          savedRevision: 0,
+          dirty: true,
+        },
+        sourceSha256: "b".repeat(64),
+        revision: 1,
+      },
+    });
+    expect((await DOCX_AGENT_HOST.readDocument()).document).toMatchObject({
+      baselineId: "baseline-2",
+      sourceSha256: "c".repeat(64),
+      sessionRevision: 1,
+      savedRevision: 1,
+      dirty: false,
+    });
+  });
+
   it("reports unavailable callbacks instead of rebinding or adding a default", async () => {
     const local = harness();
     register(local.session);
@@ -2483,6 +2610,59 @@ it("reports a checkpoint failure while preserving the actual committed operation
   expect(await runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "durable-intent" },
     "session-1", "format", { paragraphRef: "p1", expectedRevision: 0, format: { font: { nameEastAsia: "宋体" } } }))
     .toMatchObject({ operation: "format", ok: true, result: { changed: true }, checkpoint: { status: "failed", error: "Error: disk full" } });
+  expect(local.session.revision()).toBe(1);
+});
+
+it("recovers a committed task edit only through its original project and working copy after checkpoint failure", async () => {
+  const local = harness();
+  local.session.formatParagraph = vi.fn((): DocxApplyResult => {
+    local.edit("p1", "Committed before checkpoint failed.");
+    return { ok: true, changed: true, revision: 1 };
+  });
+  let retainedOperation: string | undefined;
+  const onTaskOperation = vi.fn<NonNullable<DocxAgentRegistration["onTaskOperation"]>>(async ({ operationId }) => {
+    retainedOperation = operationId;
+    throw new Error("checkpoint offline");
+  });
+  const onTaskOperationRecorded = vi.fn<NonNullable<DocxAgentRegistration["onTaskOperationRecorded"]>>(
+    async (operationId) => {
+      expect(retainedOperation).toBe(operationId);
+      retainedOperation = undefined;
+    },
+  );
+  register(local.session, { onTaskOperation, onTaskOperationRecorded });
+  const scope = { projectId: "app-project", workbenchProjectId: "paper-project" };
+
+  await expect(runTaskDocxOperation(
+    { ...scope, operationId: "retryable-checkpoint" },
+    "session-1",
+    "format",
+    { paragraphRef: "p1", expectedRevision: 0, format: { font: { bold: true } } },
+  )).resolves.toMatchObject({
+    operation: "format",
+    ok: true,
+    result: { ok: true, changed: true, revision: 1 },
+    document: {
+      appProjectId: "app-project",
+      workbenchProjectId: "paper-project",
+      sessionRevision: 1,
+    },
+    checkpoint: { status: "failed", error: "Error: checkpoint offline" },
+  });
+  expect(retainedOperation).toBe("retryable-checkpoint");
+
+  await expect(settleTaskDocxOperation(
+    { ...scope, workbenchProjectId: "another-paper" },
+    "retryable-checkpoint",
+    "session-1",
+  )).rejects.toThrow("unavailable or ambiguous");
+  expect(onTaskOperationRecorded).not.toHaveBeenCalled();
+  expect(retainedOperation).toBe("retryable-checkpoint");
+
+  await settleTaskDocxOperation(scope, "retryable-checkpoint", "session-1");
+  expect(onTaskOperationRecorded).toHaveBeenCalledExactlyOnceWith("retryable-checkpoint");
+  expect(retainedOperation).toBeUndefined();
+  expect(local.session.listParagraphs()[0].text).toBe("Committed before checkpoint failed.");
   expect(local.session.revision()).toBe(1);
 });
 

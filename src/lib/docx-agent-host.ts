@@ -1404,8 +1404,22 @@ async function executeTaskDocxOperation(
   if (operation === "read_format") {
     if (!registration.readFormat) throw new Error("Live DOCX formatting reads are unavailable for this working copy.");
     const result = await registration.readFormat((args as DocxTaskReadFormatArgs).query);
+    if (taskRegistration(scope, registration.sessionId).session !== registration.session) {
+      throw new Error("The DOCX session closed or changed while its formatting was read.");
+    }
     return {
-      operation, ok: true, document: docxTaskDocument(scope, registration.sessionId), result,
+      operation,
+      ok: true,
+      document: {
+        sessionId: result.document.sessionId,
+        appProjectId: registration.appProjectId,
+        workbenchProjectId: registration.workbenchProjectId,
+        baselineId: result.document.baselineId,
+        sourceSha256: result.sourceSha256,
+        sessionRevision: result.revision,
+        savedRevision: result.document.savedRevision,
+      },
+      result,
     };
   }
   if (operation === "replace_range") {
