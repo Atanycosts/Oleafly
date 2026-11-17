@@ -4,18 +4,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MaterialAnnotations } from "./MaterialAnnotations";
 import { useMaterialAnnotationsStore } from "@/store/material-annotations";
 import { materialTarget, type MaterialDocument } from "@/lib/material-surface";
-import type { TaskAnnotation, TaskAnnotationDraft } from "@/lib/task-collaboration";
+import type { AnnotationTarget, TaskAnnotation, TaskAnnotationDraft } from "@/lib/task-collaboration";
 import { researchTaskFixture } from "@/components/research/tasks/tests/task-fixtures";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { useSettingsStore } from "@/store/settings";
 
-const api = vi.hoisted(() => ({ save: vi.fn(), request: vi.fn(), read: vi.fn(), load: vi.fn(), list: vi.fn(), capture: vi.fn(), start: vi.fn(), enable: vi.fn(), enabled: vi.fn(), open: vi.fn(), receive: vi.fn(), taskDetail: vi.fn(), bindProject: vi.fn() }));
+const api = vi.hoisted(() => ({ save: vi.fn(), request: vi.fn(), read: vi.fn(), load: vi.fn(), group: vi.fn(), list: vi.fn(), capture: vi.fn(), start: vi.fn(), enable: vi.fn(), enabled: vi.fn(), open: vi.fn(), receive: vi.fn(), taskDetail: vi.fn(), bindProject: vi.fn(), refresh: vi.fn(), projectId: null as string | null, tasks: [] as { id: string }[] }));
 vi.mock("@/lib/research-tasks", async (original) => ({ ...await original<typeof import("@/lib/research-tasks")>(), listResearchTasks: api.list }));
 vi.mock("@/lib/material-annotations", async (original) => ({ ...await original<typeof import("@/lib/material-annotations")>(), saveMaterialAnnotation: api.save, requestMaterialAnnotation: api.request, readMaterialAnnotation: api.read }));
-vi.mock("@/lib/task-collaboration", () => ({ loadObjectAnnotations: api.load, loadTaskAnnotations: vi.fn(), loadTaskGroup: vi.fn().mockResolvedValue(null), submitTaskAnnotation: vi.fn() }));
+vi.mock("@/lib/task-collaboration", () => ({ loadObjectAnnotations: api.load, loadTaskAnnotations: vi.fn(), loadTaskGroup: api.group, submitTaskAnnotation: vi.fn() }));
 vi.mock("@/lib/assistant-delegation-capture", () => ({ captureAssistantTarget: api.capture }));
 vi.mock("@/store/research-tasks-flag", () => ({ researchTasksEnabled: api.enabled, setResearchTasksEnabled: api.enable }));
-vi.mock("@/store/research-tasks", () => ({ useResearchTasksStore: { getState: () => ({ projectId: null, bindProject: api.bindProject, startTask: api.start, receiveTask: api.receive, openTaskDetail: api.taskDetail }) } }));
+vi.mock("@/store/research-tasks", () => ({ useResearchTasksStore: { getState: () => ({ projectId: api.projectId, tasks: api.tasks, bindProject: api.bindProject, refresh: api.refresh, startTask: api.start, receiveTask: api.receive, openTaskDetail: api.taskDetail }) } }));
 vi.mock("@/store/material-viewer", () => ({ useMaterialViewerStore: { getState: () => ({ open: api.open }) } }));
 const labels = en.tasks.annotations;
 const document: MaterialDocument = { projectId: "paper", documentId: "material-a", path: "figure.svg", title: "Figure A", kind: "image", revision: "revision-new", source: { bytes: new Uint8Array([1, 2]) } };
@@ -30,6 +30,7 @@ function fillRequest() {
 }
 beforeEach(() => {
   vi.clearAllMocks(); saved = [];
+  api.projectId = null; api.tasks = [];
   useMaterialAnnotationsStore.getState().open(document, { kind: "region", rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 } });
   api.load.mockImplementation(async () => ({ annotations: saved, deliveries: [], handlings: [], requirements: [], distillations: [] }));
   api.save.mockImplementation(async (_document: MaterialDocument, _anchor: unknown, draft: TaskAnnotationDraft) => {
@@ -37,6 +38,8 @@ beforeEach(() => {
   });
   api.enabled.mockReturnValue(false);
   api.list.mockResolvedValue([]);
+  api.group.mockResolvedValue(null);
+  api.refresh.mockResolvedValue(undefined);
   api.enable.mockResolvedValue(undefined);
   api.bindProject.mockResolvedValue(undefined);
   api.capture.mockResolvedValue({ runtimeId: "builtin", agentId: "provider", modelId: "model" });
@@ -236,5 +239,93 @@ describe("material feedback panel", () => {
     expect(request.revision).toBe("revision-old");
     expect(await request.load()).toEqual(new Uint8Array([7]));
     expect(request.anchor).toEqual({ kind: "whole" });
+  });
+  it("passes a frozen source to its host and reports a failed source read without opening it", async () => {
+    const retained = { snapshot: { document: { ...document, source: undefined }, anchor: { kind: "whole" }, sha256: "old", size: 1, mediaType: "image/svg+xml" }, bytes: [7] };
+    saved = [annotation({ source: { kind: "material_snapshot", content: JSON.stringify(retained.snapshot), sha256: "source" } })];
+    api.read.mockRejectedValueOnce(new Error("Retained source is unavailable")).mockResolvedValue(retained);
+    const onOpenSnapshot = vi.fn();
+    render(<MaterialAnnotations onOpenSnapshot={onOpenSnapshot} />);
+    const card = await screen.findByTestId("task-annotation");
+    const open = within(card).getByRole("button", { name: labels.recordedObject });
+    fireEvent.click(open);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Retained source is unavailable");
+    expect(onOpenSnapshot).not.toHaveBeenCalled();
+    expect(api.open).not.toHaveBeenCalled();
+    fireEvent.click(open);
+    await waitFor(() => expect(onOpenSnapshot).toHaveBeenCalledExactlyOnceWith(retained));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(api.read).toHaveBeenNthCalledWith(2, "paper", "feedback-1");
+    expect(api.open).not.toHaveBeenCalled();
+  });
+  it("recovers the newest annotated task and offers its members for feedback", async () => {
+    const oldTask = researchTaskFixture({ id: "old", createdAt: 1, status: "awaiting_review" });
+    const latest = researchTaskFixture({ id: "latest", createdAt: 2, status: "awaiting_review" });
+    saved = [annotation({ id: "old-note", target: { ...materialTarget(document), taskId: oldTask.id } }), annotation({ target: { ...materialTarget(document), taskId: latest.id } })];
+    api.list.mockResolvedValue([oldTask, latest]);
+    api.group.mockResolvedValue({ members: [{ id: "reviewer", name: "Figure reviewer" }] });
+    render(<MaterialAnnotations />);
+    await screen.findByRole("button", { name: `${en.materialAnnotations.openTask} · Task latest` });
+    expect(api.group).toHaveBeenCalledExactlyOnceWith("paper", "latest");
+    fireEvent.click(await screen.findByRole("checkbox", { name: "@Figure reviewer" }));
+    fireEvent.change(screen.getByRole("textbox", { name: labels.body }), { target: { value: "Check the caption" } });
+    fireEvent.click(screen.getByRole("button", { name: labels.save }));
+    await waitFor(() => expect(api.save).toHaveBeenCalledWith(document, expect.anything(), expect.objectContaining({ mentions: ["reviewer"], explicitRequest: false })));
+    expect(screen.queryByRole("button", { name: en.materialAnnotations.retryStart })).not.toBeInTheDocument();
+  });
+  it.each(["task history", "task members"] as const)("keeps feedback usable when recovered %s cannot load", async (source) => {
+    saved = [annotation({ target: { ...materialTarget(document), taskId: "task-1" } })];
+    api.list.mockResolvedValue([researchTaskFixture({ status: "awaiting_review" })]);
+    if (source === "task history") api.list.mockRejectedValueOnce(new Error("History unavailable"));
+    else api.group.mockRejectedValueOnce(new Error("Members unavailable"));
+    render(<MaterialAnnotations />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(source === "task history" ? "History unavailable" : "Members unavailable");
+    fireEvent.change(screen.getByRole("textbox", { name: labels.body }), { target: { value: "Saved locally for later" } });
+    fireEvent.click(screen.getByRole("button", { name: labels.save }));
+    await waitFor(() => expect(api.save).toHaveBeenCalledOnce());
+    expect(api.request).not.toHaveBeenCalled();
+  });
+  function showResult(reference: AnnotationTarget) {
+    const original = annotation();
+    saved = [original];
+    const context = { annotations: saved, deliveries: [], requirements: [], distillations: [], handlings: [{ id: "handling", annotationId: original.id, author: { kind: "model", id: "model" }, summary: "Reviewed", resultRefs: [reference], createdAt: 2 }] };
+    api.load.mockResolvedValue(context);
+    return context;
+  }
+  it("delegates a handling result to the caller when a target opener is supplied", async () => {
+    const result = { ...materialTarget(document), objectKind: "artifact", objectId: "result", taskId: "result-task", path: "review.md" };
+    showResult(result);
+    const onOpenTarget = vi.fn();
+    render(<MaterialAnnotations onOpenTarget={onOpenTarget} />);
+    fireEvent.click(await screen.findByRole("button", { name: "review.md" }));
+    expect(onOpenTarget).toHaveBeenCalledExactlyOnceWith(result);
+    expect(api.taskDetail).not.toHaveBeenCalled();
+  });
+  it.each(["known", "missing", "refresh failure"] as const)("opens a %s handling task in the already bound project", async (state) => {
+    api.projectId = "paper";
+    api.tasks = state === "known" ? [{ id: "result-task" }] : [];
+    if (state === "refresh failure") api.refresh.mockRejectedValueOnce(new Error("Task refresh unavailable"));
+    showResult({ ...materialTarget(document), objectKind: "artifact", objectId: "result", taskId: "result-task", path: "review.md" });
+    render(<MaterialAnnotations />);
+    fireEvent.click(await screen.findByRole("button", { name: "review.md" }));
+    if (state === "refresh failure") {
+      expect(await screen.findByRole("alert")).toHaveTextContent("Task refresh unavailable");
+      expect(api.taskDetail).not.toHaveBeenCalled();
+    } else await waitFor(() => expect(api.taskDetail).toHaveBeenCalledWith("result-task", "output"));
+    expect(api.bindProject).not.toHaveBeenCalled();
+    expect(api.refresh).toHaveBeenCalledTimes(state === "known" ? 0 : 1);
+  });
+  it("opens the exact material revision referenced by a handling result", async () => {
+    const result = { ...materialTarget(document), objectRevision: "sha256:earlier" };
+    const snapshot = { document: { ...document, source: undefined, revision: "earlier" }, anchor: { kind: "whole" }, sha256: "earlier", size: 1, mediaType: "image/svg+xml" };
+    const frozen = annotation({ id: "earlier-note", target: result, source: { kind: "material_snapshot", content: JSON.stringify(snapshot), sha256: "source" } });
+    const initial = showResult(result);
+    // The initial object query supplies the handling result; opening it resolves its retained annotation.
+    api.load.mockImplementation((reference: AnnotationTarget) => Promise.resolve(reference.objectRevision === result.objectRevision ? { annotations: [frozen] } : initial));
+    api.read.mockResolvedValue({ snapshot, bytes: [8] });
+    render(<MaterialAnnotations />);
+    fireEvent.click(await screen.findByRole("button", { name: `${document.title} · ${en.materialAnnotations.oldVersion}` }));
+    await waitFor(() => expect(api.read).toHaveBeenCalledExactlyOnceWith("paper", "earlier-note"));
+    expect(api.open).toHaveBeenCalledWith(expect.objectContaining({ revision: "earlier" }));
   });
 });

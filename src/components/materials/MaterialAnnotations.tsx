@@ -112,6 +112,7 @@ function MaterialAnnotationPanel({ document, anchor, options, onOpenSnapshot, on
   async function openSource(annotation: TaskAnnotation) {
     try {
       const retained = await readMaterialAnnotation(annotation.target.projectId, annotation.id);
+      setError(null);
       if (onOpenSnapshot) onOpenSnapshot(retained);
       else useMaterialViewerStore.getState().open({ ...retained.snapshot.document,
         load: async () => new Uint8Array(retained.bytes), anchor: retained.snapshot.anchor, mediaType: retained.snapshot.mediaType });
