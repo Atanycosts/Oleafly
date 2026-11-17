@@ -1,22 +1,15 @@
 #!/usr/bin/env sh
 #
-# Pre-commit hook: run the same gates CI does, so a red build is caught here
-# instead of after a push. Mirrors .github/workflows/ci.yml exactly:
-#
-#   Frontend: pnpm lint  |  pnpm build (tsc -b + vite build)  |  pnpm test
-#   Rust:     cargo fmt --all  |  cargo clippy --workspace  |  cargo test --workspace
-#   Docs:     docsite build (sync docs/ -> Starlight -> astro build)
-#
-# Only the areas you touched run, so a frontend-only commit skips the Rust
-# gate and vice-versa. Skip everything with:  git commit --no-verify
+# Keep commits lightweight. Builds, typechecking, Clippy and test suites are
+# explicit checks in scripts/check-full.sh and CI, never automatic commit work.
 #
 set -e
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-# Files staged for this commit (added/copied/modified/renamed).
-staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+# Include deletions so removed catalogs and Rust files still trigger checks.
+staged="$(git diff --cached --name-only --diff-filter=ACMRD)"
 [ -z "$staged" ] && exit 0
 
 fail() {
@@ -24,51 +17,23 @@ fail() {
   exit 1
 }
 
-# Frontend gate: any app source or frontend config file.
-if printf '%s\n' "$staged" | grep -qE '^(src/|packages/|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|tsconfig|vite\.config|vitest|biome\.json|\.biome/|index\.html)'; then
-  echo "→ frontend: lint"
-  pnpm lint || fail "biome lint"
+git diff --cached --check || fail "staged diff"
+
+if printf '%s\n' "$staged" | grep -qE '^((src/|packages/|web/).*\.tsx?$|biome\.json$|\.biome/)'; then
+  echo "→ frontend: lint staged files"
+  pnpm exec biome lint --staged --vcs-enabled=true --vcs-client-kind=git --no-errors-on-unmatched || fail "biome lint"
+fi
+
+if printf '%s\n' "$staged" | grep -qE '^(src/i18n/|packages/i18n-contract/|scripts/i18n/)'; then
   echo "→ frontend: i18n types + English / Simplified Chinese catalogs"
   pnpm i18n:types:check || fail "i18n types"
   pnpm i18n:validate --locale zh-Hans || fail "i18n validate"
-  echo "→ frontend: typecheck + build"
-  # The Vite build peaks close to Node's default heap; CI gives it 6 GB, so the hook does too.
-  NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}" pnpm build || fail "tsc / vite build"
-  echo "→ frontend: tests"
-  pnpm test || fail "vitest"
 fi
 
 # Rust gate: any workspace crate or workspace configuration.
 if printf '%s\n' "$staged" | grep -qE '^(src-tauri/|crates/|Cargo\.(toml|lock)$|\.cargo/|rust-toolchain\.toml$)'; then
-  # rustup resolves the version from rust-toolchain.toml, which CI installs too,
-  # so these gates lint with the compiler CI will use.
-  echo "→ rust: $(rustc --version)"
   echo "→ rust: fmt check"
   cargo fmt --all -- --check || fail "cargo fmt"
-  echo "→ rust: clippy"
-  cargo clippy --workspace --all-targets -- -D warnings || fail "cargo clippy"
-  echo "→ rust: tests"
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*)
-      OLEAFLY_EMBED_TEST_MANIFEST=1 cargo test --workspace --lib || fail "cargo test"
-      cargo test -p oleafly-cli --test cli || fail "cargo test (oleaflyc)"
-      ;;
-    *)
-      cargo test --workspace --all-targets || fail "cargo test"
-      ;;
-  esac
 fi
 
-# Docs-site gate: any authored docs or docsite source. Builds the Starlight
-# site (which also runs the docs sync) to catch broken content or config. Only
-# runs when the site's deps are installed, so it never forces an install.
-if printf '%s\n' "$staged" | grep -qE '^(docs/|docsite/)'; then
-  if [ -d docsite/node_modules ]; then
-    echo "→ docs: build site"
-    ( cd docsite && pnpm build ) || fail "docs site build"
-  else
-    echo "→ docs: skipped (run 'pnpm -C docsite install' to enable this gate)"
-  fi
-fi
-
-printf '\033[32m✓ pre-commit checks passed\033[0m\n'
+printf '\033[32m✓ lightweight pre-commit checks passed\033[0m\n'

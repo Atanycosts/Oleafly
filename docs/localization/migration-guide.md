@@ -142,4 +142,10 @@ pnpm exec vitest run <the directories you touched>
 pnpm i18n:validate
 ```
 
-`pnpm i18n:validate` fails on any key that a shipped locale is missing, and CI and the pre-commit hook run it. A pull request that adds English keys therefore adds the same keys to every locale under `src/i18n/locales/`. Machine translation is acceptable for a first pass as long as placeholders, tags, glossary terms and the locale's plural categories are kept; the validator checks all four.
+`pnpm i18n:validate` checks all shipped locales and fails on any missing key. The current
+pre-commit hook runs catalog checks when localization files change; it and CI explicitly
+select English/Simplified Chinese with `--locale zh-Hans`. Other locales still have missing
+Word-workspace keys, so these scoped checks do not establish complete translation coverage.
+A release covering every shipped locale needs the full validator above. Machine translation
+is acceptable for a first pass as long as placeholders, tags, glossary terms and the locale's
+plural categories are kept; the validator checks all four.

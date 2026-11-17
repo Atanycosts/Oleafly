@@ -376,11 +376,43 @@ people who depend on the output are usually scripting against it.
 
 ### Checks before opening a PR
 
-Make sure these pass:
+The pre-commit hook runs lightweight checks on the affected areas: staged diff
+whitespace, Biome lint for staged frontend files, generated translation types
+and English/Simplified Chinese catalogs when localization files change, and
+`cargo fmt --all -- --check` when Rust files or configuration change. Deleted
+catalogs and Rust files also trigger their checks. These tools read the working
+files for the selected paths; partially staged files can therefore include
+unstaged edits in their lint or format result.
+
+Committing never starts a frontend or documentation build, Rust compilation,
+Clippy, typechecking or a test suite, including after lockfile/toolchain changes.
+Check the changed behavior explicitly before opening a PR. Select the relevant
+tests and include affected callers when changing a shared crate. Report the
+commands actually run and any unverified behavior.
+
+Full checks are an explicit operation when the machine has capacity:
+
+```bash
+sh scripts/check-full.sh frontend         # lint, catalogs, typecheck/build, Vitest
+sh scripts/check-full.sh rust             # format, workspace Clippy and tests
+sh scripts/check-full.sh docs             # docsite build, requires its dependencies
+sh scripts/check-full.sh all              # run those areas sequentially
+```
+
+Running the script without an area prints help and runs no checks. It uses one
+Cargo compilation job and one Vitest worker; it does not remove the memory cost
+of a full frontend build or a large Rust link. It is not installed as a pre-push
+hook. The Rust path retains the existing Windows library/CLI test split. These
+commands cover the earlier local hook gates; CI has additional platform and
+integration checks. The current workflow triggers pull requests targeting
+`main`, so stacked PRs targeting another branch do not automatically receive
+those checks.
+
+Other focused and integration checks remain available:
 
 ```bash
 pnpm lint                                 # Biome lint over src/ and packages/
-pnpm build                                # frontend typecheck (noUnusedLocals/Parameters on)
+pnpm build                                # frontend typecheck and production bundle
 pnpm test                                 # vitest across src/ and packages/
 pnpm language-servers:test                # manifest, checksum, target, URL, and license policy
 pnpm audit --prod --audit-level high      # registry-backed npm advisory check
@@ -392,8 +424,10 @@ cargo deny --workspace --all-features --config src-tauri/deny.toml check  # Rust
 ```
 
 The two audit commands require registry/network access. CI records their
-current results on every code change. An offline local run cannot certify that
-the dependency graph is advisory-free.
+results when its workflow runs. An offline local run cannot certify that the
+dependency graph is advisory-free. `node --test scripts/local-checks.node-tests.mjs`
+verifies local check selection and failure propagation with stubbed tools and
+temporary Git repositories; it starts no real build or test suite.
 
 CI also runs `pnpm test:coverage`, which fails if frontend coverage drops below
 the thresholds in `vitest.config.ts` (98% of lines, 92% of branches, 96% of
@@ -404,8 +438,8 @@ the `src/main.tsx` bootstrap and the e2e-only probes.
 ### The Rust toolchain pin
 
 `rust-toolchain.toml` names one Rust version. rustup applies it to every plain
-`cargo` call in the repo, so the pre-commit hook, CI, the e2e builds, and the
-release workflow all compile and lint with the same compiler. Before the pin,
+`cargo` call in the repo, so local checks, CI, the e2e builds and releases use
+the same toolchain, including the pre-commit formatter. Before the pin,
 CI floated on the latest stable while local machines stayed wherever they
 were, and a commit could pass clippy locally and then fail it on CI with no
 code change behind the break.
