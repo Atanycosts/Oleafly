@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useId, useLayoutEffect, useState } from "rea
 import { useTranslation } from "react-i18next";
 import { MessageSquareText } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { Editor, EditorTabBar } from "./Editor";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useDocxWorkspaceStore } from "@/store/docx-workspace";
@@ -72,7 +73,7 @@ export function WorkspaceCenter() {
     onBeforeInputCapture={pauseAgentWorkspaceFollow} onKeyDownCapture={pauseAgentWorkspaceFollow}>
     {!zen && <EditorTabBar diffFocused={diffFocused} />}
     <AgentWorkspaceFeedback />
-    {navigationError && <p role="status" className="border-b px-3 py-1 text-xs text-muted-foreground" title={navigationError}>{t(($) => $.researchTools.workspace.navigationUnavailable)}</p>}
+    {navigationError && <p role="status" className="border-b px-3 py-1 text-xs text-muted-foreground"><Tooltip label={navigationError}><span>{t(($) => $.researchTools.workspace.navigationUnavailable)}</span></Tooltip></p>}
     <div className="relative flex min-h-0 flex-1 overflow-hidden">
     <div className={`relative min-h-0 min-w-0 flex-1 ${annotationDocument ? "pr-12" : ""}`}>
       <div className="h-full min-h-0" hidden={active !== "files"} inert={active !== "files" || undefined}><Editor showTabBar={false} /></div>

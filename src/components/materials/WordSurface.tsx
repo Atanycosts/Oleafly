@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEditorCommand, useEditorValueCommand, useFontFamily } from "@docx-editor.dev/react";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 export type WordSurfaceView = "working" | "original" | "compare";
@@ -136,7 +137,7 @@ export function WordSurface({
           {(["previous", "current"] as const).map((side) => <button
             key={side}
             type="button"
-            className={cn("absolute flex h-8 min-w-0 items-center gap-2 overflow-hidden rounded-t-md border border-b-0 border-border px-3 text-left text-xs duration-[180ms] ease-out motion-safe:transition-transform motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", front === side ? "font-medium shadow-sm" : "bg-muted text-muted-foreground hover:text-foreground")}
+            className={cn("absolute flex h-8 min-w-0 items-center gap-2 overflow-hidden rounded-t-md border border-b-0 border-border px-3 text-left text-xs duration-[180ms] ease-out motion-safe:transition-transform motion-reduce:transition-none focus-visible:border-primary focus-visible:text-primary", front === side ? "font-medium shadow-sm" : "bg-muted text-muted-foreground hover:text-foreground")}
             style={{ left: paper?.left ?? "max(24px, calc((100% - 794px) / 2))", width: paper?.width ?? "min(794px, calc(100% - 48px))",
               backgroundColor: front === side ? paper?.background : undefined,
               transform: front === side ? "translate(0, 32px)" : `translate(${front === "current" ? "-20px" : "20px"}, 4px)` }}
@@ -215,20 +216,21 @@ export function WordFormattingToolbar({
     icon: ReactNode,
     command: typeof bold,
   ) => (
-    <Button
-      type="button"
-      size="icon"
-      variant={command.isActive ? "secondary" : "ghost"}
-      className="size-7"
-      aria-label={label}
-      aria-pressed={command.isActive}
-      title={command.disabledReason ?? label}
-      disabled={disabled || !command.isEnabled}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={() => command.execute()}
-    >
-      {icon}
-    </Button>
+    <Tooltip label={command.disabledReason ?? label}>
+      <Button
+        type="button"
+        size="icon"
+        variant={command.isActive ? "secondary" : "ghost"}
+        className="size-7"
+        aria-label={label}
+        aria-pressed={command.isActive}
+        disabled={disabled || !command.isEnabled}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => command.execute()}
+      >
+        {icon}
+      </Button>
+    </Tooltip>
   );
 
   return (
@@ -246,27 +248,27 @@ export function WordFormattingToolbar({
       {button(labels.bold, <Bold />, bold)}
       {button(labels.italic, <Italic />, italic)}
       {compact && (
-        <Button
-          type="button"
-          size="icon"
-          variant="ghost"
-          className="size-7"
-          aria-label={expanded ? labels.fewerTools : labels.moreTools}
-          aria-expanded={expanded}
-          title={expanded ? labels.fewerTools : labels.moreTools}
-          disabled={disabled}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? <ChevronUp /> : <ChevronDown />}
-        </Button>
+        <Tooltip label={expanded ? labels.fewerTools : labels.moreTools}>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="size-7"
+            aria-label={expanded ? labels.fewerTools : labels.moreTools}
+            aria-expanded={expanded}
+            disabled={disabled}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? <ChevronUp /> : <ChevronDown />}
+          </Button>
+        </Tooltip>
       )}
       {showFormatting && (
         <>
           <span aria-hidden="true" className="mx-1 h-4 w-px bg-border" />
           <select
             aria-label={labels.fontFamily}
-            title={labels.fontFamily}
             className="h-7 min-w-28 max-w-40 rounded-md border border-input bg-background px-1.5 text-xs text-foreground disabled:opacity-50"
             value={fontFamily.value ?? ""}
             disabled={disabled || !fontFamily.isEnabled}
@@ -277,7 +279,6 @@ export function WordFormattingToolbar({
           </select>
           <select
             aria-label={labels.fontSize}
-            title={labels.fontSize}
             className="h-7 w-16 rounded-md border border-input bg-background px-1.5 text-xs text-foreground disabled:opacity-50"
             value={fontSize.value ?? ""}
             disabled={disabled || !fontSize.isEnabled}

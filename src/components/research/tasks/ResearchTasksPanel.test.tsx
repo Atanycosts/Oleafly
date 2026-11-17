@@ -20,6 +20,7 @@ vi.mock("@/lib/research-tasks", async (importOriginal) => ({
   listenForResearchTaskChanges: vi.fn(), listenForResearchTaskEvents: vi.fn(),
   loadResearchTaskEvents: vi.fn(), loadResearchTaskEventsBefore: vi.fn(), retryResearchTask: vi.fn(), startResearchTask: vi.fn(),
   previewResearchTaskFile: vi.fn(), previewResearchTaskArtifact: vi.fn(),
+  listTaskCompiledPdfs: vi.fn(), readTaskCompiledPdf: vi.fn(),
   listenForResearchTaskDeltas: vi.fn(async () => () => {}),
   watchResearchTask: vi.fn(async () => {}),
   approveResearchTaskPlan: vi.fn(),
@@ -35,7 +36,10 @@ vi.mock("@/lib/research-tasks", async (importOriginal) => ({
 }));
 
 vi.mock("@/store/files", () => ({
-  useFilesStore: { getState: () => ({ runExternalProjectMutation: fileMocks.transaction }) },
+  useFilesStore: Object.assign(
+    (select: (state: { projectId: string }) => unknown) => select({ projectId: "paper" }),
+    { getState: () => ({ runExternalProjectMutation: fileMocks.transaction }) },
+  ),
 }));
 
 vi.mock("@/components/editor/diff/InlineDiffPreview", () => ({
@@ -154,6 +158,7 @@ beforeEach(async () => {
   changedEvent = undefined;
   await useResearchTasksStore.getState().bindProject(null);
   vi.mocked(api.listResearchTasks).mockResolvedValue([]);
+  vi.mocked(api.listTaskCompiledPdfs).mockResolvedValue([]);
   vi.mocked(api.loadResearchTaskEventsBefore).mockResolvedValue({ events: [], nextSequence: null });
   vi.mocked(api.listenForResearchTaskChanges).mockImplementation(async (listener) => { changedTask = listener; return unlistenTasks; });
   vi.mocked(api.listenForResearchTaskEvents).mockImplementation(async (listener) => { changedEvent = listener; return unlistenEvents; });

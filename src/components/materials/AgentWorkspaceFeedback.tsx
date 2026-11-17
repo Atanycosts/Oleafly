@@ -2,6 +2,7 @@ import { Check, CircleAlert, Navigation, Pause } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { Tooltip } from "@/components/ui/tooltip";
 import { agentExecutionFlowKey, useAgentWorkspaceStore } from "@/store/agent-workspace";
 import { useFilesStore } from "@/store/files";
 import { useResearchTasksStore } from "@/store/research-tasks";
@@ -104,7 +105,7 @@ export function AgentWorkspaceFeedback({ compact = false }: { compact?: boolean 
     {operation.phase === "started" ? <Spinner size="xs" /> : attention ? <CircleAlert className="size-3.5 shrink-0 text-destructive" /> : <Check className="size-3.5 shrink-0 text-muted-foreground" />}
     <div className="min-w-0 flex-1" role="status" aria-live="polite">
       <p className="truncate font-medium">{label}</p>
-      <p className="truncate text-muted-foreground" title={operation.error}>{actions[operation.operation] ?? text.process} · {stateLabel}</p>
+      <p className="truncate text-muted-foreground"><Tooltip label={operation.error} suppressed={!operation.error}><span>{actions[operation.operation] ?? text.process} · {stateLabel}</span></Tooltip></p>
     </div>
     <Button type="button" variant="ghost" size="xs" className="shrink-0" data-agent-follow-control
       data-testid={compact ? "sidebar-agent-follow" : "workspace-agent-follow"}

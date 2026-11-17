@@ -57,6 +57,8 @@ const MUTATING_TOOLS = new Set([
   "export_docx_document",
   "suggest_docx_change",
   "apply_docx_suggestion",
+  "write_docx_equation",
+  "replace_docx_text_range",
   "apply_docx_format",
   "apply_docx_format_batch",
   "import_docx_template_styles",

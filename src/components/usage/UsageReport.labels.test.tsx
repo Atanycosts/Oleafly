@@ -348,7 +348,7 @@ describe("UsageReport labels", () => {
     const { unmount } = render(<UsageReport report={withCustom} providerNames={names} />);
     const providers = within(sectionByHeading(enUsage.report.providers));
     expect(providers.getByText("Lemonade (local)")).toBeVisible();
-    expect(providers.getByText("OpenAI")).toBeVisible();
+    expect(providers.getByText("OpenAI", { selector: "span" })).toBeVisible();
     expect(providers.queryByText("Not the catalog name")).not.toBeInTheDocument();
     expect(providers.getByText("lab-gateway")).toBeVisible();
     unmount();
