@@ -29,11 +29,11 @@ interface LoadedVersion {
 
 export async function loadMaterialView(request: MaterialViewerRequest, version: MaterialViewVersion): Promise<LoadedVersion> {
   const content = await version.load();
-  const source = typeof content === "string" ? { text: content, mediaType: version.mediaType } : { bytes: content, mediaType: version.mediaType };
+  const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content.slice();
+  const source = typeof content === "string" ? { text: content, mediaType: version.mediaType } : { bytes, mediaType: version.mediaType };
   const document = await createMaterialDocument({ projectId: request.projectId, documentId: request.documentId,
     path: request.path ?? null, kind: request.kind, title: version.title }, source);
   if (document.revision !== version.revision.replace(/^sha256:/u, "")) throw new Error("material_version_mismatch");
-  const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content.slice();
   return { document, bytes, text: typeof content === "string" ? content : new TextDecoder().decode(bytes) };
 }
 

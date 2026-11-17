@@ -106,6 +106,27 @@ it("freezes binary content independently of the loader's mutable buffer", async 
   expect(loaded.document).toMatchObject({ documentId: "word", path: "paper.docx", revision: document.revision });
 });
 
+it("renders the verified snapshot when the loader's buffer changes during hashing", async () => {
+  const content = "Retained\r\nsource";
+  const bytes = new TextEncoder().encode(content);
+  const document = await createMaterialDocument({ projectId: "project", documentId: "source", path: "main.tex", kind: "source", title: "Source" }, { bytes });
+  const version: MaterialViewerRequest = { ...document, load: async () => bytes };
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  const pendingHash = vi.spyOn(crypto.subtle, "digest").mockImplementationOnce(async (algorithm, input) => {
+    const result = await digest(algorithm, input);
+    bytes.fill(0);
+    return result;
+  });
+  try {
+    const loaded = await loadMaterialView(version, version);
+    expect(loaded.document.revision).toBe(document.revision);
+    expect(Array.from(loaded.bytes)).toEqual(Array.from(new TextEncoder().encode(content)));
+    expect(loaded.text).toBe(content);
+  } finally {
+    pendingHash.mockRestore();
+  }
+});
+
 it.each([
   { kind: "source", testId: "source-renderer", path: "notes/main.tex", anchor: { kind: "text", from: 2, to: 5, quote: "句子" } },
   { kind: "diagram", testId: "diagram-renderer", path: null, anchor: { kind: "object", id: "node-1" } },
