@@ -42,7 +42,7 @@ import { loadNamespace } from "@/i18n";
 import { base64ToBytes } from "@/lib/base64";
 import { useCloudStore } from "@/store/cloud";
 import { useSettingsStore } from "@/store/settings";
-import { ThemeProvider } from "@/lib/theme";
+import { ThemeProvider, requestThemePreference, requestThemeToggle } from "@/lib/theme";
 import SettingsFileCardView from "./SettingsFileCard";
 
 function SettingsFileCard() {
@@ -147,6 +147,16 @@ describe("SettingsFileCard", () => {
     expect(mocks.toast.success).not.toHaveBeenCalled();
   });
 
+  it("does nothing when the import picker is cancelled", async () => {
+    mocks.pickSettingsFile.mockResolvedValue(null);
+    render(<SettingsFileCard />);
+    await chooseLocalImport();
+    await waitFor(() => expect(screen.getByTestId("settings-file-import")).toBeEnabled());
+    expect(screen.queryByTestId("settings-file-problem")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(mocks.toast.error).not.toHaveBeenCalled();
+  });
+
   it("reports a failed export", async () => {
     mocks.pickSavePath.mockResolvedValue("/tmp/x.json");
     mocks.writeBytesFile.mockRejectedValueOnce(new Error("disk full"));
@@ -216,6 +226,17 @@ describe("SettingsFileCard", () => {
     expect(useSettingsStore.getState().appFontSize).toBe(16);
   });
 
+  it("explains when an imported file is not JSON", async () => {
+    mocks.pickSettingsFile.mockResolvedValue({ name: "broken.json", text: "{not json" });
+    render(<SettingsFileCard />);
+    await chooseLocalImport();
+    const problem = await screen.findByTestId("settings-file-problem");
+    expect(problem).toHaveTextContent("broken.json wasn't imported");
+    expect(problem).toHaveTextContent("The file isn't valid JSON.");
+    expect(problem).not.toHaveTextContent("This isn't an Oleafly settings file.");
+    expect(useSettingsStore.getState().appFontSize).toBe(16);
+  });
+
   it("says so when the file matches the current settings", async () => {
     mocks.pickSettingsFile.mockResolvedValue(settingsFile({ appearance: { app: { fontSize: 16 } } }));
     render(<SettingsFileCard />);
@@ -229,6 +250,22 @@ describe("SettingsFileCard", () => {
     render(<SettingsFileCard />);
     await chooseLocalImport();
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith("Couldn't open that file."));
+  });
+
+  it("closes the import and reports an apply failure without claiming success", async () => {
+    mocks.pickSettingsFile.mockResolvedValue(settingsFile({ ai: { includePdfPreview: "off" } }));
+    mocks.setConfig.mockRejectedValueOnce(new Error("settings.json is read-only"));
+    render(<SettingsFileCard />);
+    await chooseLocalImport();
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: /^Import/ }));
+
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith(
+      "Some settings couldn't be saved. Try the import again.",
+    ));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-file-import")).toBeEnabled();
+    expect(mocks.toast.success).not.toHaveBeenCalledWith("Settings imported.");
   });
 
   it("works outside the theme provider, the way the Settings harness renders it", async () => {
@@ -249,6 +286,18 @@ describe("SettingsFileCard", () => {
     await waitFor(() => expect(screen.getByTestId("settings-file-json")).toHaveTextContent('"fontSize": 21'));
     await userEvent.click(toggle);
     expect(screen.queryByTestId("settings-file-json")).not.toBeInTheDocument();
+  });
+
+  it("refreshes the settings JSON when the theme preference changes or toggles", async () => {
+    render(<SettingsFileCard />);
+    await userEvent.click(screen.getByTestId("settings-file-view"));
+    expect(await screen.findByTestId("settings-file-json")).toHaveTextContent('"theme": "system"');
+
+    act(() => requestThemePreference("dark"));
+    await waitFor(() => expect(screen.getByTestId("settings-file-json")).toHaveTextContent('"theme": "dark"'));
+
+    act(() => requestThemeToggle());
+    await waitFor(() => expect(screen.getByTestId("settings-file-json")).toHaveTextContent('"theme": "light"'));
   });
 
   it("offers this device and the cloud", async () => {
