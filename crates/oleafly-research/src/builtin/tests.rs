@@ -1303,7 +1303,11 @@ async fn the_agent_is_woken_when_a_run_finishes_after_its_turn() {
         "{woken}"
     );
     assert!(
-        woken.ends_with("Record the result in ledger.tsv with ledger_append and update handoff.md before the next step."),
+        woken.contains("If the task permits and needs file records, record the result in ledger.tsv with ledger_append and update handoff.md before the next step"),
+        "{woken}"
+    );
+    assert!(
+        woken.ends_with("The task's explicit output and file restrictions still apply."),
         "{woken}"
     );
     let runs = services.runs.list(&task.id).unwrap();
