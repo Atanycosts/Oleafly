@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { JournalCheck, JournalFragment, JournalObjectReference, JournalProject, JournalRule, JournalState, JournalWorld } from "@/lib/journal-workbench";
+import type { JournalCheck, JournalDiff, JournalFragment, JournalObjectReference, JournalProject, JournalReview, JournalRule, JournalState, JournalWorld } from "@/lib/journal-workbench";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { useFilesStore } from "@/store/files";
 import { useDocxWorkspaceStore } from "@/store/docx-workspace";
@@ -791,6 +791,88 @@ it("offers rule and retained source fragment discussion inside the existing evid
   fireEvent.click(within(dialog).getByRole("button", { name: /Open source fragment/ }));
   await waitFor(() => expect(within(dialog).getAllByTestId("journal-object-entry").some((node) => node.textContent === "source:world-current:guide-fragment")).toBe(true));
   expect(api.references).toContainEqual({ libraryRoot: "/retained/library", workbenchProjectId: "manuscript", kind: "source", objectId: "guide-fragment", worldVersionId: "world-current", checkId: "check-current" });
+});
+
+it.each(["rule evidence", "source library", "version comparison", "historical check"] as const)(
+  "does not reopen an old %s after the file tree opens another manuscript",
+  async (operation) => {
+    const secondWorld: JournalWorld = operation === "historical check"
+      ? { ...world, version_id: "world-old", version_ordinal: 1 }
+      : { ...world, version_id: "second-world", journal_id: "second-journal", journal_name: "Second journal", rules: [] };
+    const second: JournalProject = {
+      project_id: "second-manuscript", name: "Second manuscript", baseline_id: "second-baseline",
+      binding: { binding_id: "second-binding", baseline_id: "second-baseline", world_version_id: secondWorld.version_id },
+      latest_check: null,
+    };
+    const pending = deferred<JournalReview | JournalDiff | JournalWorld>();
+    let historicalReadPending = false;
+    const originalRequest = api.request.getMockImplementation();
+    if (!originalRequest) throw new Error("Expected the journal request fixture");
+    api.request.mockImplementation(async (path: string, payload?: unknown) => {
+      const url = new URL(path, "http://workbench");
+      if (url.pathname === "/api/review" && (operation === "rule evidence" || operation === "source library")) return pending.promise;
+      if (url.pathname === "/api/diff" && operation === "version comparison") return pending.promise;
+      if (url.pathname === "/api/world") {
+        if (url.searchParams.get("version_id") === "world-old" && operation === "historical check" && !historicalReadPending) {
+          historicalReadPending = true;
+          return pending.promise;
+        }
+        if (url.searchParams.get("version_id") === secondWorld.version_id) return secondWorld;
+      }
+      if (url.pathname === "/api/history" && url.searchParams.get("project_id") === second.project_id) return { checks: [] };
+      const response = await originalRequest(path, payload);
+      if (url.pathname === "/api/state") return { ...response, projects: [...response.projects, second], worlds: [...response.worlds.filter((item: JournalWorld) => item.version_id !== secondWorld.version_id), secondWorld] };
+      return response;
+    });
+    render(<JournalWorkspaceHarness />);
+    const button = operation === "rule evidence"
+      ? await screen.findByRole("button", { name: /Columns.*2/ })
+      : await screen.findByRole("button", { name: operation === "source library" ? text.sourceLibrary : operation === "version comparison" ? text.compareVersions : /Example Journal · v1/ });
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByTestId("journal-checks-panel")).toHaveAttribute("aria-busy", "true"));
+
+    act(() => useDocxWorkspaceStore.getState().open({ appProjectId: "paper", project: second, world: secondWorld, onSaved: async () => {} }));
+    await screen.findByRole("heading", { name: secondWorld.journal_name });
+    await waitFor(() => expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue(second.project_id));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await act(async () => {
+      pending.resolve(operation === "rule evidence" || operation === "source library"
+        ? { world_version_id: world.version_id, fragments: [fragment], rule_links: [] }
+        : operation === "version comparison"
+          ? { scope_changed: true, journal_changed: false, changes: [] }
+          : { ...world, version_id: "world-old", version_ordinal: 1 });
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: secondWorld.journal_name })).toBeInTheDocument();
+    expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue(second.project_id);
+    expect(screen.getByTestId("journal-world-select")).toHaveValue(secondWorld.version_id);
+    expect(screen.queryByRole("region", { name: text.results })).not.toBeInTheDocument();
+    expect(api.references.filter((reference) => reference.workbenchProjectId === second.project_id)).not.toContainEqual(
+      expect.objectContaining({ objectId: rule.rule_id }),
+    );
+  },
+);
+
+it("compares the selected journal versions and keeps each requirement's original evidence", async () => {
+  const before: JournalRule = { ...rule, expected: 1, basis_status: "confirmed", evidence: [{ source_id: "guide", locator: "guide:line:1", quote: "Use one column in the initial manuscript" }] };
+  const after: JournalRule = { ...rule, resolution: { reason: "Confirmed the updated guide", previous_expected: 1, previous_basis_status: "confirmed" } };
+  const diff: JournalDiff = { scope_changed: true, journal_changed: false, changes: [{ property: rule.property, before, after, status: "changed" }] };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => new URL(path, "http://workbench").pathname === "/api/diff" ? diff : originalRequest(path, payload));
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await screen.findByRole("button", { name: text.compareVersions }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("combobox", { name: text.compareFrom })).toHaveValue("world-old");
+  expect(api.request).toHaveBeenCalledWith("/api/diff?from_version=world-old&to_version=world-current");
+  expect(within(dialog).getByText(text.scopeChanged)).toBeInTheDocument();
+  expect(within(dialog).getByRole("heading", { name: `${text.properties.columns} · ${text.changes.changed}` })).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByText(text.changeEvidence));
+  expect(within(dialog).getByText(before.evidence[0].quote)).toBeVisible();
+  expect(within(dialog).getByText(after.evidence[0].quote)).toBeVisible();
+  expect(within(dialog).getByText(`${text.operatorDecision}: ${after.resolution?.reason}`)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 });
 
 it("edits an exact font requirement as text and sends its name without numeric conversion", async () => {

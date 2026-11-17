@@ -196,6 +196,9 @@ existing save/discard flow; it cannot bypass an in-flight save or check.
 Workbench stores continue to own sessions, saved versions and journal records.
 Journal checks uses one controller: it renders manuscript/template selection
 and check actions into the sidebar and displays results in the center.
+Rule evidence, source-library reviews, version comparisons and historical-check
+selection share the controller's request sequence, so a late response cannot
+replace the details after another manuscript opens from the file tree.
 Submission context and additional requirement sources remain available, while
 internal IDs, JSON import/export, raw XML and developer diagnostics have no
 controls in the normal Word or Journal views. Coverage uses the domain gap

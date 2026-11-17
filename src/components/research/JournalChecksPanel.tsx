@@ -430,9 +430,10 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     }
   }
 
-  async function openEvidence(selectedRule: JournalRule | null) {
+  async function openEvidence(selectedRule: JournalRule | null, sequence: number) {
     if (!world) return;
     const next = await journalRequest<JournalReview>(journalQuery("/api/review", { version_id: world.version_id }));
+    if (sequence !== loadSequence.current) return;
     setReview(next);
     setRule(selectedRule);
     setSourceLibraryOpen(selectedRule === null);
@@ -445,8 +446,9 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     setDispositionNote("");
   }
 
-  async function compareVersions(from: string, to: string) {
+  async function compareVersions(from: string, to: string, sequence: number) {
     const diff = await journalRequest<JournalDiff>(journalQuery("/api/diff", { from_version: from, to_version: to }));
+    if (sequence !== loadSequence.current) return;
     setComparison({ from, diff });
   }
 
@@ -944,7 +946,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                       }}>
                         {text.importJournal}
                       </Button>
-                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => void perform(() => openEvidence(null))}>
+                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => void perform((sequence) => openEvidence(null, sequence))}>
                         {text.sourceLibrary}
                       </Button>
                       {otherVersions.length > 0 && (
@@ -952,7 +954,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                           size="sm"
                           variant="ghost"
                           disabled={busy}
-                          onClick={() => void perform(() => compareVersions(otherVersions[0].version_id, world.version_id))}
+                          onClick={() => void perform((sequence) => compareVersions(otherVersions[0].version_id, world.version_id, sequence))}
                         >
                           {text.compareVersions}
                         </Button>
@@ -997,7 +999,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                           key={item.rule_id}
                           type="button"
                           disabled={busy}
-                          onClick={() => void perform(() => openEvidence(item))}
+                          onClick={() => void perform((sequence) => openEvidence(item, sequence))}
                           className="rounded-lg border p-3 text-left transition-colors hover:bg-accent disabled:opacity-50"
                         >
                           <span className="flex items-start justify-between gap-3">
@@ -1047,6 +1049,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                           onClick={() =>
                             void perform(async (sequence) => {
                               await chooseWorld(record.world_version_id, sequence);
+                              if (sequence !== loadSequence.current) return;
                               setCheck(record);
                             })
                           }
@@ -1442,7 +1445,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 className={selectClass}
                 disabled={busy}
                 value={comparison?.from ?? ""}
-                onChange={(event) => void perform(() => compareVersions(event.target.value, world.version_id))}
+                onChange={(event) => void perform((sequence) => compareVersions(event.target.value, world.version_id, sequence))}
               >
                 {otherVersions.map((item) => (
                   <option key={item.version_id} value={item.version_id}>
