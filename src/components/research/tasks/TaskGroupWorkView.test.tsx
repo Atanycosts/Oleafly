@@ -51,11 +51,16 @@ beforeAll(async () => {
 
 afterEach(() => testing.cleanup());
 
-function message(id: string, body: string, replyTo: string | null = null): GroupMessage {
+function message(
+  id: string,
+  body: string,
+  replyTo: string | null = null,
+  groupId = "g1",
+): GroupMessage {
   return {
     id,
     sequence: 1,
-    groupId: "g1",
+    groupId,
     author: { kind: "user", id: "user-1", executionId: null },
     body,
     recipients: [],
@@ -71,10 +76,11 @@ function work(
   status: GroupWork["status"],
   causeKind = "message",
   causeId = "source",
+  groupId = "g1",
 ): GroupWork {
   return {
     id,
-    groupId: "g1",
+    groupId,
     memberId: "m1",
     causeKind,
     causeId,
@@ -87,10 +93,74 @@ function work(
   };
 }
 
-function snapshot(workItems: GroupWork[], messages: GroupMessage[] = []): GroupSnapshot {
+function eventWork(
+  id: string,
+  causeId = "event-1",
+  groupId = "g1",
+  path = "draft.md",
+): GroupWork {
+  const item = work(id, "pending", "event", causeId, groupId);
+  item.reasons = [{
+    kind: "interest_object",
+    object: { kind: "file", id: path, revision: "2", path },
+  }];
+  return item;
+}
+
+function annotation(
+  id = "annotation-1",
+  body = "Please verify the retained claim.",
+  path = "notes.md",
+): TaskAnnotation {
+  return {
+    id,
+    target: {
+      projectId: "p1",
+      taskId: "t1",
+      objectKind: "file",
+      objectId: path,
+      objectRevision: "4",
+      path,
+    },
+    author: { kind: "user", id: "user-1" },
+    body,
+    parentId: null,
+    mentions: ["m1"],
+    explicitRequest: true,
+    status: "open",
+    createdAt: 1,
+    updatedAt: 1,
+    handledAt: null,
+    handledBy: null,
+  };
+}
+
+function event(
+  id = "event-1",
+  groupId = "g1",
+  kind = "file_changed",
+  path = "draft.md",
+): GroupEvent {
+  return {
+    sequence: 3,
+    id,
+    groupId,
+    kind,
+    object: { kind: "file", id: path, revision: "2", path },
+    author: { kind: "member", id: "m1", executionId: null },
+    detail: "The draft changed.",
+    createdAt: 3,
+  };
+}
+
+function snapshot(
+  workItems: GroupWork[],
+  messages: GroupMessage[] = [],
+  groupId = "g1",
+): GroupSnapshot {
   return {
     group: {
-      id: "g1",
+      id: groupId,
       projectId: "p1",
       taskId: "t1",
       status: "open",
@@ -99,7 +169,7 @@ function snapshot(workItems: GroupWork[], messages: GroupMessage[] = []): GroupS
     },
     members: [{
       id: "m1",
-      groupId: "g1",
+      groupId,
       name: "Reviewer",
       responsibility: "Check evidence",
       runtimeId: "builtin",
@@ -116,6 +186,14 @@ function snapshot(workItems: GroupWork[], messages: GroupMessage[] = []): GroupS
     executions: [],
     nextSequence: messages.length,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 it("filters work sections and follows up on a loaded source message", () => {
@@ -152,51 +230,16 @@ it("filters work sections and follows up on a loaded source message", () => {
 });
 
 it("loads exact annotation and event sources only when requested", async () => {
-  const annotation: TaskAnnotation = {
-    id: "annotation-1",
-    target: {
-      projectId: "p1",
-      taskId: "t1",
-      objectKind: "file",
-      objectId: "notes.md",
-      objectRevision: "4",
-      path: "notes.md",
-    },
-    author: { kind: "user", id: "user-1" },
-    body: "Please verify the retained claim.",
-    parentId: null,
-    mentions: ["m1"],
-    explicitRequest: true,
-    status: "open",
-    createdAt: 1,
-    updatedAt: 1,
-    handledAt: null,
-    handledBy: null,
-  };
-  const event: GroupEvent = {
-    sequence: 3,
-    id: "event-1",
-    groupId: "g1",
-    kind: "file_changed",
-    object: { kind: "file", id: "draft.md", revision: "2", path: "draft.md" },
-    author: { kind: "member", id: "m1", executionId: null },
-    detail: "The draft changed.",
-    createdAt: 3,
-  };
-  const loadAnnotation = vi.fn(async () => annotation);
-  const loadEvent = vi.fn(async () => event);
+  const retainedAnnotation = annotation();
+  const changedEvent = event();
+  const loadAnnotation = vi.fn(async () => retainedAnnotation);
+  const loadEvent = vi.fn(async () => changedEvent);
 
   const view = testing.render(
     <WorkView
       snapshot={snapshot([
         work("annotation-work", "pending", "annotation", "annotation-1"),
-        {
-          ...work("event-work", "pending", "event", "event-1"),
-          reasons: [{
-            kind: "interest_object",
-            object: { kind: "file", id: "draft.md", revision: "2", path: "draft.md" },
-          }],
-        },
+        eventWork("event-work"),
       ])}
       busy={false}
       loadMessage={async () => null}
@@ -284,4 +327,291 @@ it("opens only exact historical result identities and keeps malformed references
   expect(view.queryByRole("button", { name: "foreign-task · generation:2" })).toBeNull();
   expect(view.getByText("wrong-generation · generation:3")).toBeTruthy();
   expect(view.getByText("foreign-task · generation:2")).toBeTruthy();
+});
+
+it("clears a failed message error after a successful retry", async () => {
+  const loadMessage = vi.fn()
+    .mockRejectedValueOnce(new Error("Message unavailable"))
+    .mockResolvedValueOnce(message("source", "Recovered source message"));
+  const view = testing.render(
+    <WorkView
+      snapshot={snapshot([work("message-retry", "pending")])}
+      busy={false}
+      loadMessage={loadMessage}
+      loadEvent={async () => null}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+  const source = view.getByTestId("source-question-message-retry");
+
+  testing.fireEvent.click(testing.within(source).getByRole("button", { name: "workReadSource" }));
+  await testing.waitFor(() => {
+    expect(testing.within(source).getByRole("alert").textContent).toBe("Message unavailable");
+  });
+
+  const retry = testing.within(source).getByRole("button", {
+    name: "workReadSource",
+  }) as HTMLButtonElement;
+  expect(retry.disabled).toBe(false);
+  testing.fireEvent.click(retry);
+
+  await testing.waitFor(() => {
+    expect(testing.within(source).getByText("Recovered source message")).toBeTruthy();
+  });
+  expect(testing.within(source).queryByRole("alert")).toBeNull();
+});
+
+it("surfaces an event failure and retries to the recovered label", async () => {
+  const loadEvent = vi.fn()
+    .mockRejectedValueOnce(new Error("Event unavailable"))
+    .mockResolvedValueOnce(event());
+  const view = testing.render(
+    <WorkView
+      snapshot={snapshot([eventWork("event-retry")])}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={loadEvent}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+  const source = view.getByTestId("source-event-event-retry");
+
+  testing.fireEvent.click(testing.within(source).getByRole("button", { name: "workReadSource" }));
+  await testing.waitFor(() => {
+    expect(testing.within(source).getByRole("alert").textContent).toBe("Event unavailable");
+  });
+  await testing.waitFor(() => {
+    const retry = testing.within(source).getByRole("button", {
+      name: "workReadSource",
+    }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+  });
+
+  testing.fireEvent.click(testing.within(source).getByRole("button", { name: "workReadSource" }));
+  await testing.waitFor(() => {
+    expect(testing.within(source).getByText("file_changed · draft.md")).toBeTruthy();
+  });
+});
+
+it("surfaces an annotation failure and retries to the recovered body", async () => {
+  const loadAnnotation = vi.fn()
+    .mockRejectedValueOnce(new Error("Annotation unavailable"))
+    .mockResolvedValueOnce(annotation());
+  const view = testing.render(
+    <WorkView
+      snapshot={snapshot([work("annotation-retry", "pending", "annotation", "annotation-1")])}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={async () => null}
+      loadAnnotation={loadAnnotation}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+  const source = view.getByTestId("source-annotation-annotation-retry");
+
+  testing.fireEvent.click(testing.within(source).getByRole("button", { name: "workReadSource" }));
+  await testing.waitFor(() => {
+    expect(testing.within(source).getByRole("alert").textContent).toBe("Annotation unavailable");
+  });
+  await testing.waitFor(() => {
+    const retry = testing.within(source).getByRole("button", {
+      name: "workReadSource",
+    }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+  });
+
+  testing.fireEvent.click(testing.within(source).getByRole("button", { name: "workReadSource" }));
+  await testing.waitFor(() => {
+    expect(testing.within(source).getByText("Please verify the retained claim.")).toBeTruthy();
+  });
+  expect(testing.within(source).getByText("notes.md")).toBeTruthy();
+});
+
+it("does not let a late message from an old group block the current group", async () => {
+  const oldMessage = deferred<GroupMessage | null>();
+  const currentMessage = deferred<GroupMessage | null>();
+  const loadMessage = vi.fn()
+    .mockImplementationOnce(() => oldMessage.promise)
+    .mockImplementationOnce(() => currentMessage.promise);
+  const view = testing.render(
+    <WorkView
+      key="g1"
+      snapshot={snapshot([work("message-scope", "pending")])}
+      busy={false}
+      loadMessage={loadMessage}
+      loadEvent={async () => null}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+  testing.fireEvent.click(
+    testing.within(view.getByTestId("source-question-message-scope")).getByRole("button", {
+      name: "workReadSource",
+    }),
+  );
+
+  view.rerender(
+    <WorkView
+      key="g2"
+      snapshot={snapshot([work("message-scope", "pending", "message", "source", "g2")], [], "g2")}
+      busy={false}
+      loadMessage={loadMessage}
+      loadEvent={async () => null}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+
+  const currentSource = view.getByTestId("source-question-message-scope");
+  const readCurrent = testing.within(currentSource).getByRole("button", {
+    name: "workReadSource",
+  }) as HTMLButtonElement;
+  expect(readCurrent.disabled).toBe(false);
+  testing.fireEvent.click(readCurrent);
+  await testing.act(async () => {
+    currentMessage.resolve(message("source", "Current group-two message", null, "g2"));
+    await currentMessage.promise;
+  });
+  await testing.waitFor(() => {
+    expect(testing.within(currentSource).getByText("Current group-two message")).toBeTruthy();
+  });
+
+  await testing.act(async () => {
+    oldMessage.resolve(message("source", "Stale group-one message"));
+    await oldMessage.promise;
+  });
+
+  expect(testing.within(currentSource).getByText("Current group-two message")).toBeTruthy();
+  expect(currentSource.textContent).not.toContain("Stale group-one message");
+});
+
+it("does not publish an event resolved for an old group", async () => {
+  const oldEvent = deferred<GroupEvent | null>();
+  const currentEvent = deferred<GroupEvent | null>();
+  const loadEvent = vi.fn()
+    .mockImplementationOnce(() => oldEvent.promise)
+    .mockImplementationOnce(() => currentEvent.promise);
+  const view = testing.render(
+    <WorkView
+      key="g1"
+      snapshot={snapshot([eventWork("event-scope")])}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={loadEvent}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+  testing.fireEvent.click(
+    testing.within(view.getByTestId("source-event-event-scope")).getByRole("button", {
+      name: "workReadSource",
+    }),
+  );
+
+  view.rerender(
+    <WorkView
+      key="g2"
+      snapshot={snapshot([eventWork("event-scope", "event-1", "g2")], [], "g2")}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={loadEvent}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+
+  const currentSource = view.getByTestId("source-event-event-scope");
+  const readCurrent = testing.within(currentSource).getByRole("button", {
+    name: "workReadSource",
+  }) as HTMLButtonElement;
+  expect(readCurrent.disabled).toBe(false);
+  testing.fireEvent.click(readCurrent);
+  await testing.act(async () => {
+    currentEvent.resolve(event("event-1", "g2", "file_changed"));
+    await currentEvent.promise;
+  });
+  await testing.waitFor(() => {
+    expect(testing.within(currentSource).getByText("file_changed · draft.md")).toBeTruthy();
+  });
+
+  await testing.act(async () => {
+    oldEvent.resolve(event("event-1", "g1", "stale_group_event"));
+    await oldEvent.promise;
+  });
+
+  expect(testing.within(currentSource).getByText("file_changed · draft.md")).toBeTruthy();
+  expect(currentSource.textContent).not.toContain("stale_group_event");
+});
+
+it("does not publish an annotation resolved for an old group", async () => {
+  const oldAnnotation = deferred<TaskAnnotation | null>();
+  const currentAnnotation = deferred<TaskAnnotation | null>();
+  const loadAnnotation = vi.fn()
+    .mockImplementationOnce(() => oldAnnotation.promise)
+    .mockImplementationOnce(() => currentAnnotation.promise);
+  const view = testing.render(
+    <WorkView
+      key="g1"
+      snapshot={snapshot([work("annotation-scope", "pending", "annotation", "annotation-1")])}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={async () => null}
+      loadAnnotation={loadAnnotation}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+  testing.fireEvent.click(
+    testing.within(view.getByTestId("source-annotation-annotation-scope")).getByRole("button", {
+      name: "workReadSource",
+    }),
+  );
+
+  view.rerender(
+    <WorkView
+      key="g2"
+      snapshot={snapshot([
+        work("annotation-scope", "pending", "annotation", "annotation-1", "g2"),
+      ], [], "g2")}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={async () => null}
+      loadAnnotation={loadAnnotation}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+
+  const currentSource = view.getByTestId("source-annotation-annotation-scope");
+  const readCurrent = testing.within(currentSource).getByRole("button", {
+    name: "workReadSource",
+  }) as HTMLButtonElement;
+  expect(readCurrent.disabled).toBe(false);
+  testing.fireEvent.click(readCurrent);
+  await testing.act(async () => {
+    currentAnnotation.resolve(annotation("annotation-1", "Current group-two annotation", "group-two.md"));
+    await currentAnnotation.promise;
+  });
+  await testing.waitFor(() => {
+    expect(testing.within(currentSource).getByText("Current group-two annotation")).toBeTruthy();
+  });
+  expect(testing.within(currentSource).getByText("group-two.md")).toBeTruthy();
+
+  await testing.act(async () => {
+    oldAnnotation.resolve(annotation("annotation-1", "Stale group-one annotation", "group-one.md"));
+    await oldAnnotation.promise;
+  });
+
+  expect(testing.within(currentSource).getByText("Current group-two annotation")).toBeTruthy();
+  expect(testing.within(currentSource).getByText("group-two.md")).toBeTruthy();
+  expect(currentSource.textContent).not.toContain("Stale group-one annotation");
 });

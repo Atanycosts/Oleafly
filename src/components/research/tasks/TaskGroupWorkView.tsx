@@ -122,6 +122,7 @@ export function TaskGroupWorkView({
       const message = await loadMessage(id);
       if (scopeRef.current !== requestScope) return null;
       setResolvedMessages((current) => ({ ...current, [id]: message }));
+      setLoadErrors((current) => ({ ...current, [`message:${id}`]: "" }));
       return message;
     } catch (cause) {
       if (scopeRef.current !== requestScope) return null;
@@ -154,6 +155,7 @@ export function TaskGroupWorkView({
     try {
       const event = await loadEvent(id);
       setEvents((current) => ({ ...current, [id]: event }));
+      setLoadErrors((current) => ({ ...current, [`event:${id}`]: "" }));
     } catch (cause) {
       setLoadErrors((current) => ({ ...current, [`event:${id}`]: errorText(cause) }));
     } finally {
@@ -166,6 +168,7 @@ export function TaskGroupWorkView({
     try {
       const annotation = await loadAnnotation(id);
       setAnnotations((current) => ({ ...current, [id]: annotation }));
+      setLoadErrors((current) => ({ ...current, [`annotation:${id}`]: "" }));
     } catch (cause) {
       setLoadErrors((current) => ({ ...current, [`annotation:${id}`]: errorText(cause) }));
     } finally {
@@ -248,10 +251,14 @@ export function TaskGroupWorkView({
             <p className="whitespace-pre-wrap break-words text-sm">{annotation.body}</p>
           ) : (
             <p role="alert" className="text-xs text-destructive">
-              {loadErrors[`annotation:${work.causeId}`] ??
-                t(($) => $.researchTools.tasks.group.workSourceUnavailable)}
+              {t(($) => $.researchTools.tasks.group.workSourceUnavailable)}
             </p>
           )}
+          {annotation === undefined && loadErrors[`annotation:${work.causeId}`] ? (
+            <p role="alert" className="text-xs text-destructive">
+              {loadErrors[`annotation:${work.causeId}`]}
+            </p>
+          ) : null}
           {annotation ? (
             <p className="break-words text-xs text-muted-foreground">
               {annotation.target.path ?? annotation.target.objectId}
@@ -282,10 +289,14 @@ export function TaskGroupWorkView({
             </Button>
           ) : event ? null : (
             <p role="alert" className="text-xs text-destructive">
-              {loadErrors[`event:${work.causeId}`] ??
-                t(($) => $.researchTools.tasks.group.workSourceUnavailable)}
+              {t(($) => $.researchTools.tasks.group.workSourceUnavailable)}
             </p>
           )}
+          {event === undefined && loadErrors[`event:${work.causeId}`] ? (
+            <p role="alert" className="text-xs text-destructive">
+              {loadErrors[`event:${work.causeId}`]}
+            </p>
+          ) : null}
         </div>
       );
     }
