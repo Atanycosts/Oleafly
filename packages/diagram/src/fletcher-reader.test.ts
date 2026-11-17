@@ -531,6 +531,123 @@ describe("readFletcher on hand-written code", () => {
     expect(written).not.toContain("node-inset");
   });
 
+  it("keeps nested code, raw options, and edits stable across write-read cycles", () => {
+    const source = [
+      IMPORT,
+      '#let accent = rgb("#3366ff")',
+      "#figure(diagram(",
+      "  spacing: 2em,",
+      "  node((0, 0), [Start #strong[now]], name: <start>, inset: 6pt),",
+      '  edge(<start>, <middle>, "->", stroke: red),',
+      "  node((1, 0), [Middle], name: <middle>, fill: accent.lighten(40%), inset: 8pt),",
+      "  node((2, 0), [Drop], name: <drop>, width: 2cm, height: 1cm),",
+      '  edge(<middle>, <drop>, "->", dash: "dotted"),',
+      "  for step in range(2) { node((step, 2), [extra]) },",
+      "), caption: [Flow])",
+      "// trailing note",
+    ].join("\n");
+    const first = read(source);
+    const firstModel = first.model as DiagramModel;
+    expect(firstModel.nodes.map((item) => item.id)).toEqual(["start", "middle", "drop"]);
+    expect(firstModel.edges.map((item) => [item.source, item.target])).toEqual([
+      ["start", "middle"],
+      ["middle", "drop"],
+    ]);
+    expect(first.extras?.items).toEqual([
+      "for step in range(2) { node((step, 2), [extra]) }",
+    ]);
+
+    const edited: DiagramModel = {
+      ...firstModel,
+      nodes: [
+        ...firstModel.nodes
+          .filter((item) => item.id !== "drop")
+          .map((item) =>
+            item.id === "middle"
+              ? { ...item, label: "Milestone", x: item.x + 55 }
+              : item,
+          ),
+        node({ id: "done", shape: "roundrect", x: 300, y: 0, label: "Done", radius: 8 }),
+      ],
+      edges: [
+        ...firstModel.edges
+          .filter((item) => item.target !== "drop")
+          .map((item): DiagEdge =>
+            item.source === "start"
+              ? { ...item, arrow: "both", label: "Ready" }
+              : item,
+          ),
+        edge({ id: "finish", source: "middle", target: "done" }),
+      ],
+    };
+    const stageOne = modelToFletcher(edited, { extras: first.extras });
+    expect(stageOne).toContain('#let accent = rgb("#3366ff")');
+    expect(stageOne).toContain("#figure(diagram(");
+    expect(stageOne).toContain("), caption: [Flow])");
+    expect(stageOne).toContain("// trailing note");
+    expect(stageOne).toContain(
+      "  node((0, 0), [Start #strong[now]], name: <start>, inset: 6pt),",
+    );
+    expect(stageOne).toContain("fill: accent.lighten(40%)");
+    expect(stageOne).toContain("inset: 8pt");
+    expect(stageOne).toContain(
+      '  edge(<start>, <middle>, "<|-|>", [Ready], label-side: center, stroke: red),',
+    );
+    expect(stageOne).not.toContain("[Drop]");
+    expect(stageOne).not.toContain("<drop>");
+    const loop = "  for step in range(2) { node((step, 2), [extra]) },";
+    expect(stageOne).toContain(loop);
+    expect(stageOne.indexOf(loop)).toBeLessThan(stageOne.indexOf("[Done]"));
+
+    const second = read(stageOne);
+    const secondModel = second.model as DiagramModel;
+    expect(secondModel.nodes.map((item) => [item.id, item.label])).toEqual([
+      ["start", "Start #strong[now]"],
+      ["middle", "Milestone"],
+      ["done", "Done"],
+    ]);
+    expect(secondModel.edges.map((item) => [
+      item.source,
+      item.target,
+      item.arrow,
+      item.label ?? "",
+    ])).toEqual([
+      ["start", "middle", "both", "Ready"],
+      ["middle", "done", "forward", ""],
+    ]);
+    expect(second.extras?.items).toEqual([
+      "for step in range(2) { node((step, 2), [extra]) }",
+    ]);
+
+    const movedAgain: DiagramModel = {
+      ...secondModel,
+      nodes: secondModel.nodes.map((item) =>
+        item.id === "start" ? { ...item, x: item.x + 20 } : item,
+      ),
+    };
+    const stageTwo = modelToFletcher(movedAgain, { extras: second.extras });
+    const startLine =
+      stageTwo.split("\n").find((line) => line.includes("name: <start>")) ?? "";
+    expect(startLine).toContain("[Start #strong[now]]");
+    expect(startLine).toContain("inset: 6pt");
+    expect(startLine).not.toContain("\\#strong");
+    expect(stageTwo).toContain(loop);
+    expect(stageTwo).toContain(
+      '  edge(<start>, <middle>, "<|-|>", [Ready], label-side: center, stroke: red),',
+    );
+    expect(stageTwo).not.toContain("<drop>");
+
+    const third = read(stageTwo);
+    expect(third.model?.nodes.map((item) => [item.id, item.label])).toEqual([
+      ["start", "Start #strong[now]"],
+      ["middle", "Milestone"],
+      ["done", "Done"],
+    ]);
+    expect(third.extras?.items).toEqual([
+      "for step in range(2) { node((step, 2), [extra]) }",
+    ]);
+  });
+
   it("regenerates only the node the canvas moved and keeps its raw options", () => {
     const source = [
       IMPORT,
@@ -607,6 +724,57 @@ describe("readFletcher on hand-written code", () => {
     const written = modelToFletcher(result.model as DiagramModel, { extras: result.extras });
     expect(written).toContain("  node(enclose: (<a>,), stroke: red),");
     expect(written).toContain('  edge(<a>, <missing>, "->"),');
+  });
+
+  it("keeps a reversed curved edge's direction and bend after another edit", () => {
+    const source = [
+      IMPORT,
+      "#diagram(",
+      "  node((0, 0), [A], name: <a>),",
+      "  node((2, 1), [B], name: <b>),",
+      '  edge(<b>, <a>, "<-", bend: 30deg, stroke: red),',
+      ")",
+    ].join("\n");
+    const first = read(source);
+    const firstEdge = first.model?.edges[0];
+    expect(firstEdge).toMatchObject({
+      source: "a",
+      target: "b",
+      routing: "curved",
+      arrow: "forward",
+      style: "solid",
+    });
+
+    const edited: DiagramModel = {
+      ...(first.model as DiagramModel),
+      edges: (first.model as DiagramModel).edges.map((item) => ({
+        ...item,
+        label: "Back",
+        style: "dashed",
+      })),
+    };
+    const written = modelToFletcher(edited, { extras: first.extras });
+    const line = written.split("\n").find((text) => text.includes("[Back]")) ?? "";
+    expect(line).toContain("edge(<a>, <b>");
+    expect(line).toContain("bend: -30deg");
+    expect(line).toContain("stroke: red");
+    expect(line).not.toContain('edge(<b>, <a>');
+    expect(line).not.toContain("bend: 30deg");
+
+    const second = read(written);
+    expect(second.model?.edges[0]).toMatchObject({
+      source: "a",
+      target: "b",
+      routing: "curved",
+      arrow: "forward",
+      style: "dashed",
+      label: "Back",
+      sourceHandle: firstEdge?.sourceHandle,
+      targetHandle: firstEdge?.targetHandle,
+    });
+    expect(second.extras?.edges[second.model?.edges[0].id ?? ""].args).toContainEqual(
+      expect.objectContaining({ key: "stroke", text: "stroke: red" }),
+    );
   });
 
   it("keeps an import line that brings in more than the writer needs", () => {

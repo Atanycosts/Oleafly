@@ -1236,8 +1236,13 @@ function resolveEdge(
   };
   if (edge.label) applyEdgeLabel(context, model, edge.label);
   applyEdgeRouting(context, model, { source, target, vertices }, reversed, edge.bend ?? 0);
-  if (reversed && (edge.sourceArgs.has("marks") || edge.marksText !== null)) {
-    edge.sourceArgs.delete("marks");
+  if (reversed) {
+    if (edge.bend !== null && edge.sourceArgs.has("bend")) {
+      edge.sourceArgs.set("bend", `bend: ${-edge.bend}deg`);
+    }
+    if (edge.sourceArgs.has("marks") || edge.marksText !== null) {
+      edge.sourceArgs.delete("marks");
+    }
   }
   return { edge: model, vertices };
 }
