@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { strToU8, zipSync } from "fflate";
 import { StrictMode } from "react";
 import type { JournalCheck, JournalProject, JournalState, JournalWorld } from "@/lib/journal-workbench";
 import type { DocxParagraph, DocxSession, DocxTarget } from "@/lib/docx-session";
@@ -208,6 +209,28 @@ function paragraph(ref: string, body: string): DocxParagraph {
     text: body,
     paraId: `para-${ref}`,
   };
+}
+
+function exactFontDocx(): Uint8Array {
+  const word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const relationships =
+    "http://schemas.openxmlformats.org/package/2006/relationships";
+  const officeDocument =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
+  return zipSync({
+    "[Content_Types].xml": strToU8(
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    ),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="${relationships}"><Relationship Id="doc" Type="${officeDocument}" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="${relationships}"/>`,
+    ),
+    "word/document.xml": strToU8(
+      `<w:document xmlns:w="${word}"><w:body><w:p><w:r><w:rPr><w:rFonts w:ascii="Exact Face" w:hAnsi="Exact Face"/></w:rPr><w:t>Exact Face</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`,
+    ),
+  });
 }
 
 function sessionHarness(initial: readonly DocxParagraph[]) {
@@ -554,6 +577,44 @@ it("returns actual font resolution and export outcomes through the registered bu
   await act(async () => { await expect(registration.exportDocument()).rejects.toThrow("disk full"); });
   expect(mocks.createSession).toHaveBeenCalledOnce();
   expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+});
+
+it("reads exact live run fonts through the registered format contract", async () => {
+  mocks.editorSave.mockResolvedValue(exactFontDocx().buffer);
+  await renderReady(sessionHarness([paragraph("first", "Exact Face")]));
+  const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+
+  const first = await registration.readFormat({
+    kind: "objects",
+    objectKind: "run",
+    limit: 10,
+  });
+  const second = await registration.readFormat({
+    kind: "objects",
+    objectKind: "run",
+    limit: 10,
+  });
+
+  expect(first.document).toMatchObject({
+    sessionId: registration.sessionId,
+    filename: SOURCE.filename,
+    baselineId: INITIAL_BASELINE,
+    sessionRevision: 0,
+    savedRevision: 0,
+    dirty: false,
+  });
+  expect(first.objects).toContainEqual(
+    expect.objectContaining({
+      kind: "run",
+      text: "Exact Face",
+      properties: expect.objectContaining({
+        run: expect.objectContaining({ fontFamily: "Exact Face" }),
+      }),
+    }),
+  );
+  expect(second.sourceSha256).toBe(first.sourceSha256);
+  expect(mocks.editorSave).toHaveBeenCalledOnce();
+  expect(mocks.createSession).toHaveBeenCalledOnce();
 });
 
 it("cancels a reveal before or during the next frame without a late scroll", async () => {
