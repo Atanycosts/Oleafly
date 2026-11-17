@@ -89,7 +89,9 @@ jobs:
   frontend:
     name: Frontend (typecheck + build)
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    # The assembled stack needs about 40 minutes for build and coverage.
+    # Leave room to upload reports and save caches after those checks finish.
+    timeout-minutes: 60
     env:
       # The 0.4.8 vite build peaks near Node's default 4 GB heap (same
       # setting as release.yml).
@@ -231,7 +233,8 @@ jobs:
   frontend-windows:
     name: Frontend (Windows)
     runs-on: windows-2022
-    timeout-minutes: 45
+    # A passing suite reached 45 minutes and timed out during cache saving.
+    timeout-minutes: 60
     env:
       # The 0.4.8 vite build peaks near Node's default 4 GB heap (same
       # setting as release.yml).
