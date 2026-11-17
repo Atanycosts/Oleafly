@@ -11,7 +11,8 @@ on:
       - "docs/**"
       - ".github/badges/**"
   pull_request:
-    branches: [main]
+    # Stacked PRs target the preceding codex/ branch before they reach main.
+    branches: [main, "codex/**"]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -536,6 +537,8 @@ jobs:
     name: SonarQube Cloud
     needs: [frontend, rust]
     if: >-
+      vars.SONAR_ORGANIZATION != '' &&
+      vars.SONAR_PROJECT_KEY != '' &&
       github.actor != 'dependabot[bot]' &&
       (github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&

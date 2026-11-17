@@ -404,9 +404,29 @@ Cargo compilation job and one Vitest worker; it does not remove the memory cost
 of a full frontend build or a large Rust link. It is not installed as a pre-push
 hook. The Rust path retains the existing Windows library/CLI test split. These
 commands cover the earlier local hook gates; CI has additional platform and
-integration checks. The current workflow triggers pull requests targeting
-`main`, so stacked PRs targeting another branch do not automatically receive
-those checks.
+integration checks. On machines with limited memory, run focused checks locally
+and leave full builds and platform suites to GitHub Actions. The
+[CI workflow](../.github/workflows/ci.yml) runs for code changes in pull requests
+targeting `main` or `codex/**`, including draft stacked PRs, and for pushes to
+`main`. Documentation-only changes still skip automatic CI. It uses standard
+GitHub-hosted runners, whose execution time is free for public repositories;
+artifact and cache storage have separate allowances.
+
+For an existing branch that has not received a new pull request event, dispatch
+CI explicitly in your own fork:
+
+```bash
+gh workflow run ci.yml -R OWNER/Oleafly --ref YOUR_BRANCH
+gh run list -R OWNER/Oleafly --workflow ci.yml --branch YOUR_BRANCH
+```
+
+Replace `OWNER` and `YOUR_BRANCH` with your fork owner and pushed branch. A
+manual dispatch tests that branch's commit; a pull request run tests GitHub's
+merge commit with its target branch. CI builds E2E applications for its tests;
+it does not publish a release or replace the installed application. SonarQube
+Cloud analysis runs only when the repository variables `SONAR_ORGANIZATION`
+and `SONAR_PROJECT_KEY` are configured; an opted-in repository must also provide
+the `SONAR_TOKEN` secret. Build, lint and test jobs run without those settings.
 
 Other focused and integration checks remain available:
 
