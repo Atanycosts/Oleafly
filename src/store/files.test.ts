@@ -1226,7 +1226,6 @@ describe("disk reloads that finish after a project transition", () => {
     await useFilesStore.getState().closeProject();
     mocks.getProject.mockResolvedValue({
       ...META,
-      id: "project",
       name: "Reopened",
     });
     await useFilesStore.getState().openProject("project");
@@ -2014,7 +2013,6 @@ describe("folder listings that stop early", () => {
     mocks.listFiles.mockResolvedValue(WITH_BIB);
     mocks.getProject.mockResolvedValue({
       ...META,
-      id: "project",
       name: "Reopened",
     });
     await useFilesStore.getState().openProject("project");
@@ -2914,7 +2912,6 @@ describe("creating and renaming projects", () => {
     await useFilesStore.getState().openProject("project");
     resolveRename({
       ...META,
-      id: "project",
       name: "Stale rename",
     });
     await pendingRename;

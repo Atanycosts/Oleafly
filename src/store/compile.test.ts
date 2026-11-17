@@ -1168,9 +1168,11 @@ describe("queued compiles and stale results", () => {
 });
 
 describe("saving before a compile", () => {
-  const failedResult = {
+  const failedResult: CompileResult = {
     ok: false,
     has_pdf: false,
+    output_id: null,
+    output_revision: null,
     log: "",
     errors: [],
     synctex_path: null,

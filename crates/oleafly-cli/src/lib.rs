@@ -67,7 +67,7 @@ pub struct Cli {
 /// depend on the platform's much smaller main-thread stack.
 pub fn main() -> ExitCode {
     let main_thread = std::thread::Builder::new()
-        .name(MAIN_THREAD_NAME)
+        .name(MAIN_THREAD_NAME.to_owned())
         .stack_size(MAIN_THREAD_STACK_SIZE)
         .spawn(main_on_controlled_stack);
     let main_thread = match main_thread {
