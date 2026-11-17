@@ -3250,6 +3250,216 @@ describe("renaming entries", () => {
     expect(state.mainDoc).toBe("main.tex");
   });
 
+  it("finishes a confirmed rename when the post-rename generation cannot be refreshed", async () => {
+    const refreshFailure = new Error("generation unavailable");
+    const disk = new Map([
+      ["main.tex", "main"],
+      ["draft.tex", "draft start"],
+    ]);
+    mocks.writeFileContent.mockImplementation(
+      async (_projectId: string, path: string, content: string) => {
+        disk.set(path, content);
+        return { path, generation: 5 };
+      },
+    );
+    mocks.projectMutationGeneration
+      .mockResolvedValueOnce(4)
+      .mockResolvedValueOnce(6)
+      .mockRejectedValueOnce(refreshFailure)
+      .mockResolvedValueOnce(12);
+    mocks.renameFile.mockImplementation(async (_projectId: string, from: string, to: string) => {
+      disk.set(to, disk.get(from) ?? "");
+      disk.delete(from);
+      return to;
+    });
+    const before = [
+      { path: "main.tex", is_dir: false },
+      { path: "draft.tex", is_dir: false },
+    ];
+    const after = [
+      { path: "main.tex", is_dir: false },
+      { path: "paper.tex", is_dir: false },
+    ];
+    mocks.listFiles.mockResolvedValue(after);
+    const events: EntryRenamedEvent[] = [];
+    const stop = onEntryRenamed((event) => events.push(event));
+    useFilesStore.setState({
+      tree: before,
+      files: { "draft.tex": { content: "edited draft", dirty: true } },
+      openTabs: ["draft.tex"],
+      tabOrder: { "draft.tex": 1 },
+      activePath: "draft.tex",
+    });
+
+    try {
+      await expect(useFilesStore.getState().renameEntry("draft.tex", "paper.tex")).resolves.toBe(
+        "paper.tex",
+      );
+
+      expect(disk.get("paper.tex")).toBe("edited draft");
+      expect(disk.has("draft.tex")).toBe(false);
+      expect(useFilesStore.getState()).toMatchObject({
+        tree: after,
+        files: { "paper.tex": { content: "edited draft", dirty: false } },
+        openTabs: ["paper.tex"],
+        tabOrder: { "paper.tex": 1 },
+        activePath: "paper.tex",
+      });
+      expect(useFilesStore.getState().files["draft.tex"]).toBeUndefined();
+      expect(events).toEqual([
+        {
+          projectId: "project",
+          from: "draft.tex",
+          to: "paper.tex",
+          previousTree: before,
+          tree: after,
+          previousMainDoc: "main.tex",
+          mainDoc: "main.tex",
+        },
+      ]);
+      expect(mocks.logError).toHaveBeenCalledWith(
+        "refresh mutation generation after rename",
+        refreshFailure,
+      );
+
+      useFilesStore.getState().setContent("paper.tex", "later edit");
+      await useFilesStore.getState().saveFile("paper.tex");
+
+      expect(mocks.projectMutationGeneration).toHaveBeenCalledTimes(4);
+      expect(mocks.projectMutationGeneration.mock.calls[3]).toEqual(["project"]);
+      expect(mocks.writeFileContent).toHaveBeenLastCalledWith(
+        "project",
+        "paper.tex",
+        "later edit",
+        12,
+        expect.any(String),
+      );
+      expect(disk.get("paper.tex")).toBe("later edit");
+    } finally {
+      stop();
+    }
+  });
+
+  it("saves before a conflicting move and retries to the keep-both destination", async () => {
+    const disk = new Map([
+      ["draft.tex", "draft start"],
+      ["final.tex", "existing final"],
+    ]);
+    mocks.writeFileContent.mockImplementation(
+      async (_projectId: string, path: string, content: string) => {
+        disk.set(path, content);
+        return { path, generation: 5 };
+      },
+    );
+    mocks.projectMutationGeneration
+      .mockResolvedValueOnce(4)
+      .mockResolvedValueOnce(5)
+      .mockResolvedValueOnce(6)
+      .mockResolvedValueOnce(7);
+    const conflict = Object.assign(
+      new Error("A file or folder already exists at final.tex."),
+      {
+        name: "FileConflictError",
+        destination: "final.tex",
+        suggestedDestination: "draft (2).tex",
+      },
+    );
+    mocks.renameFile.mockImplementation(
+      async (
+        _projectId: string,
+        from: string,
+        _to: string,
+        strategy: "error" | "keep_both" | "replace",
+      ) => {
+        if (strategy === "error") throw conflict;
+        disk.set("draft (2).tex", disk.get(from) ?? "");
+        disk.delete(from);
+        return "draft (2).tex";
+      },
+    );
+    const before = [
+      { path: "main.tex", is_dir: false },
+      { path: "draft.tex", is_dir: false },
+      { path: "final.tex", is_dir: false },
+    ];
+    const after = [
+      { path: "main.tex", is_dir: false },
+      { path: "draft (2).tex", is_dir: false },
+      { path: "final.tex", is_dir: false },
+    ];
+    mocks.listFiles.mockResolvedValue(after);
+    const events: EntryRenamedEvent[] = [];
+    const stop = onEntryRenamed((event) => events.push(event));
+    useFilesStore.setState({
+      tree: before,
+      files: {
+        "draft.tex": { content: "draft start", dirty: false },
+        "final.tex": { content: "existing final", dirty: false },
+      },
+      openTabs: ["final.tex", "draft.tex"],
+      tabOrder: { "final.tex": 1, "draft.tex": 2 },
+      activePath: "draft.tex",
+    });
+    useFilesStore.getState().setContent("draft.tex", "edited draft");
+
+    try {
+      await expect(useFilesStore.getState().renameEntry("draft.tex", "final.tex")).rejects.toBe(
+        conflict,
+      );
+
+      expect(disk.get("draft.tex")).toBe("edited draft");
+      expect(disk.get("final.tex")).toBe("existing final");
+      expect(useFilesStore.getState()).toMatchObject({
+        tree: before,
+        files: {
+          "draft.tex": { content: "edited draft", dirty: false },
+          "final.tex": { content: "existing final", dirty: false },
+        },
+        openTabs: ["final.tex", "draft.tex"],
+        activePath: "draft.tex",
+      });
+      expect(events).toEqual([]);
+      expect(mocks.listFiles).not.toHaveBeenCalled();
+
+      await expect(
+        useFilesStore.getState().renameEntry("draft.tex", "final.tex", "keep_both"),
+      ).resolves.toBe("draft (2).tex");
+
+      expect(disk.has("draft.tex")).toBe(false);
+      expect(disk.get("draft (2).tex")).toBe("edited draft");
+      expect(disk.get("final.tex")).toBe("existing final");
+      expect(useFilesStore.getState()).toMatchObject({
+        tree: after,
+        files: {
+          "draft (2).tex": { content: "edited draft", dirty: false },
+          "final.tex": { content: "existing final", dirty: false },
+        },
+        openTabs: ["final.tex", "draft (2).tex"],
+        tabOrder: { "final.tex": 1, "draft (2).tex": 2 },
+        activePath: "draft (2).tex",
+      });
+      expect(useFilesStore.getState().files["draft.tex"]).toBeUndefined();
+      expect(mocks.renameFile.mock.calls.map((call) => call[3])).toEqual(["error", "keep_both"]);
+      expect(mocks.renameFile.mock.calls.map((call) => call[4])).toEqual([5, 6]);
+      expect(mocks.writeFileContent.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.renameFile.mock.invocationCallOrder[0],
+      );
+      expect(events).toEqual([
+        {
+          projectId: "project",
+          from: "draft.tex",
+          to: "draft (2).tex",
+          previousTree: before,
+          tree: after,
+          previousMainDoc: "main.tex",
+          mainDoc: "main.tex",
+        },
+      ]);
+    } finally {
+      stop();
+    }
+  });
+
   it("drops the replaced file's buffer when a rename overwrites it", async () => {
     mocks.renameFile.mockResolvedValue("final.tex");
     useFilesStore.setState({

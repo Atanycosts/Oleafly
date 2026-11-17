@@ -2190,7 +2190,12 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
       conflictStrategy,
       expectedGeneration,
     );
-    await refreshMutationGeneration(projectId);
+    try {
+      await refreshMutationGeneration(projectId);
+    } catch (error) {
+      resetMutationGeneration(projectId);
+      void logError("refresh mutation generation after rename", error);
+    }
     const remap = (p: string) => {
       if (p === from) return destination;
       return p.startsWith(`${from}/`)
