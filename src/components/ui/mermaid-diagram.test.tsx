@@ -17,15 +17,21 @@ const SOURCE = "flowchart TD\n  A --> B";
 
 function themedSvg() {
   const theme = mermaid.initialize.mock.calls.at(-1)?.[0].theme;
-  return { svg: `<svg xmlns="http://www.w3.org/2000/svg"><text>${theme}</text></svg>` };
+  return diagramSvg(theme);
+}
+
+function diagramSvg(text: string) {
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg"><text>${text}</text></svg>` };
 }
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => {};
-  const promise = new Promise<T>((done) => {
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 const diagram = () => screen.findByRole("img", { name: enCore.mermaid.diagram });
@@ -119,6 +125,139 @@ describe("MermaidDiagram", () => {
     act(() => idle.at(-1)?.());
 
     expect((await diagram()).textContent).toBe("default");
+  });
+
+  it("does not surface a failure from a theme superseded during rendering", async () => {
+    const idle: Array<() => void> = [];
+    vi.stubGlobal("requestIdleCallback", (callback: () => void) => {
+      idle.push(callback);
+      return idle.length;
+    });
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    const dark = deferred<{ svg: string }>();
+    const light = deferred<{ svg: string }>();
+    mermaid.render
+      .mockImplementationOnce(() => dark.promise)
+      .mockImplementationOnce(() => light.promise);
+    render(<MermaidDiagram source={SOURCE} />);
+    await vi.waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(1));
+
+    act(() => applyTheme("light"));
+    await act(async () => {
+      dark.reject(new Error("dark render failed"));
+      await dark.promise.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByRole("status", { name: enCore.mermaid.renderFailed })).toBeNull();
+    expect(screen.getByRole("status", { name: enCore.mermaid.rendering })).toBeTruthy();
+
+    act(() => idle.at(-1)?.());
+    await vi.waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      light.resolve(themedSvg());
+      await light.promise;
+    });
+
+    expect((await diagram()).textContent).toBe("default");
+  });
+
+  it("keeps the last good drawing when a theme redraw fails", async () => {
+    const idle: Array<() => void> = [];
+    vi.stubGlobal("requestIdleCallback", (callback: () => void) => {
+      idle.push(callback);
+      return idle.length;
+    });
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    const light = deferred<{ svg: string }>();
+    mermaid.render
+      .mockImplementationOnce(async () => diagramSvg("dark drawing"))
+      .mockImplementationOnce(() => light.promise);
+    render(<MermaidDiagram source={SOURCE} />);
+    expect((await diagram()).textContent).toBe("dark drawing");
+
+    act(() => applyTheme("light"));
+    act(() => idle[0]());
+    await vi.waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      light.reject(new Error("light render failed"));
+      await light.promise.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(
+      screen.getByRole("img", { name: enCore.mermaid.diagram }).textContent,
+    ).toBe("dark drawing");
+    expect(screen.queryByRole("status", { name: enCore.mermaid.renderFailed })).toBeNull();
+  });
+
+  it("cancels an idle theme redraw when the diagram unmounts", async () => {
+    const idle: Array<() => void> = [];
+    const cancelIdle = vi.fn();
+    vi.stubGlobal("requestIdleCallback", (callback: () => void) => {
+      idle.push(callback);
+      return idle.length;
+    });
+    vi.stubGlobal("cancelIdleCallback", cancelIdle);
+    const view = render(<MermaidDiagram source={SOURCE} />);
+    await diagram();
+
+    act(() => applyTheme("light"));
+    expect(idle).toHaveLength(1);
+    view.unmount();
+
+    expect(cancelIdle).toHaveBeenCalledWith(1);
+    act(() => idle[0]());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mermaid.render).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a late drawing after the source is replaced", async () => {
+    const stale = deferred<{ svg: string }>();
+    mermaid.render
+      .mockImplementationOnce(() => stale.promise)
+      .mockResolvedValueOnce(diagramSvg("current source"));
+    const view = render(
+      <MermaidDiagram key="stale-source" source="flowchart TD\n  Old --> Drawing" />,
+    );
+    await vi.waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(1));
+
+    view.rerender(
+      <MermaidDiagram key="current-source" source="flowchart TD\n  Current --> Drawing" />,
+    );
+    expect(screen.getByRole("status", { name: enCore.mermaid.rendering })).toBeTruthy();
+
+    await act(async () => {
+      stale.resolve(diagramSvg("stale drawing"));
+      await stale.promise;
+    });
+
+    expect((await diagram()).textContent).toBe("current source");
+    expect(screen.queryByText("stale drawing")).toBeNull();
+  });
+
+  it("ignores a late failure after the source is replaced", async () => {
+    const stale = deferred<{ svg: string }>();
+    mermaid.render
+      .mockImplementationOnce(() => stale.promise)
+      .mockResolvedValueOnce(diagramSvg("current source"));
+    const view = render(
+      <MermaidDiagram key="stale-source" source="flowchart TD\n  Old --> Drawing" />,
+    );
+    await vi.waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(1));
+
+    view.rerender(
+      <MermaidDiagram key="current-source" source="flowchart TD\n  Current --> Drawing" />,
+    );
+    await act(async () => {
+      stale.reject(new Error("stale render failed"));
+      await stale.promise.catch(() => undefined);
+    });
+
+    expect((await diagram()).textContent).toBe("current source");
+    expect(screen.queryByRole("status", { name: enCore.mermaid.renderFailed })).toBeNull();
   });
 
   it("grows smoothly from the placeholder to the drawing's height", async () => {

@@ -972,6 +972,84 @@ it.each(["rule evidence", "source library", "version comparison", "historical ch
   },
 );
 
+it.each(["source page", "section contents", "section index", "handling note", "retained object"] as const)(
+  "discards a late %s after the file tree opens another manuscript",
+  async (operation) => {
+    const pending = deferred<unknown>();
+    const secondWorld: JournalWorld = { ...world, version_id: "second-world", journal_id: "second-journal", journal_name: "Second journal" };
+    const secondCheck: JournalCheck = { ...checked(secondWorld.version_id, "second-check"), project_id: "second-manuscript", baseline_id: "second-baseline", world: secondWorld };
+    const second: JournalProject = { project_id: "second-manuscript", name: "Second manuscript", baseline_id: "second-baseline",
+      binding: { binding_id: "second-binding", baseline_id: "second-baseline", world_version_id: secondWorld.version_id }, latest_check: secondCheck };
+    const findingCheck: JournalCheck = { ...checked(world.version_id, "check-current"), rule_results: [{
+      rule_id: rule.rule_id, property: rule.property, basis_status: "candidate", verdict: "observed_difference", applicability: "APPLICABLE", limitations: [],
+      findings: [{ section_index: 1, locator: "section:one", observed: 1, expected: 2, verdict: "observed_difference", message: "Columns differ" }],
+    }] };
+    const originalRequest = api.request.getMockImplementation();
+    if (!originalRequest) throw new Error("Expected the journal request fixture");
+    api.request.mockImplementation(async (path: string, payload?: unknown) => {
+      const url = new URL(path, "http://workbench");
+      if (url.pathname === "/api/world" && url.searchParams.get("version_id") === secondWorld.version_id) return secondWorld;
+      if (url.pathname === "/api/history" && url.searchParams.get("project_id") === second.project_id) return { checks: [secondCheck] };
+      if (url.pathname === "/api/review") {
+        const current = url.searchParams.get("version_id") === secondWorld.version_id;
+        return { world_version_id: current ? secondWorld.version_id : world.version_id,
+          fragments: [{ ...fragment, kind: current ? "text_block" : "pdf_block", text: current ? "Second manuscript source" : "First manuscript source", content: current ? {} : { page: 3 } }],
+          rule_links: [{ rule_id: rule.rule_id, fragment_ids: [fragment.fragment_id] }] };
+      }
+      if (url.pathname === "/api/source-page") return pending.promise;
+      if (url.pathname === "/api/manuscript") return operation === "section index" ? pending.promise : { catalog: { items: [{ object_id: "section-object", object_type: "section", node_locator: "section:one" }] } };
+      if (url.pathname === "/api/read") return operation === "section index"
+        ? { items: [{ object_id: "section-object", content: { declared_values: { columns: 99 } } }] }
+        : pending.promise;
+      if (url.pathname === "/api/disposition") return {};
+      if (url.pathname === "/api/check") return pending.promise;
+      const response = await originalRequest(path, payload);
+      if (url.pathname === "/api/state") return { ...response, projects: [{ ...response.projects[0], latest_check: findingCheck }, second], worlds: [...response.worlds, secondWorld] };
+      return response;
+    });
+    api.target.mockReturnValueOnce(pending.promise);
+    render(<JournalWorkspaceHarness />);
+    if (operation === "retained object") {
+      await waitFor(() => expect(api.openTargets.length).toBeGreaterThan(0));
+      const openTarget = api.openTargets[0];
+      if (!openTarget) throw new Error("Expected a retained Journal target handler");
+      act(() => openTarget(sourceTarget("first-source")));
+    } else {
+      fireEvent.click(await screen.findByRole("button", { name: /Columns.*2/ }));
+      const dialog = await screen.findByRole("dialog");
+      if (operation === "source page") fireEvent.click(within(dialog).getByRole("button", { name: /Open source fragment/ }));
+      else if (operation === "handling note") {
+        fireEvent.change(within(dialog).getByRole("textbox", { name: text.handlingNote }), { target: { value: "First manuscript note" } });
+        fireEvent.click(within(dialog).getByRole("button", { name: text.saveHandling }));
+        await waitFor(() => expect(api.request.mock.calls.some(([path]) => String(path).startsWith("/api/check?"))).toBe(true));
+      } else fireEvent.click(within(dialog).getByRole("button", { name: text.readSection }));
+    }
+    await waitFor(() => expect(screen.getByTestId("journal-checks-panel")).toHaveAttribute("aria-busy", "true"));
+    act(() => useDocxWorkspaceStore.getState().open({ appProjectId: "paper", project: second, world: secondWorld, onSaved: async () => {} }));
+    await screen.findByRole("heading", { name: secondWorld.journal_name });
+    await waitFor(() => expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue(second.project_id));
+    fireEvent.click(await screen.findByRole("button", { name: /Columns.*2/ }));
+    const currentDialog = await screen.findByRole("dialog");
+    fireEvent.click(within(currentDialog).getByRole("button", { name: /Open source fragment/ }));
+    expect(await within(currentDialog).findByText("Second manuscript source")).toBeInTheDocument();
+    const oldTarget = sourceTarget("first-source");
+    await act(async () => pending.resolve(operation === "source page"
+      ? { png_base64: "c3RhbGU=", width_pt: 200, height_pt: 400 }
+      : operation === "section index"
+        ? { catalog: { items: [{ object_id: "section-object", object_type: "section", node_locator: "section:one" }] } }
+        : operation === "section contents"
+          ? { items: [{ object_id: "section-object", content: { declared_values: { columns: 99 } } }] }
+          : operation === "handling note" ? findingCheck : retainedSource(oldTarget, "First manuscript object")));
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(within(currentDialog).queryByRole("img", { name: text.sourcePage })).not.toBeInTheDocument();
+    expect(within(currentDialog).queryByText(text.retainedSection)).not.toBeInTheDocument();
+    expect(screen.queryByText("First manuscript object")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: text.results, hidden: true })).toBeInTheDocument();
+    expect(api.references).toContainEqual(expect.objectContaining({ workbenchProjectId: second.project_id, objectId: secondCheck.check_id }));
+    if (operation === "section index") expect(api.request.mock.calls.some(([path]) => path === "/api/read")).toBe(false);
+  },
+);
+
 it("compares the selected journal versions and keeps each requirement's original evidence", async () => {
   const before: JournalRule = { ...rule, expected: 1, basis_status: "confirmed", evidence: [{ source_id: "guide", locator: "guide:line:1", quote: "Use one column in the initial manuscript" }] };
   const after: JournalRule = { ...rule, resolution: { reason: "Confirmed the updated guide", previous_expected: 1, previous_basis_status: "confirmed" } };

@@ -453,7 +453,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     setComparison({ from, diff });
   }
 
-  async function readFinding(finding: JournalFinding) {
+  async function readFinding(finding: JournalFinding, sequence: number) {
     if (!project) return;
     const baselineId = visibleCheck?.baseline_id ?? project.baseline_id;
     const manuscript = await journalRequest<{
@@ -470,40 +470,39 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
         baseline_id: baselineId,
       }),
     );
+    if (sequence !== loadSequence.current) return;
     const item = manuscript.catalog.items.find(
       (item) => item.object_type === "section" && item.node_locator === finding.locator,
     );
     if (!item) throw new Error(text.sectionUnavailable);
-    setManuscriptRead(
-      await journalRequest<ManuscriptRead>("/api/read", {
-        project_id: project.project_id,
-        baseline_id: baselineId,
-        render_bundle_id: null,
-        query: {
-          region: null,
-          object_type: "section",
-          object_id: item.object_id,
-          page_number: null,
-          page_size: 1,
-          cursor: null,
-        },
-      }),
-    );
+    const contents = await journalRequest<ManuscriptRead>("/api/read", {
+      project_id: project.project_id,
+      baseline_id: baselineId,
+      render_bundle_id: null,
+      query: {
+        region: null,
+        object_type: "section",
+        object_id: item.object_id,
+        page_number: null,
+        page_size: 1,
+        cursor: null,
+      },
+    });
+    if (sequence === loadSequence.current) setManuscriptRead(contents);
   }
 
-  async function showFragment(fragment: JournalFragment) {
+  async function showFragment(fragment: JournalFragment, sequence: number) {
     setSelectedFragment(fragment);
     setSourcePage(null);
     if (fragment.content.page && world && ["pdf_block", "pdf_heading"].includes(fragment.kind)) {
-      setSourcePage(
-        await journalRequest(
-          journalQuery("/api/source-page", {
-            version_id: world.version_id,
-            source_id: fragment.source_id,
-            page: String(fragment.content.page),
-          }),
-        ),
+      const page = await journalRequest<NonNullable<typeof sourcePage>>(
+        journalQuery("/api/source-page", {
+          version_id: world.version_id,
+          source_id: fragment.source_id,
+          page: String(fragment.content.page),
+        }),
       );
+      if (sequence === loadSequence.current) setSourcePage(page);
     }
   }
 
@@ -1164,7 +1163,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   size="sm"
                   disabled={busy}
                   key={fragment.fragment_id}
-                  onClick={() => void perform(() => showFragment(fragment))}
+                  onClick={() => void perform((sequence) => showFragment(fragment, sequence))}
                 >
                   {text.openFragment} · {text.fragmentKinds[fragment.kind as keyof typeof text.fragmentKinds] ?? fragment.kind}
                 </Button>
@@ -1246,7 +1245,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                         variant="outline"
                         size="sm"
                         disabled={busy}
-                        onClick={() => void perform(() => readFinding(finding))}
+                        onClick={() => void perform((sequence) => readFinding(finding, sequence))}
                       >
                         {text.readSection}
                       </Button>
@@ -1270,7 +1269,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                       className="space-y-2"
                       onSubmit={(event) => {
                         event.preventDefault();
-                        void perform(async () => {
+                        void perform(async (sequence) => {
                           const checkId = visibleCheck.check_id;
                           await journalRequest("/api/disposition", {
                             check_id: checkId,
@@ -1281,6 +1280,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                           const saved = await journalRequest<JournalCheck>(
                             journalQuery("/api/check", { check_id: checkId }),
                           );
+                          if (sequence !== loadSequence.current) return;
                           setCheck(saved);
                           setHistory((records) =>
                             records.map((record) => (record.check_id === checkId ? saved : record)),
@@ -1324,7 +1324,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   disabled={busy}
                   key={fragment.fragment_id}
                   className="rounded-md border p-3 text-left text-sm hover:bg-accent"
-                  onClick={() => void perform(() => showFragment(fragment))}
+                  onClick={() => void perform((sequence) => showFragment(fragment, sequence))}
                 >
                   <strong className="block text-xs">
                     {world?.sources.find((source) => source.source_id === fragment.source_id)?.name}
