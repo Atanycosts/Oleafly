@@ -334,10 +334,11 @@ function observedRun(id: string): TaskObservationView {
   return {
     summary: {
       taskId: id, projectId: "paper", executionGeneration: 1, status: "awaiting_review", goal: "Read evidence", successCriteria: ["Source can be recovered"],
-      runtime: row(1, { kind: "observation", observation: { type: "runtime", runtimeId: "builtin", providerId: "actual-provider", modelId: "actual-model", sessionId: "session", tools: [{ name: "read_file", source: "builtin", schemaSha256: "schema-hash" }], declaredSkills: ["selected"], injectedSkills: [{ id: "selected", sectionSha256: "section-hash" }], unavailable: ["commands:disabled"] } }),
+      runtime: row(1, { kind: "observation", observation: { type: "runtime", runtimeId: "builtin", providerId: "actual-provider", modelId: "actual-model", sessionId: "session", tools: [{ name: "read_file", source: "builtin", schemaSha256: "schema-hash" }], declaredSkills: ["selected"], injectedSkills: [{ id: "selected", sectionSha256: "section-hash" }], unavailable: ["commands:disabled", "desktop_apps:disabled", "web_tools:unavailable"] } }),
       usage: row(2, { kind: "observation", observation: { type: "usage", inputTokens: 0, outputTokens: null } }),
       baseline: { kind: "git_worktree", executionRoot: "workspace", sourceRevision: "revision-start", baselineHash: "baseline-hash", fileCount: 2, createdAt: 1, initialGitStatus: [" M main.tex", "?? notes.md"], initialGitStatusComplete: true },
-      changedFiles: [], changedFileCount: 1, evidence: { checkedAt: 1, checks: [] }, coverageGaps: [],
+      changedFiles: [{ path: "main.tex", kind: "modified", beforeSha256: "before-main", afterSha256: "after-main", beforeSize: 12, afterSize: 14 }],
+      changedFileCount: 1, evidence: { checkedAt: 1, checks: [] }, coverageGaps: [],
     },
     page: { events: [
       row(3, { kind: "observation", observation: { type: "toolRequested", callId: "source-call", name: "read_file", inputSha256: "input-hash" } }),
@@ -772,14 +773,18 @@ describe("TaskDetailDialog", () => {
     const current = task("observed");
     const view = observedRun(current.id);
     previewMocks.observations.mockResolvedValue(view);
-    previewMocks.source.mockResolvedValue({ source: view.page.events[1], text: "证据" });
+    const read = view.page.events[1];
+    if (read.event.kind !== "observation" || read.event.observation.type !== "toolExecution" || !read.event.observation.source) {
+      throw new Error("Missing retained source fixture");
+    }
+    previewMocks.source.mockResolvedValue({ source: read.event.observation.source, text: "证据" });
     const events = [{ taskId: current.id, executionGeneration: 1, sequence: 5, createdAt: 5, event: { kind: "tool" as const, callId: "source-call", name: "read_file", phase: "request" as const, detail: '{"path":"main.tex"}', status: "running" } }];
     render(<TaskDetailDialog {...props(current)} events={events} />);
     openTab(enResearchTools.tasks.detail.tabActivity);
     const section = within(page().getByTestId("task-observations"));
     await waitFor(() => expect(section.getByText("actual-provider / actual-model · builtin")).toBeInTheDocument());
     expect(section.getByText(/Reported input.*0 \/ Unknown/)).toBeInTheDocument();
-    expect(section.getByText(/Commands turned off/)).toBeInTheDocument();
+    expect(section.getByText(/Commands turned off.*Desktop apps turned off.*Web tools unavailable/)).toBeInTheDocument();
     fireEvent.click(section.getByText(enResearchTools.tasks.observations.records));
     expect(section.getByText(/#3 → #4/)).toHaveTextContent("source-call");
     const scroll = vi.mocked(HTMLElement.prototype.scrollIntoView);
@@ -798,6 +803,8 @@ describe("TaskDetailDialog", () => {
     expect(section.getByText(/M main.tex/)).toHaveTextContent("?? notes.md");
     fireEvent.click(section.getByRole("button", { name: "Review 1 file changes" }));
     expect(page().getByRole("tab", { name: enResearchTools.tasks.detail.tabReview })).toHaveAttribute("data-state", "active");
+    expect(page().getByText(enResearchTools.tasks.detail.fileChanges)).toBeInTheDocument();
+    expect(page().getAllByText("main.tex").length).toBeGreaterThan(0);
   });
 
   it("recovers observation query errors and ignores an old page after a newer task revision", async () => {
@@ -834,14 +841,17 @@ describe("TaskDetailDialog", () => {
 
   it("shows shortened Git, file and check coverage instead of implying a complete summary", async () => {
     const current = task("partial-observed");
+    const evidence: EvidenceReport = { checkedAt: 1, checks: [{ id: "build", status: "pass", items: [] }] };
+    current.evidence = evidence;
     const view = observedRun(current.id);
     view.summary.coverageGaps = ["observations.git_status_shortened", "observations.file_list_shortened", "observations.check_items_shortened"];
+    view.summary.evidence = evidence;
     if (!view.summary.baseline) throw new Error("Missing baseline fixture");
     const baseline = view.summary.baseline;
     baseline.initialGitStatus = [];
     baseline.initialGitStatusComplete = false;
     previewMocks.observations.mockResolvedValue(view);
-    const input = props(current);
+    const input = { ...props(current), onRefreshEvidence: vi.fn(async () => {}) };
     const ui = render(<TaskDetailDialog {...input} />);
     openTab(enResearchTools.tasks.detail.tabActivity);
     const section = within(page().getByTestId("task-observations"));
@@ -853,8 +863,10 @@ describe("TaskDetailDialog", () => {
     baseline.initialGitStatusComplete = null;
     ui.rerender(<TaskDetailDialog {...input} task={{ ...current, updatedAt: 2 }} />);
     await waitFor(() => expect(section.getByText(enResearchTools.tasks.observations.gitCompletenessUnknown)).toBeInTheDocument());
-    fireEvent.click(section.getByRole("button", { name: "View 0 evidence checks" }));
+    fireEvent.click(section.getByRole("button", { name: "View 1 evidence checks" }));
     expect(page().getByRole("tab", { name: enResearchTools.tasks.detail.tabReview })).toHaveAttribute("data-state", "active");
+    const checklist = await page().findByTestId("research-evidence");
+    expect(checklist).toHaveTextContent(enResearchTools.evidence.checks.build);
   });
 
   it("the detail dialog toggles keep running and loads earlier activity", async () => {

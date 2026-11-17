@@ -26,10 +26,13 @@ function observationPage(events: TaskTranscriptEvent[], nextSequence: number, ha
   };
 }
 
-function toolRead(sequence: number): TaskTranscriptEvent {
+function toolRead(
+  sequence: number,
+  source: NonNullable<Extract<TaskObservation, { type: "toolExecution" }>["source"]> | null = null,
+): TaskTranscriptEvent {
   return {
     taskId: "task-a", executionGeneration: 2, sequence, createdAt: sequence,
-    event: { kind: "observation", observation: { type: "toolExecution", callId: `call-${sequence}`, name: "read_file", status: "done", inputSha256: "input", outputSha256: "output", skillId: null, skillInstructionsSha256: null, source: null } },
+    event: { kind: "observation", observation: { type: "toolExecution", callId: `call-${sequence}`, name: "read_file", status: "done", inputSha256: "input", outputSha256: "output", skillId: null, skillInstructionsSha256: null, source } },
   };
 }
 
@@ -40,6 +43,7 @@ it("retries a failed observation page from its retained cursor without duplicati
   const onOpenCall = vi.fn();
   render(<TaskObservations taskId="task-a" generation={2} revision={1} availableCalls={new Set(["call-1", "call-2"])} onOpenCall={onOpenCall} onReview={vi.fn()} onChecks={vi.fn()} />);
   const more = await screen.findByRole("button", { name: labels.more });
+  expect(screen.getByText(labels.notCollected)).toBeInTheDocument();
   fireEvent.click(screen.getByText("Observation records and source locators"));
   fireEvent.click(more);
   expect(await screen.findByRole("alert")).toHaveTextContent("Page temporarily unavailable");
@@ -67,10 +71,59 @@ it("ignores a late page result after the observation view unmounts", async () =>
   expect(screen.getByText("#3 · call-3")).toBeInTheDocument();
 });
 
-it.each([false, undefined])("explains source retention %s and retries an unavailable recorded range", async (snapshotRetained) => {
+it("explains runtime restrictions and opens the retained baseline and evidence review surfaces", async () => {
+  const runtimeRow: TaskTranscriptEvent = {
+    taskId: "task-a", executionGeneration: 2, sequence: 1, createdAt: 1,
+    event: {
+      kind: "observation",
+      observation: {
+        type: "runtime", runtimeId: "builtin", providerId: "provider", modelId: "model", sessionId: "session",
+        tools: [], declaredSkills: [], injectedSkills: [],
+        unavailable: ["commands:disabled", "desktop_apps:disabled", "web_tools:unavailable"],
+      },
+    },
+  };
+  const view = observationPage([runtimeRow], 1);
+  view.summary.runtime = runtimeRow;
+  view.summary.baseline = {
+    kind: "git_worktree", executionRoot: "workspace", sourceRevision: "git:revision", baselineHash: "baseline-hash",
+    fileCount: 4, createdAt: 1, skipped: [{ path: "large-data.bin", reason: "too_large" }],
+    initialGitStatus: [], initialGitStatusComplete: true,
+  };
+  view.summary.changedFiles = [
+    { path: "main.tex", kind: "modified", beforeSha256: "before-main", afterSha256: "after-main", beforeSize: 12, afterSize: 14 },
+    { path: "notes.md", kind: "added", beforeSha256: null, afterSha256: "after-notes", beforeSize: null, afterSize: 9 },
+    { path: "draft.tex", kind: "deleted", beforeSha256: "before-draft", afterSha256: null, beforeSize: 7, afterSize: null },
+  ];
+  view.summary.changedFileCount = 3;
+  view.summary.evidence = { checkedAt: 1, checks: [
+    { id: "build", status: "pass", items: [] },
+    { id: "numbers", status: "warn", items: [{ code: "numbers.unknownRun", file: "results.tex", line: 4, params: { run: "r009" } }] },
+  ] };
+  view.summary.coverageGaps = ["observations.baseline_has_skipped_files"];
+  native.observations.mockResolvedValue(view);
+  const onReview = vi.fn();
+  const onChecks = vi.fn();
+
+  render(<TaskObservations taskId="task-a" generation={2} revision={1} availableCalls={new Set()} onOpenCall={vi.fn()} onReview={onReview} onChecks={onChecks} />);
+  expect(await screen.findByText("provider / model · builtin")).toBeInTheDocument();
+  expect(screen.getByText(/Commands turned off.*Desktop apps turned off.*Web tools unavailable/)).toBeInTheDocument();
+  expect(screen.getByText("Reported input / output tokens: Unknown / Unknown")).toBeInTheDocument();
+  fireEvent.click(screen.getByText(labels.baseline));
+  expect(screen.getByText("git:revision")).toBeInTheDocument();
+  expect(screen.getByText("SHA-256 baseline-hash")).toBeInTheDocument();
+  expect(screen.getByText(labels.clean)).toBeInTheDocument();
+  expect(screen.getByText(labels.skippedFiles)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Review 3 file changes" }));
+  fireEvent.click(screen.getByRole("button", { name: "View 2 evidence checks" }));
+  expect(onReview).toHaveBeenCalledOnce();
+  expect(onChecks).toHaveBeenCalledOnce();
+});
+
+it.each([false, null])("explains source retention %s and retries an unavailable recorded range", async (snapshotRetained) => {
   const source = { path: "source.txt", fileSha256: "retained-hash", offset: 20, endOffset: 30, truncated: true, snapshotRetained };
-  native.source.mockRejectedValueOnce(new Error("Recorded bytes unavailable")).mockResolvedValueOnce({ text: "" });
-  render(<TaskSourceRead taskId="task-a" generation={2} row={toolRead(9)} source={source} />);
+  native.source.mockRejectedValueOnce(new Error("Recorded bytes unavailable")).mockResolvedValueOnce({ source, text: "" });
+  render(<TaskSourceRead taskId="task-a" generation={2} row={toolRead(9, source)} source={source} />);
   expect(screen.getByText(snapshotRetained === false ? labels.sourceNotArchived : labels.sourceRetentionUnknown)).toBeInTheDocument();
   const read = screen.getByRole("button", { name: "Read recorded source range" });
   fireEvent.click(read);
@@ -86,6 +139,10 @@ it("shows retained member executions and each request's actual tools and context
     taskId: "task-a", executionGeneration: 2, sequence, createdAt: sequence,
     event: { kind: "observation", observation },
   });
+  const retainedSource: NonNullable<Extract<TaskObservation, { type: "toolExecution" }>["source"]> = {
+    path: "papers/source.txt", fileSha256: "source-hash", offset: 0, endOffset: 10, truncated: false, snapshotRetained: true,
+    pdf: { path: "papers/source.pdf", sha256: "pdf-source-hash", pageCount: 12, pageStart: 2, pageEnd: 3 },
+  };
   const view: TaskObservationView = {
     summary: {
       taskId: "task-a", projectId: "paper", executionGeneration: 2, status: "running",
@@ -111,12 +168,13 @@ it("shows retained member executions and each request's actual tools and context
           type: "toolExecution", callId: "member-session-7:helper-1:read-source", name: "read_file", status: "done",
           inputSha256: "source-input-hash", outputSha256: "source-output-hash", skillId: null, actor: "member-session-7:helper-1",
           skillInstructionsSha256: null,
-          source: { path: "papers/source.txt", fileSha256: "source-hash", offset: 0, endOffset: 10, truncated: false, snapshotRetained: true, pdf: { path: "papers/source.pdf", sha256: "pdf-source-hash", pageCount: 12, pageStart: 2, pageEnd: 3 } },
+          source: retainedSource,
         }),
       ], nextSequence: 6, throughSequence: 6, hasMore: false,
     },
   };
   native.observations.mockResolvedValue(view);
+  native.source.mockResolvedValue({ source: retainedSource, text: "Retained PDF source range" });
   render(<TaskObservations taskId="task-a" generation={2} revision={1} availableCalls={new Set()} onOpenCall={vi.fn()} onReview={vi.fn()} onChecks={vi.fn()} />);
   await waitFor(() => expect(screen.getByText("Member executions")).toBeInTheDocument());
   fireEvent.click(screen.getByText("Member executions"));
@@ -142,15 +200,20 @@ it("shows retained member executions and each request's actual tools and context
   expect(screen.getByText("The exact file version from this read is retained.")).toBeInTheDocument();
   expect(screen.getByTestId("pdf-read-source")).toHaveTextContent("papers/source.pdf · Page 2 – 3");
   expect(screen.getByText("PDF SHA-256 pdf-source-hash")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Read recorded source range" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Read recorded source range" }));
+  await waitFor(() => expect(screen.getByText("Retained PDF source range")).toBeInTheDocument());
+  expect(native.source).toHaveBeenCalledWith("task-a", 2, 6);
   expect(native.observations).toHaveBeenCalledWith("task-a", 2, 0);
 });
 
 it("keeps parent and helper reads separate across member sessions and previews each original event", async () => {
   const actors = [undefined, "member-session-a:helper-1", "member-session-b:helper-1"];
+  const sourceBySequence = new Map<number, NonNullable<Extract<TaskObservation, { type: "toolExecution" }>["source"]>>();
   const events: TaskTranscriptEvent[] = actors.flatMap((actor, index) => {
     const callId = actor ? `${actor}:read-source` : "read-source";
     const requestSequence = index * 2 + 10;
+    const source = { path: "main.tex", fileSha256: `hash-${index}`, offset: 0, endOffset: 10, truncated: false, snapshotRetained: true };
+    sourceBySequence.set(requestSequence + 1, source);
     const row = (sequence: number, observation: TaskObservation): TaskTranscriptEvent => ({
       taskId: "task-a", executionGeneration: 2, sequence, createdAt: sequence,
       event: { kind: "observation", observation },
@@ -160,7 +223,7 @@ it("keeps parent and helper reads separate across member sessions and previews e
       row(requestSequence + 1, {
         type: "toolExecution", callId, name: "read_file", status: "done", inputSha256: "input",
         outputSha256: "output", actor, skillId: null, skillInstructionsSha256: null,
-        source: { path: "main.tex", fileSha256: `hash-${index}`, offset: 0, endOffset: 10, truncated: false, snapshotRetained: true },
+        source,
       }),
     ];
   });
@@ -172,7 +235,11 @@ it("keeps parent and helper reads separate across member sessions and previews e
     },
     page: { events, nextSequence: 15, throughSequence: 15, hasMore: false },
   } satisfies TaskObservationView);
-  native.source.mockImplementation((_taskId, _generation, sequence) => Promise.resolve({ text: `Retained source from event ${sequence}` }));
+  native.source.mockImplementation((_taskId, _generation, sequence) => {
+    const source = sourceBySequence.get(sequence);
+    if (!source) return Promise.reject(new Error(`Missing retained source for event ${sequence}`));
+    return Promise.resolve({ source, text: `Retained source from event ${sequence}` });
+  });
   render(<TaskObservations taskId="task-a" generation={2} revision={1} availableCalls={new Set()} onOpenCall={vi.fn()} onReview={vi.fn()} onChecks={vi.fn()} />);
   await waitFor(() => expect(screen.getByText("Observation records and source locators")).toBeInTheDocument());
   fireEvent.click(screen.getByText("Observation records and source locators"));

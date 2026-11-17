@@ -1377,6 +1377,120 @@ describe("DOCX paragraph adapter over the real core", () => {
     expect(host.revision()).toBe(0);
   });
 
+  it("commits a host-only formatting group once while preserving mixed fields", () => {
+    const host = open([
+      '<w:p><w:r><w:t xml:space="preserve">Before </w:t></w:r><w:fldSimple w:instr="PAGE"><w:r><w:t>7</w:t></w:r></w:fldSimple><w:r><w:t xml:space="preserve"> after</w:t></w:r></w:p>',
+      "Second paragraph.",
+    ]);
+    const session = createDocxHostSession(host);
+    try {
+      const [fieldParagraph, secondParagraph] = session.listParagraphs();
+
+      expect(session.formatBatch?.([
+        {
+          target: fieldParagraph!.handle,
+          font: { bold: true, name: "Arial" },
+          paragraph: { alignment: "Centered" },
+        },
+        {
+          target: secondParagraph!.handle,
+          font: { italic: true },
+        },
+      ], 0)).toEqual({ ok: true, revision: 1, changed: true });
+
+      expect(host.revision()).toBe(1);
+      expect(session.listParagraphs().map((paragraph) => paragraph.text)).toEqual([
+        "Before \uFFFC after",
+        "Second paragraph.",
+      ]);
+      const saved = host.save();
+      expect(saved.ok).toBe(true);
+      if (!saved.ok) throw new Error(saved.error.message);
+      const xml = new TextDecoder().decode(unzipSync(saved.bytes)["word/document.xml"]);
+      expect(xml).toContain("<w:fldSimple");
+      expect(xml).toContain("<w:t>7</w:t>");
+      expect(xml).toContain("<w:b/>");
+      expect(xml).toContain("<w:i/>");
+      expect(xml).toContain('<w:jc w:val="center"/>');
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("rejects unsupported host-only batch fields before applying the accompanying font changes", () => {
+    const host = open(["Target paragraph."]);
+    const session = createDocxHostSession(host);
+    try {
+      const paragraph = session.listParagraphs()[0];
+      const before = host.save();
+      expect(before.ok).toBe(true);
+      if (!before.ok) throw new Error(before.error.message);
+
+      expect(session.formatBatch?.([{
+        target: paragraph!.handle,
+        font: { name: "Arial", nameEastAsia: "宋体" },
+      }], 0)).toEqual({
+        ok: false,
+        code: "unsupported-target",
+        message:
+          "East Asian font slots require a live editor tree session; this DOCX host cannot write them.",
+        revision: 0,
+        changed: false,
+      });
+      expect(session.formatBatch?.([{
+        target: paragraph!.handle,
+        font: { bold: true },
+        paragraph: { keepNext: true },
+      }], 0)).toEqual({
+        ok: false,
+        code: "unsupported-target",
+        message:
+          "Paragraph pagination controls require a live editor tree session; this DOCX host cannot write them.",
+        revision: 0,
+        changed: false,
+      });
+
+      expect(host.revision()).toBe(0);
+      expect(host.save()).toEqual(before);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("preflights a mixed live formatting group before committing an earlier valid item", () => {
+    const fixture = editorSession(syntheticDocx([
+      "First paragraph.",
+      "Second paragraph.",
+    ]));
+    try {
+      const [first] = fixture.session.listParagraphs();
+      const before = fixture.save();
+
+      expect(fixture.session.formatBatch?.([
+        {
+          target: first!.handle,
+          font: { bold: true, nameEastAsia: "宋体" },
+          paragraph: { keepNext: true },
+        },
+        {
+          target: paragraphHandle("paragraph:missing"),
+          font: { italic: true },
+        },
+      ], 0)).toMatchObject({
+        ok: false,
+        code: "stale-target",
+        revision: 0,
+        changed: false,
+      });
+
+      expect(fixture.treeBatches).toEqual([]);
+      expect(fixture.tree.packageRevision()).toBe(0);
+      expect(fixture.save()).toEqual(before);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
   it("refuses object formatting in a host-only batch without changing the document", () => {
     const host = open([
       '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>',
