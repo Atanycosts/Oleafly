@@ -2105,6 +2105,29 @@ export async function settledCompletionLabels(
   }
 }
 
+async function pressCompletionKey(page: Page, key: "ArrowDown" | "Enter") {
+  // The Tauri bridge emits keypress/keyup even after CodeMirror cancels and
+  // handles keydown. Deliver the accepted key path once, as a real browser
+  // would, while still exercising CodeMirror's completion keymap.
+  const keyCode = key === "Enter" ? 13 : 40;
+  const handled = await page.evaluate<boolean>(
+    `(() => {
+      const content = document.querySelector('.cm-content');
+      if (!(content instanceof HTMLElement)) return false;
+      const event = new KeyboardEvent('keydown', {
+        key: ${scriptValue(key)},
+        code: ${scriptValue(key)},
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, 'keyCode', { get: () => ${keyCode} });
+      Object.defineProperty(event, 'which', { get: () => ${keyCode} });
+      return !content.dispatchEvent(event);
+    })()`,
+  );
+  if (!handled) throw new Error(`CodeMirror did not handle ${key}`);
+}
+
 export async function acceptCompletion(
   page: Page,
   label: string,
@@ -2123,9 +2146,9 @@ export async function acceptCompletion(
         `completion never highlighted ${label}; it offered ${labels.join(", ")}`,
       );
     }
-    await page.press(".cm-content", "ArrowDown");
+    await pressCompletionKey(page, "ArrowDown");
   }
-  await page.press(".cm-content", "Enter");
+  await pressCompletionKey(page, "Enter");
   await waitLong(
     page,
     `!document.querySelector('.cm-tooltip-autocomplete li[role="option"]')`,
