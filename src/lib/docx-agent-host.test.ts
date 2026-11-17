@@ -275,6 +275,27 @@ describe("Word workspace context and execution feedback", () => {
     expect(listener).toHaveBeenCalledTimes(calls);
   });
 
+  it("refuses a duplicate session ID without replacing the live registration", async () => {
+    const original = harness([paragraph("p1", "Original session.")]);
+    const replacement = harness([paragraph("p1", "Replacement session.")]);
+    register(original.session);
+    replacement.edit("p1", "Unregistered replacement edit.");
+
+    expect(() => register(replacement.session, {
+      baselineId: "replacement-baseline",
+      sourceSha256: "f".repeat(64),
+    })).toThrow("already registered");
+    expect(await DOCX_AGENT_HOST.readDocument()).toMatchObject({
+      document: {
+        sessionId: "session-1",
+        baselineId: "baseline-1",
+        sourceSha256: "a".repeat(64),
+        sessionRevision: 0,
+      },
+      paragraphs: [{ text: "Original session." }],
+    });
+  });
+
   it("settles a recorded task operation only in its original project and working copy", async () => {
     const recorded = vi.fn(async () => {});
     register(harness().session, { onTaskOperationRecorded: recorded });
@@ -829,6 +850,51 @@ function retainedTemplateCheck(
 }
 
 describe("live DOCX format, save and template tools", () => {
+  it("validates a format-read paragraph against the live session before delegating", async () => {
+    const local = harness();
+    const readFormat = vi.fn(async () => readableFormat());
+    register(local.session, { readFormat });
+    const read = DOCX_AGENT_HOST.readFormat;
+    if (!read) throw new Error("The DOCX format-read host is unavailable.");
+
+    await expect(read("session-1", { paragraphRef: "missing", kind: "objects" }))
+      .rejects.toThrow("Paragraph missing is not present");
+    expect(readFormat).not.toHaveBeenCalled();
+
+    await expect(read("session-1", { paragraphRef: "p1", kind: "objects" }))
+      .resolves.toMatchObject({ paragraph: { paragraphRef: "p1" } });
+    expect(readFormat).toHaveBeenCalledExactlyOnceWith({
+      paragraphRef: "p1",
+      kind: "objects",
+    });
+  });
+
+  it("rejects a template check whose live session is replaced before its receipt", async () => {
+    const original = harness();
+    const check = vi.fn(async ({ template }) => {
+      unregisterDocxAgentSession("session-1");
+      const reopened = harness([paragraph("p1", "Reopened working copy.")]);
+      register(reopened.session, { baselineId: "reopened-baseline", sourceSha256: "f".repeat(64) });
+      return retainedTemplateCheck(template);
+    });
+    register(original.session, { check });
+    const checkFromHost = DOCX_AGENT_HOST.checkTemplate;
+    if (!checkFromHost) throw new Error("The DOCX template-check host is unavailable.");
+
+    await expect(checkFromHost("session-1", "world-v7")).rejects.toThrow(
+      "The DOCX session closed or changed",
+    );
+    expect(check).toHaveBeenCalledExactlyOnceWith({ template: "world-v7" });
+    expect(await DOCX_AGENT_HOST.readDocument()).toMatchObject({
+      document: {
+        baselineId: "reopened-baseline",
+        sourceSha256: "f".repeat(64),
+        sessionRevision: 0,
+      },
+      paragraphs: [{ text: "Reopened working copy." }],
+    });
+  });
+
   it.each(["paragraph", "object", "batch"] as const)(
     "refuses a cancelled direct %s format before calling the live session",
     async (kind) => {
