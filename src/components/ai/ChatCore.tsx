@@ -921,6 +921,7 @@ export function ChatCore() {
     activeChatId ? s.threadByChat[activeChatId] ?? null : null,
   );
   const activeRunRequestIdRef = useRef<string | null>(null);
+  const chatOpenSeqRef = useRef(0);
   const [steerableRunId, setSteerableRunId] = useState<string | null>(null);
   const trackRunRequestId = useCallback((id: string | null) => {
     activeRunRequestIdRef.current = id;
@@ -1636,16 +1637,19 @@ export function ChatCore() {
   const openChat = useCallback(
     async (chat: StoredChat) => {
       if (streaming || sendPreparingRef.current || runOwnerRef.current) return;
+      const openSeq = ++chatOpenSeqRef.current;
       let body = chat;
       if (chat.stub) {
         const openingProject = useFilesStore.getState().projectId;
         try {
           body = (await useChatsStore.getState().loadChatBody(chat.id)) ?? chat;
         } catch (error) {
+          if (openSeq !== chatOpenSeqRef.current) return;
           void logError("open chat", error);
           toast.error(i18n.t(($) => $.ai.history.openFailed));
           return;
         }
+        if (openSeq !== chatOpenSeqRef.current) return;
         if (body.stub) {
           toast.error(i18n.t(($) => $.ai.history.openFailed));
           return;
@@ -1665,6 +1669,7 @@ export function ChatCore() {
   );
 
   const startNewChat = useCallback(() => {
+    chatOpenSeqRef.current++;
     setActiveChat(null);
     setMessages([]);
     useAgentTodoStore.getState().selectChat(null);
@@ -3602,6 +3607,7 @@ ${sandboxedCustom}`;
     prevProjectIdRef.current = projectId;
     if (prev === undefined || prev === projectId) return;
     runIsolationRef.current.invalidate();
+    chatOpenSeqRef.current++;
     const run = activeChatRun();
     if (run && run.projectId !== projectId) {
       run.pendingApproval?.resolve(false);
@@ -4215,6 +4221,15 @@ ${sandboxedCustom}`;
                         ? () => {
                             void approvalsSet(projectId, pendingApproval.req.tool, "allow")
                               .then(() => {
+                                const run = activeChatRun();
+                                if (
+                                  useFilesStore.getState().projectId !== projectId ||
+                                  !run ||
+                                  run.projectId !== projectId ||
+                                  run.pendingApproval !== pendingApproval
+                                ) {
+                                  return;
+                                }
                                 projectApprovalsRef.current = {
                                   ...projectApprovalsRef.current,
                                   [pendingApproval.req.tool]: "allow",
