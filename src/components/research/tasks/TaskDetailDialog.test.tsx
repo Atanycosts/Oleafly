@@ -16,7 +16,7 @@ import enCommon from "@/i18n/locales/en/common.json" with { type: "json" };
 import enResearchTools from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { taskFieldsSince047 } from "./tests/task-fixtures";
 import * as timelineBuilders from "./task-timeline";
-import type { AnnotationTarget, GroupSnapshot } from "@/lib/task-collaboration";
+import type { AnnotationTarget, GroupMessage, GroupSnapshot } from "@/lib/task-collaboration";
 import type { JournalAnnotationObject } from "@/lib/journal-workbench";
 import type { TaskAnnotationsProps } from "./TaskAnnotations";
 
@@ -90,6 +90,9 @@ vi.mock("@/components/editor/diff/InlineDiffPreview", () => ({
 vi.mock("./TaskCompiledPdfs", () => ({ TaskCompiledPdfs: ({ reference }: { reference?: { path: string; generation: number } }) => reference ? <div data-testid="mock-retained-pdf" data-path={reference.path} data-generation={reference.generation} /> : null }));
 
 const annotationMocks = vi.hoisted(() => ({ props: null as TaskAnnotationsProps | null, group: vi.fn(), message: vi.fn(), annotations: vi.fn(), pdf: vi.fn() }));
+const groupPanelMocks = vi.hoisted(() => ({
+  props: null as null | { onAnnotate: (message: GroupMessage) => void },
+}));
 const journalReference = vi.hoisted(() => ({ load: vi.fn() }));
 const materialViewer = vi.hoisted(() => ({ open: vi.fn() }));
 const retainedMaterial = vi.hoisted(() => ({ read: vi.fn() }));
@@ -105,6 +108,12 @@ vi.mock("@/lib/pdf-selection", () => ({ loadTaskPdfSelection: annotationMocks.pd
 vi.mock("./TaskPdfSelection", () => ({ TaskPdfSelection: ({ taskId, openOriginal }: { taskId: string; openOriginal?: boolean }) => <div data-testid="mock-task-pdf" data-task={taskId} data-open-original={String(openOriginal)} /> }));
 vi.mock("./TaskAnnotations", () => ({
   TaskAnnotations: (props: TaskAnnotationsProps) => { annotationMocks.props = props; return null; },
+}));
+vi.mock("./TaskGroupPanel", () => ({
+  TaskGroupPanel: (props: { onAnnotate: (message: GroupMessage) => void }) => {
+    groupPanelMocks.props = props;
+    return null;
+  },
 }));
 vi.mock(import("@/lib/task-collaboration"), async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/task-collaboration")>(),
@@ -350,6 +359,7 @@ describe("TaskDetailDialog", () => {
     previewMocks.referencedEvents.mockReset().mockResolvedValue({ events: [], nextSequence: null });
     previewMocks.compiledPdfs.mockReset().mockResolvedValue([]);
     annotationMocks.props = null;
+    groupPanelMocks.props = null;
     annotationMocks.pdf.mockReset().mockResolvedValue(null);
     annotationMocks.message.mockReset().mockResolvedValue(null);
     annotationMocks.annotations.mockReset().mockResolvedValue({ annotations: [] });
@@ -418,6 +428,52 @@ describe("TaskDetailDialog", () => {
       expect(page().getByRole("tab", { name: enResearchTools.tasks.annotations.title })).toHaveAttribute("data-state", "active");
       expect(page().queryByTestId("mock-task-pdf")).not.toBeInTheDocument();
     }
+  });
+
+  it("rejects foreign and malformed references before querying another retained source", async () => {
+    const current = task("invalid-reference");
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenTarget).toBeDefined());
+
+    const invalidTargets: AnnotationTarget[] = [
+      {
+        projectId: "another-project",
+        taskId: current.id,
+        objectKind: "message",
+        objectId: `${current.id}:1:1`,
+        objectRevision: "generation:1",
+        path: null,
+      },
+      {
+        projectId: current.projectId,
+        taskId: current.id,
+        objectKind: "task_pdf",
+        objectId: "claimed-pdf",
+        objectRevision: "not-a-generation",
+        path: "compiled-artifacts/result.pdf",
+      },
+      {
+        projectId: current.projectId,
+        taskId: current.id,
+        objectKind: "message",
+        objectId: "not-a-task-event",
+        objectRevision: "generation:1",
+        path: null,
+      },
+    ];
+
+    for (const target of invalidTargets) {
+      await act(async () => {
+        annotationMocks.props?.onOpenTarget?.(target);
+      });
+      expect(
+        within(page().getByTestId("task-annotation-source")).getByRole("alert"),
+      ).toHaveTextContent(enResearchTools.tasks.annotations.referenceUnavailable);
+    }
+
+    expect(previewMocks.compiledPdfs).not.toHaveBeenCalled();
+    expect(previewMocks.referencedEvents).not.toHaveBeenCalled();
+    expect(annotationMocks.message).not.toHaveBeenCalled();
   });
 
   it("reads a saved message reference from its recorded generation and reports a missing original sequence", async () => {
@@ -541,6 +597,72 @@ describe("TaskDetailDialog", () => {
     expect(await request.load()).toEqual(new Uint8Array([111, 108, 100]));
     expect(input.onOpenChange).toHaveBeenCalledWith(false);
     expect(previewMocks.referencedEvents).not.toHaveBeenCalled();
+  });
+
+  it("reports an unreadable retained material source without opening the viewer", async () => {
+    const current = task("missing-retained-material");
+    const target: AnnotationTarget = {
+      projectId: current.projectId,
+      taskId: current.id,
+      objectKind: "material",
+      objectId: "file:report.md",
+      objectRevision: "old-sha",
+      path: null,
+    };
+    const annotation = {
+      id: "missing-material-annotation",
+      explicitRequest: false,
+      target,
+      source: { kind: "material_snapshot", content: "{}", sha256: "reference-sha" },
+    };
+    retainedMaterial.read.mockRejectedValueOnce(new Error("The retained material snapshot is unavailable."));
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenAnnotationSource).toBeDefined());
+
+    await act(async () => {
+      annotationMocks.props?.onOpenAnnotationSource?.(annotation as never);
+    });
+
+    expect(within(page().getByTestId("task-annotation-source")).getByRole("alert"))
+      .toHaveTextContent("The retained material snapshot is unavailable.");
+    expect(materialViewer.open).not.toHaveBeenCalled();
+  });
+
+  it("scopes an annotation started from a group message to the current task", async () => {
+    const current = task("group-annotation");
+    const message: GroupMessage = {
+      id: "message-current",
+      sequence: 4,
+      groupId: "group-current",
+      author: { kind: "member", id: "reviewer", executionId: null },
+      body: "Use the retained measurement.",
+      recipients: [],
+      replyTo: null,
+      object: null,
+      requestWork: false,
+      createdAt: 4,
+    };
+    render(<TaskDetailDialog {...props(current)} initialTab="group" />);
+    await waitFor(() => expect(groupPanelMocks.props?.onAnnotate).toBeDefined());
+
+    act(() => {
+      groupPanelMocks.props?.onAnnotate(message);
+    });
+
+    await waitFor(() => expect(annotationMocks.props?.target).toEqual({
+      projectId: current.projectId,
+      taskId: current.id,
+      objectKind: "group_message",
+      objectId: message.id,
+      objectRevision: `sequence:${message.sequence}`,
+      path: null,
+    }));
+    expect(annotationMocks.props?.source).toEqual({
+      kind: "group_message",
+      content: message.body,
+    });
+    expect(page().getByRole("tab", { name: enResearchTools.tasks.annotations.title }))
+      .toHaveAttribute("data-state", "active");
   });
 
   it("opens a historical group message result by exact identity", async () => {
@@ -834,6 +956,42 @@ describe("TaskDetailDialog", () => {
     expect(previewMocks.events).toHaveBeenLastCalledWith("resumed", 3, Number.MAX_SAFE_INTEGER, 200);
   });
 
+  it("reports a failed earlier-activity read and allows the user to retry", async () => {
+    const failure = new Error("The earlier activity store is unavailable.");
+    previewMocks.events
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce({
+        events: [{
+          taskId: "history-retry",
+          executionGeneration: 2,
+          sequence: 1,
+          event: { kind: "status", message: "Recovered earlier activity" },
+          createdAt: 1,
+        }],
+        nextSequence: null,
+        previousSequence: null,
+        resumedFrom: null,
+      });
+    const current: ResearchTask = {
+      ...task("history-retry"),
+      status: "running",
+      executionGeneration: 3,
+      resumedFrom: 2,
+    };
+    render(<TaskDetailDialog {...props(current)} />);
+    const earlier = enResearchTools.backgroundHelper.earlierActivity;
+
+    fireEvent.click(page().getByRole("button", { name: earlier }));
+    await waitFor(() => expect(previewMocks.notifyError).toHaveBeenCalledWith(
+      "research-task-earlier-activity",
+      failure,
+    ));
+    await waitFor(() => expect(page().getByRole("button", { name: earlier })).toBeEnabled());
+
+    fireEvent.click(page().getByRole("button", { name: earlier }));
+    expect(await page().findByText("Recovered earlier activity")).toBeInTheDocument();
+  });
+
   it("stops showing earlier activity at a run that started fresh", async () => {
     previewMocks.events.mockImplementation(async (taskId: string, generation: number) => ({
       events: [
@@ -888,6 +1046,41 @@ describe("TaskDetailDialog", () => {
     const header = page().getByRole("heading", { name: "Task header" }).closest("header");
     expect(header?.className).toContain("overflow-y-auto");
     expect(header?.className).toMatch(/max-h-/);
+  });
+
+  it("shows the full prompt on request and renders settled task output", async () => {
+    const current = task("output");
+    current.brief = { ...current.brief, goal: "Review the final measurements" };
+    const artifact = { path: "report.md", label: "Review report", mediaType: "text/markdown" };
+    if (!current.result) throw new Error("Missing review fixture");
+    current.result = { ...current.result, artifacts: [artifact] };
+    previewMocks.artifact.mockResolvedValue({
+      artifact,
+      content: {
+        exists: true,
+        text: "Final retained report",
+        base64: null,
+        mediaType: "text/markdown",
+        binary: false,
+        truncated: false,
+        size: 21,
+        sha256: "artifact-sha",
+      },
+    });
+    render(<TaskDetailDialog {...props(current)} initialTab="output" />);
+
+    const promptSummary = page().getByText(enResearchTools.tasks.composer.promptLabel);
+    const promptDetails = promptSummary.closest("details");
+    expect(promptDetails).not.toHaveAttribute("open");
+    fireEvent.click(promptSummary);
+    expect(promptDetails).toHaveAttribute("open");
+    expect(within(promptDetails as HTMLElement).getByText(current.prompt)).toBeInTheDocument();
+
+    expect(page().getByTestId("mock-task-pdf")).toHaveAttribute("data-task", current.id);
+    expect(page().getByText(current.result.summary)).toBeInTheDocument();
+    fireEvent.click(page().getByRole("button", { name: new RegExp(artifact.label) }));
+    expect(await page().findByText("Final retained report")).toBeInTheDocument();
+    expect(previewMocks.artifact).toHaveBeenCalledWith(current.id, artifact.path, current.executionGeneration);
   });
 
   it("says Applying only while its own apply runs", async () => {
@@ -2051,9 +2244,29 @@ describe("TaskDetailDialog", () => {
       const panel = page().getByRole("tabpanel");
       const scrolled = vi.fn();
       Object.defineProperty(panel, "scrollHeight", { configurable: true, get: () => 900 });
-      Object.defineProperty(panel, "scrollTop", { configurable: true, get: () => 0, set: scrolled });
+      Object.defineProperty(panel, "clientHeight", { configurable: true, get: () => 300 });
+      let scrollTop = 0;
+      Object.defineProperty(panel, "scrollTop", {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+          scrolled(value);
+        },
+      });
 
+      fireEvent.scroll(panel);
       view.rerender(<TaskDetailDialog {...props(running())} events={[text(1, "Thinking about the ledger")]} />);
+      expect(scrolled).not.toHaveBeenCalled();
+
+      scrollTop = 600;
+      fireEvent.scroll(panel);
+      view.rerender(
+        <TaskDetailDialog
+          {...props(running())}
+          events={[text(1, "Thinking about the ledger and the measured result")]}
+        />,
+      );
 
       expect(scrolled).toHaveBeenCalledWith(900);
     });
