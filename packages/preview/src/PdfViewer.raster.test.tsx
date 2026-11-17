@@ -461,6 +461,32 @@ describe("PdfViewer raster swaps", () => {
 });
 
 describe("PdfViewer reloads", () => {
+  it("releases a painted page that a shorter reloaded document no longer has", async () => {
+    const { view, renderer, wrap } = await openViewer(1, 1, "doc-1");
+    act(() => intersect([2]));
+    await waitFor(() => expect(baseCanvases(wrap(2))).toHaveLength(1));
+    const carried = baseCanvases(wrap(2))[0];
+    expect(carried.width).toBeGreaterThan(0);
+
+    harness.documents.set(2, [{ width: 612, height: 792 }]);
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        documentIdentity="doc-2"
+        scale={1}
+        expectText={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(renderer.dataset.pdfDocumentIdentity).toBe("doc-2"),
+    );
+    expect(renderer.querySelector("[data-page='2']")).toBeNull();
+    expect(carried.isConnected).toBe(false);
+    expect(carried.width).toBe(0);
+    expect(carried.height).toBe(0);
+  });
+
   it("keeps each page's old raster on screen until the new document paints it", async () => {
     const { view, wrap } = await openViewer(1, 1, "doc-1");
     await waitFor(() => expect(baseCanvases(wrap(1))).toHaveLength(1));

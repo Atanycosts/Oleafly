@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => ({
   agentSteer: vi.fn(),
   agentThreadRead: vi.fn(),
   agentThreadArchive: vi.fn(),
+  agentThreadDelete: vi.fn(),
   acpOpen: vi.fn(),
   agentThreadFork: vi.fn(),
   agentThreadRollback: vi.fn(),
@@ -143,6 +144,7 @@ vi.mock("@/lib/agent-backend", () => ({
   agentSteer: (...args: unknown[]) => mocks.agentSteer(...args),
   agentThreadRead: (...args: unknown[]) => mocks.agentThreadRead(...args),
   agentThreadArchive: (...args: unknown[]) => mocks.agentThreadArchive(...args),
+  agentThreadDelete: (...args: unknown[]) => mocks.agentThreadDelete(...args),
   agentThreadFork: (...args: unknown[]) => mocks.agentThreadFork(...args),
   agentThreadRollback: (...args: unknown[]) => mocks.agentThreadRollback(...args),
   agentThreadClaimPrewarmed: (...args: unknown[]) => mocks.claimPrewarmed(...args),
@@ -652,6 +654,7 @@ beforeEach(() => {
   useAssistantRuntimeStore.setState({ runtime: "built-in", handoffRuntime: null });
   useAgentHandoffStore.setState({ pendingPrompt: null, autoSend: false, pendingImages: [], pendingDelegation: null });
   mocks.agentThreadArchive.mockReset().mockResolvedValue(true);
+  mocks.agentThreadDelete.mockReset().mockResolvedValue(undefined);
   mocks.agentThreadFork.mockReset().mockResolvedValue("thread-forked");
   mocks.agentThreadRollback.mockReset().mockResolvedValue([]);
   mocks.providerCredit.mockReset().mockResolvedValue(null);
@@ -2272,6 +2275,24 @@ describe("ChatCore agent turns", () => {
     expect(mocks.runs[0].options.system).not.toContain(
       "mcp__papers__search_papers",
     );
+
+    await act(async () => finishRun(0, "Ready"));
+  });
+
+  it("continues a send when workspace context and project retrieval are unavailable", async () => {
+    const rendered = await renderChat();
+    mocks.buildWorkspaceContext.mockRejectedValueOnce(new Error("workspace index unavailable"));
+    mocks.retrieveProjectChunks.mockRejectedValueOnce(new Error("vector store unavailable"));
+
+    submit(rendered, "Work from the open document");
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+
+    expect(mocks.runs[0].options.system).toContain("(workspace context unavailable)");
+    expect(plainTranscript(mocks.runs[0].options.messages).at(-1)).toEqual({
+      role: "user",
+      content: "Work from the open document",
+    });
+    expect(mocks.toastError).not.toHaveBeenCalled();
 
     await act(async () => finishRun(0, "Ready"));
   });
@@ -4143,6 +4164,61 @@ describe("ChatCore agent turns", () => {
     expect(within(card).queryByRole("button", { name: "Undo notes.md" })).toBeNull();
   });
 
+  it("keeps an explicit commit when working-tree status cannot be read", async () => {
+    mocks.gitHeadOid.mockResolvedValueOnce("head-0").mockResolvedValue("head-2");
+    mocks.gitShow.mockResolvedValue("new\n");
+    const rendered = await renderChat();
+    const projectId = useFilesStore.getState().projectId;
+    mocks.gitStatus.mockRejectedValueOnce(new Error("working tree unavailable"));
+    act(() => {
+      useFilesStore.setState((state) => ({
+        files: { ...state.files, "notes.md": { content: "old\n", dirty: false } },
+      }));
+    });
+    submit(rendered, "Edit and commit");
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+
+    await act(async () => {
+      await mocks.runs[0].options.handlers.onToolCall({
+        id: "write-1",
+        name: "write_file",
+        args: { path: "notes.md", content: "new\n" },
+      });
+      useFilesStore.setState((state) => ({
+        files: { ...state.files, "notes.md": { content: "new\n", dirty: false } },
+      }));
+      mocks.runs[0].options.handlers.onToolResult({
+        id: "write-1",
+        output: { success: true, path: "notes.md" },
+      });
+      await mocks.runs[0].options.handlers.onToolCall({
+        id: "commit-1",
+        name: "run_command",
+        args: { command: "git add notes.md && git commit -m update" },
+      });
+      mocks.runs[0].options.handlers.onToolResult({
+        id: "commit-1",
+        output: {
+          exec: true,
+          command: "git add notes.md && git commit -m update",
+          output: "",
+          exit_code: 0,
+          status: "Success",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const turn = agentFileChangeTurnForChat(useAgentFileChangesStore.getState(), "chat-1");
+      expect(turn?.commits).toContainEqual({ id: "head-2", files: ["notes.md"] });
+    });
+    expect(mocks.gitStatus).toHaveBeenCalledWith(projectId);
+    expect(mocks.gitShow).toHaveBeenCalledWith(projectId, "head-2", "notes.md");
+    expect(mocks.toastError).not.toHaveBeenCalled();
+
+    await act(async () => finishRun(0, "Committed"));
+  });
+
   it("keeps a commit for a file past the listed ones, so Undo all never asks for every file", async () => {
     mocks.gitHeadOid.mockResolvedValueOnce("head-0").mockResolvedValue("head-2");
     mocks.gitShow.mockResolvedValue("new\n");
@@ -5505,6 +5581,45 @@ describe("ChatCore conversation navigation", () => {
 
     expect(useChatsStore.getState().activeId).toBe("chat-1");
     await act(async () => finishRun(0, "Done"));
+  });
+
+  it("cancels and removes the active chat when it is deleted during a run", async () => {
+    useAgentTurnsStore.setState({ threadByChat: { "chat-1": "thread-delete" } });
+    let signal: AbortSignal | undefined;
+    mocks.runAgentHarness.mockImplementationOnce(
+      (options: HarnessOptions & { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          signal = options.signal;
+          options.onRequestId?.("request-delete");
+          options.handlers.onStep?.(0);
+          options.handlers.onText("Working");
+          options.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    const rendered = await renderChat();
+    submit(rendered, "Keep working");
+    await waitFor(() => expect(mocks.runAgentHarness).toHaveBeenCalledOnce());
+    expect(signal).toBeDefined();
+    expect(signal?.aborted).toBe(false);
+
+    await act(async () => {
+      mocks.historyProps?.onDelete("chat-1");
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(activeChatRun()).toBeNull());
+
+    expect(signal?.aborted).toBe(true);
+    expect(mocks.agentThreadDelete).toHaveBeenCalledExactlyOnceWith("thread-delete");
+    expect(useChatsStore.getState().byId("chat-1")).toBeUndefined();
+    expect(useChatsStore.getState().activeId).toBeNull();
+    expect(
+      rendered.getByPlaceholderText("Ask AI to help with your document…"),
+    ).toHaveValue("");
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("keeps the newest chat selection when an earlier body load finishes late", async () => {
