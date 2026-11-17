@@ -1,2 +1,4 @@
 [build]
 target-dir = "src-tauri/target"
+# Keep local compiler concurrency within a 16 GB development machine's budget.
+jobs = 1

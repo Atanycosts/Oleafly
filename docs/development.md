@@ -319,6 +319,15 @@ pnpm build              # typecheck + build the frontend (tsc -b && vite build)
 pnpm tauri build        # produce a distributable bundle
 ```
 
+The workspace Cargo configuration defaults to one compilation job, including
+Rust builds started by Tauri. This reduces concurrent compiler memory use on
+16 GB development machines; a single compiler or linker can still use substantial
+memory. Avoid starting another heavy build from a second checkout or chat at the
+same time. Use `cargo ... --jobs N` or `CARGO_BUILD_JOBS=N` to override the default
+when the machine has capacity. The CI workflow explicitly uses two compilation
+jobs on GitHub-hosted runners. This setting does not limit Rust test execution
+threads or frontend build memory.
+
 The command-line adapter ships inside the desktop app and has a dedicated
 standalone release workflow. Cargo builds it locally as `oleaflyc`, because the
 desktop package already owns the name `oleafly` in this workspace. The shipped
