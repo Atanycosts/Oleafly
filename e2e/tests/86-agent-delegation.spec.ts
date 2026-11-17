@@ -46,7 +46,7 @@ test("native system flow retains a delegated task PDF before apply", async ({ ta
     const compiledPdfs = page.locator('section[aria-label="Task compiled PDFs"]');
     await expect(compiledPdfs).toBeVisible({ timeout: 20_000 });
     await compiledPdfs.locator("button").first().click();
-    await compiledPdfs.getByRole("button", { name: "Open in workspace" }).click();
+    await compiledPdfs.getByText("Open in workspace", { exact: true }).click();
     const materialViewer = page.locator('[data-testid="workspace-material-surface"]:not([hidden]) [data-testid="retained-material-viewer"]');
     await expect(materialViewer).toBeVisible({ timeout: 20_000 });
     await expect(materialViewer).toContainText("main.tex");

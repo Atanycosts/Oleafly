@@ -1293,9 +1293,10 @@ The integrated preview renders a second page.
     timeout: 30_000,
   });
   await activatePreviewControl(tauriPage, "Document outline");
-  await expect(
-    tauriPage.locator('[aria-label="PDF document outline"]'),
-  ).not.toHaveAttribute("inert", "");
+  await expect.poll(() => tauriPage.evaluate<boolean>(`(() => {
+    const panel = document.querySelector('[aria-label="PDF document outline"]');
+    return panel instanceof HTMLElement && !panel.inert;
+  })()`)).toBe(true);
   await tauriPage.click('[aria-label="Close document outline"]');
   await activatePreviewControl(tauriPage, "Search PDF");
   await expect(

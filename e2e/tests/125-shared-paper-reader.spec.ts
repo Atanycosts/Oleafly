@@ -89,6 +89,7 @@ test("ordinary chat reads retained paper windows, revises, compiles and reopens 
     })`);
     await page.evaluate(`window.__researchTasksSet?.(false)`);
     let first: PaperText | undefined;
+    const completeMarker = `SHARED_PAPER_CHAT_COMPLETE_${projectId}`;
     server.setToolSequence([
       { name: "read_paper", args: { path: "source.pdf", max_chars: 1000 } },
       { name: "read_paper", args: (request) => {
@@ -99,11 +100,11 @@ test("ordinary chat reads retained paper windows, revises, compiles and reopens 
       { name: "write_file", args: { path: "main.tex", content: REVISED } },
       { name: "compile", args: {} },
       { name: "get_pdf_text", args: {} },
-    ], "SHARED_PAPER_CHAT_COMPLETE");
+    ], completeMarker);
     await openRailTab(page, "Research Assistant");
     await fillTextarea(page, 'textarea[placeholder*="Ask AI"]', "Read source.pdf, correct the validation/test statement, compile, and read the resulting PDF.");
     await page.press('textarea[placeholder*="Ask AI"]', "Enter");
-    await waitLong(page, `document.body.innerText.includes('SHARED_PAPER_CHAT_COMPLETE') && !document.querySelector('[aria-label="Stop"]')`, 150_000);
+    await waitLong(page, `document.body.innerText.includes(${scriptValue(completeMarker)}) && !document.querySelector('[aria-label="Stop"]')`, 150_000);
     expect(first?.source.offset).toBe(0);
     expect(first?.nextOffset).toBeGreaterThan(0);
     expect(first?.text).toContain("VALIDATION_SOURCE_FIRST");
@@ -123,10 +124,20 @@ test("ordinary chat reads retained paper windows, revises, compiles and reopens 
     const manuscriptText = () => page.evaluate<string>(`window.__oleaflyE2EImport('/src/components/pdf/pdfController.ts').then(async m => (await m.pdfPageText(1))?.map(run => run.str).join(' ') ?? '')`);
     expect(await manuscriptText()).toContain("test data stay held out");
     const reference = first!.pdfReference;
-    const paperCard = page.locator('[data-tool-name="read_paper"]').first();
-    const header = paperCard.locator('button[aria-expanded]').first();
-    if (await header.getAttribute("aria-expanded") === "false") await header.click();
-    await paperCard.getByRole("button", { name: "Open retained PDF", exact: true }).click();
+    expect(await page.evaluate<boolean>(`(() => {
+      const card = document.querySelector('[data-tool-name="read_paper"]');
+      const header = card?.querySelector('button[aria-expanded]');
+      if (!header) return false;
+      if (header.getAttribute("aria-expanded") === "false") header.click();
+      return true;
+    })()`)).toBe(true);
+    await waitLong(page, `!![...document.querySelectorAll('[data-tool-name="read_paper"] button')].find(button => button.textContent.trim() === 'Open retained PDF')`, 10_000);
+    expect(await page.evaluate<boolean>(`(() => {
+      const card = document.querySelector('[data-tool-name="read_paper"]');
+      const button = [...(card?.querySelectorAll('button') ?? [])].find(button => button.textContent.trim() === 'Open retained PDF');
+      button?.click();
+      return !!button;
+    })()`)).toBe(true);
     const viewer = page.locator('[data-testid="workspace-material-surface"]:not([hidden]) [data-testid="retained-material-viewer"]');
     await expect(viewer).toBeVisible({ timeout: 30_000 });
     await expect(viewer).toContainText(reference.path);
@@ -197,7 +208,10 @@ test("single task and task group share the paper reader and retain compiled resu
       await waitLong(page, `window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m => ['awaiting_review', 'failed'].includes((await m.listResearchTasks(${scriptValue(projectId)})).find(t => t.id === ${scriptValue(task.id)})?.status))`, 150_000);
       const settled = await page.evaluate<ResearchTask>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m => (await m.listResearchTasks(${scriptValue(projectId)})).find(t => t.id === ${scriptValue(task.id)}))`);
       const taskRequests = server.requestBodies().map(body => JSON.parse(body) as Record<string, unknown>);
-      const compile = compileToolResult(taskRequests.at(-1)!);
+      const compile = taskRequests
+        .map((request) => compileToolResult(request))
+        .filter((result): result is CompileToolResult => result !== null)
+        .at(-1);
       if (compile) {
         await testInfo.attach(`shared-paper-compile-result-${group ? "group" : "single"}`, {
           body: compile.excerpt,

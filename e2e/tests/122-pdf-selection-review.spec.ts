@@ -48,7 +48,7 @@ test("PDF feedback retains the displayed original through recompile and links it
     const feedback = "Keep this old PDF as evidence; this comment alone requests no model work.";
     await fillTextarea(page, '[data-testid="material-annotations"] [data-testid="task-annotations"] textarea', feedback);
     const baseline = server.requestCount();
-    await feedbackPanel.getByRole("button", { name: "Save annotation" }).click();
+    await feedbackPanel.getByText("Save annotation", { exact: true }).click();
     await expect(feedbackPanel).toContainText(feedback);
     expect(server.requestCount()).toBe(baseline);
 
@@ -93,7 +93,7 @@ test("PDF feedback retains the displayed original through recompile and links it
     await expect(feedbackPanel).toContainText("ORIGINAL-PDF-SELECTION-A");
 
     const feedbackCard = feedbackPanel.locator('[data-testid="task-annotation"]').filter({ hasText: feedback });
-    await feedbackCard.getByRole("button", { name: "Reply" }).click();
+    await feedbackCard.getByText("Reply", { exact: true }).click();
     const request = "Recheck the historical PDF selection against today's source, amend the task copy and compile it, keeping the old input distinct from the new result.";
     await fillTextarea(page, '[data-testid="material-annotations"] [data-testid="task-annotations"] textarea', request);
     await feedbackPanel.locator('[data-testid="task-annotations"] button[role="checkbox"]').click();
@@ -133,7 +133,7 @@ test("PDF feedback retains the displayed original through recompile and links it
       }
       return "Original PDF A and the revised B output were kept distinct; changes await review and handling is linked to the annotation.";
     });
-    await feedbackPanel.getByRole("button", { name: "Save annotation" }).click();
+    await feedbackPanel.getByText("Save annotation", { exact: true }).click();
     let task: ResearchTask | undefined;
     await expect.poll(async () => {
       task = await page.evaluate<ResearchTask | undefined>(`window.__oleaflyE2EImport('/src/lib/research-tasks.ts').then(async m=>(await m.listResearchTasks(${scriptValue(projectId)})).find(t=>t.prompt.startsWith(${scriptValue(request)})))`);
@@ -208,7 +208,7 @@ test("PDF feedback retains the displayed original through recompile and links it
     const requestCard = detail
       .locator('[data-testid="task-annotation"]:has([data-testid="annotation-handling"])')
       .filter({ hasText: request });
-    await requestCard.getByRole("button", { name: "Recorded object" }).click();
+    await requestCard.getByText("Recorded object", { exact: true }).click();
     const viewer = page.locator('[data-testid="workspace-material-surface"]:not([hidden]) [data-testid="retained-material-viewer"]');
     await expect(viewer).toContainText("main.tex · PDF");
     await expect.poll(() => page.evaluate<{ role: string; revision: string; anchorKind: string } | null>(
