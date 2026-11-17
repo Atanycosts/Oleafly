@@ -424,6 +424,11 @@ targeting `main` or `codex/**`, including draft stacked PRs, and for pushes to
 GitHub-hosted runners, whose execution time is free for public repositories;
 artifact and cache storage have separate allowances.
 
+The same workflow runs the Workbench Python formatting, lint, type and portable
+test gates on Linux and Windows. It installs the service's development and
+fixture-building extras; private manuscript and real Office rendering acceptance
+remain separate environment-bound procedures.
+
 For an existing branch that has not received a new pull request event, dispatch
 CI explicitly in your own fork:
 

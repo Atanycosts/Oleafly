@@ -39,6 +39,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  workbench:
+    name: Workbench (Python, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    defaults:
+      run:
+        working-directory: services/research-workbench
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Workbench development dependencies
+        run: python -m pip install -e ".[dev,fixture-building]"
+
+      - name: Check Python formatting and lint
+        run: |
+          python -m ruff format --check --no-cache .
+          python -m ruff check --no-cache .
+
+      - name: Check Python types
+        run: python -m mypy
+
+      - name: Test Workbench storage and document contracts
+        run: python -m pytest -rs
+
   markdown-platform-smoke:
     name: Markdown smoke (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
