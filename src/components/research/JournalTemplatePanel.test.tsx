@@ -190,3 +190,83 @@ it.each([
   }));
   expect(screen.queryByText(/OLD_CONTEXT_VALUE/)).not.toBeInTheDocument();
 });
+
+it("recovers a failed comparison by selecting another verdict and shows the empty result explicitly", async () => {
+  api.request.mockRejectedValueOnce(new Error("Comparison query failed"))
+    .mockResolvedValue({ findings: [], total: 0, next_offset: null });
+  render(<JournalTemplatePanel world={world} project={project} check={check} />);
+  expect(await screen.findByRole("alert")).toHaveTextContent(en.workspace.journalTemplate.loadFailed);
+  fireEvent.change(screen.getByRole("combobox", { name: text.filter }), { target: { value: "observed_match" } });
+  expect(await screen.findByText(en.workspace.journalTemplate.noFindings)).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: text.previous })).toBeDisabled();
+  expect(screen.getByRole("button", { name: text.next })).toBeDisabled();
+  expect(api.request).toHaveBeenLastCalledWith("/api/docx-query", {
+    target: { check_id: check.check_id }, operation: "findings", verdict: "observed_match", offset: 0, limit: 20,
+  });
+});
+
+it("uses the retained line-spacing rule across pages and returns to the previous page", async () => {
+  api.request.mockImplementation(async (_path, input) => input.offset === 0
+    ? { findings: [{ ...finding, property_path: "paragraph.lineSpacing.rule", observed: "atLeast", expected: "auto" }], total: 21, next_offset: 20 }
+    : { findings: [{ ...finding, property_path: "paragraph.lineSpacing.value", observed: 18, expected: 360 }], total: 21, next_offset: null });
+  render(<JournalTemplatePanel world={world} project={project} check={check} />);
+  await screen.findByText("Manuscript: At least");
+  fireEvent.click(screen.getByRole("button", { name: text.next }));
+  expect(await screen.findByText("Manuscript: At least 18 pt")).toBeInTheDocument();
+  expect(screen.getByText("Template: 1.5× line spacing")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: text.next })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: text.previous }));
+  expect(await screen.findByText("Manuscript: At least")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: text.previous })).toBeDisabled();
+  expect(api.request.mock.calls.map(([, input]) => input.offset)).toEqual([0, 20, 0]);
+});
+
+it("does not reuse a previous verdict's spacing rule for a newly filtered finding", async () => {
+  api.request.mockImplementation(async (_path, input) => input.verdict === "observed_difference"
+    ? { findings: [{ ...finding, property_path: "paragraph.lineSpacing.rule", observed: "exact", expected: "auto" }], total: 1, next_offset: null }
+    : { findings: [{ ...finding, property_path: "paragraph.lineSpacing.value", observed: 360, expected: null, verdict: "cannot_determine" }], total: 1, next_offset: null });
+  render(<JournalTemplatePanel world={world} project={project} check={check} />);
+  await screen.findByText("Manuscript: Exact");
+  fireEvent.change(screen.getByRole("combobox", { name: text.filter }), { target: { value: "cannot_determine" } });
+  expect(await screen.findByText("Manuscript: Word line spacing value: 360")).toBeInTheDocument();
+  expect(screen.getByText("Template: Not retained")).toBeInTheDocument();
+  expect(screen.queryByText("Manuscript: Exactly 360 pt")).not.toBeInTheDocument();
+});
+
+it("shows table, section and list formats using their units and readable Word values", async () => {
+  const formats = [
+    { case_id: "width", property_path: "run.horizontalScalePercent", observed: 80, expected: 100, observedText: "80%", expectedText: "100%" },
+    { case_id: "indent", property_path: "section.margins.leftTwips", observed: 720, expected: 0, observedText: "720 twips", expectedText: "0 twips" },
+    { case_id: "height", property_path: "row.height.rule", observed: "atLeast", expected: "exact", observedText: "At least", expectedText: "Exact" },
+    { case_id: "break", property_path: "section.breakType", observed: "continuous", expected: "nextPage", observedText: "Continuous", expectedText: "Next page" },
+    { case_id: "direction", property_path: "cell.textDirection", observed: "btLr", expected: "horizontal", observedText: "Bottom to top", expectedText: "Horizontal" },
+    { case_id: "list", property_path: "paragraph.listItem.ilvl", observed: 0, expected: 2, observedText: "Level 1", expectedText: "Level 3" },
+    { case_id: "underline", property_path: "run.underline", observed: { variant: "double" }, expected: { variant: "single" }, observedText: "Double underline", expectedText: "Single underline" },
+    { case_id: "size", property_path: "table.tableWidth", observed: { type: "pct", value: 4000 }, expected: { type: "pct", value: 5000 }, observedText: "Type：pct；Value：4000", expectedText: "Type：pct；Value：5000" },
+    { case_id: "tab", property_path: "paragraph.tabStops.stops", observed: [{ alignment: "decimal", positionPt: 72 }], expected: [{ alignment: "right", positionPt: 144 }], observedText: "Decimal numbering at 72 pt", expectedText: "Right aligned at 144 pt" },
+    { case_id: "font", property_path: "run.fontFamilyEastAsia", observed: "SimSun", expected: "Source Han Serif SC", observedText: "SimSun", expectedText: "Source Han Serif SC" },
+    { case_id: "columns", property_path: "table.columnWidthsPt", observed: [25, 40], expected: [30, 50], observedText: "25 pt、40 pt", expectedText: "30 pt、50 pt" },
+  ];
+  api.request.mockResolvedValue({ findings: formats.map((format) => ({ ...finding, ...format })), total: formats.length, next_offset: null });
+  render(<JournalTemplatePanel world={world} project={project} check={check} />);
+  await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(formats.length));
+  const articles = screen.getAllByRole("article");
+  formats.forEach((format, index) => {
+    expect(articles[index]).toHaveTextContent(`Manuscript: ${format.observedText}`);
+    expect(articles[index]).toHaveTextContent(`Template: ${format.expectedText}`);
+  });
+  expect(screen.queryByText("run.fontFamilyEastAsia")).not.toBeInTheDocument();
+});
+
+it("explains unsupported template profiles without exposing backend diagnostics", async () => {
+  api.request.mockResolvedValue({ findings: [
+    { ...finding, case_id: "bands", role: "custom-table-role", property_path: "", reason: "Cannot compare band sizes other than one", verdict: "cannot_determine" },
+    { ...finding, case_id: "unresolved", reason: "Unsupported private backend detail", verdict: "cannot_determine" },
+  ], total: 2, next_offset: null });
+  render(<JournalTemplatePanel world={world} project={project} check={check} />);
+  expect(await screen.findByText(en.workspace.journalTemplate.reason.tableBands)).toBeInTheDocument();
+  expect(screen.getByText(en.workspace.journalTemplate.reason.generic)).toBeInTheDocument();
+  expect(screen.getByText(`Other text · ${text.retainedFormat}`)).toBeInTheDocument();
+  expect(screen.queryByText("Unsupported private backend detail")).not.toBeInTheDocument();
+});

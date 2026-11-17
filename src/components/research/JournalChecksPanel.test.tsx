@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   connect: vi.fn(),
   target: vi.fn(),
   templateImport: vi.fn(),
+  templateCheck: vi.fn(),
   references: [] as JournalObjectReference[],
 }));
 vi.mock("@tauri-apps/api/core", async (original) => ({
@@ -28,8 +29,8 @@ vi.mock("@/lib/research-workspace", () => ({ getResearchWorkspace: api.workspace
 vi.mock("@/lib/docx-template-client", async (original) => ({
   ...await original<typeof import("@/lib/docx-template-client")>(),
   importJournalTemplate: api.templateImport,
+  checkJournalTemplate: api.templateCheck,
 }));
-vi.mock("./JournalResearchPanel", () => ({ JournalResearchPanel: () => null }));
 vi.mock("./JournalAnnotations", () => ({ JournalAnnotations: ({ reference }: { reference: JournalObjectReference }) => {
   api.references.push(reference); return <div data-testid="journal-object-entry">{reference.kind}:{reference.worldVersionId}:{reference.objectId}</div>;
 } }));
@@ -70,6 +71,7 @@ beforeEach(() => {
   api.connect.mockResolvedValue({ python: "/python", libraryRoot: "/retained/library" });
   api.invoke.mockResolvedValue({ journalProjectId: "template-draft" });
   api.templateImport.mockResolvedValue(world);
+  api.templateCheck.mockResolvedValue(checked("world-current", "check-template"));
   api.request.mockImplementation(async (path: string) => {
     const url = new URL(path, "http://workbench");
     if (url.pathname === "/api/state") return { worlds: [world, { ...world, version_id: "world-old", version_ordinal: 1 }], projects: [{ project_id: "manuscript", name: "Retained manuscript", baseline_id: "baseline", binding: { binding_id: "binding", baseline_id: "baseline", world_version_id: "world-current" }, latest_check: checked("world-current", "check-current") }] };
@@ -811,4 +813,267 @@ it("edits an exact font requirement as text and sends its name without numeric c
   fireEvent.change(within(dialog).getByLabelText(text.decisionReason), { target: { value: "Reviewed the journal guide" } });
   fireEvent.click(within(dialog).getByRole("button", { name: text.saveRevision }));
   await waitFor(() => expect(api.request).toHaveBeenCalledWith("/api/revise", { version_id: "world-current", rule_id: "font-rule", expected: "PT Serif", reason: "Reviewed the journal guide" }));
+});
+
+function capturedFile(name: string, content: string) {
+  const file = new File([content], name);
+  file.arrayBuffer = async () => new TextEncoder().encode(content).buffer;
+  return file;
+}
+
+it("imports a manuscript's chosen bytes and links the returned retained project", async () => {
+  const imported: JournalProject = { project_id: "imported-paper", name: "Revised paper", baseline_id: "imported-baseline", binding: null, latest_check: null };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  let created = false;
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (path === "/api/projects") { created = true; return imported; }
+    const response = await originalRequest(path, payload);
+    if (path === "/api/state" && created) return { ...response, projects: [...response.projects, imported] };
+    return response;
+  });
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await sidebar().findByRole("button", { name: text.importManuscript }));
+  const dialog = await screen.findByRole("dialog");
+  const file = capturedFile("paper.docx", "retained manuscript bytes");
+  fireEvent.change(within(dialog).getByLabelText(text.files), { target: { files: [file] } });
+  expect(within(dialog).getByLabelText(text.displayName)).toHaveValue("paper");
+  fireEvent.change(within(dialog).getByLabelText(text.displayName), { target: { value: imported.name } });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.importManuscript }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(api.request).toHaveBeenCalledWith("/api/projects", { name: imported.name, filename: file.name, content_base64: btoa("retained manuscript bytes") });
+  expect(api.invoke).toHaveBeenCalledWith("journal_workbench_link", { projectId: "paper", workbenchProjectId: imported.project_id });
+  expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue(imported.project_id);
+});
+
+it("updates a manuscript baseline with the selected file and operator reason", async () => {
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  let updated = false;
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (path === "/api/baseline") { updated = true; return { baseline_id: "updated-baseline" }; }
+    const response = await originalRequest(path, payload);
+    if (path === "/api/state" && updated) return { ...response, projects: response.projects.map((project: JournalProject) => ({ ...project, baseline_id: "updated-baseline" })) };
+    return response;
+  });
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await sidebar().findByRole("button", { name: text.updateManuscript }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).queryByLabelText(text.displayName)).not.toBeInTheDocument();
+  fireEvent.change(within(dialog).getByLabelText(text.files), { target: { files: [capturedFile("revision.docx", "new baseline bytes")] } });
+  fireEvent.change(within(dialog).getByLabelText(text.updateReason), { target: { value: "Applied editor comments" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.updateManuscript }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(api.request).toHaveBeenCalledWith("/api/baseline", {
+    project_id: "manuscript", expected_baseline_id: "baseline", filename: "revision.docx", content_base64: btoa("new baseline bytes"),
+    reason: "Applied editor comments", request_id: expect.stringMatching(/^request-/),
+  });
+  expect(screen.getByText(text.rebindAfterUpdate)).toBeInTheDocument();
+  expect(sidebar().getByRole("button", { name: text.runCheck })).toBeDisabled();
+});
+
+it("recovers from selecting two templates and imports the chosen template together with a guide source", async () => {
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await within(screen.getByTestId("journal-workspace")).findByRole("button", { name: text.importJournal }));
+  const dialog = await screen.findByRole("dialog");
+  const template = capturedFile("layout.doc", "template bytes");
+  const guide = capturedFile("author-guide.docx", "guide bytes");
+  fireEvent.change(within(dialog).getByLabelText(text.files), { target: { files: [template, guide] } });
+  fireEvent.click(within(dialog).getByText(text.sourceRoles));
+  const guideRole = within(dialog).getByLabelText(`${text.sourceKind}: ${guide.name}`);
+  expect(within(dialog).getByLabelText(`${text.sourceKind}: ${template.name}`)).toHaveValue("template_docx");
+  expect(guideRole).toHaveValue("guide_docx");
+  fireEvent.change(guideRole, { target: { value: "template_docx" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.importJournal }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent(text.template.oneTemplate);
+  expect(api.templateImport).not.toHaveBeenCalled();
+  fireEvent.change(guideRole, { target: { value: "guide_docx" } });
+  fireEvent.click(within(dialog).getByText(text.submissionContext));
+  fireEvent.change(within(dialog).getByLabelText(text.articleType), { target: { value: "review_article" } });
+  fireEvent.change(within(dialog).getByLabelText(text.stage), { target: { value: "revision" } });
+  fireEvent.change(within(dialog).getByLabelText(text.language), { target: { value: "zh" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.importJournal }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(api.templateImport).toHaveBeenCalledWith(template, {
+    journal_id: expect.stringMatching(/^journal-/), journal_name: world.journal_name, article_type: "review_article", stage: "revision", language: "zh",
+  }, [{ name: guide.name, kind: "guide_docx", content_base64: btoa("guide bytes") }]);
+});
+
+it("imports explicitly classified guide sources without treating a Word guide as the template", async () => {
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => path === "/api/worlds" ? world : originalRequest(path, payload));
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await within(screen.getByTestId("journal-workspace")).findByRole("button", { name: text.importJournal }));
+  const dialog = await screen.findByRole("dialog");
+  const guide = capturedFile("author-guide.docx", "Word guide");
+  const checklist = capturedFile("checklist.txt", "Submission checklist");
+  fireEvent.change(within(dialog).getByLabelText(text.files), { target: { files: [guide, checklist] } });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.importJournal }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(api.request).toHaveBeenCalledWith("/api/worlds", expect.objectContaining({ sources: [
+    { name: guide.name, kind: "guide_docx", content_base64: btoa("Word guide") },
+    { name: checklist.name, kind: "guide_text", content_base64: btoa("Submission checklist") },
+  ] }));
+  expect(api.templateImport).not.toHaveBeenCalled();
+});
+
+it("requires rebinding the selected world before running a non-template check", async () => {
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  let bound = false;
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (path === "/api/bind") { bound = true; return {}; }
+    if (path === "/api/check") return checked("world-old", "rebound-check");
+    const response = await originalRequest(path, payload);
+    if (path === "/api/state" && bound) return { ...response, projects: response.projects.map((project: JournalProject) => ({ ...project,
+      binding: { ...project.binding, world_version_id: "world-old" }, latest_check: checked("world-old", "rebound-check"),
+    })) };
+    return response;
+  });
+  render(<JournalWorkspaceHarness />);
+  const select = await screen.findByTestId("journal-world-select");
+  await waitFor(() => expect(select).toHaveValue("world-current"));
+  fireEvent.change(select, { target: { value: "world-old" } });
+  await screen.findByText(text.viewingUnboundVersion);
+  expect(sidebar().getByRole("button", { name: text.runCheck })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: text.bind }));
+  await waitFor(() => expect(sidebar().getByRole("button", { name: text.runCheck })).toBeEnabled());
+  expect(api.request).toHaveBeenCalledWith("/api/bind", { project_id: "manuscript", world_version_id: "world-old", expected_binding_id: "binding" });
+  act(() => useWorkspaceSurfaceStore.getState().showFiles());
+  fireEvent.click(sidebar().getByRole("button", { name: text.runCheck }));
+  await waitFor(() => expect(api.request).toHaveBeenCalledWith("/api/check", { project_id: "manuscript" }));
+  await waitFor(() => expect(useWorkspaceSurfaceStore.getState().active).toBe("journal"));
+  expect(api.templateCheck).not.toHaveBeenCalled();
+});
+
+it("uses the explicit template-check operation for the selected retained manuscript", async () => {
+  const { templateWorld, draft } = templateWithoutManuscript();
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.workspace.mockResolvedValue({ journalProjectId: draft.project_id });
+  api.request.mockImplementation(async (path: string, payload?: unknown) => path === "/api/state"
+    ? { worlds: [templateWorld], projects: [draft] } : originalRequest(path, payload));
+  render(<JournalWorkspaceHarness />);
+  const run = await sidebar().findByRole("button", { name: text.runCheck });
+  await waitFor(() => expect(run).toBeEnabled());
+  fireEvent.click(run);
+  await waitFor(() => expect(api.templateCheck).toHaveBeenCalledWith(draft, templateWorld.version_id));
+  await waitFor(() => expect(run).toBeEnabled());
+  expect(api.request.mock.calls.some(([path]) => path === "/api/check")).toBe(false);
+});
+
+it("shows a retained PDF source page and anchors its discussion to the selected fragment", async () => {
+  const parent = { ...fragment, fragment_id: "guide-heading", kind: "pdf_heading", text: "Author requirements" };
+  const pdf: JournalFragment = { ...fragment, kind: "pdf_block", parent_fragment_id: parent.fragment_id,
+    content: { page: 3, bbox: [20, 40, 120, 80], title: "Layout and columns" } };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  let pageReads = 0;
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/review") return { world_version_id: world.version_id, fragments: [parent, pdf], rule_links: [{ rule_id: rule.rule_id, fragment_ids: [pdf.fragment_id] }] };
+    if (url.pathname === "/api/source-page") {
+      pageReads += 1;
+      if (pageReads === 1) throw new Error("Source page renderer is temporarily busy");
+      return { png_base64: "cGFnZQ==", width_pt: 200, height_pt: 400 };
+    }
+    return originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await screen.findByRole("button", { name: /Columns.*2/ }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(parent.text)).toBeInTheDocument();
+  const open = within(dialog).getByRole("button", { name: /Open source fragment/ });
+  fireEvent.click(open);
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Source page renderer is temporarily busy");
+  await waitFor(() => expect(open).toBeEnabled());
+  fireEvent.click(open);
+  const image = await within(dialog).findByRole("img", { name: text.sourcePage });
+  expect(image).toHaveAttribute("src", "data:image/png;base64,cGFnZQ==");
+  expect(image.nextElementSibling).toHaveStyle({ left: "10%", top: "10%", width: "50%", height: "10%" });
+  expect(within(dialog).getByText(`${text.declaredReference}: ${pdf.content.title}`)).toBeInTheDocument();
+  expect(api.request).toHaveBeenCalledWith("/api/source-page?version_id=world-current&source_id=guide&page=3");
+  expect(api.references).toContainEqual({ libraryRoot: "/retained/library", workbenchProjectId: "manuscript", kind: "source", objectId: pdf.fragment_id,
+    worldVersionId: world.version_id, checkId: "check-current" });
+});
+
+it("reads the check's retained baseline and saves a defer note without changing its finding", async () => {
+  const findingCheck: JournalCheck = { ...checked("world-current", "check-current"), baseline_id: "checked-baseline", validity: "STALE",
+    rule_results: [{ rule_id: rule.rule_id, property: rule.property, basis_status: "candidate", verdict: "observed_difference", applicability: "APPLICABLE", limitations: [],
+      findings: [{ section_index: 1, locator: "section:one", observed: 1, expected: 2, verdict: "observed_difference", message: "Columns differ" }] }],
+    dispositions: [{ rule_id: rule.rule_id, action: "note", note: "Existing review note", created_at: "2026-11-10T00:00:00Z" }],
+  };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  let savedNote = "";
+  api.request.mockImplementation(async (path: string, payload?: Record<string, unknown>) => {
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/manuscript") return { catalog: { items: [{ object_id: "section-object", object_type: "section", node_locator: "section:one" }] } };
+    if (path === "/api/read") return { items: [{ object_id: "section-object", content: { declared_values: { columns: 1, body_font_size_halfpoints: 24, body_line_spacing_twips: 480, top_margin_twips: 1440 } } }] };
+    if (path === "/api/disposition") { savedNote = String(payload?.note); return {}; }
+    if (url.pathname === "/api/check") return { ...findingCheck, dispositions: [...findingCheck.dispositions, { rule_id: rule.rule_id, action: "defer", note: savedNote, created_at: "2026-11-17T00:00:00Z" }] };
+    const response = await originalRequest(path, payload);
+    if (path === "/api/state") return { ...response, projects: response.projects.map((project: JournalProject) => ({ ...project, latest_check: findingCheck })) };
+    return response;
+  });
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await screen.findByRole("button", { name: /Columns.*2/ }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(text.staleHelp)).toBeInTheDocument();
+  expect(within(dialog).getByText("Existing review note")).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: text.readSection }));
+  await within(dialog).findByText(text.retainedSection);
+  expect(api.request).toHaveBeenCalledWith("/api/manuscript?project_id=manuscript&baseline_id=checked-baseline");
+  expect(api.request).toHaveBeenCalledWith("/api/read", { project_id: "manuscript", baseline_id: "checked-baseline", render_bundle_id: null,
+    query: { region: null, object_type: "section", object_id: "section-object", page_number: null, page_size: 1, cursor: null } });
+  expect(within(dialog).getByText("12 pt")).toBeInTheDocument();
+  expect(within(dialog).getByText("24 pt")).toBeInTheDocument();
+  expect(within(dialog).getByText("25.4 mm")).toBeInTheDocument();
+  fireEvent.change(within(dialog).getByRole("combobox", { name: text.handlingAction }), { target: { value: "defer" } });
+  fireEvent.change(within(dialog).getByRole("textbox", { name: text.handlingNote }), { target: { value: "Keep one column until final submission" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.saveHandling }));
+  expect(await within(dialog).findByText("Keep one column until final submission")).toBeInTheDocument();
+  expect(api.request).toHaveBeenCalledWith("/api/disposition", { check_id: "check-current", rule_id: rule.rule_id, action: "defer", note: "Keep one column until final submission" });
+  expect(within(dialog).getByRole("textbox", { name: text.handlingNote })).toHaveValue("");
+  expect(within(dialog).getByText(/Section 1.*Observed 1.*Expected 2/)).toBeInTheDocument();
+});
+
+it("keeps an exact font edit after a failed revision and retries with the same name and reason", async () => {
+  const fontRule: JournalRule = { ...rule, rule_id: "font-rule", property: "body_font_family", expected: "Times New Roman", unit: "font_family" };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  let revisionCalls = 0;
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (path === "/api/revise") {
+      revisionCalls += 1;
+      if (revisionCalls === 1) throw new Error("Revision service is temporarily unavailable");
+      return { ...world, version_id: "world-font-revised", rules: [fontRule] };
+    }
+    const response = await originalRequest(path, payload);
+    if (new URL(path, "http://workbench").pathname === "/api/world") return { ...response, rules: [fontRule] };
+    return response;
+  });
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await screen.findByRole("button", { name: /Times New Roman/ }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByText(text.reviseRequirement));
+  const family = within(dialog).getByDisplayValue("Times New Roman");
+  const reason = within(dialog).getByLabelText(text.decisionReason);
+  const save = within(dialog).getByRole("button", { name: text.saveRevision });
+  expect(save).toBeDisabled();
+  fireEvent.change(family, { target: { value: "  Source Han Serif SC  " } });
+  fireEvent.change(reason, { target: { value: "Use the exact family named by the journal" } });
+  fireEvent.click(save);
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Revision service is temporarily unavailable");
+  expect(family).toHaveValue("  Source Han Serif SC  ");
+  expect(reason).toHaveValue("Use the exact family named by the journal");
+  await waitFor(() => expect(save).toBeEnabled());
+  fireEvent.click(save);
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(api.request.mock.calls.filter(([path]) => path === "/api/revise")).toEqual([
+    ["/api/revise", { version_id: world.version_id, rule_id: fontRule.rule_id, expected: "Source Han Serif SC", reason: "Use the exact family named by the journal" }],
+    ["/api/revise", { version_id: world.version_id, rule_id: fontRule.rule_id, expected: "Source Han Serif SC", reason: "Use the exact family named by the journal" }],
+  ]);
+  expect(screen.getAllByText(text.versionCreated).length).toBeGreaterThan(0);
 });
