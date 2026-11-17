@@ -91,7 +91,7 @@ test("native task group routes addressed work into member execution and a reply"
     if (!work) throw new Error("Native member work has no returned message");
     expect(result.executions.some(execution => execution.id === work.executionId && execution.memberId === reviewer.id && execution.modelId === "llama3.2")).toBe(true);
     expect(result.messages.find(message => message.id === work.resultMessageId)?.author.id).toBe(reviewer.id);
-    await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+    await panel.getByText("Refresh", { exact: true }).click();
     const workCard = panel.getByTestId(`work-${work.id}`);
     await workCard.getByTestId(`resolution-${work.id}`).getByRole("button", { name: "Open result", exact: true }).click();
     await expect(panel.locator('section[aria-label="Loaded discussion thread"]')).toBeVisible();

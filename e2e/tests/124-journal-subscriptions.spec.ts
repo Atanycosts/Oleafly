@@ -103,10 +103,11 @@ test("external journal revision wakes only the subscribed idle member and dedupl
     const observedTurns: { phase: string; member: string; prompt: string }[] = [];
     server.setResponder(body=>{
       const messages = body.messages as { role: string; content: unknown }[];
+      if (messages.some(message=>message.role==="system" && typeof message.content==="string" && message.content.includes("Assess responsibility-based participation"))) return '{"decisions":[]}';
       const lastUser=messages.reduce((last,m,index)=>m.role==="user"?index:last,-1);
       const prompt = String(messages[lastUser]?.content ?? "");
       const results = messages.slice(lastUser+1).filter(m=>m.role==="tool" && typeof m.content==="string").map(m=>decodeToolResult(m.content as string));
-      const member = prompt.includes("You are Reviewer. Responsibility:") ? "Reviewer" : prompt.includes("You are Coordinator. Responsibility:") ? "Coordinator" : "Explorer";
+      const member = prompt.includes("You are the persistent member Reviewer. Responsibility:") ? "Reviewer" : prompt.includes("You are the persistent member Coordinator. Responsibility:") ? "Coordinator" : "Explorer";
       if (!results.length) observedTurns.push({phase:externallyRevised?"external":"initial",member,prompt});
       if (member === "Coordinator") {
         if (results.length===0) return {name:"discover_tools",args:{query:"group_message"}};

@@ -108,8 +108,8 @@ test("historical journal feedback creates an explicit task and links real busine
     await page.getByTestId("journal-workspace").getByText("Use this version", { exact: true }).click();
     await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
     await panel.getByText("Run check", { exact: true }).click();
-    const results = page.getByTestId("journal-workspace").locator('[aria-label="Check results"]');
-    await expect(results).toBeVisible();
+    const checkResults = page.getByTestId("journal-workspace").locator('[aria-label="Check results"]');
+    await expect(checkResults).toBeVisible();
     await expect.poll(() => page.evaluate<string | null>(`(() => {
       const cards = Array.from(document.querySelectorAll('[aria-label="Check results"] div.grid > div'));
       const card = cards.find((item) => item.children[0]?.textContent === 'Violation');

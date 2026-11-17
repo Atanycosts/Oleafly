@@ -76,7 +76,7 @@ test("native tasks propose DOCX changes and retain user decisions with exact sav
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
     await panel.getByText("Edit DOCX working copy", { exact: true }).click();
     await expect.poll(() => live(page).then((read) => read.paragraphs[0]?.text, () => null), { timeout: 90_000 }).toBe(ORIGINAL);
-    await page.getByTestId("docx-workspace").getByRole("button", { name: "Document tools", exact: true }).click();
+    await page.getByTestId("docx-workspace").getByText("Document tools", { exact: true }).click();
     const initial = await live(page);
     const manuscript = initial.document.workbenchProjectId;
     const records: { task: ResearchTask; proposed: DocxActivity; saved: DocxActivity; group: GroupSnapshot | null }[] = [];
