@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createServer, request as httpRequest } from "node:http";
 import type {
   ResearchTask,
   TaskTranscriptEvent,
@@ -12,6 +13,7 @@ import {
   waitForTask,
   type Page,
 } from "./word-manuscript-live";
+import { startLiveRelay } from "../run-docx-recovery.mjs";
 import type { DocxDocumentRead, DocxReadQuery } from "../../packages/ai-tools/src/tools";
 
 const sourceSha256 = "a".repeat(64);
@@ -39,6 +41,60 @@ function event(
 }
 
 describe("whole-manuscript live coverage", () => {
+  it("forwards only the configured provider chat-completions route", async () => {
+    const upstreamPaths: (string | undefined)[] = [];
+    const upstream = createServer((request, response) => {
+      upstreamPaths.push(request.url);
+      request.resume();
+      request.on("end", () => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}");
+      });
+    });
+    await new Promise<void>((accept, reject) => {
+      upstream.once("error", reject);
+      upstream.listen(0, "127.0.0.1", () => {
+        upstream.off("error", reject);
+        accept();
+      });
+    });
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Fixture upstream did not bind TCP.");
+    const relay = await startLiveRelay(
+      new URL(`http://127.0.0.1:${address.port}/v1`),
+      [],
+      new Set(),
+    );
+    const request = (path: string): Promise<number> => new Promise((accept, reject) => {
+      const endpoint = new URL(relay.baseURL);
+      const outgoing = httpRequest({
+        hostname: endpoint.hostname,
+        port: endpoint.port,
+        path,
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": 2 },
+      }, (response) => {
+        response.resume();
+        response.on("end", () => accept(response.statusCode ?? 0));
+      });
+      outgoing.once("error", reject);
+      outgoing.end("{}");
+    });
+    try {
+      expect(await request(`http://127.0.0.1:${address.port}/v1/admin`)).toBe(404);
+      expect(await request("/v1/%2e%2e/admin")).toBe(404);
+      expect(await request("/v1/chat/completions?target=http://127.0.0.1")).toBe(404);
+      expect(upstreamPaths).toEqual([]);
+      expect(await request("/v1/chat/completions")).toBe(200);
+      expect(upstreamPaths).toEqual(["/v1/chat/completions"]);
+    } finally {
+      relay.relay.closeAllConnections();
+      await new Promise<void>((accept, reject) => relay.relay.close(error => error ? reject(error) : accept()));
+      upstream.closeAllConnections();
+      await new Promise<void>((accept, reject) => upstream.close(error => error ? reject(error) : accept()));
+    }
+  });
+
   function windowedReadFixture() {
     const document = { sessionId: "session", appProjectId: "app", workbenchProjectId: "manuscript",
       baselineId: "baseline", sourceSha256, sessionRevision: 0, savedRevision: 0,

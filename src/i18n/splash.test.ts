@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 import { SUPPORTED_LOCALES } from "@oleafly/i18n-contract";
 
@@ -17,7 +18,11 @@ describe("boot splash narration", () => {
   const prePaintLocales = JSON.parse(shipped?.[1] ?? "[]") as string[];
 
   it("paints Chinese on a fresh English device and respects an explicit English choice", () => {
-    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].find((entry) => entry[1].includes("var locale"))?.[1];
+    const source = new JSDOM(html);
+    const script = [...source.window.document.querySelectorAll("script")]
+      .map((element) => element.textContent)
+      .find((content) => content?.includes("var locale"));
+    source.window.close();
     if (!script) throw new Error("Pre-paint locale script is missing");
     for (const [preference, expected] of [[null, "zh-Hans"], ["en", "en"], ["system", "en"]]) {
       const document = { documentElement: { lang: "", className: "", style: {} } };

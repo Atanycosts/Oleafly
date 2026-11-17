@@ -1,4 +1,5 @@
 import { test, expect } from "../fixtures";
+import { scriptValue } from "../script-value";
 import {
   createBlankProject,
   editorSource,
@@ -14,7 +15,7 @@ const PROJECT = "E2E Settings";
 
 async function openSettingsProject(page: Page & { getByText(t: string): { click(): Promise<void> } }) {
   const exists = await page.evaluate<boolean>(
-    `Array.from(document.querySelectorAll('button')).some((el) => el.textContent?.includes(${JSON.stringify(PROJECT)}))`,
+    `Array.from(document.querySelectorAll('button')).some((el) => el.textContent?.includes(${scriptValue(PROJECT)}))`,
   );
   if (exists) await openProject(page, PROJECT);
   else await createBlankProject(page, PROJECT);
