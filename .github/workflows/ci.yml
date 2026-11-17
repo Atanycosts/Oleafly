@@ -411,9 +411,9 @@ jobs:
           -p oleafly-sandbox -p oleafly-forge
           -p oleafly-agent
 
-      # Preflight and research read PDFs with lopdf 0.42 (research through
-      # pdf-extract), which uses let chains, so they need Rust 1.88 although
-      # lopdf declares 1.85. The ACP client needs 1.88 for the official ACP SDK
+      # Preflight reads PDFs with lopdf 0.42, which uses let chains, so it
+      # needs Rust 1.88 although lopdf declares 1.85. Research also needs
+      # patched SQLite below. The ACP client needs 1.88 for the official ACP SDK
       # and schema crates. Lint builds on 1.88 without its proofread feature;
       # harper-core's dependencies need 1.90. Downloads needs 1.88 for zip 9,
       # the first zip release with the fixes for its 2026 advisories.
@@ -422,20 +422,21 @@ jobs:
         with:
           toolchain: 1.88.0
 
-      - name: Check the PDF crates, the ACP client, downloads and lint against their Rust 1.88 MSRV
+      - name: Check preflight, the ACP client, downloads and lint against their Rust 1.88 MSRV
         run: |
-          cargo +1.88.0 check -p oleafly-preflight -p oleafly-research -p oleafly-acp -p oleafly-downloads --all-targets
+          cargo +1.88.0 check -p oleafly-preflight -p oleafly-acp -p oleafly-downloads --all-targets
           cargo +1.88.0 check -p oleafly-lint --no-default-features --all-targets
 
-      # The CLI links the collaboration client, and online import decrypts
-      # browser cookies with aes 0.9. Both need Rust 1.89.
+      # Patched bundled SQLite requires rusqlite 0.41 and Rust 1.89 in history
+      # and research too. The CLI also links the collaboration client, and
+      # online import decrypts browser cookies with aes 0.9.
       - name: Install the CLI's minimum supported Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.89.0
 
-      - name: Check the CLI and online import against their Rust 1.89 MSRV
-        run: cargo +1.89.0 check -p oleafly-cli -p oleafly-online --all-targets
+      - name: Check the CLI, online import, history and research against their Rust 1.89 MSRV
+        run: cargo +1.89.0 check -p oleafly-cli -p oleafly-online -p oleafly-history -p oleafly-research --all-targets
 
   server-web:
     name: Server with browser access
@@ -513,13 +514,13 @@ jobs:
       - name: Lint all native Windows targets
         run: cargo clippy --workspace --exclude oleafly-server --all-targets -- -D warnings
 
-      - name: Install minimum supported Rust toolchain
+      - name: Install history's minimum supported Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
-          toolchain: 1.87.0
+          toolchain: 1.89.0
 
-      - name: Test history on Rust 1.87
-        run: cargo +1.87.0 test -p oleafly-history --all-targets
+      - name: Test history on Rust 1.89
+        run: cargo +1.89.0 test -p oleafly-history --all-targets
 
   cargo-deny:
     # RustSec advisories plus a permissive-only license gate for the Rust workspace.
