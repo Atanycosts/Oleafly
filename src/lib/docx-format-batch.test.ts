@@ -14,9 +14,8 @@ function mounted(
   mode: "edit" | "view" | "suggest" = "edit",
   styles = "",
   theme = "",
+  numbering = "",
 ) {
-  const container = document.createElement("div");
-  document.body.append(container);
   const bytes = zipSync({
     "[Content_Types].xml": strToU8(
       '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
@@ -61,9 +60,39 @@ function mounted(
       ),
     );
   }
+  if (numbering) {
+    parts["word/numbering.xml"] = strToU8(numbering);
+    const relationships = parts["word/_rels/document.xml.rels"]
+      ? strFromU8(parts["word/_rels/document.xml.rels"])
+      : '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    parts["word/_rels/document.xml.rels"] = strToU8(
+      relationships.replace(
+        "</Relationships>",
+        '<Relationship Id="numbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>',
+      ),
+    );
+    parts["[Content_Types].xml"] = strToU8(
+      strFromU8(parts["[Content_Types].xml"]).replace(
+        "</Types>",
+        '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>',
+      ),
+    );
+  }
+  return mountPackage(
+    styles || theme || numbering ? zipSync(parts) : bytes,
+    mode,
+  );
+}
+
+function mountPackage(
+  bytes: Uint8Array,
+  mode: "edit" | "view" | "suggest",
+) {
+  const container = document.createElement("div");
+  document.body.append(container);
   const opened = mountPaginatedSurface(
     container,
-    styles || theme ? zipSync(parts) : bytes,
+    bytes,
     {
       editingMode: mode,
       author: "Batch Author",
@@ -145,6 +174,147 @@ it("changes only a model span after field and math atoms and undoes the entire g
     f.surface.undo();
     expect(f.xml()).toBe(before);
   } finally {
+    f.dispose();
+  }
+});
+
+it("preserves two-level numbering while formatting list text around fields and math through undo and reopen", async () => {
+  const styles =
+    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="ListMetadata"><w:name w:val="List Metadata"/><w:basedOn w:val="ListParagraph"/><w:pPr><w:spacing w:after="80"/></w:pPr></w:style>';
+  const numbering =
+    '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="4"><w:multiLevelType w:val="multilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2)"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num></w:numbering>';
+  const body =
+    '<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr><w:spacing w:after="120"/></w:pPr><w:r><w:t xml:space="preserve">Finding </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF detail </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Detailed result</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><m:oMath><m:r><m:t>x+1</m:t></m:r></m:oMath><w:r><w:t xml:space="preserve"> remains editable</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="1"/><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t>Nested item</w:t></w:r></w:p>';
+  const f = mounted(body, "edit", styles, "", numbering);
+  let reopened: ReturnType<typeof mountPackage> | null = null;
+  try {
+    const [first, second] = f.paragraphs;
+    const model = f.session.readParagraphModelText!(first.handle);
+    expect(model).toBe("Finding \uFFFC\uFFFC remains editable");
+    const editableStart = model.indexOf("remains editable");
+    expect(editableStart).toBeGreaterThan(0);
+    const before = f.surface.save();
+
+    expect(
+      f.session.formatBatch!(
+        [
+          {
+            target: first.handle,
+            range: { start: editableStart, end: model.length },
+            font: { name: "Arial", nameEastAsia: "SimHei", bold: true },
+          },
+          {
+            target: first.handle,
+            paragraph: { style: "List Metadata", keepNext: true },
+          },
+          {
+            target: second.handle,
+            font: { nameEastAsia: "SimSun", italic: true },
+            paragraph: { style: "List Metadata", keepLines: true },
+          },
+        ],
+        0,
+      ),
+    ).toEqual({ ok: true, revision: 1, changed: true });
+
+    const saved = f.surface.save();
+    const dom = new DOMParser().parseFromString(f.xml(), "text/xml");
+    const paragraphs = [...dom.getElementsByTagName("w:p")];
+    expect(
+      paragraphs.map((paragraph) => {
+        const numPr = paragraph.getElementsByTagName("w:numPr")[0]!;
+        return [
+          numPr.getElementsByTagName("w:numId")[0]!.getAttribute("w:val"),
+          numPr.getElementsByTagName("w:ilvl")[0]!.getAttribute("w:val"),
+        ];
+      }),
+    ).toEqual([
+      ["7", "0"],
+      ["7", "1"],
+    ]);
+    expect(
+      paragraphs.map((paragraph) =>
+        paragraph
+          .getElementsByTagName("w:pStyle")[0]!
+          .getAttribute("w:val"),
+      ),
+    ).toEqual(["ListMetadata", "ListMetadata"]);
+    expect(paragraphs[0]!.getElementsByTagName("w:keepNext")).toHaveLength(1);
+    expect(paragraphs[1]!.getElementsByTagName("w:keepLines")).toHaveLength(
+      1,
+    );
+
+    const runs = [...dom.getElementsByTagName("w:r")];
+    const editable = runs.find((run) =>
+      run.textContent?.includes("remains editable"),
+    )!;
+    expect(editable.getElementsByTagName("w:b")).toHaveLength(1);
+    expect(
+      editable.getElementsByTagName("w:rFonts")[0]!.getAttribute(
+        "w:eastAsia",
+      ),
+    ).toBe("SimHei");
+    const fieldResult = runs.find(
+      (run) => run.textContent === "Detailed result",
+    )!;
+    expect(fieldResult.getElementsByTagName("w:b")).toHaveLength(0);
+    expect(dom.getElementsByTagName("m:t")[0]!.textContent).toBe("x+1");
+    const nested = runs.find((run) => run.textContent === "Nested item")!;
+    expect(nested.getElementsByTagName("w:i")).toHaveLength(1);
+    expect(
+      nested.getElementsByTagName("w:rFonts")[0]!.getAttribute("w:eastAsia"),
+    ).toBe("SimSun");
+
+    const facts = await openDocxFormatFacts(saved);
+    const listItems = facts.snapshot.objects.flatMap((object) => {
+      if (object.kind !== "paragraph") return [];
+      const paragraph = object.properties.paragraph as
+        | {
+            listItem?: {
+              numId: string;
+              abstractNumId: string;
+              ilvl: number;
+              numFmt: string;
+              markerText: string;
+            };
+          }
+        | undefined;
+      return paragraph?.listItem ? [paragraph.listItem] : [];
+    });
+    expect(listItems).toMatchObject([
+      {
+        numId: "7",
+        abstractNumId: "4",
+        ilvl: 0,
+        numFmt: "decimal",
+        markerText: "1.",
+      },
+      {
+        numId: "7",
+        abstractNumId: "4",
+        ilvl: 1,
+        numFmt: "lowerLetter",
+        markerText: "a)",
+      },
+    ]);
+
+    reopened = mountPackage(saved, "edit");
+    const [reopenedFirst, reopenedSecond] = reopened.paragraphs;
+    expect(
+      reopened.session.readParagraphFormatting!(reopenedFirst.handle)
+        .paragraph,
+    ).toMatchObject({ keepNext: true, keepLines: false });
+    expect(
+      reopened.session.readParagraphFormatting!(reopenedSecond.handle)
+        .paragraph,
+    ).toMatchObject({ keepNext: false, keepLines: true });
+    expect(reopened.xml()).toContain('<w:numId w:val="7"/>');
+    expect(reopened.xml()).toContain('<w:ilvl w:val="1"/>');
+
+    f.surface.undo();
+    expect(f.surface.save()).toEqual(before);
+  } finally {
+    reopened?.dispose();
     f.dispose();
   }
 });

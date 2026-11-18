@@ -27,6 +27,7 @@ import { useIndexStore } from "@/store/project-index";
 import {
   projectIntelligenceCompletion,
   projectIntelligenceExtensions,
+  typstCompletionWithLanguageService,
 } from "./project-intelligence";
 import { stubRangeGeometry } from "../../../../packages/editor/src/test-geometry";
 
@@ -34,6 +35,8 @@ stubRangeGeometry();
 
 function snapshot(
   sources: Readonly<Record<string, string>>,
+  projectRevision = 1,
+  mainDocument = "main.tex",
 ): ProjectIntelligenceSnapshot {
   const files = Object.fromEntries(
     Object.entries(sources).map(([path, source]) => [
@@ -44,12 +47,12 @@ function snapshot(
   return assembleProjectIntelligence({
     identity: {
       projectId: "completion-project",
-      projectRevision: 1,
-      requestGeneration: 1,
+      projectRevision,
+      requestGeneration: projectRevision,
     },
     files,
     knownFiles: Object.keys(sources),
-    mainDocument: "main.tex",
+    mainDocument,
     stats: {
       fileCount: Object.keys(files).length,
       characterCount: Object.values(sources).reduce(
@@ -65,11 +68,13 @@ function snapshot(
 
 function installProject(
   sources: Readonly<Record<string, string>>,
+  projectRevision = 1,
+  mainDocument = "main.tex",
 ): ProjectIntelligenceSnapshot {
-  const value = snapshot(sources);
+  const value = snapshot(sources, projectRevision, mainDocument);
   useFilesStore.setState({
     projectId: "completion-project",
-    activePath: "main.tex",
+    activePath: mainDocument,
     files: Object.fromEntries(
       Object.entries(sources).map(([path, content]) => [
         path,
@@ -86,7 +91,7 @@ function installProject(
       stale: false,
     },
   });
-  setEditorDocumentPath("main.tex");
+  setEditorDocumentPath(mainDocument);
   return value;
 }
 
@@ -478,6 +483,62 @@ describe("project LaTeX completion revisions and argument parity", () => {
     );
     expect(view.state.doc.toString()).toBe("\\needletarget{}");
     await Promise.resolve();
+    view.destroy();
+  });
+});
+
+describe("project completion request isolation", () => {
+  it("rejects a delayed Typst completion after the project analysis refreshes", async () => {
+    const main = "#hel";
+    installProject(
+      {
+        "main.typ": main,
+        "lib.typ": "#let helper(x) = x\n",
+      },
+      1,
+      "main.typ",
+    );
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: main,
+        selection: { anchor: main.length },
+      }),
+      parent: document.body,
+    });
+    let finishLanguageService!: (
+      result: CompletionResult | null,
+    ) => void;
+    const languageServiceResult = new Promise<CompletionResult | null>(
+      (resolve) => {
+        finishLanguageService = resolve;
+      },
+    );
+    const source = typstCompletionWithLanguageService(
+      () => languageServiceResult,
+    );
+    const pending = source(
+      new CompletionContext(view.state, view.state.doc.length, false),
+    );
+
+    installProject(
+      {
+        "main.typ": main,
+        "lib.typ": "#let unrelated(x) = x\n",
+      },
+      2,
+      "main.typ",
+    );
+    finishLanguageService(null);
+    const result = await pending;
+    const candidate = option(result, "helper");
+
+    apply(
+      view,
+      result as CompletionResult,
+      candidate,
+      view.state.doc.length,
+    );
+    expect(view.state.doc.toString()).toBe(main);
     view.destroy();
   });
 });
