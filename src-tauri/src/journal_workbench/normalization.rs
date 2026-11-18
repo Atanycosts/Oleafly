@@ -374,13 +374,11 @@ mod tests {
 
     #[cfg(unix)]
     fn fake_libreoffice(directory: &Path, behavior: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let executable = directory.join("selected soffice");
         let script = format!(
             "#!/bin/sh\ncase \"$1\" in -env:UserInstallation=file:*) ;; *) exit 21;; esac\nprofile=\"$1\"\nshift\nif [ \"$1\" = --version ]; then echo 'LibreOffice 26.2 test'; exit 0; fi\n[ \"$1\" = --headless ] || exit 22\n[ \"$6\" = 'docx:Office Open XML Text' ] || exit 23\n[ \"$7\" = --outdir ] || exit 24\n[ \"$9\" = \"$PWD/template.doc\" ] || exit 25\n[ -f \"$9\" ] || exit 26\n{behavior}\n"
         );
-        std::fs::write(&executable, script).unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::test_wait::write_executable(&executable, &script);
         executable
     }
 
@@ -433,8 +431,8 @@ mod tests {
             assert!(error.contains(expected), "{error}");
             assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
         }
-        let executable = fake_libreoffice(directory.path(), "exit 0");
-        std::fs::write(&executable, "#!/bin/sh\necho 'Some other converter'\n").unwrap();
+        let executable = directory.path().join("other converter");
+        crate::test_wait::write_executable(&executable, "#!/bin/sh\necho 'Some other converter'\n");
         assert!(convert_legacy(CFB_SIGNATURE, &executable, &scratch)
             .unwrap_err()
             .contains("did not identify itself as LibreOffice"));
