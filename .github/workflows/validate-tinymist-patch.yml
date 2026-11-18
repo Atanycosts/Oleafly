@@ -2,6 +2,7 @@ name: Validate Tinymist source patch
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - "patches/tinymist/**"
       - "scripts/ci/validate-tinymist-candidate.mjs"

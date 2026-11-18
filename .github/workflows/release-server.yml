@@ -5,6 +5,7 @@ on:
     tags:
       - "server-v*.*.*"
   pull_request:
+    branches: [main]
     paths:
       - "crates/oleafly-server/**"
       - "crates/oleafly-collab-protocol/**"

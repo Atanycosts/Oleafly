@@ -419,10 +419,11 @@ commands cover the earlier local hook gates; CI has additional platform and
 integration checks. On machines with limited memory, run focused checks locally
 and leave full builds and platform suites to GitHub Actions. The
 [CI workflow](../.github/workflows/ci.yml) runs for code changes in pull requests
-targeting `main` or `codex/**`, including draft stacked PRs, and for pushes to
-`main`. Documentation-only changes still skip automatic CI. It uses standard
-GitHub-hosted runners, whose execution time is free for public repositories;
-artifact and cache storage have separate allowances.
+targeting `main` and for pushes to `main`. Use one integration PR targeting
+`main` to validate a stack; PRs targeting intermediate branches do not run the
+full matrix. Documentation-only changes still skip automatic CI. The workflow
+uses standard GitHub-hosted runners, whose execution time is free for public
+repositories; artifact and cache storage have separate allowances.
 
 The same workflow runs the Workbench Python formatting, lint, type and portable
 test gates on Linux and Windows. It installs the service's development and
@@ -438,10 +439,11 @@ gh run list -R OWNER/Oleafly --workflow ci.yml --branch YOUR_BRANCH
 ```
 
 Replace `OWNER` and `YOUR_BRANCH` with your fork owner and pushed branch. A
-manual dispatch tests that branch's commit; a pull request run tests GitHub's
-merge commit with its target branch. CI builds E2E applications for its tests;
-it does not publish a release or replace the installed application. SonarQube
-Cloud analysis runs only when the repository variables `SONAR_ORGANIZATION`
+manual dispatch tests that branch's commit without coverage gates; a pull
+request run tests GitHub's merge commit with its target branch and applies the
+coverage gates. CI builds E2E applications for its tests; it does not publish a
+release or replace the installed application. SonarQube Cloud analysis runs
+only when the repository variables `SONAR_ORGANIZATION`
 and `SONAR_PROJECT_KEY` are configured; an opted-in repository must also provide
 the `SONAR_TOKEN` secret. Build, lint and test jobs run without those settings.
 
@@ -482,8 +484,10 @@ the preceding test or coverage gate failed, retaining it for one day. A failed
 gate still fails the job; the report lets contributors locate the uncovered code.
 The frontend test/coverage job runs independently of the frontend build job.
 Browser and native E2E jobs depend on the build, so a coverage failure remains
-visible without suppressing integration results. SonarCloud waits for the
-coverage job and the Rust job before downloading their reports.
+visible without suppressing integration results. The packaged Tinymist
+diagnostics smoke runs as a separate gate, so Rust tests and native E2E can
+report their own results even if it fails. SonarCloud waits for the coverage
+job and the Rust job before downloading their reports.
 
 The browser-harness and native desktop E2E jobs share the
 [`workbench-runtime` action](../.github/actions/workbench-runtime/action.yml).

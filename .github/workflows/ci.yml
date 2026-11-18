@@ -11,8 +11,8 @@ on:
       - "docs/**"
       - ".github/badges/**"
   pull_request:
-    # Stacked PRs target the preceding codex/ branch before they reach main.
-    branches: [main, "codex/**"]
+    # Run the full matrix on the integration PR, not each layer of a stack.
+    branches: [main]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -343,6 +343,26 @@ jobs:
       - name: Test editor performance
         run: pnpm test:editor:performance
 
+  tinymist-diagnostics:
+    # Keep the shipping diagnostics gate independent of Rust and desktop E2E
+    # so a sidecar failure does not hide failures in the application itself.
+    name: Tinymist (packaged diagnostics)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Stage checksum-pinned Tinymist resource archive
+        run: node scripts/fetch-language-servers.mjs --server tinymist --target x86_64-unknown-linux-gnu --install-mode resource
+
+      - name: Smoke-test Tinymist resource extraction and diagnostic ordering
+        run: node scripts/smoke-language-servers.mjs --server tinymist
+
   rust:
     name: Rust (test + clippy)
     runs-on: ubuntu-22.04
@@ -420,9 +440,6 @@ jobs:
 
       - name: Stage checksum-pinned Tinymist resource archive
         run: node scripts/fetch-language-servers.mjs --server tinymist --target x86_64-unknown-linux-gnu --install-mode resource
-
-      - name: Smoke-test Tinymist resource extraction and LSP handshake
-        run: node scripts/smoke-language-servers.mjs --server tinymist
 
       - name: Smoke-test Typst sidecar
         run: bash scripts/smoke-typst.sh x86_64-unknown-linux-gnu
