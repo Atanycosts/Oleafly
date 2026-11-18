@@ -179,7 +179,7 @@ test("ordinary chat reads retained paper windows, revises, compiles and reopens 
     })()`), { timeout: 45_000 }).toBe(true);
     await waitLong(page, `!![...document.querySelectorAll('[data-testid="workspace-material-surface"] .textLayer span')].find(node => node.textContent.includes('VALIDATION_SOURCE_FIRST'))`, 30_000);
     await webviewScreenshot(page, testInfo.outputPath("retained-paper-material-viewer.png"));
-    await viewer.getByRole("button", { name: "Close material", exact: true }).click();
+    await viewer.locator('button[aria-label="Close material"]').click();
     await expect(viewer).toHaveCount(0);
     expect(await manuscriptText()).toContain("test data stay held out");
     const mismatch = await page.evaluate<string>(`window.__oleaflyE2EImport('/src/lib/research-literature.ts').then(async m => { try { await m.readRetainedPaperPdf(${scriptValue({ ...first!.pdfReference, pdfSha256: "0".repeat(64) })}); return 'unexpected success'; } catch (error) { return String(error); } })`);

@@ -115,6 +115,7 @@ function MaterialAnnotationPanel({ document, anchor, options, onOpenSnapshot, on
       setError(null);
       if (onOpenSnapshot) onOpenSnapshot(retained);
       else useMaterialViewerStore.getState().open({ ...retained.snapshot.document,
+        role: annotation.explicitRequest ? "task_input" : "evidence",
         load: async () => new Uint8Array(retained.bytes), anchor: retained.snapshot.anchor, mediaType: retained.snapshot.mediaType });
     } catch (cause) { setError(describeError(cause)); }
   }

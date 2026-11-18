@@ -362,7 +362,12 @@ export function PreviewWindow({
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
   const toggleFullscreen = () => {
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().then(() => {
+        setIsFs(false);
+        setFsToolbarHidden(false);
+      }).catch(() => {});
+    }
     else void rootRef.current?.requestFullscreen?.().catch(() => {});
   };
   const submitSavePdf = async () => {

@@ -94,7 +94,7 @@ test("native task group routes addressed work into member execution and a reply"
     await panel.getByText("Refresh", { exact: true }).click();
     const workCard = panel.getByTestId(`work-${work.id}`);
     const resolution = workCard.getByTestId(`resolution-${work.id}`);
-    await resolution.getByRole("button", { name: "Open result", exact: true }).click();
+    await resolution.locator('button[aria-label="Open result"]').click();
     await expect(panel.locator('section[aria-label="Loaded discussion thread"]')).toBeVisible();
     await expect(panel.locator(`[id="group-message-${work.resultMessageId}"]`)).toBeVisible();
     await expect(panel.locator(`[id="group-message-${work.resultMessageId}"]`)).toContainText("Scripted member review returned");

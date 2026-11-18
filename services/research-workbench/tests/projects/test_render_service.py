@@ -423,6 +423,30 @@ def test_libreoffice_failure_never_registers_a_partial_render(rendered_project, 
     assert open_project(project).list_derived_renders(baseline) == []
 
 
+def test_conversion_start_failure_preserves_platform_error(rendered_project, tmp_path):
+    project, _, _, _, baseline = rendered_project
+    executable = tmp_path / "LibreOffice"
+    executable.write_bytes(b"fake LibreOffice executable")
+    executable.chmod(0o755)
+
+    def runner(command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
+        if command[1:] == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, b"LibreOffice 25.2\n", b"")
+        raise OSError("[WinError 206] The filename or extension is too long")
+
+    with pytest.raises(RenderConversionError, match=r"WinError 206"):
+        render_libreoffice_baseline(
+            project,
+            baseline_id=baseline,
+            executable=executable,
+            profile=tmp_path / "profile",
+            actor_id="operator-test",
+            confirmation_reason="Render a failing conversion",
+            surface="browser",
+            runner=runner,
+        )
+
+
 def test_unreadable_pdf_is_a_conversion_failure_without_registration(rendered_project, tmp_path):
     project, _, _, _, baseline = rendered_project
     executable = tmp_path / "LibreOffice"

@@ -1435,7 +1435,9 @@ jobs:
     name: E2E (browser harness, Linux)
     needs: frontend
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Workbench, LibreOffice and Chromium installation consume most of this
+    # runner's first 20 minutes before the browser specs begin.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 

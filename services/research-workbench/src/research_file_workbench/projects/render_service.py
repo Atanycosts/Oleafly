@@ -163,7 +163,7 @@ def render_libreoffice_baseline(
                 conversion_result = invoke(command, LIBREOFFICE_RENDER_TIMEOUT_SECONDS)
             except (OSError, subprocess.SubprocessError) as exc:
                 raise RenderConversionError(
-                    "LibreOffice headless conversion could not be started."
+                    f"LibreOffice headless conversion could not be started: {exc}"
                 ) from exc
             if conversion_result.returncode != 0:
                 raise RenderConversionError(

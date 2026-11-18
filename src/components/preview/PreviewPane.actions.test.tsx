@@ -541,7 +541,6 @@ describe("PreviewPane toolbar actions", () => {
     });
     document.exitFullscreen = vi.fn(async () => {
       fullscreenElement = null;
-      document.dispatchEvent(new Event("fullscreenchange"));
     });
 
     await act(async () => {

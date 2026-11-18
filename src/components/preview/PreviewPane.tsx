@@ -922,7 +922,12 @@ export function PreviewPane({ active = true }: { active?: boolean } = {}) {
   }, []);
 
   const toggleFullscreen = () => {
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().then(() => {
+        setIsFs(false);
+        setFsToolbarHidden(false);
+      }).catch(() => {});
+    }
     else rootRef.current?.requestFullscreen?.().catch(() => {});
   };
 

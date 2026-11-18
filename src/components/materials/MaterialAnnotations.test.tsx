@@ -274,13 +274,14 @@ describe("material feedback panel", () => {
   });
   it("opens the retained earlier bytes rather than applying old anchors to a current buffer", async () => {
     const snapshot = { document: { ...document, source: undefined, revision: "revision-old" }, anchor: { kind: "whole" }, sha256: "old", size: 1, mediaType: "image/svg+xml" };
-    saved = [annotation({ target: { ...materialTarget(document), objectRevision: "revision-old" }, source: { kind: "material_snapshot", content: JSON.stringify(snapshot), sha256: "source" } })];
+    saved = [annotation({ target: { ...materialTarget(document), taskId: "task-1", objectRevision: "revision-old" }, explicitRequest: true, source: { kind: "material_snapshot", content: JSON.stringify(snapshot), sha256: "source" } })];
     api.read.mockResolvedValue({ snapshot, bytes: [7] });
     render(<MaterialAnnotations />);
     const card = await screen.findByTestId("task-annotation");
     fireEvent.click(within(card).getByRole("button", { name: labels.recordedObject }));
     await waitFor(() => expect(api.open).toHaveBeenCalledOnce());
     const request = api.open.mock.calls[0][0];
+    expect(request.role).toBe("task_input");
     expect(request.revision).toBe("revision-old");
     expect(await request.load()).toEqual(new Uint8Array([7]));
     expect(request.anchor).toEqual({ kind: "whole" });
