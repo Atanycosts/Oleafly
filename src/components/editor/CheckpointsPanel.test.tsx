@@ -1004,6 +1004,51 @@ describe("CheckpointsPanel failure reporting", () => {
     expect(mocks.applyProjectStateChanged).not.toHaveBeenCalled();
   });
 
+  it("retries a failed restore and closes only after the checkpoint is applied", async () => {
+    mocks.checkpointRestore
+      .mockRejectedValueOnce(new Error("pack is corrupt"))
+      .mockResolvedValueOnce(restoredEvent);
+    const user = await renderPanel();
+
+    await user.click(screen.getByRole("button", { name: "Restore V2" }));
+    await user.click(await screen.findByRole("button", { name: "Restore files" }));
+
+    await waitFor(() =>
+      expect(mocks.notifyError).toHaveBeenCalledWith(
+        "restore checkpoint",
+        expect.any(Error),
+        "Couldn't restore this checkpoint. See the app log for details.",
+      ),
+    );
+    expect(mocks.applyProjectStateChanged).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().versioningOpen).toBe(true);
+
+    await user.click(await screen.findByRole("button", { name: "Restore V2" }));
+    await user.click(await screen.findByRole("button", { name: "Restore files" }));
+
+    await waitFor(() =>
+      expect(mocks.applyProjectStateChanged).toHaveBeenCalledWith(restoredEvent),
+    );
+    expect(mocks.checkpointRestore).toHaveBeenCalledTimes(2);
+    expect(mocks.checkpointRestore).toHaveBeenNthCalledWith(
+      1,
+      "project",
+      checkpoints[0].snapshot_root,
+      17,
+    );
+    expect(mocks.checkpointRestore).toHaveBeenNthCalledWith(
+      2,
+      "project",
+      checkpoints[0].snapshot_root,
+      17,
+    );
+    expect(mocks.checkpointFiles).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(mocks.toastSuccess).toHaveBeenCalledWith("Checkpoint restored.");
+      expect(useSettingsStore.getState().versioningOpen).toBe(false);
+    });
+  });
+
   it("names the path that blocked a restore", async () => {
     await showRealToasts();
     mocks.checkpointRestore.mockRejectedValue(

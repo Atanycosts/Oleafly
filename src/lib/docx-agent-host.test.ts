@@ -822,7 +822,8 @@ function readableFormat(revision = 0, dirty = false) {
         highlightColor: null, subscript: null, superscript: null, name: null, size: null, color: null },
       paragraph: { alignment: "Left" as const, style: null, firstLineIndent: null,
         leftIndent: null, rightIndent: null, lineSpacing: null, spaceBefore: null,
-        spaceAfter: null, widowControl: null, readingOrder: "LeftToRight" as const } },
+        spaceAfter: null, widowControl: null, keepNext: null, keepLines: null,
+        pageBreakBefore: null, readingOrder: "LeftToRight" as const } },
     objects: [{ object_id: "word/document.xml#0.0", kind: "paragraph" }],
     total: 1, nextOffset: null,
   };

@@ -449,10 +449,10 @@ describe("DOCX host contracts", () => {
     });
     const tools = createDocxTools(makeDocxHost({ workspaceContext, listDocuments }));
 
-    expect(await tools.get_docx_workspace_context.execute({})).toEqual({
+    expect(await tools.get_docx_workspace_context.execute()).toEqual({
       error: "Error: context store closed",
     });
-    expect(await tools.list_docx_documents.execute({})).toEqual({
+    expect(await tools.list_docx_documents.execute()).toEqual({
       error: "Error: document index closed",
     });
   });

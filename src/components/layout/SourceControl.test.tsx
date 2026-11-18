@@ -963,6 +963,23 @@ describe("SourceControl", () => {
     );
   });
 
+  it("amends the latest commit with its existing message when no replacement is entered", async () => {
+    const user = userEvent.setup();
+    render(<SourceControl />);
+
+    await screen.findByText("main.tex");
+    await user.click(screen.getByRole("button", { name: "More commit actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Amend last commit" }));
+
+    await waitFor(() =>
+      expect(mocks.gitCommitAmend).toHaveBeenCalledWith("project-1", ""),
+    );
+    expect(await screen.findByTestId("source-control-status")).toHaveTextContent(
+      "Amended the last commit and kept its message.",
+    );
+    await waitFor(() => expect(fileState.refreshTree).toHaveBeenCalled());
+  });
+
   it("can cancel destructive confirmations without applying their mutation", async () => {
     const user = userEvent.setup();
     render(<SourceControl />);
@@ -1128,6 +1145,56 @@ describe("SourceControl", () => {
       "project-1",
       expect.any(Function),
     );
+  });
+
+  it("keeps the current branch after a failed checkout, then retries and refreshes the selected branch", async () => {
+    const user = userEvent.setup();
+    const updated = snapshot({
+      branch: "revision",
+      aheadBehind: { ahead: 0, behind: 0, has_upstream: true },
+      commits: [
+        {
+          ...snapshot().commits[0],
+          refs: ["revision"],
+        },
+      ],
+    });
+    mocks.gitWorkspaceSnapshot
+      .mockResolvedValueOnce(snapshot())
+      .mockResolvedValue(updated);
+    mocks.gitCheckoutBranch
+      .mockRejectedValueOnce(new Error("Local changes would be overwritten."))
+      .mockResolvedValueOnce(projectState);
+    render(<SourceControl />);
+
+    const branchButton = await screen.findByRole("button", { name: "main" });
+    await waitFor(() => expect(mocks.applyGit).toHaveBeenCalledTimes(1));
+    await user.click(branchButton);
+    const menu = screen.getByRole("menu");
+    expect(
+      within(menu).getByRole("menuitem", { name: "main" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    await user.click(within(menu).getByRole("menuitem", { name: "revision" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Local changes would be overwritten.",
+    );
+    expect(screen.getByRole("button", { name: "main" })).toBeInTheDocument();
+    expect(mocks.gitWorkspaceSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.applyGit).toHaveBeenCalledTimes(1);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "main" })).toBeEnabled(),
+    );
+    await user.click(branchButton);
+    await user.click(screen.getByRole("menuitem", { name: "revision" }));
+
+    await waitFor(() => expect(mocks.gitCheckoutBranch).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: "revision" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(fileState.runExternalProjectMutation).toHaveBeenCalledTimes(2);
+    expect(mocks.gitWorkspaceSnapshot).toHaveBeenCalledTimes(2);
+    expect(mocks.applyGit).toHaveBeenLastCalledWith("project-1", updated.changes);
   });
 
   it("offers incoming and manual conflict recovery, and permits aborting a merge", async () => {
