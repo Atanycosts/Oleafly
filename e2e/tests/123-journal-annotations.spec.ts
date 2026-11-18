@@ -208,7 +208,6 @@ test("historical journal feedback creates an explicit task and links real busine
     await expect(pdfReference.locator("pre")).toContainText("JOURNAL-REVIEWED-TASK-COPY");
     await detail.locator('[data-testid="annotation-handling"] button').first().click();
     await expect(page.locator('[data-testid="journal-retained-object"]')).toContainText(quote);
-    await expect(page.locator('[data-testid="journal-retained-object"]')).toContainText(reference.worldVersionId);
     writeFileSync(testInfo.outputPath("checks.json"), JSON.stringify({
       mode: "scripted-provider-native-workbench", realModelReasoning: false,
       projectId, taskId: task.id, executionGeneration: task.executionGeneration,

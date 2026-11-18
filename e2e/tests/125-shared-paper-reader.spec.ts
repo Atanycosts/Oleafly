@@ -140,13 +140,13 @@ test("ordinary chat reads retained paper windows, revises, compiles and reopens 
     })()`)).toBe(true);
     const viewer = page.locator('[data-testid="workspace-material-surface"]:not([hidden]) [data-testid="retained-material-viewer"]');
     await expect(viewer).toBeVisible({ timeout: 30_000 });
-    await expect(viewer).toContainText(reference.path);
-    await expect.poll(() => page.evaluate<{ kind: string; revision: string } | null>(
+    await expect(viewer).toContainText(reference.path.split("/").at(-1)!);
+    await expect.poll(() => page.evaluate<{ kind: string; revision: string; documentId: string } | null>(
       `window.__oleaflyE2EImport('/src/store/material-viewer.ts').then(m => {
         const request = m.useMaterialViewerStore.getState().request;
-        return request ? { kind: request.kind, revision: request.revision } : null;
+        return request ? { kind: request.kind, revision: request.revision, documentId: request.documentId } : null;
       })`,
-    )).toEqual({ kind: "pdf", revision: reference.pdfSha256 });
+    )).toEqual({ kind: "pdf", revision: reference.pdfSha256, documentId: `paper:${reference.path}` });
     await expect.poll(() => page.evaluate<boolean>(`(() => {
       const viewer = document.querySelector('[data-testid="workspace-material-surface"]:not([hidden]) [data-testid="retained-material-viewer"]');
       return !!viewer

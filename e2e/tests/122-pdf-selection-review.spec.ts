@@ -19,6 +19,17 @@ import {
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 
+function decodeToolResult(content: string): Record<string, any> {
+  const result = JSON.parse(content);
+  if (Array.isArray(result.content) && typeof result.isError === "boolean") {
+    expect(result.isError).toBe(false);
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe("text");
+    return JSON.parse(result.content[0].text);
+  }
+  return result;
+}
+
 // Scripted provider + real app IPC, compile, retained material bytes, PDF text
 // tools and storage. Native DOM Range selection; trusted mouse selection is 24.
 test("PDF feedback retains the displayed original through recompile and links its review result", async ({ tauriPage: page }, testInfo) => {
@@ -107,7 +118,7 @@ test("PDF feedback retains the displayed original through recompile and links it
       explicitAnnotationId = /Current material request: ([^ .]+)\./.exec(prompt)?.[1] ?? explicitAnnotationId;
       const results = messages
         .filter((message) => message.role === "tool" && typeof message.content === "string")
-        .map((message) => JSON.parse(message.content as string));
+        .map((message) => decodeToolResult(message.content as string));
       const toolCount = results.length;
       const compiled = [...results].reverse().find((result) => result.artifact?.generation > 0)?.artifact;
       if (toolCount === 0) return { name: "discover_tools", args: { query: "read_paper" } };
@@ -160,7 +171,7 @@ test("PDF feedback retains the displayed original through recompile and links it
     expect(readFileSync(join(executionRoot, "main.tex"), "utf8")).toBe(revisedSource);
 
     const bodies = server.requestBodies().map((body) => JSON.parse(body));
-    const results = bodies.flatMap((body) => body.messages).filter((message) => message.role === "tool" && typeof message.content === "string").map((message) => JSON.parse(message.content));
+    const results = bodies.flatMap((body) => body.messages).filter((message) => message.role === "tool" && typeof message.content === "string").map((message) => decodeToolResult(message.content));
     const originalText = results.find((result) => result.source?.pdf?.sha256 === hashA && typeof result.text === "string");
     expect(originalText?.source?.pdf?.pageCount).toBe(2);
     expect(originalText?.text).toContain("ORIGINAL-PDF-SELECTION-A");

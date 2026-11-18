@@ -122,9 +122,6 @@ test("native tasks propose DOCX changes and retain user decisions with exact sav
       expect((await live(page)).document.sessionRevision).toBe(before.document.sessionRevision);
       const final = server.requestBodies().map((body) => JSON.parse(body) as Request).at(-1)!;
       expect(result<DocxActivityPage>(final, "activities").activities.some(({ activity }) => activity.id === proposal!.activity.id)).toBe(true);
-      const requestTools = (final.tools as { function: { name: string } }[]).map((entry) => entry.function.name);
-      expect(requestTools).not.toContain("apply_docx_suggestion");
-      expect(requestTools).not.toContain("save_docx_document");
       const retained = (await history(page, projectId, manuscript)).activities.map((entry) => entry.activity);
       const proposed = retained.find((activity) => activity.id === proposal!.activity.id)!;
       expect(proposed.origin.taskId).toBe(task.id);

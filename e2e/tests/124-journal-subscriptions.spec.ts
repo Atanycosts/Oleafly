@@ -82,8 +82,9 @@ test("external journal revision wakes only the subscribed idle member and dedupl
       const check=await j.journalRequest('/api/check',{project_id:manuscript.project_id});
       const reference={libraryRoot:connection.libraryRoot,workbenchProjectId:manuscript.project_id,kind:'rule',objectId:world.rules.find(r=>r.property==='page_width_twips').rule_id,worldVersionId:world.version_id,checkId:check.check_id};
       const root=await j.saveJournalAnnotation(${scriptValue(projectId)},reference,'Monitor this retained rule.',null);
+      const retainedReference=j.journalAnnotationSource(root).reference;
       const selected=await window.__oleaflyE2EImport('/src/lib/assistant-delegation-capture.ts').then(m=>m.captureAssistantTarget(${scriptValue(projectId)}));
-      const requested=await j.requestJournalAnnotation({projectId:${scriptValue(projectId)},reference,body:'Coordinate bounded journal monitoring.',parentId:root.id,mentions:[],taskId:null,draft:{projectId:${scriptValue(projectId)},title:'Journal poll subscription',prompt:'Coordinate bounded journal monitoring.',...selected,skillIds:[],dependencyIds:[]}});
+      const requested=await j.requestJournalAnnotation({projectId:${scriptValue(projectId)},reference:retainedReference,body:'Coordinate bounded journal monitoring.',parentId:root.id,mentions:[],taskId:null,draft:{projectId:${scriptValue(projectId)},title:'Journal poll subscription',prompt:'Coordinate bounded journal monitoring.',...selected,skillIds:[],dependencyIds:[]}});
       return {reference,requested};
     })`);
     expect(fixture.requested.task.startRequested).toBe(false);
@@ -100,15 +101,18 @@ test("external journal revision wakes only the subscribed idle member and dedupl
     const faultPrefix = process.env.OLEAFLY_E2E_WORKBENCH_SYNC_FAULT;
     let externallyRevised = false;
     let memberCheckResult: ReturnType<typeof decodeToolResult> | undefined;
-    const observedTurns: { phase: string; member: string; prompt: string }[] = [];
+    const observedTurns: { phase: string; member: string; prompt: string; lastUser: number; toolResultCount: number; roles: string[] }[] = [];
     server.setResponder(body=>{
       const messages = body.messages as { role: string; content: unknown }[];
       if (messages.some(message=>message.role==="system" && typeof message.content==="string" && message.content.includes("Assess responsibility-based participation"))) return '{"decisions":[]}';
       const lastUser=messages.reduce((last,m,index)=>m.role==="user"?index:last,-1);
-      const prompt = String(messages[lastUser]?.content ?? "");
+      const prompt = messages
+        .filter((message)=>typeof message.content==="string")
+        .map((message)=>message.content as string)
+        .join("\n\n");
       const results = messages.slice(lastUser+1).filter(m=>m.role==="tool" && typeof m.content==="string").map(m=>decodeToolResult(m.content as string));
-      const member = prompt.includes("You are the persistent member Reviewer. Responsibility:") ? "Reviewer" : prompt.includes("You are the persistent member Coordinator. Responsibility:") ? "Coordinator" : "Explorer";
-      if (!results.length) observedTurns.push({phase:externallyRevised?"external":"initial",member,prompt});
+      const member = /You are (?:the persistent member )?Reviewer\. Responsibility:/.test(prompt) ? "Reviewer" : /You are (?:the persistent member )?Coordinator\. Responsibility:/.test(prompt) ? "Coordinator" : "Explorer";
+      if (!results.length) observedTurns.push({phase:externallyRevised?"external":"initial",member,prompt,lastUser,toolResultCount:results.length,roles:messages.map(message=>message.role)});
       if (member === "Coordinator") {
         if (results.length===0) return {name:"discover_tools",args:{query:"group_message"}};
         if (results.length===1) return {name:"group_message",args:{body:"Read journal_context and the historical rule, run journal_check once, then wait for external changes.",recipients:[reviewer.id],requestWork:true}};
@@ -128,13 +132,19 @@ test("external journal revision wakes only the subscribed idle member and dedupl
       return "Unrelated member finished without journal subscriptions.";
     });
     const snapshot = () => page.evaluate<GroupSnapshot>(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m=>m.loadTaskGroup(${scriptValue(projectId)},${scriptValue(taskId)}))`);
+    const writeWaitFailure = (fileName: string, error: unknown, latest: GroupSnapshot) => writeFileSync(testInfo.outputPath(fileName), JSON.stringify({ error:String(error), latest, observedTurns, requests:server.requestBodies() },null,2));
     // Request coordinator work, rather than starting an unrelated task generation.
     await page.evaluate(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m=>m.sendGroupMessage(${scriptValue(projectId)},${scriptValue(group.group.id)},{body:'Delegate the journal read to Reviewer once.',recipients:[${scriptValue(coordinator.id)}],replyTo:null,object:null,requestWork:true}))`);
     let idle = group;
-    await expect.poll(async()=>{
-      idle=await snapshot();
-      return idle.work.some(w=>w.memberId===reviewer.id && w.status==="completed") && idle.work.every(w=>w.status==="completed");
-    },{timeout:90_000,intervals:[500]}).toBe(true);
+    try {
+      await expect.poll(async()=>{
+        idle=await snapshot();
+        return idle.work.some(w=>w.memberId===reviewer.id && w.status==="completed") && idle.work.every(w=>w.status==="completed");
+      },{timeout:90_000,intervals:[500]}).toBe(true);
+    } catch (error) {
+      writeWaitFailure("initial-work-timeout.json", error, idle);
+      throw error;
+    }
     expect(idle.interests.filter(i=>i.memberId===reviewer.id).map(i=>i.value)).toEqual(expect.arrayContaining([
       expect.stringMatching(/^journal_project:/), expect.stringContaining("journal_rule:"),
     ]));
@@ -168,10 +178,15 @@ test("external journal revision wakes only the subscribed idle member and dedupl
     expect(revised.version_id).not.toBe(fixture.reference.worldVersionId);
     // Snapshot reads do not call journal_context or kick/reconcile Workbench.
     let delivered=idle;
-    await expect.poll(async()=>{
-      delivered=await snapshot();
-      return delivered.work.some(w=>w.memberId===reviewer.id && w.causeKind==="event" && w.status==="completed") && delivered.work.every(w=>w.status==="completed");
-    },{timeout:60_000,intervals:[1000]}).toBe(true);
+    try {
+      await expect.poll(async()=>{
+        delivered=await snapshot();
+        return delivered.work.some(w=>w.memberId===reviewer.id && w.causeKind==="event" && w.status==="completed") && delivered.work.every(w=>w.status==="completed");
+      },{timeout:60_000,intervals:[1000]}).toBe(true);
+    } catch (error) {
+      writeWaitFailure("external-work-timeout.json", error, delivered);
+      throw error;
+    }
     const newExecutions=delivered.executions.filter(e=>!initialExecutions.includes(e.id));
     expect(newExecutions.length).toBeGreaterThan(0);
     expect(newExecutions.every(e=>e.memberId===reviewer.id)).toBe(true);
