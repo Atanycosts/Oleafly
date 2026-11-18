@@ -844,7 +844,7 @@ async fn take_native_screenshot<R: Runtime>(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     const TABLE: [u8; 256] = {
         let mut t = [255u8; 256];
         let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

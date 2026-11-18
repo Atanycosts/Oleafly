@@ -3,7 +3,14 @@ import { PluginClient, TauriPage, type BrowserPageAdapter } from "@srsholmes/tau
 /** Capture the app webview through the E2E bridge without native window capture. */
 export async function webviewScreenshot(page: TauriPage | BrowserPageAdapter, path: string) {
   if (!(page instanceof TauriPage)) return page.screenshot({ path });
-  const client = new PluginClient(process.env.TAURI_PLAYWRIGHT_SOCKET ?? "/tmp/tauri-playwright.sock");
+  // WebKitGTK exposes its live image surface directly. The SVG fallback below
+  // cannot read PDF canvases and taints its own output canvas on Linux.
+  if (process.platform === "linux" || process.platform === "win32") {
+    return page.screenshot({ path });
+  }
+  const client = new PluginClient(
+    process.env.TAURI_PLAYWRIGHT_SOCKET ?? "/tmp/tauri-playwright.sock",
+  );
   await client.connect();
   try {
     const result = await client.send({ type: "screenshot", window: "main", path });

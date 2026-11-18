@@ -522,7 +522,11 @@ impl ToolScope {
             match name.as_str() {
                 "discover_tools" => {
                     let query=args["query"].as_str().unwrap_or("").to_lowercase();
-                    let matches=self.catalog.iter().filter(|tool|query.is_empty() || format!("{} {}",tool.name,tool.description).to_lowercase().contains(&query)).take(20).cloned().collect::<Vec<_>>();
+                    let terms=query.split_whitespace().collect::<Vec<_>>();
+                    let matches=self.catalog.iter().filter(|tool|{
+                        let searchable=format!("{} {}",tool.name,tool.description).to_lowercase();
+                        terms.is_empty() || terms.iter().any(|term|searchable.contains(term))
+                    }).take(20).cloned().collect::<Vec<_>>();
                     if args["load"].as_bool().unwrap_or(true){let mut selected=lock(&self.selected);for tool in &matches{selected.insert(tool.name.clone());}}
                     Ok(json!({"tools":matches,"loaded":args["load"].as_bool().unwrap_or(true)}))
                 }
@@ -1192,7 +1196,7 @@ impl BuiltinTaskAdapter {
                 mcp.insert(tool.schema.name.clone(), tool);
             }
         }
-        tools.push(ToolSchema {name:"discover_tools".into(),description:"Find and load additional application, research, group or annotation tools by name or a topic. Loaded schemas are provided at the next model request.".into(),input_schema:json!({"type":"object","properties":{"query":{"type":"string"},"load":{"type":"boolean"}},"additionalProperties":false})});
+        tools.push(ToolSchema {name:"discover_tools".into(),description:"Find and load additional application, research, group or annotation tools by name or space-separated keywords. Loaded schemas are provided at the next model request.".into(),input_schema:json!({"type":"object","properties":{"query":{"type":"string"},"load":{"type":"boolean"}},"additionalProperties":false})});
         let names: BTreeSet<String> = tools.iter().map(|tool| tool.name.clone()).collect();
         let selected: BTreeSet<String> = tools
             .iter()

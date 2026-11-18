@@ -78,8 +78,10 @@ async function activatePreviewControl(
 ) {
   const direct = page.locator(`[aria-label=${JSON.stringify(label)}]`);
   if (await direct.isVisible()) {
-    await direct.focus();
-    await direct.press("Enter");
+    // Synthetic key events do not trigger a button's native click action.
+    // Radix menu items handle those events themselves; a plain toolbar button
+    // needs the DOM click so the same action reaches React on every webview.
+    await direct.evaluate((element) => element.click());
     return;
   }
 

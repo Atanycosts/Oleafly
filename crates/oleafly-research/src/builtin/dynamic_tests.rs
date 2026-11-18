@@ -551,7 +551,7 @@ async fn next_provider_request_loads_discovered_tools_and_current_scoped_require
         0 => tool_delta(vec![
             (
                 "discover_tools",
-                json!({"query":"results_table","load":true}),
+                json!({"query":"results_table task_pdf_text","load":true}),
             ),
             ("read_file", json!({"path":"analysis/result.md"})),
         ]),
@@ -595,6 +595,7 @@ async fn next_provider_request_loads_discovered_tools_and_current_scoped_require
     assert!(tool_names(&requests[0]).contains(&"discover_tools".into()));
     assert!(!request_context(&requests[0]).contains(&original.id));
     assert!(tool_names(&requests[1]).contains(&"results_table".into()));
+    assert!(tool_names(&requests[1]).contains(&"task_pdf_text".into()));
     assert!(request_context(&requests[1]).contains(&original.id));
     assert!(!request_context(&requests[1]).contains(&replacement));
     assert!(request_context(&requests[2]).contains(&replacement));
