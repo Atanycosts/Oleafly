@@ -1625,6 +1625,19 @@ export function ChatCore() {
 
   useEffect(
     () => () => {
+      // The run can outlive this mounted tree. Commit its queued view updates
+      // before disposing the scheduler that would otherwise own them.
+      while (
+        streamPatchesRef.current.text.length > 0 ||
+        streamPatchesRef.current.output.length > 0
+      ) {
+        if (streamPatchesRef.current.text.length > 0) {
+          streamTierDrainRef.current("text");
+        }
+        if (streamPatchesRef.current.output.length > 0) {
+          streamTierDrainRef.current("output");
+        }
+      }
       streamQueuesRef.current?.dispose();
       streamQueuesRef.current = null;
       streamPatchesRef.current = { text: [], output: [] };
