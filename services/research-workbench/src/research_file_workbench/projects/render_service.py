@@ -168,7 +168,7 @@ def render_libreoffice_baseline(
                     "LibreOffice output does not begin with a PDF signature."
                 )
             try:
-                with pymupdf.open(output_path) as pdf:  # type: ignore[no-untyped-call]
+                with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:  # type: ignore[no-untyped-call]
                     page_count = pdf.page_count
                     pdf_fonts = sorted(
                         {font[3] for page in pdf for font in page.get_fonts(full=True)}
