@@ -36,6 +36,63 @@ function toolRead(
   };
 }
 
+it("retries an unavailable run without treating it as an empty record", async () => {
+  native.observations.mockRejectedValueOnce(new Error("Run record unavailable")).mockResolvedValueOnce(observationPage([], 0));
+  render(<TaskObservations taskId="task-a" generation={2} revision={1} availableCalls={new Set()} onOpenCall={vi.fn()} onReview={vi.fn()} onChecks={vi.fn()} />);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Run record unavailable");
+  expect(screen.queryByText(labels.noCalls)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: labels.retry }));
+
+  expect(await screen.findByText(labels.noCalls)).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(native.observations.mock.calls).toEqual([["task-a", 2, 0], ["task-a", 2, 0]]);
+});
+
+it("distinguishes pending and failed calls from returned instructions and shows limits on older evidence", async () => {
+  const row = (sequence: number, observation: TaskObservation): TaskTranscriptEvent => ({
+    taskId: "task-a", executionGeneration: 2, sequence, createdAt: sequence, event: { kind: "observation", observation },
+  });
+  const skill = { type: "toolExecution" as const, name: "load_skill", inputSha256: "input", source: null };
+  const view = observationPage([
+    row(1, { type: "toolRequested", callId: "waiting-read", name: "read_file", inputSha256: "input" }),
+    row(2, { ...skill, callId: "skill-failed", status: "failed", outputSha256: "failed-output", skillId: "literature", skillInstructionsSha256: null }),
+    row(3, { ...skill, callId: "skill-loaded", status: "done", outputSha256: "loaded-output", skillId: "manuscript", skillInstructionsSha256: "instructions-hash" }),
+  ], 3);
+  view.summary.runtime = row(0, {
+    type: "runtime", runtimeId: "builtin", providerId: "provider", modelId: "model", sessionId: "session",
+    tools: [], declaredSkills: ["manuscript"], injectedSkills: [{ id: "manuscript", sectionSha256: "section-hash" }],
+    unavailable: ["bibliography:offline"],
+  });
+  view.summary.baseline = {
+    kind: "git_worktree", executionRoot: "workspace", sourceRevision: "git:revision", baselineHash: "baseline-hash",
+    fileCount: 4, createdAt: 1, skipped: [], initialGitStatus: [" M methods.tex"], initialGitStatusComplete: null,
+  };
+  view.summary.coverageGaps = ["observations.git_status_completeness_unknown", "observations.source_snapshot_not_retained"];
+  native.observations.mockResolvedValue(view);
+  render(<TaskObservations taskId="task-a" generation={2} revision={1} availableCalls={new Set(["skill-loaded"])} onOpenCall={vi.fn()} onReview={vi.fn()} onChecks={vi.fn()} />);
+
+  expect(await screen.findByText(labels.gitCompletenessUnknown)).toBeInTheDocument();
+  expect(screen.getByText(labels.sourceRetentionLimit)).toBeInTheDocument();
+  expect(screen.getByText(/bibliography:offline/)).toBeInTheDocument();
+  fireEvent.click(screen.getByText(labels.baseline));
+  expect(screen.getByText("M methods.tex")).toBeVisible();
+  expect(screen.queryByText(labels.clean)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText(labels.skills));
+  expect(screen.getByText("Selected skills: manuscript")).toBeVisible();
+  fireEvent.click(screen.getByText(labels.records));
+  const pending = within(screen.getByText("#1 · waiting-read").closest("li")!);
+  const failed = within(screen.getByText("#2 · skill-failed").closest("li")!);
+  const loaded = within(screen.getByText("#3 · skill-loaded").closest("li")!);
+  expect(pending.getByText("read_file").parentElement).toHaveTextContent(`read_file · ${labels.pending}`);
+  expect(pending.getByRole("button", { name: labels.openCall })).toBeDisabled();
+  expect(failed.getByText("load_skill").parentElement).toHaveTextContent(`load_skill · ${labels.failed}`);
+  expect(failed.getByText(`${labels.loadedSkill}: literature · ${labels.noSkillBody}`)).toBeVisible();
+  expect(loaded.getByText(`${labels.loadedSkill}: manuscript · ${labels.returned}`)).toBeVisible();
+  expect(loaded.getByText("instructions-hash")).toBeInTheDocument();
+  expect(loaded.getByRole("button", { name: labels.openCall })).toBeEnabled();
+});
+
 it("retries a failed observation page from its retained cursor without duplicating earlier calls", async () => {
   const first = observationPage([toolRead(1)], 1, true);
   const second = observationPage([toolRead(2)], 2);
@@ -132,6 +189,19 @@ it.each([false, null])("explains source retention %s and retries an unavailable 
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   expect(native.source.mock.calls).toEqual([["task-a", 2, 9], ["task-a", 2, 9]]);
   expect(document.querySelector("pre")).toBeEmptyDOMElement();
+});
+
+it.each([3, null])("shows the exact PDF identity without inventing a page range (%s)", (page) => {
+  const source = {
+    path: "recorded.txt", fileSha256: "text-hash", offset: 0, endOffset: 10, truncated: false, snapshotRetained: true,
+    pdf: { path: "recorded.pdf", sha256: "pdf-hash", pageCount: 8, pageStart: page, pageEnd: page },
+  };
+  render(<TaskSourceRead taskId="task-a" generation={2} row={toolRead(9, source)} source={source} />);
+
+  const pdf = within(screen.getByTestId("pdf-read-source"));
+  expect(pdf.getByText(page === null ? "recorded.pdf" : "recorded.pdf · Page 3")).toBeVisible();
+  expect(pdf.getByText("PDF SHA-256 pdf-hash")).toBeVisible();
+  expect(native.source).not.toHaveBeenCalled();
 });
 
 it("shows retained member executions and each request's actual tools and context sizes", async () => {
@@ -267,6 +337,10 @@ it("shows DOCX proposals and saves alongside ordinary task activity", async () =
     sessionId: "docx-session", appProjectId: "app", workbenchProjectId: "paper",
     baselineId: "baseline-7", sourceSha256: "source-hash", sessionRevision: 4, savedRevision: 3,
   };
+  const origin = { taskId: "task-a", generation: 2, groupId: null, memberId: null, executionId: null, workIds: [] };
+  const recorded = (sequence: number, event: Extract<TaskObservation, { type: "docx" }>["activity"]["event"]) => row(sequence, {
+    type: "docx", activity: { id: `activity-${sequence}`, document, origin, proposalId: null, createdAt: sequence, event },
+  });
   native.observations.mockResolvedValue({
     summary: {
       taskId: "task-a", projectId: "paper", executionGeneration: 2, status: "running",
@@ -310,8 +384,12 @@ it("shows DOCX proposals and saves alongside ordinary task activity", async () =
           type: "toolExecution", callId: "normal-read", name: "read_file", status: "done",
           inputSha256: "input-hash", outputSha256: "output-hash", skillId: null, skillInstructionsSha256: null, source: null,
         }),
+        recorded(6, { type: "runtime", event: { kind: "read", offset: 0, paragraphs: [{ paragraphRef: "p8", text: "The exact earlier paragraph" }] } }),
+        recorded(7, { type: "runtime", event: { kind: "captured", target: { targetId: "target-8", paragraphRef: "p8", revision: 4, original: "The original target text" } } }),
+        recorded(8, { type: "runtime", event: { kind: "operation", operation: "format", request: {}, result: { ok: false, error: "Revision changed" } } }),
+        recorded(9, { type: "operationCheckpoint", operationId: "recovered-save", phase: "recovered", recoveryKey: "key", contentSha256: "recovered-hash", fromDocument: document }),
       ],
-      nextSequence: 5, throughSequence: 5, hasMore: false,
+      nextSequence: 9, throughSequence: 9, hasMore: false,
     },
   } satisfies TaskObservationView);
 
@@ -329,6 +407,10 @@ it("shows DOCX proposals and saves alongside ordinary task activity", async () =
   expect(within(proposal).getByText("Original paragraph")).toBeInTheDocument();
   expect(within(proposal).getByText("Revised paragraph")).toBeInTheDocument();
   expect(within(saved).getByText("save-request-7 · saved-content-hash")).toBeInTheDocument();
+  expect(within(docx).getByText("The exact earlier paragraph")).toBeVisible();
+  expect(within(docx).getByText("The original target text")).toBeVisible();
+  expect(within(docx).getByText("Document operation · format · failed · r4")).toBeVisible();
+  expect(within(docx).getByText("Recovered accepted changes · r4")).toBeVisible();
 
   fireEvent.click(screen.getByText("Member executions"));
   expect(screen.getByText("#3 · normal-reviewer · completed")).toBeInTheDocument();

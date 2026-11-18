@@ -6,10 +6,11 @@ import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { useDocxWorkspaceStore } from "@/store/docx-workspace";
 
 const mocks = vi.hoisted(() => ({
-  commit: vi.fn(), list: vi.fn(), read: vi.fn(), discard: vi.fn(), connect: vi.fn(), workspace: vi.fn(), journal: vi.fn(), openProject: vi.fn(), open: vi.fn(),
+  commit: vi.fn(), list: vi.fn(), read: vi.fn(), discard: vi.fn(), download: vi.fn(), connect: vi.fn(), workspace: vi.fn(), journal: vi.fn(), openProject: vi.fn(), open: vi.fn(),
   files: { projectId: null as string | null, projects: [{ id: "app-project", name: "Paper project" }] },
 }));
 vi.mock("@/lib/docx-recovery", () => ({ listDocxRecovery: mocks.list, readDocxRecovery: mocks.read, discardDocxRecovery: mocks.discard, commitDocxRecovery: mocks.commit }));
+vi.mock("@/lib/docx-download", () => ({ downloadDocxCopy: mocks.download }));
 vi.mock("@/lib/journal-workbench", () => ({ connectJournalWorkbench: mocks.connect, journalRequest: mocks.journal, journalQuery: (path: string) => path }));
 vi.mock("@/lib/research-workspace", () => ({ getResearchWorkspace: mocks.workspace }));
 vi.mock("@/features/open-folder", () => ({ openRecentProject: mocks.openProject }));
@@ -32,6 +33,7 @@ beforeEach(() => {
   mocks.list.mockResolvedValue({ snapshots: [candidate], failures: [] });
   mocks.read.mockResolvedValue(snapshot);
   mocks.discard.mockResolvedValue(true);
+  mocks.download.mockResolvedValue({ status: "download_requested" });
   mocks.connect.mockResolvedValue({});
   mocks.workspace.mockResolvedValue({ journalProjectId: candidate.workbenchProjectId });
   mocks.journal.mockResolvedValue({ projects: [project], worlds: [] });
@@ -191,4 +193,93 @@ it("keeps a different snapshot hash unconfirmed after a known refusal", async ()
   mocks.list.mockResolvedValue({ snapshots: [{ ...pendingSnapshot, contentSha256: "d".repeat(64) }], failures: [] });
   fireEvent.click(within(dialog).getByRole("button", { name: text.refresh }));
   await waitFor(() => expect(within(dialog).getByTestId("docx-recovery-discard")).toBeDisabled());
+});
+
+it("keeps the confirmed choice downloadable when the Workbench project disappears after save", async () => {
+  mocks.read.mockResolvedValue(pendingSnapshot);
+  mocks.list.mockResolvedValue({ snapshots: [pendingSnapshot], failures: [] });
+  mocks.commit.mockResolvedValue({ baselineId: project.baseline_id, sourceSha256: candidate.contentSha256, revision: 8 });
+  mocks.journal
+    .mockResolvedValueOnce({ projects: [project], worlds: [] })
+    .mockResolvedValueOnce({ projects: [], worlds: [] });
+  const dialog = await showCandidates();
+
+  fireEvent.click(within(dialog).getByTestId("docx-recovery-restore"));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(text.projectMissing));
+  expect(within(dialog).getByTestId("docx-recovery-restore")).toBeEnabled();
+  expect(within(dialog).getByTestId("docx-recovery-download")).toBeEnabled();
+  expect(within(dialog).getByTestId("docx-recovery-discard")).toBeEnabled();
+  expect(mocks.commit).toHaveBeenCalledOnce();
+  expect(mocks.open).not.toHaveBeenCalled();
+});
+
+it("keeps recovery when reopening the app lands in a different project", async () => {
+  mocks.read.mockResolvedValue(pendingSnapshot);
+  mocks.list.mockResolvedValue({ snapshots: [pendingSnapshot], failures: [] });
+  mocks.commit.mockResolvedValue({ baselineId: project.baseline_id, sourceSha256: candidate.contentSha256, revision: 8 });
+  mocks.openProject.mockImplementationOnce(async () => { mocks.files.projectId = "other-app-project"; });
+  const dialog = await showCandidates();
+
+  fireEvent.click(within(dialog).getByTestId("docx-recovery-restore"));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(text.projectMissing));
+  expect(mocks.openProject).toHaveBeenCalledWith(candidate.appProjectId);
+  expect(within(dialog).getByTestId("docx-recovery-restore")).toBeEnabled();
+  expect(within(dialog).getByTestId("docx-recovery-download")).toBeEnabled();
+  expect(mocks.discard).not.toHaveBeenCalled();
+  expect(mocks.open).not.toHaveBeenCalled();
+});
+
+it("keeps the saved recovery choice when clearing its checkpoint fails", async () => {
+  mocks.read.mockResolvedValue(pendingSnapshot);
+  mocks.list.mockResolvedValue({ snapshots: [pendingSnapshot], failures: [] });
+  mocks.commit.mockResolvedValue({ baselineId: project.baseline_id, sourceSha256: candidate.contentSha256, revision: 8 });
+  mocks.discard.mockResolvedValue(false);
+  const dialog = await showCandidates();
+
+  fireEvent.click(within(dialog).getByTestId("docx-recovery-restore"));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(text.clearFailed));
+  expect(mocks.discard).toHaveBeenCalledWith(pendingSnapshot);
+  expect(within(dialog).getByTestId("docx-recovery-download")).toBeEnabled();
+  expect(within(dialog).getByTestId("docx-recovery-discard")).toBeEnabled();
+  expect(mocks.open).not.toHaveBeenCalled();
+});
+
+it("keeps recovery choices available when downloading fails", async () => {
+  mocks.download.mockRejectedValueOnce(new Error("download failed"));
+  const dialog = await showCandidates();
+
+  fireEvent.click(within(dialog).getByTestId("docx-recovery-download"));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("download failed"));
+  expect(mocks.download).toHaveBeenCalledWith(snapshot.bytes, `recovered-${candidate.workbenchProjectId}.docx`);
+  expect(within(dialog).getByTestId("docx-recovery-restore")).toBeEnabled();
+  expect(within(dialog).getByTestId("docx-recovery-download")).toBeEnabled();
+  expect(within(dialog).getByTestId("docx-recovery-discard")).toBeEnabled();
+  expect(mocks.discard).not.toHaveBeenCalled();
+  expect(mocks.open).not.toHaveBeenCalled();
+});
+
+it("shows a library discovery failure and keeps the dialog available for retry", async () => {
+  mocks.list.mockRejectedValueOnce(new Error("recovery storage unavailable"));
+  render(<DocxRecoveryHost />);
+  fireEvent.click(await screen.findByTestId("docx-recovery-open"));
+
+  expect(screen.getByRole("alert")).toHaveTextContent("recovery storage unavailable");
+  expect(screen.getByRole("button", { name: text.refresh })).toBeEnabled();
+});
+
+it("keeps an unsaved copy when its Workbench project is no longer present", async () => {
+  mocks.journal.mockResolvedValueOnce({ projects: [], worlds: [] });
+  const dialog = await showCandidates();
+  fireEvent.click(within(dialog).getByTestId("docx-recovery-restore"));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(text.projectMissing));
+  expect(mocks.commit).not.toHaveBeenCalled();
+  expect(within(dialog).getByTestId("docx-recovery-restore")).toBeEnabled();
+  expect(within(dialog).getByTestId("docx-recovery-download")).toBeEnabled();
+  expect(within(dialog).getByTestId("docx-recovery-discard")).toBeEnabled();
+  expect(mocks.open).not.toHaveBeenCalled();
 });

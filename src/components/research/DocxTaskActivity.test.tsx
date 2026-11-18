@@ -235,3 +235,103 @@ it.each([
     expect(screen.queryByText(`${enEditor.agentWorkspace.export} · ${enEditor.agentWorkspace.exportSaved}`)).not.toBeInTheDocument();
   }
 });
+
+it("coalesces an explicit refresh while the current activity page is still loading", async () => {
+  let finishLoad!: (page: { activities: never[]; nextCursor: number; hasMore: boolean }) => void;
+  mocks.load.mockReturnValueOnce(new Promise((resolve) => { finishLoad = resolve; }));
+  render(<DocxTaskActivity projectId="app" workbenchProjectId="paper" sessionId="live-session" />);
+  await waitFor(() => expect(mocks.load).toHaveBeenCalledOnce());
+
+  fireEvent.click(screen.getByRole("button", { name: text.refresh }));
+  expect(mocks.load).toHaveBeenCalledOnce();
+  await act(async () => finishLoad({ activities: [], nextCursor: 0, hasMore: false }));
+  expect(screen.getByRole("button", { name: text.refresh })).toBeEnabled();
+});
+
+it("reports a task-list failure without losing the recoverable activity panel", async () => {
+  mocks.list.mockRejectedValueOnce(new Error("tasks unavailable"));
+  mocks.load.mockReturnValueOnce(new Promise(() => {}));
+  render(<DocxTaskActivity projectId="app" workbenchProjectId="paper" sessionId="live-session" />);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("tasks unavailable");
+  expect(screen.getByRole("button", { name: text.bind })).toBeDisabled();
+  expect(screen.getByRole("button", { name: text.refresh })).toBeEnabled();
+});
+
+it("reports an activity-history failure and recovers on the next refresh", async () => {
+  mocks.load.mockRejectedValueOnce(new Error("history unavailable"));
+  render(<DocxTaskActivity projectId="app" workbenchProjectId="paper" sessionId="live-session" />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("history unavailable");
+
+  fireEvent.click(screen.getByRole("button", { name: text.refresh }));
+
+  await waitFor(() => expect(mocks.load).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("renders started and failed historical operations from the same page", async () => {
+  const started: DocxActivity = {
+    ...activity,
+    id: "started",
+    event: {
+      type: "runtime",
+      event: { kind: "operationStarted", operation: "save", request: { expected_revision: 1 } },
+    },
+  };
+  const failed: DocxActivity = {
+    ...activity,
+    id: "failed",
+    event: {
+      type: "runtime",
+      event: {
+        kind: "operation",
+        operationId: "export-failed",
+        operation: "export",
+        request: { session_id: activity.document.sessionId },
+        result: { operation: "export", ok: false },
+      },
+    },
+  };
+  const checkpoint: DocxActivity = {
+    ...activity,
+    id: "checkpoint",
+    event: {
+      type: "operationCheckpoint",
+      operationId: "save-operation",
+      phase: "saved",
+      recoveryKey: "recovery-key",
+      contentSha256: "d".repeat(64),
+      fromDocument: activity.document,
+    },
+  };
+  mocks.load.mockResolvedValueOnce({
+    activities: [
+      { cursor: 1, activity: started },
+      { cursor: 2, activity: failed },
+      { cursor: 3, activity: checkpoint },
+    ],
+    nextCursor: 3,
+    hasMore: false,
+  });
+  render(<DocxTaskActivity projectId="app" workbenchProjectId="paper" sessionId="live-session" />);
+
+  expect(await screen.findByText(`${enEditor.agentWorkspace.save} · ${text.events.operationStarted}`)).toBeVisible();
+  const operation = screen.getByText(`${enEditor.agentWorkspace.export} · ${text.operationFailed}`);
+  expect(operation).toHaveAttribute("data-outcome", "failed");
+  expect(operation).not.toHaveAttribute("data-session-revision");
+  expect(screen.getByText(text.events.saved)).toBeVisible();
+});
+
+it("reports a live-session bind failure and leaves the selection ready to retry", async () => {
+  mocks.bind.mockRejectedValueOnce(new Error("session is stale"));
+  render(<DocxTaskActivity projectId="app" workbenchProjectId="paper" sessionId="live-session" />);
+  const select = await screen.findByLabelText(text.chooseTask);
+  fireEvent.change(select, { target: { value: "queued-task" } });
+
+  fireEvent.click(screen.getByRole("button", { name: text.bind }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("session is stale");
+  expect(screen.getByRole("button", { name: text.bind })).toBeEnabled();
+  expect(select).toHaveValue("queued-task");
+  expect(screen.queryByRole("button", { name: text.bound })).not.toBeInTheDocument();
+});

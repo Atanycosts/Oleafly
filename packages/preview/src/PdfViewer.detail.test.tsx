@@ -230,6 +230,7 @@ interface Scene {
   base: () => HTMLCanvasElement | null;
   detail: () => HTMLCanvasElement | null;
   detailCalls: () => RenderCall[];
+  movePage: (position: [number, number]) => void;
   resizeViewport: (size: [number, number]) => void;
   zoom: (scale: number) => void;
 }
@@ -242,7 +243,7 @@ async function openPage(scale = 2.5): Promise<Scene> {
   const renderer = view.getByTestId("pdf-renderer");
   const scrollParent = renderer.parentElement as HTMLElement;
   let viewportSize: [number, number] = [800, 600];
-  const pagePosition: [number, number] = [0, 0];
+  let pagePosition: [number, number] = [0, 0];
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
     function (this: Element) {
       if (this === scrollParent) {
@@ -279,6 +280,9 @@ async function openPage(scale = 2.5): Promise<Scene> {
     base,
     detail,
     detailCalls: () => harness.renderCalls.filter((call) => call.detail),
+    movePage: (position) => {
+      pagePosition = position;
+    },
     resizeViewport: (size) => {
       viewportSize = size;
       const callback = harness.resizeCallbacks.at(-1);
@@ -394,6 +398,25 @@ describe("PdfViewer detail raster lifecycle", () => {
     expect(replacement.width).toBe(
       Number.parseFloat(replacement.style.width) * 2,
     );
+  });
+
+  it("releases detail outside the viewport and restores it when the page scrolls back", async () => {
+    const scene = await openPage();
+    await waitFor(() => expect(scene.wrap.dataset.pdfDetail).toBe("ready"));
+    const original = scene.detail()!;
+    const base = scene.base()!;
+
+    scene.movePage([0, -2_000]);
+    scene.resizeViewport([800, 600]);
+    await waitFor(() => expect(scene.detail()).toBeNull());
+    expect(scene.wrap.dataset.pdfDetail).toBeUndefined();
+    expect(scene.base()).toBe(base);
+
+    scene.movePage([0, 0]);
+    scene.resizeViewport([800, 600]);
+    await waitFor(() => expect(scene.detail()).not.toBeNull());
+    expect(scene.detail()).not.toBe(original);
+    expect(scene.base()).toBe(base);
   });
 
   it("keeps the previous successful detail and base when a replacement render fails", async () => {

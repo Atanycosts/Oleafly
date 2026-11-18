@@ -215,3 +215,35 @@ it("portals toolbar chrome and disables history and formatting controls together
   view.unmount();
   target.remove();
 });
+
+it("represents mixed formatting and preserves a custom font size", () => {
+  fontFamily.value = null;
+  fontSize.value = 23;
+  const view = render(<WordFormattingToolbar labels={labels} compact={false} />);
+
+  const family = screen.getByRole("combobox", { name: "Font" });
+  const size = screen.getByRole("combobox", { name: "Size" });
+  expect(family).toHaveValue("");
+  expect(size).toHaveValue("23");
+  expect(within(family).getByRole("option", { name: "Mixed" })).toBeDisabled();
+  expect(within(size).getByRole("option", { name: "11.5" })).toBeInTheDocument();
+
+  fireEvent.change(family, { target: { value: "Times New Roman" } });
+  expect(fontFamily.setValue).toHaveBeenCalledWith("Times New Roman");
+
+  fontSize.value = null;
+  view.rerender(<WordFormattingToolbar labels={labels} compact={false} />);
+  expect(screen.getByRole("combobox", { name: "Size" })).toHaveValue("");
+  expect(
+    within(screen.getByRole("combobox", { name: "Size" })).getByRole(
+      "option",
+      { name: "Mixed" },
+    ),
+  ).toBeDisabled();
+
+  view.unmount();
+  const emptyPortal = render(<WordToolbarPortal target={null} labels={labels} />);
+  expect(emptyPortal.container).toBeEmptyDOMElement();
+  fontFamily.value = "Cambria";
+  fontSize.value = 22;
+});

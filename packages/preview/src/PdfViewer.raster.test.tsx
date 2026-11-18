@@ -14,6 +14,7 @@ interface RenderCall {
   scale: number;
   canvas: HTMLCanvasElement;
   resolve: () => void;
+  reject: (error: Error) => void;
   cancelled: boolean;
 }
 
@@ -24,6 +25,10 @@ const harness = vi.hoisted(() => ({
   textRequests: [] as Array<{ documentId: number; pageNumber: number; paintedBefore: boolean }>,
   deferRenders: false,
   blockedGeometry: new Set<string>(),
+  controller: null as null | { ensurePageRendered: (pageNumber: number) => void },
+  setController(view: { ensurePageRendered: (pageNumber: number) => void }) {
+    this.controller = view;
+  },
   reset() {
     this.documents = new Map([
       [1, [
@@ -44,12 +49,14 @@ const harness = vi.hoisted(() => ({
     this.textRequests = [];
     this.deferRenders = false;
     this.blockedGeometry = new Set();
+    this.controller = null;
   },
 }));
 
 vi.mock("./mainThreadWorker", () => ({ installMainThreadPdfWorker: vi.fn() }));
 vi.mock("./pdfController", () => ({
-  registerPdfView: vi.fn(),
+  registerPdfView: (view: { ensurePageRendered: (pageNumber: number) => void }) =>
+    harness.setController(view),
   clearPdfView: vi.fn(),
   pageClickToBp: vi.fn(() => null),
 }));
@@ -129,6 +136,7 @@ vi.mock("pdfjs-dist", () => {
           scale: viewport.scale,
           canvas,
           resolve,
+          reject,
           cancelled: false,
         };
         harness.renderCalls.push(call);
@@ -560,6 +568,46 @@ describe("PdfViewer reloads", () => {
     expect(baseCanvases(wrap(1))).toEqual([fresh.canvas]);
   });
 
+  it("reports a replacement raster failure after holding the old page during the attempt", async () => {
+    const { view, renderer, wrap } = await openViewer(1, 1, "doc-1");
+    await waitFor(() => expect(baseCanvases(wrap(1))).toHaveLength(1));
+    const old = baseCanvases(wrap(1))[0];
+
+    harness.deferRenders = true;
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        documentIdentity="doc-2"
+        scale={1}
+        expectText={false}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        harness.renderCalls.some(
+          (call) => call.documentId === 2 && call.pageNumber === 1,
+        ),
+      ).toBe(true),
+    );
+    const replacement = harness.renderCalls.find(
+      (call) => call.documentId === 2 && call.pageNumber === 1,
+    )!;
+    expect(old.isConnected).toBe(true);
+    expect(old.dataset.pdfRaster).toBe("stale");
+
+    await act(async () =>
+      replacement.reject(new Error("Replacement raster failed")),
+    );
+
+    await waitFor(() =>
+      expect(renderer.dataset.pdfRenderError).toContain(
+        "Replacement raster failed",
+      ),
+    );
+    expect(old.isConnected).toBe(false);
+    expect(replacement.canvas.isConnected).toBe(false);
+  });
+
   it("lays a reloaded document out with the previous page sizes until its own arrive", async () => {
     const { view, wrap, renderer } = await openViewer(1, 1, "doc-1");
     await waitFor(() => expect(wrap(2).dataset.pdfGeometry).toBe("exact"));
@@ -875,6 +923,27 @@ describe("PdfViewer scrolling", () => {
     await waitFor(() => expect(again.canvas.isConnected).toBe(true));
     expect(preview.isConnected).toBe(false);
     expect(preview.width).toBeGreaterThan(0);
+  });
+
+  it("caps controller-requested rasters by evicting pages farthest from the reader", async () => {
+    harness.documents.set(
+      1,
+      Array.from({ length: 15 }, () => ({ width: 612, height: 792 })),
+    );
+    const { wrap } = await openViewer();
+    await waitFor(() => expect(harness.controller).not.toBeNull());
+    await waitFor(() => expect(baseCanvases(wrap(1))).toHaveLength(1));
+
+    for (let pageNumber = 2; pageNumber <= 14; pageNumber++) {
+      harness.controller?.ensurePageRendered(pageNumber);
+      await waitFor(() => expect(baseCanvases(wrap(pageNumber))).toHaveLength(1));
+    }
+
+    harness.controller?.ensurePageRendered(15);
+    await waitFor(() => expect(baseCanvases(wrap(15))).toHaveLength(1));
+
+    expect(baseCanvases(wrap(1))).toHaveLength(1);
+    expect(baseCanvases(wrap(14))).toHaveLength(0);
   });
 
   it("keeps the painted page when a preview copy cannot be created", async () => {

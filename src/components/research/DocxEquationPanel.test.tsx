@@ -289,6 +289,88 @@ describe("DocxEquationPanel", () => {
     expect(screen.getByLabelText(text.source)).toHaveValue("\\bad{");
   });
 
+  it.each(["finishes", "fails"] as const)("keeps the new draft's preview when the old preview %s late", async (outcome) => {
+    const harness = session();
+    let resolveOld!: (svg: string) => void;
+    let rejectOld!: (cause: Error) => void;
+    previewMocks.equationToSvgDocument
+      .mockImplementationOnce(() => new Promise<string>((resolve, reject) => { resolveOld = resolve; rejectOld = reject; }))
+      .mockResolvedValueOnce("<svg><title>New formula</title></svg>");
+    render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={{ paragraphRef: "first" }} />);
+    const source = screen.getByLabelText(text.source);
+    const preview = screen.getByRole("button", { name: text.preview });
+
+    fireEvent.change(source, { target: { value: "a^2" } });
+    fireEvent.click(preview);
+    expect(preview).toBeDisabled();
+    fireEvent.change(source, { target: { value: "b^2" } });
+    fireEvent.click(preview);
+    const rendered = await screen.findByTestId("docx-equation-preview");
+    expect(rendered).toHaveTextContent("New formula");
+
+    await act(async () => {
+      if (outcome === "finishes") resolveOld("<svg><title>Old formula</title></svg>");
+      else rejectOld(new Error("Old formula failed"));
+    });
+    expect(rendered).toHaveTextContent("New formula");
+    expect(rendered).not.toHaveTextContent("Old formula");
+    expect(source).toHaveValue("b^2");
+  });
+
+  it("retains a LaTeX draft after a rejected write and retries at the same captured equation", async () => {
+    const harness = session({ text: "\uFFFC", equations: [equation({ status: "unbound" })] });
+    mocks.writeEquation.mockRejectedValueOnce(new Error("Editor did not accept the write"));
+    render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={{ paragraphRef: "first" }} />);
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent(text.unbound);
+    const source = screen.getByLabelText(text.source);
+    const macros = screen.getByLabelText(text.macros);
+    fireEvent.change(source, { target: { value: "\\sq{x}" } });
+    fireEvent.change(macros, { target: { value: "\\newcommand{\\sq}[1]{#1^2}" } });
+    const replace = screen.getByRole("button", { name: text.replace });
+    expect(replace).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
+    fireEvent.click(replace);
+
+    const result = await screen.findByTestId("docx-equation-result");
+    expect(result).toHaveTextContent("Editor did not accept the write");
+    expect(source).toHaveValue("\\sq{x}");
+    expect(macros).toHaveValue("\\newcommand{\\sq}[1]{#1^2}");
+    expect(screen.getByRole("checkbox", { name: text.adopt })).toBeChecked();
+
+    fireEvent.click(replace);
+    await waitFor(() => expect(screen.getByTestId("docx-equation-result")).toHaveTextContent(text.results));
+    const write = { sessionId: "session-1", paragraphRef: "first", expectedRevision: 0, objectRef: "first:math-0",
+      expectedFingerprint: "fp-1", latex: "\\sq{x}", macros: "\\newcommand{\\sq}[1]{#1^2}", adoptSource: true };
+    expect(mocks.writeEquation.mock.calls).toEqual([[write, undefined], [write, undefined]]);
+  });
+
+  it("offers a display equation only in an empty paragraph and clears the target when its paragraph disappears", async () => {
+    const empty = session();
+    const filled = session({ text: "Keep this sentence", equations: [{}] });
+    const selected = { paragraphRef: "first", collapsedModelOffset: 100 };
+    const view = render(<DocxEquationPanel active sessionId="session-1" session={empty.session} selection={selected} />);
+    fireEvent.change(screen.getByLabelText(text.source), { target: { value: "x^2" } });
+    fireEvent.click(screen.getByRole("radio", { name: text.display }));
+    fireEvent.click(screen.getByRole("radio", { name: text.inline }));
+    expect(screen.getByRole("radio", { name: text.inline })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: text.display }));
+    fireEvent.click(screen.getByRole("button", { name: text.insert }));
+    await waitFor(() => expect(screen.getByTestId("docx-equation-result")).toHaveTextContent(text.results));
+    expect(mocks.writeEquation).toHaveBeenCalledExactlyOnceWith({
+      sessionId: "session-1", paragraphRef: "first", expectedRevision: 0, latex: "x^2", offset: 0, display: true,
+    }, undefined);
+
+    view.rerender(<DocxEquationPanel active sessionId="session-2" session={filled.session} selection={selected} />);
+    expect(screen.getByRole("radio", { name: text.display })).toBeDisabled();
+    expect(screen.getByRole("option", { name: text.insertAtEnd })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: text.replace })).not.toBeInTheDocument();
+    view.rerender(<DocxEquationPanel active sessionId="session-2" session={filled.session} selection={{ paragraphRef: "removed" }} />);
+    expect(screen.getByText(text.noSelection)).toBeVisible();
+    expect(screen.queryByRole("button", { name: text.insert })).not.toBeInTheDocument();
+  });
+
   it("reloads the newly bound target after a successful insert and preserves the result", async () => {
     const harness = session({ text: "abc", equations: [] });
     mocks.writeEquation.mockImplementationOnce(async (request) => {

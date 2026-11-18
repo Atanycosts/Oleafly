@@ -2925,3 +2925,148 @@ describe("retained working-copy recovery safety", () => {
     expect(mocks.saveRecovery.mock.calls[1]?.[2]).toEqual(mocks.saveRecovery.mock.calls[0]?.[2]);
   });
 });
+
+describe("Workspace save failure retention and stale identity", () => {
+  it("keeps an unready Agent export dirty and retries the same revision", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 1 });
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls[0][0];
+    act(() => harness.edit("first", "Fixed after retry"));
+    mocks.editorSave.mockResolvedValueOnce(null);
+
+    await act(async () => {
+      await expect(registration.save({ expectedRevision: 1 })).rejects.toThrow(text.notReady);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(text.notReady);
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+    expect(mocks.prepareSave).not.toHaveBeenCalled();
+    expect(mocks.saveRecovery).not.toHaveBeenCalled();
+    expect(mocks.commitRecovery).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved));
+    expect(mocks.editorSave).toHaveBeenCalledTimes(2);
+    expect(mocks.prepareSave).toHaveBeenCalledOnce();
+    expect(mocks.commitRecovery).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the working copy dirty when save package preparation fails", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 1 });
+    await renderReady(harness);
+    act(() => harness.edit("first", "Package retry"));
+    mocks.prepareSave.mockImplementationOnce(() => {
+      throw new Error("package preparation failed");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("package preparation failed"));
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+    expect(mocks.saveRecovery).not.toHaveBeenCalled();
+    expect(mocks.commitRecovery).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved));
+    expect(mocks.editorSave).toHaveBeenCalledTimes(2);
+    expect(mocks.prepareSave).toHaveBeenCalledTimes(2);
+    expect(mocks.commitRecovery).toHaveBeenCalledOnce();
+  });
+
+  it("retains the fixed save when checkpoint verification cannot be read", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 1 });
+    mocks.saveRecovery.mockRejectedValueOnce(new Error("checkpoint write failed"));
+    mocks.readRecovery.mockRejectedValueOnce(new Error("checkpoint read failed"));
+    await renderReady(harness);
+    act(() => harness.edit("first", "Pinned before receipt"));
+
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("checkpoint read failed"));
+    const retry = screen.getByRole("button", { name: text.retrySave });
+    expect(retry).toBeEnabled();
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+    expect(mocks.commitRecovery).not.toHaveBeenCalled();
+    expect(mocks.prepareSave).toHaveBeenCalledOnce();
+
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved));
+    expect(mocks.editorSave).toHaveBeenCalledOnce();
+    expect(mocks.prepareSave).toHaveBeenCalledOnce();
+    expect(mocks.saveRecovery).toHaveBeenCalledTimes(2);
+    expect(mocks.saveRecovery.mock.calls[1]?.[2]).toEqual(mocks.saveRecovery.mock.calls[0]?.[2]);
+    expect(mocks.commitRecovery).toHaveBeenCalledOnce();
+  });
+
+  it("does not retire a task checkpoint after its session revision has changed", async () => {
+    mocks.saveRecovery.mockImplementation(async (identity, revision, _bytes, taskState) => ({
+      ...identity,
+      revision,
+      taskState,
+      recoveryKey: "b".repeat(64),
+      contentSha256: "c".repeat(64),
+      updatedAt: "2026-11-18T00:00:00Z",
+    }));
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls[0][0];
+    const document = {
+      sessionId: registration.sessionId,
+      appProjectId: "app-project",
+      workbenchProjectId: PROJECT.project_id,
+      baselineId: INITIAL_BASELINE,
+      sourceSha256: SOURCE.source_sha256,
+      sessionRevision: 0,
+      savedRevision: 0,
+    };
+
+    await act(async () => registration.onTaskOperation({
+      operationId: "stale-format",
+      document,
+      result: {
+        operation: "format",
+        ok: true,
+        document,
+        result: { ok: true, changed: false, revision: 0 },
+      },
+    }));
+    act(() => harness.edit("first", "User edit before receipt"));
+    await act(async () => registration.onTaskOperationRecorded("stale-format"));
+
+    expect(mocks.discardRecovery).not.toHaveBeenCalled();
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+    expect(harness.text("first")).toBe("User edit before receipt");
+  });
+
+  it("rejects an Agent check after its project disappears, then checks when it returns", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    const checked = {
+      baseline_id: INITIAL_BASELINE,
+      world_version_id: WORLD_VERSION,
+      validity: "CURRENT",
+    } satisfies Partial<JournalCheck>;
+    mocks.journalRequest
+      .mockResolvedValueOnce({ projects: [], worlds: [] })
+      .mockResolvedValue({ projects: [PROJECT], worlds: [] });
+    mocks.templateCheck.mockResolvedValue(checked);
+    const view = await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls[0][0];
+
+    await act(async () => {
+      await expect(registration.check({ template: WORLD_VERSION })).rejects.toThrow(text.newBaseline);
+    });
+    expect(mocks.templateCheck).not.toHaveBeenCalled();
+    expect(view.onSaved).not.toHaveBeenCalled();
+
+    let result: unknown;
+    await act(async () => {
+      result = await registration.check({ template: WORLD_VERSION });
+    });
+    expect(result).toEqual({ template: WORLD_VERSION, check: checked });
+    expect(mocks.templateCheck).toHaveBeenCalledOnce();
+    expect(view.onSaved).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("docx-check-validity")).toHaveTextContent(en.journal.current);
+  });
+});

@@ -197,6 +197,130 @@ it("turns successful save and check calls into their actual business receipts", 
   expect(feedback).toHaveAttribute("data-validity", "STALE");
 });
 
+it("does not invent optional save, check, or export receipt fields", () => {
+  const store = useAgentWorkspaceStore.getState();
+  const origin = { kind: "external" as const, flowId: "receipts" };
+  store.report({
+    id: "partial-save",
+    projectId: "project",
+    sessionId: "word",
+    origin,
+    operation: "save",
+    phase: "succeeded",
+    result: {
+      baselineId: "saved-baseline",
+      revision: "3",
+      sourceSha256: 42,
+    },
+  });
+  render(<AgentWorkspaceFeedback />);
+  const feedback = screen.getByTestId("workspace-agent-operation");
+
+  expect(screen.getByText("Saving working copy · Saved manuscript version")).toBeVisible();
+  expect(feedback).toHaveAttribute("data-baseline-id", "saved-baseline");
+  expect(feedback).not.toHaveAttribute("data-revision");
+  expect(feedback).not.toHaveAttribute("data-source-sha256");
+
+  act(() => store.report({
+    id: "partial-check",
+    projectId: "project",
+    sessionId: "word",
+    origin,
+    operation: "check",
+    phase: "succeeded",
+    target: { projectId: "project", sessionId: "word", sessionRevision: 3 },
+    result: {
+      operation: "check",
+      result: {
+        check: {
+          validity: "CURRENT",
+          baseline_id: 3,
+          check_id: 9,
+        },
+      },
+    },
+  }));
+  act(() => store.publishView({
+    projectId: "project",
+    documentId: "word",
+    title: "Manuscript",
+    kind: "docx",
+    role: "original",
+    revision: "3",
+    sessionId: "word",
+    sessionRevision: 3,
+    dirty: false,
+  }));
+
+  expect(screen.getByText("Checking requirements · Result available")).toBeVisible();
+  expect(feedback).toHaveAttribute("data-receipt-state", "checked");
+  expect(feedback).not.toHaveAttribute("data-validity");
+  expect(feedback).not.toHaveAttribute("data-baseline-id");
+  expect(feedback).not.toHaveAttribute("data-check-id");
+  expect(feedback).not.toHaveAttribute("data-world-version-id");
+
+  act(() => store.report({
+    id: "export",
+    projectId: "project",
+    sessionId: "word",
+    origin,
+    operation: "export",
+    phase: "succeeded",
+    result: { operation: "export", result: { result: { status: "saved" } } },
+  }));
+  expect(screen.getByText("Exporting document · File saved")).toBeVisible();
+  expect(feedback).toHaveAttribute("data-receipt-state", "saved");
+
+  act(() => store.report({
+    id: "export",
+    projectId: "project",
+    sessionId: "word",
+    origin,
+    operation: "export",
+    phase: "succeeded",
+    result: { operation: "export", result: { result: { status: "download_requested" } } },
+  }));
+  expect(screen.getByText("Exporting document · Download requested")).toBeVisible();
+
+  act(() => store.report({
+    id: "export",
+    projectId: "project",
+    sessionId: "word",
+    origin,
+    operation: "export",
+    phase: "succeeded",
+    result: { operation: "export", result: { result: { status: 7 } } },
+  }));
+  expect(screen.getByText("Exporting document · Result available")).toBeVisible();
+  expect(feedback).toHaveAttribute("data-receipt-state", "available");
+});
+
+it("starts following only for the operation the user explicitly follows", () => {
+  const store = useAgentWorkspaceStore.getState();
+  store.report({
+    id: "unknown-action",
+    projectId: "project",
+    sessionId: "word",
+    origin: { kind: "external", flowId: "manual-follow" },
+    operation: "unknown_action",
+    phase: "succeeded",
+  });
+  render(<AgentWorkspaceFeedback compact />);
+  const feedback = screen.getByTestId("sidebar-agent-operation");
+
+  expect(screen.getByText("Processing manuscript · Completed")).toBeVisible();
+  expect(feedback).toHaveAttribute("data-follow-state", "idle");
+  expect(screen.getByRole("button", { name: "Follow this operation" })).toBeVisible();
+
+  fireEvent.click(screen.getByRole("button", { name: "Follow this operation" }));
+
+  expect(feedback).toHaveAttribute("data-follow-state", "following");
+  expect(useAgentWorkspaceStore.getState().following).toEqual({
+    projectId: "project",
+    flowKey: "external:manual-follow",
+  });
+});
+
 it("hides another project's operations", () => {
   useAgentWorkspaceStore.getState().report({ id: "other", projectId: "another", sessionId: "word", origin: { kind: "external", flowId: "mcp" }, operation: "save", phase: "succeeded" });
   const view = render(<AgentWorkspaceFeedback />);
