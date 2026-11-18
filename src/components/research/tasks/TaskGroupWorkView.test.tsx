@@ -792,6 +792,35 @@ it("loads a retained result with its reply parent and routes the exact dependenc
   expect(loadMessage.mock.calls).toEqual([[result.id], [parent.id]]);
 });
 
+it("keeps historical work readable when its member is no longer in the group", () => {
+  const historical = work("removed-member-work", "completed");
+  historical.memberId = "removed-member";
+  historical.waits = [{
+    requestMessageId: "missing-request",
+    work: [{
+      workId: "removed-dependency",
+      memberId: "removed-member",
+      status: "waiting",
+      resultMessageId: null,
+    }],
+  }];
+  const view = testing.render(
+    <WorkView
+      snapshot={snapshot([historical])}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={async () => null}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+
+  const card = view.getByTestId("work-removed-member-work");
+  expect(testing.within(card).getAllByText("removed-member")).toHaveLength(2);
+  expect(card.textContent).not.toContain("paused");
+});
+
 it("keeps unavailable annotations, events and generic sources tied to their cause", async () => {
   const missingAnnotation = work(
     "missing-annotation",
