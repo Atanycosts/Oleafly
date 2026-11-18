@@ -876,6 +876,30 @@ describe("PdfViewer scrolling", () => {
     expect(preview.isConnected).toBe(false);
     expect(preview.width).toBeGreaterThan(0);
   });
+
+  it("keeps the painted page when a preview copy cannot be created", async () => {
+    const drawImage = vi.fn(() => {
+      throw new Error("Preview copy failed");
+    });
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+      drawImage,
+    } as unknown as CanvasRenderingContext2D);
+    const { wrap } = await openViewer();
+    await waitFor(() => expect(baseCanvases(wrap(1))).toHaveLength(1));
+    const painted = baseCanvases(wrap(1))[0];
+
+    await waitFor(() =>
+      expect(drawImage).toHaveBeenCalledWith(
+        painted,
+        0,
+        0,
+        expect.any(Number),
+        expect.any(Number),
+      ),
+    );
+    expect(painted.isConnected).toBe(true);
+    expect(wrap(1).querySelector("canvas[data-pdf-raster='preview']")).toBeNull();
+  });
 });
 
 describe("PdfViewer out of the document", () => {

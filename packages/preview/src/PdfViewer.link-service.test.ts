@@ -10,6 +10,8 @@ let createPdfLinkViewerAdapter: typeof import("./PdfViewer").createPdfLinkViewer
 let calculatePdfFitScale: typeof import("./PdfViewer").calculatePdfFitScale;
 let prioritizePdfPages: typeof import("./PdfViewer").prioritizePdfPages;
 let selectCurrentPdfPage: typeof import("./PdfViewer").selectCurrentPdfPage;
+let capturePdfZoomAnchor: typeof import("./PdfViewer").capturePdfZoomAnchor;
+let restorePdfZoomAnchor: typeof import("./PdfViewer").restorePdfZoomAnchor;
 
 // The real pdf.js ESM import exceeded 10 seconds on the shared Windows runner.
 beforeAll(async () => {
@@ -20,10 +22,12 @@ beforeAll(async () => {
   vi.stubGlobal("ImageData", class ImageData {});
   vi.stubGlobal("Path2D", class Path2D {});
   ({
+    capturePdfZoomAnchor,
     calculatePdfFitScale,
     createPdfLinkService,
     createPdfLinkViewerAdapter,
     prioritizePdfPages,
+    restorePdfZoomAnchor,
     selectCurrentPdfPage,
   } = await import("./PdfViewer"));
 }, 30_000);
@@ -105,6 +109,50 @@ describe("PdfViewer current-page geometry", () => {
         4,
       ),
     ).toBe(5);
+  });
+});
+
+describe("PdfViewer zoom anchoring", () => {
+  it("keeps the horizontal reading position but refuses to override new navigation", () => {
+    const scrollParent = document.createElement("div");
+    const page = document.createElement("div");
+    page.dataset.page = "1";
+    scrollParent.append(page);
+    document.body.append(scrollParent);
+    let scrollWidth = 1_200;
+    let scrollLeft = 200;
+    Object.defineProperties(scrollParent, {
+      clientWidth: { configurable: true, value: 800 },
+      scrollWidth: {
+        configurable: true,
+        get: () => scrollWidth,
+      },
+      scrollLeft: {
+        configurable: true,
+        get: () => scrollLeft,
+        set: (value: number) => {
+          scrollLeft = value;
+        },
+      },
+    });
+    scrollParent.scrollTop = 100;
+    scrollParent.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 600, left: 0, right: 800, width: 800, height: 600 }) as DOMRect;
+    page.getBoundingClientRect = () =>
+      ({ top: -100, bottom: 700, left: 100, right: 700, width: 600, height: 800 }) as DOMRect;
+
+    const anchor = capturePdfZoomAnchor(scrollParent, [page]);
+    if (!anchor) throw new Error("The visible page must produce a zoom anchor");
+    page.getBoundingClientRect = () =>
+      ({ top: -80, bottom: 720, left: 100, right: 700, width: 600, height: 800 }) as DOMRect;
+    scrollWidth = 1_400;
+
+    expect(restorePdfZoomAnchor(scrollParent, anchor)).toBe(true);
+    expect(scrollParent.scrollTop).toBe(120);
+    expect(scrollParent.scrollLeft).toBe(300);
+
+    scrollLeft = 310;
+    expect(restorePdfZoomAnchor(scrollParent, anchor)).toBe(false);
   });
 });
 

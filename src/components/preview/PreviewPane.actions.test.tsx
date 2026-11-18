@@ -327,6 +327,34 @@ describe("PreviewPane downloads", () => {
 });
 
 describe("PreviewPane viewer states", () => {
+  it("ignores readiness and failures reported for another PDF identity", async () => {
+    mocks.firstLoad = "loading";
+    await renderPane();
+    expect(screen.getByText(enPreview.startup.render.preparing)).toBeInTheDocument();
+
+    act(() =>
+      mocks.viewer?.onLoadStateChange?.({
+        status: "ready",
+        documentIdentity: "another-pdf",
+      }),
+    );
+    act(() =>
+      mocks.viewer?.onLoadStateChange?.({
+        status: "error",
+        documentIdentity: "another-pdf",
+        message: "This failure belongs to another document",
+      }),
+    );
+
+    expect(screen.getByText(enPreview.startup.render.preparing)).toBeInTheDocument();
+    expect(screen.queryByText(enPreview.viewer.loadFailedTitle)).toBeNull();
+
+    loadState("ready");
+    await waitFor(() =>
+      expect(screen.queryByText(enPreview.startup.render.preparing)).toBeNull(),
+    );
+  });
+
   it("keeps the last good PDF when a newer one fails to load and offers a recompile", async () => {
     await renderPane();
     const firstIdentity = mocks.viewer?.documentIdentity;
@@ -339,9 +367,21 @@ describe("PreviewPane viewer states", () => {
     loadState("invalid", { message: "Missing %%EOF" });
 
     await waitFor(() => expect(mocks.viewer?.documentIdentity).toBe(firstIdentity));
+    loadState("unavailable");
+    loadState("ready");
     const badge = screen.getByTestId("preview-stale-badge");
     fireEvent.click(badge);
     expect(useCompileStore.getState().recompile).toHaveBeenCalled();
+
+    mocks.firstLoad = "ready";
+    act(() => {
+      useCompileStore.setState({
+        pdfBytes: new Uint8Array([6, 7, 8]),
+        lastCompileCheckpoint: checkpoint(2, 3) as never,
+      });
+    });
+    await waitFor(() => expect(mocks.viewer?.documentIdentity).toContain(`pdf-v1:3:${PROJECT}`));
+    expect(screen.queryByTestId("preview-stale-badge")).not.toBeInTheDocument();
   });
 
   it("marks an outdated PDF stale and announces it", async () => {

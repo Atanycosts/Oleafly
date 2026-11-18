@@ -228,6 +228,48 @@ describe("detached preview compile states", () => {
     expect(screen.queryByText(win.staleHeading)).not.toBeInTheDocument();
   });
 
+  it("keeps a same-request failure when lower-priority states arrive late", async () => {
+    render(<PreviewWindow />);
+    await waitFor(() => expect(mocks.listeners.has("preview:refresh")).toBe(true));
+    const revision = 2;
+    const identity = {
+      projectId: "alpha",
+      mainDocument: "chapters/main.tex",
+      projectRevision: revision,
+      requestGeneration: revision,
+    };
+
+    refresh({
+      projectStateRevision: revision,
+      identity,
+      status: "unavailable",
+      checkpoint: null,
+    });
+    refresh({
+      projectStateRevision: revision,
+      identity,
+      status: "error",
+      checkpoint: null,
+      message: "Undefined control sequence",
+    });
+    refresh({
+      projectStateRevision: revision,
+      identity,
+      status: "compiling",
+      checkpoint: null,
+    });
+    refresh({
+      projectStateRevision: revision,
+      identity,
+      status: "not_run",
+      checkpoint: null,
+    });
+
+    expect(screen.getByText(win.compileFailedTitle)).toBeInTheDocument();
+    expect(screen.getByText("Undefined control sequence")).toBeInTheDocument();
+    expect(screen.queryByText(win.compilingTitle)).not.toBeInTheDocument();
+  });
+
   it("marks the shown PDF stale while a newer revision compiles or fails", async () => {
     mocks.readCompiledPdf.mockResolvedValue(buffer(5));
     render(<PreviewWindow />);
@@ -256,6 +298,36 @@ describe("detached preview compile states", () => {
     expect(mocks.readCompiledPdf).toHaveBeenCalledWith("beta");
   });
 
+  it("ignores a superseded artifact failure after a newer compile is shown", async () => {
+    let failFirst!: (error: Error) => void;
+    mocks.readCompiledPdf
+      .mockImplementationOnce(
+        () =>
+          new Promise<ArrayBuffer>((_resolve, reject) => {
+            failFirst = reject;
+          }),
+      )
+      .mockResolvedValueOnce(buffer(2));
+    render(<PreviewWindow />);
+    await waitFor(() => expect(mocks.listeners.has("preview:refresh")).toBe(true));
+
+    refresh(state("alpha", 1, 1));
+    await waitFor(() => expect(mocks.readCompiledPdf).toHaveBeenCalledTimes(1));
+    refresh(state("alpha", 2, 2));
+    expect(await screen.findByText("2")).toBeInTheDocument();
+
+    await act(async () => {
+      failFirst(new Error("late artifact failure"));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.queryByText("1")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(win.artifactUnavailableTitle),
+    ).not.toBeInTheDocument();
+  });
+
   it("refuses a PDF whose bytes do not match the compile and retries on request", async () => {
     mocks.readCompiledPdf.mockResolvedValueOnce(buffer(9)).mockResolvedValueOnce(buffer(1));
     render(<PreviewWindow />);
@@ -276,6 +348,27 @@ describe("detached preview viewer recovery", () => {
     refresh(state("alpha", value, revision));
     await screen.findByText(String(value));
   }
+
+  it("ignores load state reported for a different document identity", async () => {
+    render(<PreviewWindow />);
+    await waitFor(() => expect(mocks.listeners.has("preview:refresh")).toBe(true));
+    await showDocument(1, 1);
+    expect(screen.getByText(win.loadingTitle)).toBeInTheDocument();
+
+    act(() =>
+      mocks.viewer?.onLoadStateChange?.({
+        status: "error",
+        documentIdentity: "another-pdf",
+        message: "This failure belongs to another document",
+      }),
+    );
+
+    expect(screen.queryByText(enPreview.viewer.loadFailedTitle)).toBeNull();
+    expect(screen.getByText(win.loadingTitle)).toBeInTheDocument();
+
+    loadState("ready");
+    await waitFor(() => expect(screen.queryByText(win.loadingTitle)).toBeNull());
+  });
 
   it("falls back to the last good PDF when a newer one cannot be loaded", async () => {
     render(<PreviewWindow />);

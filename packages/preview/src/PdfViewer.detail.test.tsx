@@ -423,6 +423,23 @@ describe("PdfViewer detail raster lifecycle", () => {
     expect(base.isConnected).toBe(true);
   });
 
+  it("clears the rendering state when the first detail render fails", async () => {
+    harness.deferDetail = true;
+    const scene = await openPage();
+    await waitFor(() => expect(scene.detailCalls().length).toBeGreaterThan(0));
+    const failed = scene.detailCalls().at(-1)!;
+    expect(scene.wrap.dataset.pdfDetail).toBe("rendering");
+
+    await act(async () => failed.reject(new Error("detail render failed")));
+
+    await waitFor(() => expect(scene.wrap.dataset.pdfDetail).toBeUndefined());
+    expect(scene.base()).not.toBeNull();
+    expect(scene.detail()).toBeNull();
+    expect(failed.canvas.isConnected).toBe(false);
+    expect(failed.canvas.width).toBe(0);
+    expect(failed.canvas.height).toBe(0);
+  });
+
   it("cancels and releases a pending detail render when the viewer unmounts", async () => {
     harness.deferDetail = true;
     const scene = await openPage();
