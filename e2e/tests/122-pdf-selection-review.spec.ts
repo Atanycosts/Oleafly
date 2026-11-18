@@ -178,7 +178,7 @@ test("PDF feedback retains the displayed original through recompile and links it
       if (toolCount === 4) return { name: "compile", args: {} };
       if (toolCount === 5) return { name: "discover_tools", args: { query: "task_pdf_text annotation_handle" } };
       if (toolCount === 6) {
-        if (compileResult?.success !== true || !compiled) {
+        if (compileResult?.ok !== true || !compiled) {
           throw new Error(`The task compile did not expose a retained PDF artifact: ${JSON.stringify({ compileResult, compiled })}`);
         }
         return { name: "task_pdf_text", args: { reference: compiled } };
