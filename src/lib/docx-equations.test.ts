@@ -266,7 +266,7 @@ describe("DOCX equation source binding", () => {
     );
     const paragraph = paragraphOf(f.tree);
     const equations = paragraphOffsetIndex(paragraph).segments.filter(
-      (segment) => segment.node.localName === "oMathPara",
+      ({ node }) => node.kind === "generic" && node.localName === "oMathPara",
     );
     expect(equations).toHaveLength(2);
     expect(equations.map((segment) => equationOfAtom(segment.node))).toEqual([
@@ -829,7 +829,7 @@ describe("DOCX equation source binding", () => {
     )).toMatchObject({ ok: true, changed: true });
 
     const updated = firstEquation(f.tree);
-    expect(updated.atom.localName).toBe("oMathPara");
+    expect(updated.atom).toMatchObject({ localName: "oMathPara" });
     expect(updated.bookmarks.map((bookmark) => bookmark.name)).toEqual(
       original.bookmarks.map((bookmark) => bookmark.name),
     );

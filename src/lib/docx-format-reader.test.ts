@@ -35,7 +35,7 @@ function fixture(body: string) {
     save: () => writeOoxmlPackage(tree.currentPackage()),
   };
   const session = createDocxSession({ surface, exec: () => ({ ok: true }), on: () => () => {}, can: () => ({ ok: false }) } as unknown as DocxEditorInstance);
-  const exportBytes = vi.fn(async () => writeOoxmlPackage(tree.currentPackage()));
+  const exportBytes = vi.fn(async (): Promise<Uint8Array | null> => writeOoxmlPackage(tree.currentPackage()));
   const openFacts = vi.fn(openDocxFormatFacts);
   const read = createDocxFormatReader({ session, exportBytes, openFacts,
     document: () => ({ sessionId: "live", filename: "test.docx", baselineId: "saved-baseline", savedRevision: 0 }) });

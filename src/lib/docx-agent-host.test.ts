@@ -1915,10 +1915,10 @@ describe("live DOCX format, save and template tools", () => {
     const local = harness();
     const phases: string[] = [];
     const onApplied = vi.fn();
-    register(local.session, {
-      onSuggestion: ({ proposed, phase }) => phases.push(`${phase}:${proposed}`),
-      onApplied,
-    });
+    const onSuggestion: DocxAgentRegistration["onSuggestion"] = ({ proposed, phase }) => {
+      phases.push(`${phase}:${proposed}`);
+    };
+    register(local.session, { onSuggestion, onApplied });
     mocks.runInlineCompletion.mockImplementationOnce(async ({ onToken }) => {
       onToken?.("Partial");
       return "Final";
