@@ -262,9 +262,10 @@ Saved DOCX PDF previews use a locally installed LibreOffice executable. The nati
 `OLEAFLY_LIBREOFFICE`, the configured `soffice` locator, and standard macOS/Windows install
 locations; the sidebar also accepts an explicit executable path. Workbench reads only the retained
 baseline, creates a private temporary LibreOffice profile below its own library, checks the PDF
-signature and page count, and records renderer identity with the derived bundle. A missing or
-non-LibreOffice executable fails the render rather than silently changing engines. WPS remains an
-optional external editor/render source and is not required for the embedded flow.
+signature and page count with its installed PDF reader, and records renderer identity with the
+derived bundle. This preview does not need the separate Poppler inspector used for historical
+evidence. A missing or non-LibreOffice executable fails the render. WPS remains an optional
+external editor/render source and is not required for the embedded flow.
 
 DOCX recovery checkpoints live in the selected application's private data directory.
 Startup lists available copies without starting Workbench or loading the editor. Explicit

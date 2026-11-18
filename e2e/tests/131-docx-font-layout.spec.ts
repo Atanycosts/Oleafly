@@ -364,7 +364,7 @@ async function verifyMicrosoftFontPackages(page: Page) {
   }
   expect(edited, "real manuscript has a supported plain-text paragraph for saved-PDF acceptance").not.toBeNull();
   await expect.poll(() => live(page).then(value => value.document.dirty)).toBe(true);
-  await click(page, "Save manuscript version");
+  await click(page, "Save version");
   await expect.poll(() => live(page).then(value => value.document.dirty), { timeout: 90_000 }).toBe(false);
   const saved = await live(page);
   expect(saved.document.baselineId).not.toBe(snapshot.document.baselineId);

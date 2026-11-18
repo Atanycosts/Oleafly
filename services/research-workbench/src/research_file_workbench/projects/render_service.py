@@ -23,7 +23,7 @@ from research_file_workbench.common.json_io import (
     decode_json_object,
     encode_json_object,
 )
-from research_file_workbench.common.pdf import PdfInspectionError, read_pdf_page_count
+from research_file_workbench.common.pdf import read_pdf_page_count
 from research_file_workbench.docx.page_mapping import PAGE_MAPPING_VERSION
 from research_file_workbench.docx.reader import read_docx_bytes
 from research_file_workbench.docx.report import READER_VERSION
@@ -168,11 +168,15 @@ def render_libreoffice_baseline(
                     "LibreOffice output does not begin with a PDF signature."
                 )
             try:
-                page_count = read_pdf_page_count(output_path)
-            except PdfInspectionError as exc:
+                with pymupdf.open(output_path) as pdf:  # type: ignore[no-untyped-call]
+                    page_count = pdf.page_count
+                    pdf_fonts = sorted(
+                        {font[3] for page in pdf for font in page.get_fonts(full=True)}
+                    )
+            except pymupdf.FileDataError as exc:
                 raise RenderConversionError("LibreOffice output is not a readable PDF.") from exc
-            with pymupdf.open(output_path) as pdf:  # type: ignore[no-untyped-call]
-                pdf_fonts = sorted({font[3] for page in pdf for font in page.get_fonts(full=True)})
+            if page_count < 1:
+                raise RenderConversionError("LibreOffice output is not a readable PDF.")
 
     completed_at = utc_now_iso()
     duration_ms = round((time.monotonic() - started) * 1000)

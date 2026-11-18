@@ -130,7 +130,7 @@ def register(fixture, *, reviewed=True):
 
 
 def test_libreoffice_render_retains_readable_pdf_without_fabricating_page_mapping(
-    rendered_project, tmp_path
+    rendered_project, tmp_path, monkeypatch
 ):
     project, _, source, _, baseline = rendered_project
     fixture_pdf = (
@@ -156,6 +156,7 @@ def test_libreoffice_render_retains_readable_pdf_without_fabricating_page_mappin
     same_source = source.with_name("same-source.docx")
     same_source.write_bytes(source.read_bytes())
     source.unlink()
+    monkeypatch.setenv("PATH", "")  # The saved preview does not need Poppler.
     record = render_libreoffice_baseline(
         project,
         baseline_id=baseline,
@@ -172,6 +173,7 @@ def test_libreoffice_render_retains_readable_pdf_without_fabricating_page_mappin
     assert manifest["evidence_kind"] == "derived_pdf"
     assert manifest["mapping"] is None
     assert manifest["mapping_status"] == "pending_independent_review"
+    assert manifest["page_count"] == 3
     assert manifest["pages"] == []
     assert manifest["render_record"]["renderer_engine"] == "LibreOffice"
     assert manifest["render_record"]["renderer_identity_status"] == "executable_hash_verified"

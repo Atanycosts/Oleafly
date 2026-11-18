@@ -141,6 +141,7 @@ test("DOCX live working copy preserves intervention, undo and exact saved checks
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "oleafly-docx-")));
   const service = await startWorkbench(resolve(root, "library"));
   const browser = await chromium.launch({ channel: "chrome" });
+  const workbenchErrors: string[] = [];
   try {
     const session = await (await fetch(`${service.url}api/session`)).json();
     async function request(path: string, payload?: unknown) {
@@ -150,14 +151,22 @@ test("DOCX live working copy preserves intervention, undo and exact saved checks
         body: payload === undefined ? undefined : JSON.stringify(payload),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
+      if (!response.ok) {
+        const message = `${path}: ${result.error}`;
+        workbenchErrors.push(message);
+        throw new Error(message);
+      }
       return result;
     }
     async function requestBytes(path: string) {
       const response = await fetch(new URL(path, service.url), {
         headers: { "X-RFW-Token": session.token },
       });
-      if (!response.ok) throw new Error((await response.json()).error);
+      if (!response.ok) {
+        const message = `${path}: ${(await response.json()).error}`;
+        workbenchErrors.push(message);
+        throw new Error(message);
+      }
       return new Uint8Array(await response.arrayBuffer());
     }
     const guideWorld = await request("/api/worlds", { journal_id: "docx-test", journal_name: "DOCX test journal", article_type: "research_article", stage: "initial_submission", language: "en", sources: [{ name: "guide.txt", kind: "guide_text", content_base64: Buffer.from("All manuscript pages must use A4 paper.").toString("base64") }] });
@@ -258,9 +267,16 @@ test("DOCX live working copy preserves intervention, undo and exact saved checks
     await expect(page.getByTestId("docx-workspace")).toBeVisible();
     await expect(page.getByTestId("docx-check-validity")).toHaveText("Check saved: Current");
     await page.getByRole("button", { name: "Open PDF", exact: true }).click();
-    await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy", { timeout: 30_000 });
-    await expect(page.locator("[data-testid=docx-render-preview] [data-pdf-state=ready]")).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator("[data-testid=docx-render-preview] .pdf-canvas").first()).toBeVisible();
+    const preview = page.getByTestId("docx-render-preview");
+    const viewer = preview.getByTestId("pdf-renderer");
+    try {
+      await expect(viewer).toHaveAttribute("data-pdf-state", "ready", { timeout: 30_000 });
+      await expect(viewer.locator("canvas.pdf-canvas").first()).toBeVisible();
+      await expect(preview.getByText("PDF matches the saved working copy", { exact: true })).toBeVisible();
+    } catch (cause) {
+      await testInfo.attach("docx-preview-errors", { body: JSON.stringify({ workbenchErrors, errors, consoleErrors }), contentType: "application/json" });
+      throw cause;
+    }
     await page.getByRole("button", { name: "Back to document", exact: true }).click();
     const state = await request("/api/state");
     const current = state.projects[0];
@@ -269,6 +285,7 @@ test("DOCX live working copy preserves intervention, undo and exact saved checks
     expect(current.latest_check.summary.compliant).toBe(2);
     const renders = await request(`/api/derived-renders?project_id=${project.project_id}&baseline_id=${current.baseline_id}`);
     expect(renders.derived_renders).toHaveLength(1);
+    expect(renders.derived_renders[0]).toMatchObject({ baseline_id: current.baseline_id });
     expect(renders.derived_renders[0].manifest.page_count).toBeGreaterThan(0);
     const renderedPdf = await requestBytes(`/api/render?project_id=${project.project_id}&baseline_id=${current.baseline_id}&bundle_id=${renders.derived_renders[0].bundle_id}&role=pdf&page_number=none`);
     expect(new TextDecoder().decode(renderedPdf.slice(0, 5))).toBe("%PDF-");

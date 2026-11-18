@@ -180,7 +180,7 @@ test("restore native checkpoint after SIGKILL then save exact baseline and PDF",
   const continued = await liveDocument(page);
   const savedText = continued.paragraphs.find((paragraph) => paragraph.text.includes(CONTINUED.trim()))!.text;
   expect(savedText).toContain(PREPARED.trim());
-  await clickButton(page, '[data-testid="docx-workspace"]', "Save manuscript version");
+  await clickButton(page, '[data-testid="docx-workspace"]', "Save version");
   await expect.poll(async () => (await liveDocument(page)).document.dirty, { timeout: 90_000 }).toBe(false);
   const saved = await liveDocument(page);
   expect(saved.document.baselineId).not.toBe(run.baselineId);
@@ -196,7 +196,10 @@ test("restore native checkpoint after SIGKILL then save exact baseline and PDF",
     const candidates = await page.evaluate<DocxRecoveryListing>(`window.__oleaflyE2EImport('/src/lib/docx-recovery.ts').then(m => m.listDocxRecovery())`);
     return candidates.snapshots.some((item) => item.recoveryKey === run.recovery.recoveryKey);
   }, { timeout: 20_000 }).toBe(false);
-  await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy", { timeout: 150_000 });
+  await clickButton(page, '[data-testid="docx-workspace"]', "Open PDF");
+  const preview = page.getByTestId("docx-render-preview");
+  await expect(preview.locator("canvas").first()).toBeVisible({ timeout: 150_000 });
+  await expect(preview).toContainText("PDF matches the saved working copy");
   const renders = await page.evaluate<DocxRender[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(m => m.loadDocxRenders(${scriptValue(run.workbenchProjectId)}, ${scriptValue(saved.document.baselineId)}))`);
   const render = renders.find((item) => item.baseline_id === saved.document.baselineId && item.manifest.source_sha256 === source.source_sha256);
   expect(render, "LibreOffice retained PDF belongs to the exact saved bytes").toBeDefined();
@@ -207,13 +210,9 @@ test("restore native checkpoint after SIGKILL then save exact baseline and PDF",
   expect(render!.manifest.page_count).toBeGreaterThan(0);
   await writeFile(evidencePath("saved.pdf"), Buffer.from(pdf));
   await writeFile(evidencePath("saved-render.json"), JSON.stringify(render, null, 2));
-  await clickButton(page, '[data-testid="docx-workspace"]', "Open PDF");
-  await expect(page.getByTestId("docx-render-preview").locator("canvas").first()).toBeVisible({ timeout: 90_000 });
-  await expect(page.getByTestId("docx-render-preview").locator(".textLayer").first()).toContainText(CONTINUED.trim(), { timeout: 30_000 });
+  await expect(preview.locator(".textLayer").first()).toContainText(CONTINUED.trim(), { timeout: 30_000 });
   await page.screenshot({ path: evidencePath("saved-pdf.png") });
-  // TauriLocator.getByRole currently drops its parent scope. Close the exact
-  // nested surface rather than whichever global Close button appears first.
-  await clickButton(page, '[data-testid="docx-render-preview"]', "Close");
+  await clickButton(page, '[data-testid="docx-workspace"]', "Back to document");
   await clickButton(page, '[data-testid="docx-workspace"]', "Close");
   await expect(page.getByTestId("docx-workspace")).toHaveCount(0);
   await openRailTab(page, "Journal checks");
