@@ -44,10 +44,33 @@ beforeEach(() => {
 
 async function ready() { await screen.findByTestId("annotation-editor"); await waitFor(() => expect(api.group).toHaveBeenCalledWith("paper", task.id)); }
 
+it("reports when the retained Journal object cannot be loaded", async () => {
+  api.load.mockRejectedValueOnce(new Error("Retained Journal object is unavailable"));
+  render(<JournalAnnotations projectId="paper" reference={reference} onOpenTarget={vi.fn()} />);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Retained Journal object is unavailable",
+  );
+  expect(screen.queryByTestId("annotation-editor")).not.toBeInTheDocument();
+});
+
+it("keeps the annotation editor usable when reviewer membership cannot load", async () => {
+  api.group.mockRejectedValueOnce(new Error("Reviewer membership is unavailable"));
+  render(<JournalAnnotations projectId="paper" reference={reference} onOpenTarget={vi.fn()} />);
+
+  expect(await screen.findByTestId("annotation-editor")).toBeInTheDocument();
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Reviewer membership is unavailable",
+  );
+});
+
 it("saves original feedback without resolving a model or asking an associated task to run", async () => {
   render(<JournalAnnotations projectId="paper" reference={reference} onOpenTarget={vi.fn()} />);
   await ready();
   expect(api.panel?.describeTarget?.(target)).toBe("This journal requirement");
+  expect(api.panel?.describeTarget?.({ ...target, objectKind: "unknown_journal_target" })).toBe(
+    en.workspace.journalAnnotationTargets.other,
+  );
   const body = "  This rule may be wrong.\nKeep the original quote.  ";
   await act(async () => { await api.panel?.submitAnnotation?.(draft({ body })); });
   expect(api.save).toHaveBeenCalledExactlyOnceWith("paper", reference, body, null, []);
@@ -73,6 +96,9 @@ it("retains a newly created task when start fails and retries its same ID withou
   await act(async () => { await api.panel?.submitAnnotation?.(draft({ explicitRequest: true })); });
   expect(await screen.findByRole("alert")).toHaveTextContent("Start failed");
   expect(api.request).toHaveBeenCalledWith(expect.objectContaining({ parentId: root.id, taskId: null, draft: expect.objectContaining({ runtimeId: "builtin", agentId: "chosen", modelId: "chosen-model" }) }));
+  await expect(api.panel?.submitAnnotation?.(draft({ explicitRequest: true }))).rejects.toThrow(
+    text.retryHelp,
+  );
   fireEvent.click(screen.getByRole("button", { name: text.retryStart }));
   await waitFor(() => expect(screen.queryByRole("button", { name: text.retryStart })).toBeNull());
   expect(api.start.mock.calls).toEqual([[task.id], [task.id]]);
@@ -106,6 +132,11 @@ it("starts an existing unstarted associated task only when the backend requests 
   await act(async () => { await api.panel?.submitAnnotation?.(draft({ explicitRequest: true })); });
   expect(api.start).toHaveBeenCalledExactlyOnceWith(task.id);
   expect(api.capture).not.toHaveBeenCalled();
+  fireEvent.click(await screen.findByRole("button", {
+    name: `${text.openTask} · ${task.title}`,
+  }));
+  expect(api.open).toHaveBeenCalledWith(task.id, "annotations");
+  expect(api.rail).toHaveBeenCalledWith("research");
 });
 
 it("can reply to a member's annotation using its original source without calling a model for feedback", async () => {

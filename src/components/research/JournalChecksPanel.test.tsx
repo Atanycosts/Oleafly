@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   target: vi.fn(),
   templateImport: vi.fn(),
   templateCheck: vi.fn(),
+  pick: vi.fn(),
   ensureProvider: vi.fn(),
   handoff: vi.fn(),
   references: [] as JournalObjectReference[],
@@ -35,6 +36,10 @@ vi.mock("@/lib/docx-template-client", async (original) => ({
   ...await original<typeof import("@/lib/docx-template-client")>(),
   importJournalTemplate: api.templateImport,
   checkJournalTemplate: api.templateCheck,
+}));
+vi.mock("@/lib/tauri", async (original) => ({
+  ...await original<typeof import("@/lib/tauri")>(),
+  pickOpenPaths: api.pick,
 }));
 vi.mock("@/features/assistant-handoff", () => ({
   ensureAiProviderOrOpenSettings: api.ensureProvider,
@@ -129,6 +134,7 @@ beforeEach(() => {
   api.invoke.mockResolvedValue({ journalProjectId: "template-draft" });
   api.templateImport.mockResolvedValue(world);
   api.templateCheck.mockResolvedValue(checked("world-current", "check-template"));
+  api.pick.mockResolvedValue(null);
   api.ensureProvider.mockResolvedValue(true);
   api.request.mockImplementation(async (path: string) => {
     const url = new URL(path, "http://workbench");
@@ -965,6 +971,8 @@ it("opens a retained journal object and navigates to its related work", async ()
 
     expect(openTaskDetail).toHaveBeenCalledWith("task-related", "annotations");
     expect(useWorkspaceSurfaceStore.getState().active).toBe("files");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   } finally {
     openTaskDetail.mockRestore();
   }
@@ -1308,12 +1316,16 @@ it("imports explicitly classified guide sources without treating a Word guide as
   const dialog = await screen.findByRole("dialog");
   const guide = capturedFile("author-guide.docx", "Word guide");
   const checklist = capturedFile("checklist.txt", "Submission checklist");
-  fireEvent.change(within(dialog).getByLabelText(text.files), { target: { files: [guide, checklist] } });
+  const pdfGuide = capturedFile("layout-guide.PDF", "PDF guide");
+  fireEvent.change(within(dialog).getByLabelText(text.files), {
+    target: { files: [guide, checklist, pdfGuide] },
+  });
   fireEvent.click(within(dialog).getByRole("button", { name: text.importJournal }));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(api.request).toHaveBeenCalledWith("/api/worlds", expect.objectContaining({ sources: [
     { name: guide.name, kind: "guide_docx", content_base64: btoa("Word guide") },
     { name: checklist.name, kind: "guide_text", content_base64: btoa("Submission checklist") },
+    { name: pdfGuide.name, kind: "guide_pdf", content_base64: btoa("PDF guide") },
   ] }));
   expect(api.templateImport).not.toHaveBeenCalled();
 });
@@ -1410,7 +1422,10 @@ it("reads the check's retained baseline and saves a defer note without changing 
   api.request.mockImplementation(async (path: string, payload?: Record<string, unknown>) => {
     const url = new URL(path, "http://workbench");
     if (url.pathname === "/api/manuscript") return { catalog: { items: [{ object_id: "section-object", object_type: "section", node_locator: "section:one" }] } };
-    if (path === "/api/read") return { items: [{ object_id: "section-object", content: { declared_values: { columns: 1, body_font_size_halfpoints: 24, body_line_spacing_twips: 480, top_margin_twips: 1440 } } }] };
+    if (path === "/api/read") return { items: [
+      { object_id: "section-object", content: { declared_values: { columns: 1, body_font_size_halfpoints: 24, body_line_spacing_twips: 480, top_margin_twips: 1440 } } },
+      { object_id: "content-object", content: { columns: 3, retained_private_token: "hidden" } },
+    ] };
     if (path === "/api/disposition") { savedNote = String(payload?.note); return {}; }
     if (url.pathname === "/api/check") return { ...findingCheck, dispositions: [...findingCheck.dispositions, { rule_id: rule.rule_id, action: "defer", note: savedNote, created_at: "2026-11-17T00:00:00Z" }] };
     const response = await originalRequest(path, payload);
@@ -1430,6 +1445,8 @@ it("reads the check's retained baseline and saves a defer note without changing 
   expect(within(dialog).getByText("12 pt")).toBeInTheDocument();
   expect(within(dialog).getByText("24 pt")).toBeInTheDocument();
   expect(within(dialog).getByText("25.4 mm")).toBeInTheDocument();
+  expect(within(dialog).getByText("3")).toBeInTheDocument();
+  expect(within(dialog).queryByText("hidden")).not.toBeInTheDocument();
   fireEvent.change(within(dialog).getByRole("combobox", { name: text.handlingAction }), { target: { value: "defer" } });
   fireEvent.change(within(dialog).getByRole("textbox", { name: text.handlingNote }), { target: { value: "Keep one column until final submission" } });
   fireEvent.click(within(dialog).getByRole("button", { name: text.saveHandling }));
@@ -1476,4 +1493,424 @@ it("keeps an exact font edit after a failed revision and retries with the same n
     ["/api/revise", { version_id: world.version_id, rule_id: fontRule.rule_id, expected: "Source Han Serif SC", reason: "Use the exact family named by the journal" }],
   ]);
   expect(screen.getAllByText(text.versionCreated).length).toBeGreaterThan(0);
+});
+
+it("shows the project choice in both Journal surfaces before a project is open", () => {
+  useFilesStore.setState({ projectId: null });
+  render(<JournalWorkspaceHarness />);
+
+  expect(within(screen.getByTestId("journal-sidebar-content")).getByText(text.openProject)).toBeInTheDocument();
+  expect(within(screen.getByTestId("journal-workspace")).getByText(text.openProject)).toBeInTheDocument();
+  expect(api.connect).not.toHaveBeenCalled();
+});
+
+it("lets the operator choose a missing runtime and reconnects without a default journal project", async () => {
+  api.connect.mockRejectedValueOnce(new Error("Journal runtime is unavailable"));
+  api.pick
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce(["/opt/homebrew/bin/python3.12"]);
+  api.workspace.mockResolvedValue({ journalProjectId: undefined });
+  render(<JournalWorkspaceHarness />);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Journal runtime is unavailable");
+  const runtime = screen.getByLabelText(text.python);
+  const browse = screen.getByRole("button", { name: text.browse });
+
+  fireEvent.click(browse);
+  await waitFor(() => expect(api.pick).toHaveBeenCalledOnce());
+  expect(runtime).toHaveValue("");
+
+  fireEvent.click(browse);
+  await waitFor(() => expect(runtime).toHaveValue("/opt/homebrew/bin/python3.12"));
+  fireEvent.click(screen.getByRole("button", { name: text.connect }));
+
+  expect(await screen.findByText(text.workspace.startTitle)).toBeInTheDocument();
+  expect(api.connect).toHaveBeenLastCalledWith("/opt/homebrew/bin/python3.12");
+  expect(screen.getByTestId("journal-world-select")).toHaveValue("");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+  const workspace = within(screen.getByTestId("journal-workspace"));
+  fireEvent.click(workspace.getByRole("button", { name: text.importManuscript }));
+  const manuscriptDialog = await screen.findByRole("dialog");
+  expect(within(manuscriptDialog).getByLabelText(text.files)).toHaveAttribute("accept", ".docx");
+  fireEvent.click(within(manuscriptDialog).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+  fireEvent.click(workspace.getByRole("button", { name: text.importTemplate }));
+  const templateDialog = await screen.findByRole("dialog");
+  expect(within(templateDialog).getByLabelText(text.files)).toHaveAttribute("accept", ".doc,.docx");
+});
+
+it("returns to the open Journal working copy instead of reopening it", async () => {
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await screen.findByRole("button", { name: en.docx.open }));
+  await waitFor(() => expect(useDocxWorkspaceStore.getState().request?.project.project_id).toBe("manuscript"));
+
+  useDocxWorkspaceStore.getState().minimize();
+  expect(useDocxWorkspaceStore.getState().minimized).toBe(true);
+  fireEvent.click(sidebar().getByRole("button", { name: text.returnToWorkingCopy }));
+
+  expect(useDocxWorkspaceStore.getState().minimized).toBe(false);
+  expect(useWorkspaceSurfaceStore.getState().active).toBe("word");
+});
+
+it("reports a retained manuscript that disappeared while opening its working copy", async () => {
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  let stateReads = 0;
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (new URL(path, "http://workbench").pathname === "/api/state") {
+      stateReads += 1;
+      if (stateReads > 1) return { worlds: [world], projects: [] };
+    }
+    return originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+
+  fireEvent.click(await screen.findByRole("button", { name: en.docx.open }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(en.docx.recovery.projectMissing);
+  expect(useDocxWorkspaceStore.getState().request).toBeNull();
+  expect(stateReads).toBe(2);
+});
+
+it("keeps current rule context, violation state and source-library fallback readable", async () => {
+  const coverageGap = {
+    code: "template_unknown_role",
+    message: "internal template_unknown_role",
+    property: null,
+    locator: null,
+  };
+  const contextRule: JournalRule = {
+    ...rule,
+    limitations: ["Declared source value differs from the expectation."],
+    resolution: {
+      reason: "Confirmed against the revised author guide",
+      previous_basis_status: "candidate",
+      previous_expected: 1,
+    },
+  };
+  const contextWorld = { ...world, rules: [contextRule], coverage_gaps: [coverageGap] };
+  const contextCheck: JournalCheck = {
+    ...checked("world-current", "check-current"),
+    summary: {
+      compliant: 0,
+      violation: 1,
+      observed_match: 0,
+      observed_difference: 0,
+      cannot_determine: 0,
+      not_checked: 0,
+    },
+    coverage_gaps: [coverageGap],
+    rule_results: [{
+      rule_id: contextRule.rule_id,
+      property: contextRule.property,
+      basis_status: "confirmed",
+      verdict: "violation",
+      applicability: "APPLICABLE",
+      findings: [{
+        section_index: 1,
+        locator: "section:one",
+        observed: 1,
+        expected: 2,
+        verdict: "violation",
+        message: "The retained section uses one column",
+      }],
+      limitations: [],
+    }],
+  };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/state") {
+      return {
+        worlds: [contextWorld, { ...contextWorld, version_id: "world-old", version_ordinal: 1 }],
+        projects: [{
+          project_id: "manuscript",
+          name: "Retained manuscript",
+          baseline_id: "baseline",
+          binding: {
+            binding_id: "binding",
+            baseline_id: "baseline",
+            world_version_id: contextWorld.version_id,
+          },
+          latest_check: contextCheck,
+        }],
+      };
+    }
+    if (url.pathname === "/api/world") return contextWorld;
+    if (url.pathname === "/api/review") {
+      return {
+        world_version_id: contextWorld.version_id,
+        fragments: [{
+          ...fragment,
+          fragment_id: "unlabelled-fragment",
+          source_id: "missing-source",
+          kind: "custom_fragment",
+          text: "",
+        }],
+        rule_links: [],
+      };
+    }
+    return originalRequest(path, payload);
+  });
+
+  render(<JournalWorkspaceHarness />);
+  expect(await screen.findByText(/Some template content has no clear role/)).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: /Columns.*2/ }));
+  const ruleDialog = await screen.findByRole("dialog");
+  expect(within(ruleDialog).getByText("Confirmed against the revised author guide")).toBeInTheDocument();
+  expect(within(ruleDialog).getAllByText(text.verdicts.violation).length).toBeGreaterThan(0);
+  fireEvent.click(within(ruleDialog).getByText(text.ruleContext));
+  expect(within(ruleDialog).getByText(text.messages.declaredDiffers)).toBeInTheDocument();
+
+  fireEvent.click(within(ruleDialog).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  fireEvent.click(screen.getByRole("button", { name: text.sourceLibrary }));
+  const sourceDialog = await screen.findByRole("dialog");
+  expect(await within(sourceDialog).findByRole("button", { name: /custom_fragment/ })).toBeInTheDocument();
+});
+
+it("creates a research-only journal request when no guide file is selected", async () => {
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    return path === "/api/worlds" ? world : originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+
+  fireEvent.click(await within(screen.getByTestId("journal-workspace")).findByRole(
+    "button",
+    { name: text.importJournal },
+  ));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: text.importJournal }));
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  const payload = api.request.mock.calls.find(([path]) => path === "/api/worlds")?.[1];
+  expect(payload).toMatchObject({
+    sources: [{
+      name: "research-request.txt",
+      kind: "guide_text",
+      content_base64: expect.any(String),
+    }],
+  });
+  expect(atob(payload.sources[0].content_base64)).toContain(
+    `Operator research request: ${world.journal_name}`,
+  );
+  expect(api.templateImport).not.toHaveBeenCalled();
+});
+
+it("explains added and removed rules when one side of a version comparison has no value", async () => {
+  const added: JournalRule = {
+    ...rule,
+    scope: { ...rule.scope, language: "fr-CA" },
+  };
+  const removed: JournalRule = {
+    ...rule,
+    rule_id: "margin-rule",
+    property: "top_margin_twips",
+    expected: 1440,
+    unit: "twips",
+  };
+  const diff: JournalDiff = {
+    scope_changed: false,
+    journal_changed: true,
+    changes: [
+      { property: "columns", before: null, after: added, status: "added" },
+      { property: "top_margin_twips", before: removed, after: null, status: "removed" },
+    ],
+  };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) =>
+    new URL(path, "http://workbench").pathname === "/api/diff"
+      ? diff
+      : originalRequest(path, payload));
+  render(<JournalWorkspaceHarness />);
+
+  fireEvent.click(await screen.findByRole("button", { name: text.compareVersions }));
+  const dialog = await screen.findByRole("dialog");
+  const addedRule = within(dialog).getByRole("heading", {
+    name: `${text.properties.columns} · ${text.changes.added}`,
+  }).closest("section");
+  const removedRule = within(dialog).getByRole("heading", {
+    name: `${text.properties.top_margin_twips} · ${text.changes.removed}`,
+  }).closest("section");
+
+  expect(addedRule).toHaveTextContent("— → 2");
+  expect(addedRule).toHaveTextContent("fr-CA");
+  expect(removedRule).toHaveTextContent("25.4 mm");
+  expect(removedRule).toHaveTextContent("→ —");
+  expect(within(dialog).queryByText(text.scopeChanged)).not.toBeInTheDocument();
+});
+
+it("follows a working-copy context change to its retained Journal version", async () => {
+  render(<JournalWorkspaceHarness />);
+  await screen.findByRole("button", { name: text.runCheck });
+
+  act(() => {
+    useDocxWorkspaceStore.getState().open({
+      appProjectId: "paper",
+      project: {
+        project_id: "manuscript",
+        name: "Retained manuscript",
+        baseline_id: "baseline",
+        binding: {
+          binding_id: "binding",
+          baseline_id: "baseline",
+          world_version_id: "world-current",
+        },
+        latest_check: checked("world-current", "check-current"),
+      },
+      world,
+      onSaved: async () => {},
+    });
+  });
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue("world-current"));
+
+  act(() => {
+    useDocxWorkspaceStore.getState().updateContext({
+      world: { ...world, version_id: "world-old", version_ordinal: 1 },
+      onSaved: async () => {},
+    });
+  });
+
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue("world-old"));
+  expect(api.request).toHaveBeenCalledWith("/api/world?version_id=world-old");
+});
+
+it("keeps the Journal rail usable when file-tree synchronization cannot load state", async () => {
+  const second: JournalProject = {
+    project_id: "second-manuscript",
+    name: "Unbound second manuscript",
+    baseline_id: "second-baseline",
+    binding: null,
+    latest_check: null,
+  };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  let stateReads = 0;
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (new URL(path, "http://workbench").pathname === "/api/state") {
+      stateReads += 1;
+      if (stateReads > 1) throw new Error("Journal state is temporarily unavailable");
+    }
+    return originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+  await screen.findByRole("button", { name: text.runCheck });
+
+  act(() => {
+    useDocxWorkspaceStore.getState().open({
+      appProjectId: "paper",
+      project: second,
+      world: null,
+      onSaved: async () => {},
+    });
+  });
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Journal state is temporarily unavailable");
+  await waitFor(() => expect(screen.getByTestId("journal-checks-panel")).toHaveAttribute("aria-busy", "false"));
+  expect(stateReads).toBe(2);
+});
+
+it("uses a readable snapshot fallback for unfamiliar rule properties and template roles", async () => {
+  const unknownProperty: JournalRule = {
+    ...rule,
+    rule_id: "custom-property",
+    property: "custom_property",
+    expected: 4,
+    unit: "count",
+  };
+  const unknownRole: JournalRule = {
+    ...rule,
+    rule_id: "custom-role",
+    property: "object_format",
+    label: "private-role-label",
+    expected: { kind: "paragraph", role: "custom_role" },
+    unit: "effective_format",
+  };
+  const unfamiliarWorld = { ...world, rules: [unknownProperty, unknownRole] };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (new URL(path, "http://workbench").pathname === "/api/state") {
+      return {
+        worlds: [unfamiliarWorld, { ...unfamiliarWorld, version_id: "world-old", version_ordinal: 1 }],
+        projects: [{
+          project_id: "manuscript",
+          name: "Retained manuscript",
+          baseline_id: "baseline",
+          binding: {
+            binding_id: "binding",
+            baseline_id: "baseline",
+            world_version_id: unfamiliarWorld.version_id,
+          },
+          latest_check: null,
+        }],
+      };
+    }
+    if (new URL(path, "http://workbench").pathname === "/api/world") return unfamiliarWorld;
+    return originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+
+  const fallbackRules = await screen.findAllByRole("button", { name: /Effective formatting/ });
+  expect(fallbackRules).toHaveLength(2);
+  expect(screen.queryByText("private-role-label")).not.toBeInTheDocument();
+  expect(screen.queryByText("custom_role")).not.toBeInTheDocument();
+});
+
+it("lets the operator compare against a different retained version", async () => {
+  const middle = { ...world, version_id: "world-middle", version_ordinal: 3 };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/state") {
+      return {
+        ...await originalRequest(path, payload),
+        worlds: [world, middle, { ...world, version_id: "world-old", version_ordinal: 1 }],
+      };
+    }
+    if (url.pathname === "/api/diff") {
+      return { scope_changed: false, journal_changed: false, changes: [] } satisfies JournalDiff;
+    }
+    return originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+
+  fireEvent.click(await screen.findByRole("button", { name: text.compareVersions }));
+  const dialog = await screen.findByRole("dialog");
+  const version = within(dialog).getByRole("combobox", { name: text.compareFrom });
+  expect(version).toHaveValue("world-middle");
+  fireEvent.change(version, { target: { value: "world-old" } });
+
+  await waitFor(() => expect(api.request).toHaveBeenCalledWith(
+    "/api/diff?from_version=world-old&to_version=world-current",
+  ));
+  expect(version).toHaveValue("world-old");
+});
+
+it("does not link or load when the operator clears the manuscript or journal version choice", async () => {
+  render(<JournalWorkspaceHarness />);
+  const manuscript = await sidebar().findByRole("combobox", { name: text.manuscript });
+  const journalVersion = screen.getByTestId("journal-world-select");
+  await waitFor(() => expect(manuscript).toHaveValue("manuscript"));
+  const stateReads = api.request.mock.calls.filter(([path]) => path === "/api/state").length;
+  const worldReads = api.request.mock.calls.filter(([path]) =>
+    String(path).startsWith("/api/world?")).length;
+
+  fireEvent.change(manuscript, { target: { value: "" } });
+  fireEvent.change(journalVersion, { target: { value: "" } });
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  expect(api.invoke).not.toHaveBeenCalled();
+  expect(api.request.mock.calls.filter(([path]) => path === "/api/state")).toHaveLength(stateReads);
+  expect(api.request.mock.calls.filter(([path]) =>
+    String(path).startsWith("/api/world?"))).toHaveLength(worldReads);
 });

@@ -270,3 +270,116 @@ it("explains unsupported template profiles without exposing backend diagnostics"
   expect(screen.getByText(`Other text · ${text.retainedFormat}`)).toBeInTheDocument();
   expect(screen.queryByText("Unsupported private backend detail")).not.toBeInTheDocument();
 });
+
+it("renders unfamiliar retained values as readable fallbacks without exposing raw object keys", async () => {
+  api.request.mockResolvedValue({
+    findings: [
+      {
+        ...finding,
+        case_id: "unknown-role-format",
+        role: "custom-role",
+        property_path: "custom.property",
+        observed: { privateToken: "opaque" },
+        expected: [],
+      },
+      {
+        ...finding,
+        case_id: "line-value-text",
+        object_id: "non-numeric-line",
+        property_path: "paragraph.lineSpacing.value",
+        observed: "unresolved",
+        expected: 240,
+      },
+      {
+        ...finding,
+        case_id: "unknown-line-rule",
+        property_path: "paragraph.lineSpacing.rule",
+        observed: "customRule",
+        expected: "exact",
+      },
+      {
+        ...finding,
+        case_id: "unknown-vertical-position",
+        property_path: "run.verticalAlign",
+        observed: "phoneticGuide",
+        expected: "top",
+      },
+      {
+        ...finding,
+        case_id: "unknown-section-break",
+        property_path: "section.breakType",
+        observed: "oddColumn",
+        expected: "nextColumn",
+      },
+      {
+        ...finding,
+        case_id: "unknown-text-direction",
+        property_path: "cell.textDirection",
+        observed: "tbRl",
+        expected: "horizontal",
+      },
+      {
+        ...finding,
+        case_id: "empty-list",
+        property_path: "paragraph.tabStops.stops",
+        observed: [],
+        expected: [],
+      },
+      {
+        ...finding,
+        case_id: "partial-tabs",
+        property_path: "paragraph.tabStops.stops",
+        observed: [null, { alignment: "left" }, { positionPt: 72 }],
+        expected: "not-an-array",
+      },
+      {
+        ...finding,
+        case_id: "unknown-underline",
+        property_path: "run.underline",
+        observed: { variant: "dashDot" },
+        expected: { variant: "wave" },
+      },
+      {
+        ...finding,
+        case_id: "complex-object",
+        property_path: "table.tableWidth",
+        observed: { unknownDimension: 10, nested: { value: 20 } },
+        expected: { type: "pct", value: 5000 },
+      },
+    ],
+    total: 10,
+    next_offset: null,
+  });
+  render(<JournalTemplatePanel world={world} project={project} check={check} />);
+
+  const articles = await screen.findAllByRole("article");
+  expect(articles).toHaveLength(10);
+  expect(articles[0]).toHaveTextContent("Other text · Other retained format");
+  expect(articles[0]).toHaveTextContent("Multiple format settings");
+  expect(articles[1]).toHaveTextContent("Manuscript: unresolved");
+  expect(articles[1]).toHaveTextContent("Template: Word line spacing value: 240");
+  expect(articles[2]).toHaveTextContent("Manuscript: customRule");
+  expect(articles[2]).toHaveTextContent("Template: Exact");
+  expect(articles[3]).toHaveTextContent("Manuscript: phoneticGuide");
+  expect(articles[4]).toHaveTextContent("Manuscript: oddColumn");
+  expect(articles[5]).toHaveTextContent("Manuscript: tbRl");
+  expect(articles[6]).toHaveTextContent("Manuscript: Multiple format settings");
+  expect(articles[7]).toHaveTextContent(
+    "Manuscript: Multiple format settings、Multiple format settings、This value cannot be shown at 72 pt",
+  );
+  expect(articles[8]).toHaveTextContent("Manuscript: Dash Dot");
+  expect(articles[9]).toHaveTextContent("Manuscript: Multiple format settings");
+  expect(screen.queryByText(/privateToken|unknownDimension|nested/)).not.toBeInTheDocument();
+});
+
+it("renders no template facts when the selected world has no adopted template", () => {
+  const { container } = render(
+    <JournalTemplatePanel
+      world={{ ...world, template: undefined }}
+      project={project}
+      check={{ ...check, template_comparison: null }}
+    />,
+  );
+  expect(container).toBeEmptyDOMElement();
+  expect(api.request).not.toHaveBeenCalled();
+});
