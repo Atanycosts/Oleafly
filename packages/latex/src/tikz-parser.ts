@@ -1835,13 +1835,12 @@ export function importTikz(source: string): TikzImport {
   const styles = new StyleTable();
   const colors = new Map<string, string>();
   const pictureOptions = picture ? parseOptions(picture.options) : [];
-  styles.define(pictureOptions);
   collectColors(clean, colors);
   const state: ScanState = {
     taken: collectNodeNames(clean),
     generated: 0,
     styles,
-    distance: nodeDistance(styles.expand(pictureOptions)),
+    distance: DEFAULT_NODE_DISTANCE,
     nodes: [],
     coordinates: new Map(),
     paths: [],
@@ -1850,6 +1849,7 @@ export function importTikz(source: string): TikzImport {
   if (picture) {
     readMacroCalls(clean.slice(0, clean.indexOf(String.raw`\begin{tikzpicture}`)), state);
   }
+  styles.define(pictureOptions);
   state.distance = nodeDistance(styles.expand(pictureOptions));
   scan(body, state, styles.expand(pictureOptions));
   const placed = placeNodes(state.nodes, state.coordinates);
