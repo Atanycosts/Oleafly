@@ -76,3 +76,19 @@ it("reports a failed task-input lookup without opening another task's PDF", asyn
   expect(screen.queryByTestId("retained")).not.toBeInTheDocument();
   expect(api.read).not.toHaveBeenCalled();
 });
+
+it("ignores a failed task-input lookup after changing tasks", async () => {
+  let rejectOld!: (cause: Error) => void;
+  api.load.mockImplementation((id: string) => id === "task-A"
+    ? new Promise<RetainedPdfSelection>((_, reject) => { rejectOld = reject; })
+    : Promise.resolve(retained("B")));
+  const view = render(<TaskPdfSelection taskId="task-A" openOriginal />);
+  await waitFor(() => expect(api.load).toHaveBeenCalledWith("task-A"));
+
+  view.rerender(<TaskPdfSelection taskId="task-B" openOriginal />);
+  await waitFor(() => expect(screen.getByTestId("retained")).toHaveTextContent("B.tex:2"));
+  await act(async () => { rejectOld(new Error("Obsolete task A lookup failed")); });
+
+  expect(screen.getByTestId("retained")).toHaveTextContent("B.tex:2");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});

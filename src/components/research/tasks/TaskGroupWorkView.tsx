@@ -90,6 +90,8 @@ export function TaskGroupWorkView({
   const scope = `${snapshot.group.projectId}\0${snapshot.group.taskId ?? ""}\0${snapshot.group.id}`;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
+  const requestKey = (kind: "message" | "event" | "annotation", id: string) =>
+    `${scopeRef.current}\0${kind}:${id}`;
   const [filter, setFilter] = useState<WorkFilter>("all");
   const [resolvedMessages, setResolvedMessages] = useState<Record<string, GroupMessage | null>>({});
   const [events, setEvents] = useState<Record<string, GroupEvent | null>>({});
@@ -114,10 +116,11 @@ export function TaskGroupWorkView({
   const findMessage = (id: string | null) => (id ? messageIndex.get(id) ?? null : null);
   const ensureMessage = async (id: string): Promise<GroupMessage | null> => {
     const requestScope = scopeRef.current;
+    const key = requestKey("message", id);
     const loaded = findMessage(id);
     if (loaded) return loaded;
-    if (Object.hasOwn(resolvedMessages, id) || loadingKey === `message:${id}`) return null;
-    setLoadingKey(`message:${id}`);
+    if (Object.hasOwn(resolvedMessages, id) || loadingKey === key) return null;
+    setLoadingKey(key);
     try {
       const message = await loadMessage(id);
       if (scopeRef.current !== requestScope) return null;
@@ -129,7 +132,7 @@ export function TaskGroupWorkView({
       setLoadErrors((current) => ({ ...current, [`message:${id}`]: errorText(cause) }));
       return null;
     } finally {
-      if (scopeRef.current === requestScope) setLoadingKey(null);
+      setLoadingKey((current) => current === key ? null : current);
     }
   };
   const ensureThread = async (messageId: string) => {
@@ -150,29 +153,37 @@ export function TaskGroupWorkView({
     return [...loaded.values()];
   };
   const ensureEvent = async (id: string) => {
-    if (Object.hasOwn(events, id) || loadingKey === `event:${id}`) return;
-    setLoadingKey(`event:${id}`);
+    const requestScope = scopeRef.current;
+    const key = requestKey("event", id);
+    if (Object.hasOwn(events, id) || loadingKey === key) return;
+    setLoadingKey(key);
     try {
       const event = await loadEvent(id);
+      if (scopeRef.current !== requestScope) return;
       setEvents((current) => ({ ...current, [id]: event }));
       setLoadErrors((current) => ({ ...current, [`event:${id}`]: "" }));
     } catch (cause) {
+      if (scopeRef.current !== requestScope) return;
       setLoadErrors((current) => ({ ...current, [`event:${id}`]: errorText(cause) }));
     } finally {
-      setLoadingKey(null);
+      setLoadingKey((current) => current === key ? null : current);
     }
   };
   const ensureAnnotation = async (id: string) => {
-    if (Object.hasOwn(annotations, id) || loadingKey === `annotation:${id}`) return;
-    setLoadingKey(`annotation:${id}`);
+    const requestScope = scopeRef.current;
+    const key = requestKey("annotation", id);
+    if (Object.hasOwn(annotations, id) || loadingKey === key) return;
+    setLoadingKey(key);
     try {
       const annotation = await loadAnnotation(id);
+      if (scopeRef.current !== requestScope) return;
       setAnnotations((current) => ({ ...current, [id]: annotation }));
       setLoadErrors((current) => ({ ...current, [`annotation:${id}`]: "" }));
     } catch (cause) {
+      if (scopeRef.current !== requestScope) return;
       setLoadErrors((current) => ({ ...current, [`annotation:${id}`]: errorText(cause) }));
     } finally {
-      setLoadingKey(null);
+      setLoadingKey((current) => current === key ? null : current);
     }
   };
   const showThread = async (messageId: string) => {
@@ -213,10 +224,10 @@ export function TaskGroupWorkView({
             <Button
               size="xs"
               variant="outline"
-              disabled={busy || loadingKey === `message:${work.causeId}`}
+              disabled={busy || loadingKey === requestKey("message", work.causeId)}
               onClick={() => void ensureMessage(work.causeId)}
             >
-              {loadingKey === `message:${work.causeId}`
+              {loadingKey === requestKey("message", work.causeId)
                 ? t(($) => $.researchTools.tasks.group.workLoadingSource)
                 : t(($) => $.researchTools.tasks.group.workReadSource)}
             </Button>
@@ -242,7 +253,7 @@ export function TaskGroupWorkView({
             <Button
               size="xs"
               variant="outline"
-              disabled={busy || loadingKey === `annotation:${work.causeId}`}
+              disabled={busy || loadingKey === requestKey("annotation", work.causeId)}
               onClick={() => void ensureAnnotation(work.causeId)}
             >
               {t(($) => $.researchTools.tasks.group.workReadSource)}
@@ -282,7 +293,7 @@ export function TaskGroupWorkView({
             <Button
               size="xs"
               variant="outline"
-              disabled={busy || loadingKey === `event:${work.causeId}`}
+              disabled={busy || loadingKey === requestKey("event", work.causeId)}
               onClick={() => void ensureEvent(work.causeId)}
             >
               {t(($) => $.researchTools.tasks.group.workReadSource)}

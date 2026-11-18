@@ -190,10 +190,12 @@ function snapshot(
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 it("filters work sections and follows up on a loaded source message", () => {
@@ -492,6 +494,62 @@ it("does not let a late message from an old group block the current group", asyn
   expect(currentSource.textContent).not.toContain("Stale group-one message");
 });
 
+it("ignores a late message failure from an old group", async () => {
+  const oldMessage = deferred<GroupMessage | null>();
+  const currentMessage = deferred<GroupMessage | null>();
+  const loadMessage = vi.fn()
+    .mockImplementationOnce(() => oldMessage.promise)
+    .mockImplementationOnce(() => currentMessage.promise);
+  const view = testing.render(
+    <WorkView
+      snapshot={snapshot([work("message-error-scope", "pending")])}
+      busy={false}
+      loadMessage={loadMessage}
+      loadEvent={async () => null}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+  testing.fireEvent.click(
+    testing.within(view.getByTestId("source-question-message-error-scope")).getByRole("button", {
+      name: "workReadSource",
+    }),
+  );
+
+  view.rerender(
+    <WorkView
+      snapshot={snapshot([work("message-error-scope", "pending", "message", "source", "g2")], [], "g2")}
+      busy={false}
+      loadMessage={loadMessage}
+      loadEvent={async () => null}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+
+  const currentSource = view.getByTestId("source-question-message-error-scope");
+  testing.fireEvent.click(
+    testing.within(currentSource).getByRole("button", { name: "workReadSource" }),
+  );
+  await testing.act(async () => {
+    currentMessage.resolve(message("source", "Current group message", null, "g2"));
+    await currentMessage.promise;
+  });
+  await testing.waitFor(() => {
+    expect(testing.within(currentSource).getByText("Current group message")).toBeTruthy();
+  });
+
+  await testing.act(async () => {
+    oldMessage.reject(new Error("Obsolete group message failed"));
+    await oldMessage.promise.catch(() => {});
+  });
+
+  expect(testing.within(currentSource).getByText("Current group message")).toBeTruthy();
+  expect(testing.within(currentSource).queryByRole("alert")).toBeNull();
+});
+
 it("does not publish an event resolved for an old group", async () => {
   const oldEvent = deferred<GroupEvent | null>();
   const currentEvent = deferred<GroupEvent | null>();
@@ -500,8 +558,7 @@ it("does not publish an event resolved for an old group", async () => {
     .mockImplementationOnce(() => currentEvent.promise);
   const view = testing.render(
     <WorkView
-      key="g1"
-      snapshot={snapshot([eventWork("event-scope")])}
+      snapshot={snapshot([eventWork("event-scope", "event-1", "g1")], [], "g1")}
       busy={false}
       loadMessage={async () => null}
       loadEvent={loadEvent}
@@ -518,7 +575,6 @@ it("does not publish an event resolved for an old group", async () => {
 
   view.rerender(
     <WorkView
-      key="g2"
       snapshot={snapshot([eventWork("event-scope", "event-1", "g2")], [], "g2")}
       busy={false}
       loadMessage={async () => null}
@@ -552,6 +608,57 @@ it("does not publish an event resolved for an old group", async () => {
   expect(currentSource.textContent).not.toContain("stale_group_event");
 });
 
+it("does not let an old event clear the current group's loading state", async () => {
+  const oldEvent = deferred<GroupEvent | null>();
+  const currentEvent = deferred<GroupEvent | null>();
+  const loadEvent = vi.fn()
+    .mockImplementationOnce(() => oldEvent.promise)
+    .mockImplementationOnce(() => currentEvent.promise);
+  const view = testing.render(
+    <WorkView
+      snapshot={snapshot([eventWork("event-loading-scope", "event-1", "g1")], [], "g1")}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={loadEvent}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+  testing.fireEvent.click(
+    testing.within(view.getByTestId("source-event-event-loading-scope")).getByRole("button", { name: "workReadSource" }),
+  );
+  view.rerender(
+    <WorkView
+      snapshot={snapshot([eventWork("event-loading-scope", "event-1", "g2")], [], "g2")}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={loadEvent}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+
+  const currentSource = view.getByTestId("source-event-event-loading-scope");
+  testing.fireEvent.click(
+    testing.within(currentSource).getByRole("button", { name: "workReadSource" }),
+  );
+  await testing.act(async () => {
+    oldEvent.resolve(event("event-1", "g1", "old_group_event"));
+    await oldEvent.promise;
+  });
+  const retryCurrent = testing.within(currentSource).getByRole("button", { name: "workReadSource" }) as HTMLButtonElement;
+  expect(retryCurrent.disabled).toBe(true);
+
+  await testing.act(async () => {
+    currentEvent.reject(new Error("Current group event unavailable"));
+    await currentEvent.promise.catch(() => {});
+  });
+  await testing.waitFor(() => expect(retryCurrent.disabled).toBe(false));
+  expect(testing.within(currentSource).getByRole("alert").textContent).toBe("Current group event unavailable");
+});
+
 it("does not publish an annotation resolved for an old group", async () => {
   const oldAnnotation = deferred<TaskAnnotation | null>();
   const currentAnnotation = deferred<TaskAnnotation | null>();
@@ -560,8 +667,7 @@ it("does not publish an annotation resolved for an old group", async () => {
     .mockImplementationOnce(() => currentAnnotation.promise);
   const view = testing.render(
     <WorkView
-      key="g1"
-      snapshot={snapshot([work("annotation-scope", "pending", "annotation", "annotation-1")])}
+      snapshot={snapshot([work("annotation-scope", "pending", "annotation", "annotation-1", "g1")], [], "g1")}
       busy={false}
       loadMessage={async () => null}
       loadEvent={async () => null}
@@ -578,7 +684,6 @@ it("does not publish an annotation resolved for an old group", async () => {
 
   view.rerender(
     <WorkView
-      key="g2"
       snapshot={snapshot([
         work("annotation-scope", "pending", "annotation", "annotation-1", "g2"),
       ], [], "g2")}
@@ -634,6 +739,8 @@ it("loads a retained result with its reply parent and routes the exact dependenc
       resultMessageId: dependencyResult.id,
     }],
   }];
+  const workSnapshot = snapshot([completed], [source, request, dependencyResult]);
+  workSnapshot.members[0].paused = true;
   const loadMessage = vi.fn(async (id: string) => {
     if (id === result.id) return result;
     if (id === parent.id) return parent;
@@ -642,7 +749,7 @@ it("loads a retained result with its reply parent and routes the exact dependenc
 
   const view = testing.render(
     <WorkView
-      snapshot={snapshot([completed], [source, request, dependencyResult])}
+      snapshot={workSnapshot}
       busy={false}
       loadMessage={loadMessage}
       loadEvent={async () => null}
@@ -653,6 +760,7 @@ it("loads a retained result with its reply parent and routes the exact dependenc
   );
 
   const card = view.getByTestId("work-retained-result");
+  expect(view.getByText("paused")).toBeTruthy();
   testing.fireEvent.click(testing.within(card).getByText("workReadResult"));
   await testing.waitFor(() => {
     expect(testing.within(card).getByRole("button", { name: "workOpenResult" })).toBeTruthy();
