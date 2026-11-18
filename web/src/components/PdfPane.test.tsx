@@ -1,5 +1,5 @@
 import type { CompileOutput } from "@oleafly/compile-port";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { forwardRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { WebApi } from "../api";
@@ -117,7 +117,7 @@ describe("PdfPane", () => {
       .mockImplementationOnce(() => new Promise((resolve) => (arrive = resolve)));
     renderPane({ api: api(output), projectId: "p1" });
     expect(await screen.findByTestId("pdf-viewer")).toHaveTextContent("3");
-    expect(useWeb.getState().compile.shownShared).toBe(outputKey(COMPILED));
+    await waitFor(() => expect(useWeb.getState().compile.shownShared).toBe(outputKey(COMPILED)));
     const newer = { ...COMPILED, compiledAt: COMPILED.compiledAt + 60_000, size: 5 };
     await act(async () => {
       useWeb.setState({ output: [newer] });
@@ -127,7 +127,7 @@ describe("PdfPane", () => {
       arrive(new Uint8Array([1, 2, 3, 4, 5]));
     });
     expect(await screen.findByText("5")).toBeInTheDocument();
-    expect(useWeb.getState().compile.shownShared).toBe(outputKey(newer));
+    await waitFor(() => expect(useWeb.getState().compile.shownShared).toBe(outputKey(newer)));
   });
 
   it("offers a retry when the PDF cannot be fetched", async () => {
