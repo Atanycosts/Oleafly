@@ -593,6 +593,91 @@ describe("PdfViewer reloads", () => {
     await waitFor(() => expect(renderer.dataset.pdfState).toBe("ready"));
     expect(scrollParent.scrollTop).toBe(1_700);
   });
+
+  it("keeps the current page across a reload", async () => {
+    const { view, scrollParent, renderer, wrap, onPageChange } = await openViewer(
+      1,
+      1,
+      "doc-1",
+    );
+    await waitFor(() => expect(wrap(4).dataset.pdfGeometry).toBe("exact"));
+
+    const pageTop = (pageNumber: number) => {
+      let top = 16;
+      for (let page = 1; page < pageNumber; page++) {
+        top += Number.parseFloat(wrap(page).style.height) + 16;
+      }
+      return top;
+    };
+    Object.defineProperty(scrollParent, "clientHeight", {
+      configurable: true,
+      value: 600,
+    });
+    scrollParent.getBoundingClientRect = () =>
+      ({
+        top: 0,
+        bottom: 600,
+        left: 0,
+        right: 800,
+        width: 800,
+        height: 600,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const nativeRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const pageNumber = Number(this.dataset.page);
+        if (!pageNumber) return nativeRect.call(this);
+        const height = Number.parseFloat(this.style.height);
+        const width = Number.parseFloat(this.style.width);
+        const y = pageTop(pageNumber) - scrollParent.scrollTop;
+        return {
+          top: y,
+          bottom: y + height,
+          left: 0,
+          right: width,
+          width,
+          height,
+          x: 0,
+          y,
+          toJSON: () => ({}),
+        } as DOMRect;
+      },
+    );
+
+    scrollParent.scrollTop = pageTop(3) + 120;
+    act(() => scrollParent.dispatchEvent(new Event("scroll")));
+    await waitFor(() => expect(onPageChange).toHaveBeenLastCalledWith(3, 4));
+    onPageChange.mockClear();
+
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        documentIdentity="doc-2"
+        scale={1}
+        expectText={false}
+        onPageChange={onPageChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(renderer.dataset.pdfDocumentIdentity).toBe("doc-2");
+      expect(renderer.dataset.pdfState).toBe("ready");
+    });
+    expect(onPageChange).toHaveBeenLastCalledWith(3, 4);
+    await waitFor(() =>
+      expect(
+        harness.renderCalls.some(
+          (call) => call.documentId === 2 && call.pageNumber === 3,
+        ),
+      ).toBe(true),
+    );
+    expect(
+      harness.renderCalls.find((call) => call.documentId === 2)?.pageNumber,
+    ).toBe(3);
+  });
 });
 
 describe("PdfViewer scrolling", () => {
@@ -644,6 +729,57 @@ describe("PdfViewer scrolling", () => {
     await waitFor(() =>
       expect(harness.renderCalls.slice(before).map((call) => call.pageNumber)).toContain(4),
     );
+  });
+
+  it("restarts the fast-scroll quiet time after another big jump", async () => {
+    const { scrollParent, wrap } = await openViewer();
+    layOut(scrollParent, wrap, 4);
+    await waitFor(() => expect(harness.renderCalls.length).toBeGreaterThan(0));
+    await waitFor(() => expect(wrap(4).dataset.pdfGeometry).toBe("exact"));
+    act(() => intersect([1], false));
+    const before = harness.renderCalls.length;
+
+    let clock = 1_000;
+    const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      scrollParent.scrollTop = 700;
+      act(() => scrollParent.dispatchEvent(new Event("scroll")));
+      clock += 16;
+      scrollParent.scrollTop = 1_400;
+      act(() => scrollParent.dispatchEvent(new Event("scroll")));
+
+      vi.advanceTimersByTime(50);
+      clock += 50;
+      scrollParent.scrollTop = 2_100;
+      act(() => scrollParent.dispatchEvent(new Event("scroll")));
+      act(() => intersect([4], true));
+
+      await act(async () => {
+        vi.advanceTimersByTime(60);
+        clock += 60;
+        for (let tick = 0; tick < 50; tick++) await Promise.resolve();
+      });
+      expect(
+        harness.renderCalls
+          .slice(before)
+          .map((call) => call.pageNumber),
+      ).not.toContain(4);
+
+      await act(async () => {
+        vi.advanceTimersByTime(20);
+        clock += 20;
+        for (let tick = 0; tick < 50; tick++) await Promise.resolve();
+      });
+      expect(
+        harness.renderCalls
+          .slice(before)
+          .map((call) => call.pageNumber),
+      ).toContain(4);
+    } finally {
+      vi.useRealTimers();
+      now.mockRestore();
+    }
   });
 
   it("keeps the reader's place in view while a zoom resizes the pages", async () => {
