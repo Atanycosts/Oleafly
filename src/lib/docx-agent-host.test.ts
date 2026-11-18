@@ -1818,6 +1818,183 @@ describe("live DOCX format, save and template tools", () => {
       expectedRevision: 0,
     })).rejects.toThrow("not bound");
   });
+
+  it("refuses unavailable direct navigation, formatting and file callbacks", async () => {
+    const local = harness();
+    register(local.session);
+    await expect(revealDocxWorkspaceTarget({
+      projectId: "app-project",
+      sessionId: "session-1",
+      sessionRevision: 0,
+      paragraphRef: "p1",
+    })).rejects.toThrow("Word navigation is unavailable");
+    await expect(DOCX_AGENT_HOST.revealWorkingCopy?.({
+      sessionId: "session-1",
+      expectedRevision: 0,
+      paragraphRef: "p1",
+    })).rejects.toThrow("Word navigation is unavailable");
+    await expect(DOCX_AGENT_HOST.prepareFonts?.("session-1"))
+      .rejects.toThrow("font preparation is unavailable");
+    await expect(DOCX_AGENT_HOST.exportDocument?.("session-1"))
+      .rejects.toThrow("export is unavailable");
+    await expect(DOCX_AGENT_HOST.formatParagraph?.(
+      "session-1", "p1", 0, { font: { bold: true } },
+    )).rejects.toThrow("Live DOCX formatting is unavailable");
+    await expect(DOCX_AGENT_HOST.formatObject?.(
+      "session-1", "p1", 0, { kind: "cell", cell: { fill: null } },
+    )).rejects.toThrow("object formatting is unavailable");
+    await expect(DOCX_AGENT_HOST.formatBatch?.(
+      "session-1", 0, [{ paragraphRef: "p1", font: { bold: true } }],
+    )).rejects.toThrow("Atomic DOCX formatting is unavailable");
+    await expect(DOCX_AGENT_HOST.importTemplateStyles?.(
+      "session-1", "world-1", ["Title"], 0,
+    )).rejects.toThrow("template style import is unavailable");
+    await expect(DOCX_AGENT_HOST.saveDocument?.("session-1", 0))
+      .rejects.toThrow("Live DOCX saving is unavailable");
+    await expect(DOCX_AGENT_HOST.checkTemplate?.("session-1", "world-1"))
+      .rejects.toThrow("template checking is unavailable");
+  });
+
+  it("navigates to a paragraph by its captured id and refuses a removed paragraph", async () => {
+    const local = harness();
+    const reveal = vi.fn();
+    register(local.session, { reveal });
+    await revealDocxWorkspaceTarget({
+      projectId: "app-project",
+      sessionId: "session-1",
+      sessionRevision: 0,
+      paraId: "p1",
+    });
+    expect(reveal).toHaveBeenCalledExactlyOnceWith({
+      paragraphRef: undefined,
+      paraId: "p1",
+      expectedRevision: 0,
+    });
+    await expect(revealDocxWorkspaceTarget({
+      projectId: "app-project",
+      sessionId: "session-1",
+      sessionRevision: 0,
+      paragraphRef: "missing",
+    })).rejects.toThrow("paragraph is no longer present");
+  });
+
+  it("cancels direct writes and checks before starting their work", async () => {
+    const local = harness();
+    const importTemplateStyles = vi.fn();
+    const save = vi.fn();
+    const check = vi.fn();
+    Object.assign(local.session, { importTemplateStyles });
+    register(local.session, { save, check });
+    mocks.templateSource.mockClear();
+    const controller = new AbortController();
+    controller.abort();
+    const context = { signal: controller.signal };
+    await expect(DOCX_AGENT_HOST.replaceTextRange?.({
+      sessionId: "session-1",
+      paragraphRef: "p1",
+      expectedRevision: 0,
+      range: { start: 0, end: 1 },
+      expectedText: "O",
+      replacement: "N",
+    }, context)).rejects.toThrow("cancelled before mutation");
+    await expect(DOCX_AGENT_HOST.importTemplateStyles?.(
+      "session-1", "world-1", ["Title"], 0, context,
+    )).rejects.toThrow("cancelled before mutation");
+    await expect(DOCX_AGENT_HOST.saveDocument?.("session-1", 0, context))
+      .rejects.toThrow("cancelled before it started");
+    await expect(DOCX_AGENT_HOST.checkTemplate?.("session-1", "world-1", context))
+      .rejects.toThrow("cancelled before it started");
+    expect(local.session.replaceParagraphRange).not.toHaveBeenCalled();
+    expect(importTemplateStyles).not.toHaveBeenCalled();
+    expect(mocks.templateSource).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it("publishes suggestion phases and applies the accepted proposal callback", async () => {
+    const local = harness();
+    const phases: string[] = [];
+    const onApplied = vi.fn();
+    register(local.session, {
+      onSuggestion: ({ proposed, phase }) => phases.push(`${phase}:${proposed}`),
+      onApplied,
+    });
+    mocks.runInlineCompletion.mockImplementationOnce(async ({ onToken }) => {
+      onToken?.("Partial");
+      return "Final";
+    });
+    const suggestion = await tool("suggest_docx_change")({
+      paragraph_ref: "p1",
+      instruction: "Revise.",
+    }) as { target: { targetId: string }; proposed: string };
+    expect(phases).toEqual([
+      "streaming:",
+      "streaming:Partial",
+      "reviewing:Final",
+    ]);
+    expect(suggestion.proposed).toBe("Final");
+    await tool("apply_docx_suggestion")({
+      target_id: suggestion.target.targetId,
+      expected_revision: 0,
+      text: suggestion.proposed,
+    });
+    expect(onApplied).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ original: "Original paragraph.", revision: 0 }),
+      "Final",
+    );
+
+    mocks.runInlineCompletion.mockRejectedValueOnce(new Error("model failed"));
+    await expect(tool("suggest_docx_change")({
+      paragraph_ref: "p1",
+      instruction: "Revise again.",
+    })).resolves.toEqual({ error: "Error: model failed" });
+    expect(phases.slice(-2)).toEqual(["streaming:", "withdrawn:"]);
+  });
+
+  it("rejects replacement, formatting and task work for a missing paragraph", async () => {
+    const local = harness();
+    const replaceParagraphRange = local.session.replaceParagraphRange;
+    local.session.formatParagraph = vi.fn();
+    local.session.formatObject = vi.fn();
+    local.session.formatBatch = vi.fn();
+    register(local.session);
+    await expect(DOCX_AGENT_HOST.replaceTextRange?.({
+      sessionId: "session-1",
+      paragraphRef: "missing",
+      expectedRevision: 0,
+      range: { start: 0, end: 1 },
+      expectedText: "O",
+      replacement: "N",
+    })).rejects.toThrow("not present");
+    await expect(DOCX_AGENT_HOST.formatParagraph?.(
+      "session-1", "missing", 0, { font: { bold: true } },
+    )).rejects.toThrow("not present");
+    await expect(DOCX_AGENT_HOST.formatObject?.(
+      "session-1", "missing", 0, { kind: "cell", cell: { fill: null } },
+    )).rejects.toThrow("not present");
+    await expect(DOCX_AGENT_HOST.formatBatch?.(
+      "session-1", 0, [{ paragraphRef: "missing", font: { bold: true } }],
+    )).rejects.toThrow("not present");
+    await expect(runTaskDocxOperation({
+      projectId: "app-project",
+      workbenchProjectId: "paper-project",
+    }, "session-1", "format", {
+      paragraphRef: "missing",
+      expectedRevision: 0,
+      format: { font: { bold: true } },
+    })).rejects.toThrow("not present");
+    await expect(runTaskDocxOperation({
+      projectId: "app-project",
+      workbenchProjectId: "paper-project",
+    }, "session-1", "format_batch", {
+      expectedRevision: 0,
+      operations: [{ paragraphRef: "missing", font: { bold: true } }],
+    })).rejects.toThrow("not present");
+    expect(replaceParagraphRange).not.toHaveBeenCalled();
+    expect(local.session.formatParagraph).not.toHaveBeenCalled();
+    expect(local.session.formatObject).not.toHaveBeenCalled();
+    expect(local.session.formatBatch).not.toHaveBeenCalled();
+  });
 });
 
 describe("live DOCX equation writes", () => {

@@ -57,3 +57,104 @@ it("makes mathematical alphabets explicit in the reading view while retaining th
   const source = equation('<m:sSup><m:e><m:r><m:rPr><m:scr m:val="double-struck"/><m:sty m:val="p"/></m:rPr><m:t>R</m:t></m:r></m:e><m:sup><m:r><m:rPr><m:scr m:val="sans-serif"/><m:sty m:val="p"/></m:rPr><m:t>T</m:t></m:r></m:sup></m:sSup>');
   expect(readDocxMathPayload(source)).toMatchObject({ complete: true, payload: { readableMath: "double-struck(R)^{sans-serif(T)}", diagnostics: [] } });
 });
+
+it("reports a non-mathematical atom without inventing readable math", () => {
+  const opened = readOoxmlPart(`<w:r xmlns:w="${W}"><w:t>x</w:t></w:r>`, {
+    name: "/word/document.xml",
+    contentType: "application/xml",
+  });
+  if (!opened.ok) throw new Error(opened.reason);
+  expect(readDocxMathPayload(opened.part.root)).toEqual({
+    readable: false,
+    complete: false,
+    payload: {
+      fallbackText: "",
+      truncated: false,
+      readableMath: "",
+      readingFormat: "structured_math_text",
+      diagnostics: [{ path: "expression", reason: "No OMML projection is available." }],
+    },
+  });
+});
+
+it("distinguishes top overlines from bottom underlines", () => {
+  const top = readDocxMathPayload(equation(`<m:bar><m:barPr><m:pos m:val="top"/></m:barPr><m:e>${run("x")}</m:e></m:bar>`));
+  const bottom = readDocxMathPayload(equation(`<m:bar><m:barPr><m:pos m:val="bot"/></m:barPr><m:e>${run("y")}</m:e></m:bar>`));
+  expect(top).toMatchObject({ complete: true, payload: { readableMath: "overline(x)" } });
+  expect(bottom).toMatchObject({ complete: true, payload: { readableMath: "underline(y)" } });
+});
+
+it("reads fractions and square or indexed radicals as distinct mathematical operations", () => {
+  const result = readDocxMathPayload(equation(
+    `<m:f><m:num>${run("a")}</m:num><m:den>${run("b")}</m:den></m:f>` +
+    `<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/><m:e>${run("x")}</m:e></m:rad>` +
+    `<m:rad><m:deg>${run("3")}</m:deg><m:e>${run("y")}</m:e></m:rad>`,
+  ));
+  expect(result).toMatchObject({
+    readable: true,
+    complete: true,
+    payload: { readableMath: "(a)/(b)sqrt(x)root(3; y)", diagnostics: [] },
+  });
+});
+
+it("reads subscripts, superscripts and combined scripts without dropping their bases", () => {
+  const result = readDocxMathPayload(equation(
+    `<m:sSub><m:e>${run("a")}</m:e><m:sub>${run("i")}</m:sub></m:sSub>` +
+    `<m:sSup><m:e>${run("b")}</m:e><m:sup>${run("2")}</m:sup></m:sSup>` +
+    `<m:sSubSup><m:e>${run("c")}</m:e><m:sub>${run("j")}</m:sub><m:sup>${run("3")}</m:sup></m:sSubSup>`,
+  ));
+  expect(result.payload.readableMath).toBe("a_{i}b^{2}c_{j}^{3}");
+});
+
+it("retains both hidden n-ary limits while omitting them from the visible reading", () => {
+  const result = readDocxMathPayload(equation(
+    `<m:nary><m:naryPr><m:chr m:val="∑"/><m:subHide m:val="1"/><m:supHide m:val="1"/></m:naryPr>` +
+    `<m:sub>${run("i=1")}</m:sub><m:sup>${run("n")}</m:sup><m:e>${run("x")}</m:e></m:nary>`,
+  ));
+  expect(result.payload).toMatchObject({
+    readableMath: "∑(x)",
+    hiddenLimits: [
+      { path: "expression", position: "lower", text: "i=1" },
+      { path: "expression", position: "upper", text: "n" },
+    ],
+  });
+});
+
+it("retains matrix alignment and hidden-placeholder intent in source details", () => {
+  const result = readDocxMathPayload(equation(
+    `<m:m><m:mPr><m:baseJc m:val="bottom"/><m:plcHide m:val="1"/></m:mPr>` +
+    `<m:mr><m:e>${run("x")}</m:e><m:e>${run("1")}</m:e></m:mr>` +
+    `<m:mr><m:e>${run("y")}</m:e><m:e>${run("2")}</m:e></m:mr></m:m>`,
+  ));
+  expect(result.payload).toMatchObject({
+    readableMath: "matrix([x | 1]; [y | 2])",
+    sourceDetails: [expect.objectContaining({
+      path: "expression",
+      columns: expect.any(Array),
+      baseJustification: "bottom",
+      hidePlaceholders: true,
+    })],
+  });
+});
+
+it("keeps authored text formatting and normal-text intent in source details", () => {
+  const result = readDocxMathPayload(equation(
+    `<m:r><m:rPr><m:nor/><m:scr m:val="sans-serif"/><m:sty m:val="b"/></m:rPr><w:rPr><w:sz w:val="24"/></w:rPr><m:t>Label</m:t></m:r>`,
+  ));
+  expect(result).toMatchObject({
+    readable: true,
+    complete: true,
+    payload: {
+      readableMath: "Label",
+      sourceDetails: [expect.objectContaining({
+        path: "expression",
+        format: expect.objectContaining({
+          normalText: true,
+          fontSizePt: 12,
+          mathScript: "sans-serif",
+          mathStyle: "b",
+        }),
+      })],
+    },
+  });
+});

@@ -93,7 +93,10 @@ function syntheticDocx(body: string): Uint8Array {
   });
 }
 
-function fixture(body: string) {
+function fixture(
+  body: string,
+  options: { rejectTransaction?: boolean; rejectReason?: string } = {},
+) {
   const opened = openTreeSession(syntheticDocx(body));
   if (!opened.ok) throw new Error(opened.reason);
   const tree: TreeDocxSessionView = opened.session;
@@ -118,6 +121,14 @@ function fixture(body: string) {
           rejected: true,
           opCount: 0,
           reason: "planned operation refused",
+        };
+      }
+      if (options.rejectTransaction) {
+        return {
+          committed: false,
+          rejected: true,
+          opCount: operations.length,
+          ...(options.rejectReason ? { reason: options.rejectReason } : {}),
         };
       }
       const edits = packageEdits ? [...packageEdits] : [];
@@ -247,6 +258,69 @@ function mathAtom(session: DocxSession) {
 }
 
 describe("DOCX equation source binding", () => {
+  it("recognizes only a single OMML equation wrapper and ignores broken source records", () => {
+    const f = fixture(
+      "<w:p><m:oMathPara/>" +
+        `<m:oMathPara><m:oMath>${run("a")}</m:oMath><m:oMath>${run("b")}</m:oMath></m:oMathPara>` +
+        "</w:p>",
+    );
+    const paragraph = paragraphOf(f.tree);
+    const equations = paragraphOffsetIndex(paragraph).segments.filter(
+      (segment) => segment.node.localName === "oMathPara",
+    );
+    expect(equations).toHaveLength(2);
+    expect(equations.map((segment) => equationOfAtom(segment.node))).toEqual([
+      null,
+      null,
+    ]);
+    expect(equationOfAtom(paragraph)).toBeNull();
+
+    const inserted = writeEquation(
+      f.session,
+      {
+        paragraphRef: firstParagraph(f.session).handle.ref,
+        expectedRevision: 0,
+        latex: "x",
+        offset: 2,
+      },
+      compiledEquation("x", run("x")),
+    );
+    expect(inserted).toMatchObject({ ok: true, changed: true });
+    const pkg = f.tree.currentPackage();
+    const dataPart = findCustomXmlDataPart(
+      pkg,
+      pkg.mainDocumentPart,
+      SOURCE_NAMESPACE,
+    );
+    if (!dataPart) throw new Error("The fixture has no equation source part.");
+    expect(f.tree.applyTreeOps([], undefined, undefined, undefined, {
+      packageEdits: [
+        (current) => withCustomXmlNode(
+          withCustomXmlNode(current, dataPart.partName, {
+            id: "invalid-json",
+            label: "Invalid",
+            data: "{",
+          }),
+          dataPart.partName,
+          {
+            id: "invalid-record",
+            label: "Invalid",
+            data: JSON.stringify({
+              version: 2,
+              bookmark: "wrong",
+              latex: "y",
+            }),
+          },
+        ),
+      ],
+    })).toMatchObject({ committed: true, rejected: false });
+
+    expect(equationsIn(f.tree).map((item) => item.source)).toMatchObject([
+      { status: "bound", latex: "x" },
+    ]);
+    expect(sourceRecordCount(f.tree)).toBe(3);
+  });
+
   it("inserts inline math, saves its source atomically, and preserves adjacent content", () => {
     const f = fixture(
       '<w:p><w:r><w:t xml:space="preserve">Before </w:t></w:r>' +
@@ -721,5 +795,130 @@ describe("DOCX equation source binding", () => {
       code: "unsupported-target",
       changed: false,
     });
+  });
+
+  it("replaces a bound equation in place while preserving its bookmark and placement", () => {
+    const f = fixture("<w:p/>");
+    const paragraph = firstParagraph(f.session);
+    expect(writeEquation(
+      f.session,
+      {
+        paragraphRef: paragraph.handle.ref,
+        expectedRevision: 0,
+        latex: "x",
+        offset: 0,
+        display: true,
+      },
+      compiledEquation("x", run("x"), true),
+    )).toMatchObject({ ok: true, changed: true });
+
+    const { paragraph: currentParagraph, atom } = mathAtom(f.session);
+    const original = firstEquation(f.tree);
+    const replacement = compiledEquation("y+1", `${run("y")}${run("+1")}`, true);
+    expect(writeEquation(
+      f.session,
+      {
+        paragraphRef: currentParagraph.handle.ref,
+        expectedRevision: f.session.revision(),
+        latex: replacement.latex,
+        objectRef: atom.objectRef,
+        expectedFingerprint: original.fingerprint,
+        display: true,
+      },
+      replacement,
+    )).toMatchObject({ ok: true, changed: true });
+
+    const updated = firstEquation(f.tree);
+    expect(updated.atom.localName).toBe("oMathPara");
+    expect(updated.bookmarks.map((bookmark) => bookmark.name)).toEqual(
+      original.bookmarks.map((bookmark) => bookmark.name),
+    );
+    expect(updated.source).toMatchObject({
+      status: "bound",
+      latex: "y+1",
+      display: true,
+    });
+    expect(sourceRecordCount(f.tree)).toBe(1);
+  });
+
+  it("rejects ambiguous targets, placement changes, missing fingerprints and invalid insertion edges", () => {
+    const f = fixture(
+      '<w:p><w:r><w:t>text</w:t></w:r><m:oMathPara>' +
+        `<m:oMath>${run("x")}</m:oMath></m:oMathPara></w:p>`,
+    );
+    const { paragraph, atom } = mathAtom(f.session);
+    const original = firstEquation(f.tree);
+    const replacement = compiledEquation("y", run("y"), true);
+    const base = {
+      paragraphRef: paragraph.handle.ref,
+      expectedRevision: f.session.revision(),
+      latex: "y",
+      objectRef: atom.objectRef,
+      expectedFingerprint: original.fingerprint,
+    };
+
+    expect(writeEquation(
+      f.session,
+      { ...base, offset: 0 },
+      replacement,
+    )).toMatchObject({ ok: false, code: "invalid-range" });
+    expect(writeEquation(
+      f.session,
+      { ...base, expectedFingerprint: undefined, adoptSource: true },
+      replacement,
+    )).toMatchObject({ ok: false, code: "stale-target" });
+    expect(writeEquation(
+      f.session,
+      { ...base, objectRef: "unrelated-object", adoptSource: true },
+      replacement,
+    )).toMatchObject({ ok: false, code: "stale-target" });
+    expect(writeEquation(
+      f.session,
+      { ...base, adoptSource: true, display: false },
+      replacement,
+    )).toMatchObject({ ok: false, code: "unsupported-target" });
+    expect(writeEquation(
+      f.session,
+      {
+        paragraphRef: paragraph.handle.ref,
+        expectedRevision: f.session.revision(),
+        latex: "z",
+      },
+      compiledEquation("z", run("z")),
+    )).toMatchObject({ ok: false, code: "invalid-range" });
+    expect(writeEquation(
+      f.session,
+      {
+        paragraphRef: paragraph.handle.ref,
+        expectedRevision: f.session.revision(),
+        latex: "z",
+        offset: 0,
+        display: true,
+      },
+      compiledEquation("z", run("z"), true),
+    )).toMatchObject({ ok: false, code: "unsupported-target" });
+    expect(sourceRecordCount(f.tree)).toBe(0);
+  });
+
+  it("reports a refused equation transaction with and without a native reason", () => {
+    for (const reason of [undefined, "Equation writes are locked."]) {
+      const f = fixture("<w:p/>", { rejectTransaction: true, rejectReason: reason });
+      const paragraph = firstParagraph(f.session);
+      expect(writeEquation(
+        f.session,
+        {
+          paragraphRef: paragraph.handle.ref,
+          expectedRevision: 0,
+          latex: "x",
+          offset: 0,
+        },
+        compiledEquation("x", run("x")),
+      )).toMatchObject({
+        ok: false,
+        code: "transaction-refused",
+        message: reason ?? "The equation transaction was refused.",
+      });
+      expect(sourceRecordCount(f.tree)).toBe(0);
+    }
   });
 });

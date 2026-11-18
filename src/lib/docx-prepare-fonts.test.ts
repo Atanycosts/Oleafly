@@ -120,7 +120,7 @@ function states() {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   mocks.catalog.status = "ready";
   mocks.catalog.packs = [];
   mocks.exact.mockResolvedValue(false);
@@ -270,4 +270,44 @@ it("stops between asynchronous stages when its caller is no longer active", asyn
   expect(mocks.load).toHaveBeenCalledOnce();
   expect(mocks.exact).not.toHaveBeenCalled();
   expect(mocks.install).not.toHaveBeenCalled();
+});
+
+it("returns an empty acquisition result without loading the catalog when no fonts are required", async () => {
+  const isActive = vi.fn(() => true);
+  expect(await ensureDocxFonts(null, { isActive })).toEqual({ families: [] });
+  expect(isActive).not.toHaveBeenCalled();
+  expect(mocks.load).not.toHaveBeenCalled();
+  expect(mocks.exact).not.toHaveBeenCalled();
+});
+
+it.each([true, false])("discards an exact-family probe result after cancellation (%s)", async (exact) => {
+  const controller = new AbortController();
+  mocks.exact.mockImplementationOnce(async () => {
+    controller.abort();
+    return exact;
+  });
+  const result = await ensureDocxFonts(oneFamily(), { isActive: () => !controller.signal.aborted });
+  expect(result).toEqual({ families: [{ family: "Exact Serif", state: "checking" }] });
+  expect(mocks.install).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["a failed install", false, false],
+  ["a successful install", true, false],
+  ["the exact-family recheck", true, true],
+] as const)("ignores late font acquisition updates after %s", async (_stage, installed, cancelOnRecheck) => {
+  const controller = new AbortController();
+  mocks.catalog.packs = [{ id: "exact", families: ["Exact Serif"] }];
+  mocks.install.mockImplementationOnce(async () => {
+    if (!cancelOnRecheck) controller.abort();
+    return installed;
+  });
+  mocks.exact.mockResolvedValueOnce(false).mockImplementationOnce(async () => {
+    controller.abort();
+    return true;
+  });
+  const result = await ensureDocxFonts(oneFamily(), { isActive: () => !controller.signal.aborted });
+  expect(result.families[0]).toMatchObject({ family: "Exact Serif", state: "downloading", packId: "exact" });
+  expect(mocks.exact).toHaveBeenCalledTimes(cancelOnRecheck ? 2 : 1);
+  expect(mocks.install).toHaveBeenCalledOnce();
 });

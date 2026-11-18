@@ -143,3 +143,87 @@ describe.skipIf(!existsSync(pandoc))("native Pandoc equation conversion", () => 
     expect(result.shape.variantCorrections[0]).toMatchObject({ text: "x", expectedVariant: "bold" });
   });
 });
+
+it("accepts harmless whitespace and comments around explicit macro declarations", async () => {
+  vi.mocked(convertAdHoc).mockResolvedValue(equation(run("x")));
+  await expect(compileDocxEquation({
+    latex: "x",
+    macros: " % keep declarations local\n\n\\newcommand{\\identity}[1]{#1}\n",
+  })).resolves.toMatchObject({ latex: "x" });
+  expect(convertAdHoc).toHaveBeenCalledOnce();
+});
+
+it.each([
+  ["\\begin{align}x&=y\\end{align}"],
+  ["\\begin{minipage}x\\end{minipage}"],
+])("rejects a non-math environment before conversion (%s)", async (latex) => {
+  await expect(compileDocxEquation({ latex })).rejects.toMatchObject({
+    code: "invalid-source",
+    message: expect.stringMatching(/environment is outside a single equation body/),
+  });
+  expect(convertAdHoc).not.toHaveBeenCalled();
+});
+
+it.each([
+  "\\DeclareMathOperator{Missing}{x}",
+  "\\newcommand{\\nested}{\\begin{align}x\\end{align}}",
+  "\\renewcommand{\\x}",
+])("rejects malformed or non-math macro declarations (%s)", async (macros) => {
+  await expect(compileDocxEquation({ latex: "x", macros })).rejects.toMatchObject({
+    code: "invalid-macros",
+  });
+  expect(convertAdHoc).not.toHaveBeenCalled();
+});
+
+it("reports a DOCX package that does not contain word/document.xml", async () => {
+  vi.mocked(convertAdHoc).mockResolvedValue({
+    ...conversion(""),
+    dataBase64: bytesToBase64(zipSync({
+      "word/other.xml": strToU8("<document/>"),
+    })),
+  });
+  await expect(compileDocxEquation({ latex: "x" })).rejects.toMatchObject({
+    code: "conversion-loss",
+    message: expect.stringContaining("Could not read the equation DOCX"),
+  });
+});
+
+it("reports malformed XML inside the converted DOCX", async () => {
+  vi.mocked(convertAdHoc).mockResolvedValue({
+    ...conversion(""),
+    dataBase64: bytesToBase64(zipSync({
+      "word/document.xml": strToU8(`<w:document xmlns:w="${W}"><w:body>`),
+    })),
+  });
+  await expect(compileDocxEquation({ latex: "x" })).rejects.toMatchObject({
+    code: "conversion-loss",
+    message: expect.stringContaining("invalid XML"),
+  });
+});
+
+it("rejects a converter response that is not a DOCX binary", async () => {
+  vi.mocked(convertAdHoc).mockResolvedValue({
+    kind: "text",
+    text: "<pkg:package/>",
+    dataBase64: null,
+    fileName: "equation.xml",
+    mediaType: "application/xml",
+    files: [],
+    report: [],
+  } as never);
+  await expect(compileDocxEquation({ latex: "x" })).rejects.toMatchObject({
+    code: "conversion",
+    message: "Pandoc did not return a DOCX equation.",
+  });
+});
+
+it("accepts an explicit normal-text style", async () => {
+  vi.mocked(convertAdHoc).mockResolvedValue(equation(
+    `<m:r><m:rPr><m:nor/></m:rPr><m:t>x</m:t></m:r>` +
+    `${run("y")}`,
+  ));
+  await expect(compileDocxEquation({ latex: "\\mathrm{x}+y" })).resolves.toMatchObject({
+    warnings: [],
+    shape: { mathVariants: ["normal"] },
+  });
+});

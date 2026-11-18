@@ -1,4 +1,8 @@
-import type { AutomationHandle } from "@docx-editor.dev/core/automation";
+import type {
+  AutomationBatchResponse,
+  AutomationHandle,
+  AutomationHost,
+} from "@docx-editor.dev/core/automation";
 import { openTreeSession } from "@docx-editor.dev/core/binding";
 import type {
   DocxEditorInstance,
@@ -11,6 +15,7 @@ import {
 import { strToU8, unzipSync, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { createDocxSession } from "./docx-session";
+import { formatDocxObject, planDocxObjectFormat } from "./docx-object-format";
 
 const WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const STYLES_TYPE =
@@ -96,6 +101,7 @@ function editorSession(bytes: Uint8Array, rejectTreeOps = false, editingMode: "e
   } as unknown as DocxEditorInstance;
   return {
     session: createDocxSession(editor),
+    surface,
     tree,
     batches,
     save: () => writeOoxmlPackage(tree.currentPackage()),
@@ -124,6 +130,27 @@ function paragraphHandle(text: string, fixture: ReturnType<typeof editorSession>
   const paragraph = fixture.session.listParagraphs().find((item) => item.text === text);
   if (!paragraph) throw new Error(`Paragraph ${text} is missing.`);
   return paragraph.handle;
+}
+
+function identityHost(respond: () => AutomationBatchResponse, revision = 0): AutomationHost {
+  return {
+    capabilities: {
+      document: true,
+      save: false,
+      events: true,
+      selection: false,
+      scrolling: false,
+      layout: false,
+    },
+    revision: () => revision,
+    execute: respond,
+    save: () => ({
+      ok: false,
+      error: { code: "unsupported-capability", message: "The live editor owns save." },
+    }),
+    subscribe: () => () => {},
+    dispose: () => {},
+  };
 }
 
 describe("DOCX object formatting", () => {
@@ -418,6 +445,109 @@ describe("DOCX object formatting", () => {
     )).toMatchObject({ ok: false, code: "stale-target", revision: 0 });
     expect(fixture.tree.packageRevision()).toBe(0);
     expect(fixture.save()).toEqual(before);
+  });
+
+  it("rejects malformed or failed paragraph identity responses before planning any write", () => {
+    const fixture = editorSession(syntheticDocx(nestedTableBody()));
+    const target = paragraphHandle("Nested", fixture);
+    const format = { kind: "frame" as const, frame: { widthTwips: 1000 } };
+    const surface = fixture.surface as never;
+
+    expect(() => planDocxObjectFormat(identityHost(() => ({
+      ok: false,
+      results: [{ status: "skipped" }],
+      revision: 0,
+      changed: false,
+    })), surface, target, 0, format)).toThrow(
+      "refused a paragraph identity without an error",
+    );
+    expect(planDocxObjectFormat(identityHost(() => ({
+      ok: false,
+      results: [{
+        status: "error",
+        error: { code: "transaction-refused", message: "The host is read-only." },
+      }],
+      revision: 0,
+      changed: false,
+    })), surface, target, 0, format)).toMatchObject({
+      ok: false,
+      code: "transaction-refused",
+      message: "The host is read-only.",
+    });
+    expect(() => planDocxObjectFormat(identityHost(() => ({
+      ok: true,
+      results: [{ status: "ok", value: { kind: "handle", handle: target } }],
+      revision: 0,
+      changed: false,
+    })), surface, target, 0, format)).toThrow(
+      "did not answer paragraph identity text",
+    );
+    expect(planDocxObjectFormat(identityHost(() => ({
+      ok: true,
+      results: [{ status: "ok", value: { kind: "text", text: "" } }],
+      revision: 0,
+      changed: false,
+    })), surface, target, 0, format)).toMatchObject({
+      ok: false,
+      code: "stale-target",
+    });
+    expect(planDocxObjectFormat(identityHost(() => ({
+      ok: true,
+      results: [{ status: "ok", value: { kind: "text", text: "missing-node" } }],
+      revision: 0,
+      changed: false,
+    })), surface, target, 0, format)).toMatchObject({
+      ok: false,
+      code: "stale-target",
+    });
+    expect(fixture.batches).toEqual([]);
+  });
+
+  it("applies a planned object format and reports a reasonless transaction refusal", () => {
+    const fixture = editorSession(syntheticDocx(nestedTableBody()));
+    const paragraph = fixture.session.listParagraphs().find((item) => item.text === "Nested");
+    if (!paragraph?.paraId) throw new Error("The nested paragraph has no identity.");
+    const host = identityHost(() => ({
+      ok: true,
+      results: [{ status: "ok", value: { kind: "text", text: paragraph.paraId! } }],
+      revision: 0,
+      changed: false,
+    }));
+    const format = { kind: "frame" as const, frame: { widthTwips: 1000 } };
+
+    expect(formatDocxObject(
+      host,
+      fixture.surface as never,
+      paragraph.handle,
+      0,
+      format,
+    )).toMatchObject({ ok: true, changed: true });
+    expect(fixture.xml()).toContain('<w:framePr w:w="1000"/>');
+
+    const refusedSurface = {
+      ...fixture.surface,
+      applyAutomationOps: () => ({
+        committed: false,
+        rejected: true,
+        opCount: 1,
+      }),
+    };
+    expect(formatDocxObject(
+      identityHost(() => ({
+        ok: true,
+        results: [{ status: "ok", value: { kind: "text", text: paragraph.paraId! } }],
+        revision: 1,
+        changed: false,
+      }), 1),
+      refusedSurface as never,
+      paragraph.handle,
+      1,
+      format,
+    )).toMatchObject({
+      ok: false,
+      code: "transaction-refused",
+      message: "The DOCX tree refused the object formatting transaction.",
+    });
   });
 
   it("reports a refused tree transaction without writing", () => {

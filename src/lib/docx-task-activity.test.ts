@@ -11,7 +11,7 @@ vi.mock("@/lib/docx-agent-host", () => ({ listTaskDocxDocuments: mocks.list, rea
   readTaskDocxImage: mocks.readImage, captureTaskDocxTarget: mocks.capture, validateTaskDocxProposal: mocks.propose,
   presentTaskDocxProposal: mocks.present, docxTaskDocument: mocks.identity,
   runTaskDocxOperation: mocks.taskOperation, settleTaskDocxOperation: mocks.settleOperation }));
-import { bindDocxTask, handleDocxRendererRequest, mountDocxTaskBridge, settleDocxTaskActivity, subscribeDocxTaskActivity, type DocxActivity, type DocxRendererRequest } from "./docx-task-activity";
+import { bindDocxTask, handleDocxRendererRequest, loadDocxTaskActivities, mountDocxTaskBridge, settleDocxTaskActivity, subscribeDocxTaskActivity, type DocxActivity, type DocxRendererRequest } from "./docx-task-activity";
 const request: DocxRendererRequest = { token: "token", projectId: "app", workbenchProjectId: "paper", operation: "read", arguments: { session_id: "session", offset: 20, limit: 10 } };
 beforeEach(() => {
   vi.clearAllMocks();
@@ -476,5 +476,87 @@ describe("task DOCX renderer bridge", () => {
     const document = { sessionId: "s", appProjectId: "app", workbenchProjectId: "paper", baselineId: "b", sourceSha256: "a".repeat(64), sessionRevision: 3, savedRevision: -1 };
     await settleDocxTaskActivity("app", "paper", "proposal", document, { kind: "applied" });
     expect(mocks.invoke).toHaveBeenCalledWith("research_docx_activity_settle", { projectId: "app", workbenchProjectId: "paper", proposalId: "proposal", document, outcome: { kind: "applied" } });
+  });
+
+  it("loads retained activity with the public default cursor and page size", async () => {
+    await loadDocxTaskActivities("app", "paper");
+    expect(mocks.invoke).toHaveBeenCalledWith("research_docx_activities", {
+      projectId: "app",
+      workbenchProjectId: "paper",
+      afterCursor: 0,
+      limit: 20,
+    });
+  });
+
+  it.each([
+    ["read_image", {}, "paragraph_ref, object_ref and expected_revision"],
+    ["capture", {}, "paragraph_ref is required"],
+    ["propose", { target_id: "target", expected_revision: 1 }, "target_id, expected_revision and text"],
+    ["present", {}, "retained activity is required"],
+    ["replace_range", { paragraph_ref: "p1", expected_revision: 1, range: { start: 0, end: 1 }, expected_text: "a" }, "replacement are required"],
+    ["write_equation", { paragraph_ref: "p1", expected_revision: 1 }, "paragraph_ref, expected_revision and latex"],
+    ["format", { paragraph_ref: "p1", expected_revision: 1 }, "a format are required"],
+    ["format_batch", { expected_revision: 1 }, "expected_revision and operations"],
+    ["import_styles", { expected_revision: 1, template: "world" }, "template, style_ids and expected_revision"],
+    ["apply", { target_id: "target", expected_revision: 1 }, "target_id, expected_revision and text"],
+    ["save", {}, "expected_revision is required"],
+    ["check", {}, "template world version is required"],
+  ] as const)("rejects incomplete %s requests before touching a document", (operation, args, message) => {
+    expect(() => handleDocxRendererRequest({
+      ...request,
+      operation,
+      arguments: args as DocxRendererRequest["arguments"],
+    })).toThrow(message);
+    expect(mocks.readImage).not.toHaveBeenCalled();
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.propose).not.toHaveBeenCalled();
+    expect(mocks.taskOperation).not.toHaveBeenCalled();
+  });
+
+  it("normalizes every optional format-read selector and supplies defaults for an empty query", () => {
+    handleDocxRendererRequest({
+      ...request,
+      operation: "read_format",
+      arguments: { session_id: "session" },
+    });
+    expect(mocks.taskOperation).toHaveBeenLastCalledWith(
+      { projectId: "app", workbenchProjectId: "paper" },
+      "session",
+      "read_format",
+      { query: {} },
+    );
+
+    handleDocxRendererRequest({
+      ...request,
+      operation: "read_format",
+      arguments: {
+        session_id: "session",
+        query: {
+          kind: "nodes",
+          object_kind: "run",
+          style_id: "Strong",
+          object_id: "run-1",
+          text: "needle",
+          path: [1, "stale", 2.5, 3],
+          attribute: { namespace_uri: "urn:attribute", local_name: "id" },
+        },
+      },
+    });
+    expect(mocks.taskOperation).toHaveBeenLastCalledWith(
+      { projectId: "app", workbenchProjectId: "paper" },
+      "session",
+      "read_format",
+      {
+        query: {
+          kind: "nodes",
+          objectKind: "run",
+          styleId: "Strong",
+          objectId: "run-1",
+          text: "needle",
+          path: [1, 3],
+          attribute: { localName: "id", namespaceUri: "urn:attribute" },
+        },
+      },
+    );
   });
 });

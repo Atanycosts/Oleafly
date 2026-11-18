@@ -18,6 +18,7 @@ import {
   formatDocxParagraph,
   inspectDocxParagraph,
   listDocxParagraphs,
+  readDocxParagraphFormatting,
   type DocxTarget,
 } from "./docx-session";
 import {
@@ -111,7 +112,10 @@ function treeParagraph(body: string | readonly string[]): OoxmlParagraphNode {
 
 function editorSession(
   bytes: Uint8Array,
-  options: { readonly rejectTransactionReason?: string } = {},
+  options: {
+    readonly rejectTransactionReason?: string;
+    readonly rejectTransaction?: boolean;
+  } = {},
 ) {
   const opened = openTreeSession(bytes);
   if (!opened.ok) throw new Error(`The synthetic DOCX did not open: ${opened.reason}`);
@@ -147,12 +151,17 @@ function editorSession(
           reason: "planned operation refused",
         };
       }
-      if (options.rejectTransactionReason !== undefined) {
+      if (
+        options.rejectTransaction ||
+        options.rejectTransactionReason !== undefined
+      ) {
         return {
           committed: false,
           rejected: true,
           opCount: operations.length,
-          reason: options.rejectTransactionReason,
+          ...(options.rejectTransactionReason === undefined
+            ? {}
+            : { reason: options.rejectTransactionReason }),
         };
       }
       return tree.applyTreeOps(operations);
@@ -1850,6 +1859,147 @@ describe("DOCX target safety", () => {
 });
 
 describe("DOCX session and typed failures", () => {
+  it.each([
+    ["field", "body", "non-field field handle"],
+    ["picture", "body", "non-picture handle"],
+    ["shape", "body", "non-shape handle"],
+  ] as const)("rejects a malformed %s handle from paragraph semantics", (kind, handleKind, message) => {
+    const document = { kind: "document", ref: "document:test:1" } as AutomationHandle<"document">;
+    const body = { kind: "body", ref: "body:test:1" } as AutomationHandle<"body">;
+    const paragraph = paragraphHandle("paragraph:test:1");
+    const wrong = { kind: handleKind, ref: `${handleKind}:test:1` } as AutomationHandle;
+    const host = fakeHost((request) => {
+      const operation = request.operations[0]?.op;
+      if (operation === "getDocument") return answer({ kind: "handle", handle: document });
+      if (operation === "getBody") return answer({ kind: "handle", handle: body });
+      if (operation === "getParagraphs") return answer({ kind: "handles", handles: [paragraph] });
+      if (request.operations.length === 1) {
+        return answer({ kind: "text", text: "ABC12345" }, { kind: "text", text: "Text" });
+      }
+      return answer(
+        { kind: "text", text: "ABC12345" },
+        { kind: "text", text: "Text" },
+        { kind: "text", text: "Text" },
+        { kind: "handles", handles: kind === "field" ? [wrong] : [] },
+        { kind: "handles", handles: kind === "picture" ? [wrong] : [] },
+        { kind: "handles", handles: kind === "shape" ? [wrong] : [] },
+      );
+    });
+    const session = createDocxHostSession(host);
+    expect(() => session.readParagraph(paragraph)).toThrow(message);
+  });
+
+  it("rejects a field operation response that is not a field", () => {
+    const document = { kind: "document", ref: "document:test:1" } as AutomationHandle<"document">;
+    const body = { kind: "body", ref: "body:test:1" } as AutomationHandle<"body">;
+    const paragraph = paragraphHandle("paragraph:test:1");
+    const field = { kind: "field", ref: "field:test:1" } as AutomationHandle<"field">;
+    const host = fakeHost((request) => {
+      const operation = request.operations[0]?.op;
+      if (operation === "getDocument") return answer({ kind: "handle", handle: document });
+      if (operation === "getBody") return answer({ kind: "handle", handle: body });
+      if (operation === "getParagraphs") return answer({ kind: "handles", handles: [paragraph] });
+      if (request.operations.length === 6) {
+        return answer(
+          { kind: "text", text: "ABC12345" },
+          { kind: "text", text: "Text" },
+          { kind: "text", text: "Result" },
+          { kind: "handles", handles: [field] },
+          { kind: "handles", handles: [] },
+          { kind: "handles", handles: [] },
+        );
+      }
+      return answer(
+        { kind: "text", text: "PAGE" },
+        { kind: "text", text: "1" },
+      );
+    });
+    const session = createDocxHostSession(host);
+    expect(() => session.readParagraph(paragraph)).toThrow(
+      "did not answer a field code",
+    );
+  });
+
+  it("validates formatting host answers and forwards an absent paragraph id", () => {
+    const paragraph = paragraphHandle("paragraph:test:1");
+    const font = {
+      bold: true, italic: null, underline: null, strikeThrough: null,
+      highlightColor: null, subscript: null, superscript: null,
+      name: "Arial", size: 12, color: null,
+    };
+    const format = {
+      alignment: "Left" as const, style: null, firstLineIndent: null,
+      leftIndent: null, rightIndent: null, lineSpacing: null,
+      spaceBefore: null, spaceAfter: null, widowControl: null,
+      readingOrder: "LeftToRight" as const,
+    };
+    const malformedHosts = [
+      {
+        host: fakeHost(() => answer(
+          { kind: "text", text: "" },
+          { kind: "text", text: "Text" },
+          { kind: "handles", handles: [] },
+          { kind: "paragraphFormat", format },
+        )),
+        message: "did not answer font formatting",
+      },
+      {
+        host: fakeHost(() => answer(
+          { kind: "text", text: "" },
+          { kind: "text", text: "Text" },
+          { kind: "font", font },
+          { kind: "handles", handles: [] },
+        )),
+        message: "did not answer paragraph formatting",
+      },
+    ];
+    for (const entry of malformedHosts) {
+      expect(() => readDocxParagraphFormatting(entry.host, paragraph)).toThrow(
+        entry.message,
+      );
+    }
+
+    const readFlags = vi.fn(() => ({
+      keepNext: true,
+      keepLines: false,
+      pageBreakBefore: false,
+    }));
+    expect(readDocxParagraphFormatting(fakeHost(() => answer(
+      { kind: "text", text: "" },
+      { kind: "text", text: "Text" },
+      { kind: "font", font },
+      { kind: "paragraphFormat", format },
+    )), paragraph, readFlags)).toMatchObject({
+      paragraphRef: paragraph.ref,
+      text: "Text",
+      font,
+      paragraph: {
+        ...format,
+        keepNext: true,
+        keepLines: false,
+        pageBreakBefore: false,
+      },
+    });
+    expect(readFlags).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
+
+  it("returns a non-conflict paragraph-format refusal without changing revision", () => {
+    const paragraph = paragraphHandle("paragraph:test:1");
+    const host = fakeHost(() => failure(
+      "transaction-refused",
+      "The document is read-only.",
+    ));
+    expect(formatDocxParagraph(host, paragraph, 0, {
+      font: { bold: true },
+    })).toEqual({
+      ok: false,
+      code: "transaction-refused",
+      message: "The document is read-only.",
+      revision: 0,
+      changed: false,
+    });
+  });
+
   it("returns no locator or target for a paragraph handle invalidated by deletion", () => {
     const fixture = editorSession(syntheticDocx(["First.", "Deleted."]));
     try {

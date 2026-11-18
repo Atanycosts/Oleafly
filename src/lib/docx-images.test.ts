@@ -7,8 +7,10 @@ import {
   mountPaginatedSurface,
   type DocxEditorInstance,
 } from "@docx-editor.dev/core/editor";
+import { readOoxmlPart } from "@docx-editor.dev/core/store";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
+import { imageAtomPayload, readDocxImageObject } from "./docx-images";
 import {
   createDocxHostSession,
   createDocxSession,
@@ -49,11 +51,11 @@ function packageBytes(input: {
   readonly body: string;
   readonly relationships?: string;
   readonly media?: Uint8Array | null;
-  readonly contentType?: string;
+  readonly contentType?: string | null;
 }): Uint8Array {
   const parts: Record<string, Uint8Array> = {
     "[Content_Types].xml": strToU8(
-      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="${input.contentType ?? "image/png"}"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${input.contentType === null ? "" : `<Default Extension="png" ContentType="${input.contentType ?? "image/png"}"/>`}<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
     ),
     "_rels/.rels": strToU8(
       `<Relationships xmlns="${PACKAGE_REL}"><Relationship Id="document" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`,
@@ -87,7 +89,7 @@ function mounted(
   options: {
     readonly relationships?: string;
     readonly media?: Uint8Array | null;
-    readonly contentType?: string;
+    readonly contentType?: string | null;
   } = {},
 ) {
   const container = document.createElement("div");
@@ -580,6 +582,140 @@ describe("DOCX image inventory", () => {
           }),
         ),
       ).toBe("stale-revision");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("reads DrawingML title fallback and omits invalid or absent dimensions", () => {
+    const fixture = mounted(`<w:p><w:r>${drawing()}</w:r></w:p>`);
+    try {
+      const xml = drawing().replace(
+        "<w:drawing>",
+        `<w:drawing xmlns:w="${W}" xmlns:wp="${WP}" xmlns:a="${A}" xmlns:pic="${PIC}" xmlns:r="${R}">`,
+      );
+      const examples = [
+        [xml.replace('cx="914400" cy="457200"', 'cx="0" cy="-1"')
+          .replace('descr="Chart preview"', 'title="Architecture overview"'), "Architecture overview"],
+        [xml.replace(/<wp:extent[^>]*\/>|<wp:docPr[^>]*\/>/g, ""), undefined],
+      ] as const;
+      for (const [drawingXml, description] of examples) {
+        const ownerPart = fixture.tree.part().name;
+        const parsed = readOoxmlPart(drawingXml, { name: ownerPart, contentType: "application/xml" });
+        if (!parsed.ok) throw new Error(parsed.reason);
+        const input = {
+          nodes: [parsed.part.root], source: fixture.tree.currentPackage(), ownerPart,
+          paragraphRef: "paragraph", objectRef: "drawing", revision: 0,
+        };
+        const { payload, readable } = imageAtomPayload(input);
+        expect(readable).toBe(true);
+        const result = readDocxImageObject(input);
+        expect(result.bytes).toEqual(PNG);
+        for (const metadata of [payload, result]) {
+          expect(metadata).toHaveProperty("relationshipId", "rIdImage");
+          expect(metadata.description).toBe(description);
+          expect(metadata).not.toHaveProperty("widthEmu");
+          expect(metadata).not.toHaveProperty("heightEmu");
+        }
+      }
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("converts VML point, inch, centimeter, millimeter, pixel and unitless extents", () => {
+    const shapes = [
+      ['width:1in;height:72pt', 914400, 914400],
+      ['width:2.54cm;height:25.4mm', 914400, 914400],
+      ['width:96px;height:100', 914400, 952500],
+      ['bogus;color:red;width:bad;height:1pc', undefined, undefined],
+    ] as const;
+    const fixture = mounted(shapes.map(([style]) =>
+      `<w:p><w:r><w:pict><v:shape id="_x0000_i1025" style="${style}"><v:imagedata o:relid="rIdImage"/></v:shape></w:pict></w:r></w:p>`,
+    ).join(""));
+    try {
+      for (const [index, [, widthEmu, heightEmu]] of shapes.entries()) {
+        const atom = fixture.session.readParagraph(fixture.paragraphs[index]!.handle).atoms[0]!;
+        if (widthEmu === undefined) {
+          expect(atom.payload).not.toHaveProperty("widthEmu");
+          expect(atom.payload).not.toHaveProperty("heightEmu");
+        } else {
+          expect(atom.payload).toMatchObject({ widthEmu, heightEmu });
+        }
+      }
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("rejects external relationship targets reached through an embed reference", () => {
+    const fixture = mounted(`<w:p><w:r>${drawing()}</w:r></w:p>`, {
+      relationships: imageRelationship(
+        "rIdImage",
+        IMAGE_REL,
+        "https://example.com/image.png",
+        "External",
+      ),
+    });
+    try {
+      const paragraph = fixture.paragraphs[0]!;
+      const atom = fixture.session.readParagraph(paragraph.handle).atoms[0]!;
+      expect(atom).toMatchObject({
+        readable: false,
+        payload: { error: { code: "external-image" } },
+      });
+      expect(
+        errorCode(() => fixture.session.readImage!({
+          paragraphRef: paragraph.handle.ref,
+          objectRef: atom.objectRef,
+          expectedRevision: 0,
+        })),
+      ).toBe("external-image");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("falls back to sniffed MIME when the package declares no PNG content type", () => {
+    const fixture = mounted(`<w:p><w:r>${drawing()}</w:r></w:p>`, {
+      contentType: null,
+    });
+    try {
+      const paragraph = fixture.paragraphs[0]!;
+      const atom = fixture.session.readParagraph(paragraph.handle).atoms[0]!;
+      expect(atom.payload).toMatchObject({
+        contentType: "image/png",
+        byteLength: PNG.byteLength,
+      });
+      expect(fixture.session.readImage!({
+        paragraphRef: paragraph.handle.ref,
+        objectRef: atom.objectRef,
+        expectedRevision: 0,
+      }).mimeType).toBe("image/png");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it.each([
+    ["DrawingML without a single blip", "<w:drawing/>"],
+    ["VML without image data", `<w:pict><v:shape style="width:1in;height:1in"/></w:pict>`],
+  ])("does not claim an image for %s", (_label, content) => {
+    const fixture = mounted(`<w:p><w:fldSimple w:instr="EMBED"><w:r>${content}</w:r></w:fldSimple></w:p>`);
+    try {
+      const paragraph = fixture.paragraphs[0]!;
+      const atom = fixture.session.readParagraph(paragraph.handle).atoms[0]!;
+      expect(atom.payload).toMatchObject({
+        contentStatus: "not_inspected",
+        error: { code: "not-image" },
+      });
+      expect(
+        errorCode(() => fixture.session.readImage!({
+          paragraphRef: paragraph.handle.ref,
+          objectRef: atom.objectRef,
+          expectedRevision: 0,
+        })),
+      ).toBe("not-image");
     } finally {
       fixture.dispose();
     }

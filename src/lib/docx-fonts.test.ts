@@ -79,3 +79,62 @@ it("checks regular-face availability using exact axes", async () => {
   expect(await hasExactDocxFont("Example")).toBe(false);
   expect(await hasExactDocxFont("Example")).toBe(true);
 });
+
+it("does no work when every requested face is already covered", async () => {
+  const options = hooks();
+  const covered = [400, 700].flatMap((weight) => [
+    request("Example", weight, "normal"),
+    request("Example", weight, "italic"),
+  ]);
+  expect(await createDocxFontResolver(options)({
+    families: ["Example", "EXAMPLE"],
+    defaultFamily: "Example",
+    resolvedFaces: covered,
+  })).toBeUndefined();
+  expect(transport.invoke).not.toHaveBeenCalled();
+  expect(options.onStatus).not.toHaveBeenCalled();
+});
+
+it("stops before native probing when its caller has already aborted", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const options = hooks();
+  expect(await createDocxFontResolver(options)({
+    ...resolution(["Example"]),
+    signal: controller.signal,
+  })).toBeUndefined();
+  expect(transport.invoke).not.toHaveBeenCalled();
+  expect(options.onStatus).not.toHaveBeenCalled();
+  expect(options.onError).not.toHaveBeenCalled();
+});
+
+it("drops a completed probe that became stale while native font lookup was running", async () => {
+  const controller = new AbortController();
+  let finish!: (value: { faces: unknown[]; missing: unknown[] }) => void;
+  transport.invoke.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+  const options = hooks();
+  const pending = createDocxFontResolver(options)({
+    ...resolution(["Example"]),
+    signal: controller.signal,
+  });
+  controller.abort();
+  finish({ faces: [], missing: [] });
+  expect(await pending).toBeUndefined();
+  expect(options.onStatus).not.toHaveBeenCalled();
+  expect(options.onError).not.toHaveBeenCalled();
+});
+
+it("suppresses a native error caused by cancellation", async () => {
+  const controller = new AbortController();
+  transport.invoke.mockImplementationOnce(async () => {
+    controller.abort();
+    throw new Error("native lookup cancelled");
+  });
+  const options = hooks();
+  expect(await createDocxFontResolver(options)({
+    ...resolution(["Example"]),
+    signal: controller.signal,
+  })).toBeUndefined();
+  expect(options.onStatus).not.toHaveBeenCalled();
+  expect(options.onError).not.toHaveBeenCalled();
+});

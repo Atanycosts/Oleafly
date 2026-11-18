@@ -498,6 +498,82 @@ describe("DOCX content-bound format facts", () => {
     expect(facts.snapshot.objects.find((object) => object.kind === "tc")?.properties.cell).toMatchObject({ gridSpan: 1 });
   });
 
+  it("reads hexadecimal table-look flags and offsets row and column bands after header positions", async () => {
+    const table = '<w:tbl><w:tblPr><w:tblLook w:val="0120" w:noHBand="0" w:noVBand="0"/></w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>' +
+      p("Header") + '</w:tc><w:tc>' + p("Header 2") + '</w:tc><w:tc>' + p("Header 3") + '</w:tc></w:tr><w:tr><w:tc>' +
+      p("Body") + '</w:tc><w:tc>' + p("Body 2") + '</w:tc><w:tc>' + p("Body 3") + '</w:tc></w:tr><w:tr><w:tc>' +
+      p("Footer") + '</w:tc><w:tc>' + p("Footer 2") + '</w:tc><w:tc>' + p("Footer 3") + '</w:tc></w:tr></w:tbl>';
+    const facts = await openDocxFormatFacts(docx(table));
+    const context = (text: string) => facts.snapshot.objects.find((object) => object.text === text)?.table_context;
+    expect(context("Body 2")?.conditions).toEqual(expect.arrayContaining([
+      "band2Vert",
+      "band1Horz",
+    ]));
+    expect(context("Footer")?.conditions).toEqual(expect.arrayContaining([
+      "band1Vert",
+      "band2Horz",
+    ]));
+  });
+
+  it("keeps invalid frame measurements uncertain and distinguishes automatic and authored heights", async () => {
+    const facts = await openDocxFormatFacts(docx(
+      p("Invalid width", "", "", '<w:framePr w:w="word" w:h="20" w:hAnchor="margin"/>') +
+      p("Invalid height", "", "", '<w:framePr w:w="2000" w:h="invalid"/>'),
+    ));
+    const paragraphs = facts.snapshot.objects.filter((object) => object.kind === "paragraph");
+    expect(group(paragraphs[0], "paragraph").frame).toMatchObject({
+      widthPt: null,
+      heightPt: 1,
+      heightRule: "atLeast",
+      hAnchor: "margin",
+      vAnchor: "text",
+      hSpacePt: 0,
+    });
+    expect(group(paragraphs[1], "paragraph").frame).toMatchObject({
+      widthPt: 100,
+      heightPt: null,
+      heightRule: "atLeast",
+    });
+  });
+
+  it("maps Word tabs and hard breaks into the same text facts exposed to the reader", async () => {
+    const facts = await openDocxFormatFacts(docx(
+      '<w:p><w:r><w:t>Before</w:t><w:tab/><w:t>Middle</w:t><w:br/><w:t>Line</w:t><w:cr/><w:t>Last</w:t></w:r></w:p>',
+    ));
+    expect(facts.snapshot.objects.find((object) => object.kind === "paragraph")?.text).toBe(
+      "Before\tMiddle\nLine\nLast",
+    );
+    expect(facts.snapshot.objects.find((object) => object.kind === "run")?.text).toBe(
+      "Before\tMiddle\nLine\nLast",
+    );
+  });
+
+  it("retains unparsed XML bytes but refuses to present them as a tree", async () => {
+    const facts = await openDocxFormatFacts(zipSync({
+      "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
+      "_rels/.rels": strToU8(`<Relationships xmlns="${REL}"><Relationship Id="doc" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
+      "word/document.xml": strToU8(`<w:document xmlns:w="${W}"><w:body>${p("Text")}</w:body></w:document>`),
+      "word/broken.xml": strToU8("<root>"),
+    }));
+    expect(facts.snapshot.parts.find((part) => part.name === "/word/broken.xml")).toMatchObject({
+      xml: true,
+      status: "unparsed",
+    });
+    expect(facts.query({ kind: "part", part: "/word/broken.xml", format: "text" })).toMatchObject({
+      format: "text",
+      data: "<root>",
+    });
+    expect(() => facts.query({ kind: "part", part: "/word/broken.xml", format: "tree" }))
+      .toThrow("no parsed XML tree");
+  });
+
+  it("fails closed when the package has no readable Word document entry", async () => {
+    const invalid = zipSync({
+      "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'),
+    });
+    await expect(openDocxFormatFacts(invalid)).rejects.toThrow("DOCX facts could not open package");
+  });
+
   it.runIf(process.env.OLEAFLY_DOCX_FORMAT_ACCEPTANCE === "1")("reads real retained author inputs without changing their bytes", async () => {
     const paths: string[] = JSON.parse(process.env.OLEAFLY_DOCX_FORMAT_INPUTS ?? "[]");
     expect(paths.length, "Set OLEAFLY_DOCX_FORMAT_INPUTS to a JSON array of retained DOCX paths.").toBeGreaterThan(0);

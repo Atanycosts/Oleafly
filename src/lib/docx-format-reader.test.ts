@@ -488,4 +488,127 @@ describe("live DOCX format reader", () => {
     expect(nodes.nodes?.[0].node).not.toHaveProperty("children");
     await expect(f.read({ limit: 51 })).rejects.toThrow("1 to 50");
   });
+
+  it.each([
+    [{ expectedRevision: -1 }, "expectedRevision must be a nonnegative integer"],
+    [{ expectedRevision: 0.5 }, "expectedRevision must be a nonnegative integer"],
+    [{ offset: -1 }, "read offset must be a nonnegative integer"],
+    [{ offset: 0.5 }, "read offset must be a nonnegative integer"],
+    [{ limit: 0 }, "read limit must be an integer from 1 to 50"],
+    [{ limit: 51 }, "read limit must be an integer from 1 to 50"],
+    [{ limit: 1.5 }, "read limit must be an integer from 1 to 50"],
+    [{ textOffset: -1 }, "textOffset must be a nonnegative UTF-16 offset"],
+    [{ textOffset: 0.5 }, "textOffset must be a nonnegative UTF-16 offset"],
+    [{ textLimit: 0 }, "textLimit must be an integer from 1 to 16000"],
+    [{ textLimit: 16_001 }, "textLimit must be an integer from 1 to 16000"],
+    [{ textLimit: 1.5 }, "textLimit must be an integer from 1 to 16000"],
+  ])("rejects an invalid live read window before exporting (%j)", async (query, message) => {
+    const f = fixture(p("Text"));
+    await expect(f.read(query as DocxFormatReadQuery)).rejects.toThrow(message);
+    expect(f.exportBytes).not.toHaveBeenCalled();
+    expect(f.openFacts).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing live export and retries after a later successful export", async () => {
+    const f = fixture(p("Text"));
+    f.exportBytes.mockResolvedValueOnce(null);
+    await expect(f.read({ kind: "overview" })).rejects.toThrow("did not export its live content");
+    expect((await f.read({ kind: "overview" })).overview).toMatchObject({ counts: expect.any(Object) });
+    expect(f.exportBytes).toHaveBeenCalledTimes(2);
+    expect(f.openFacts).toHaveBeenCalledOnce();
+  });
+
+  it("retries package analysis after a failed facts read instead of caching the rejection", async () => {
+    const f = fixture(p("Text"));
+    f.openFacts.mockRejectedValueOnce(new Error("temporary package failure"));
+    await expect(f.read({ kind: "overview" })).rejects.toThrow("temporary package failure");
+    expect((await f.read({ kind: "overview" })).overview).toMatchObject({ counts: expect.any(Object) });
+    expect(f.exportBytes).toHaveBeenCalledTimes(2);
+    expect(f.openFacts).toHaveBeenCalledTimes(2);
+  });
+
+  it("applies object selectors together and keeps every selector in a raw-node continuation", async () => {
+    const f = fixture(
+      p("Same", '<w:pStyle w:val="Base"/>') +
+      p("Same", '<w:pStyle w:val="Base"/>') +
+      p("Different"),
+    );
+    const filtered = await f.read({
+      styleId: "Base",
+      role: "unknown",
+      objectKind: "paragraph",
+      text: "Same",
+      limit: 10,
+    });
+    expect(filtered.objects?.map((object) => object.text)).toEqual(["Same", "Same"]);
+    const first = await f.read({
+      kind: "nodes",
+      part: "/word/document.xml",
+      localName: "pStyle",
+      namespaceUri: W,
+      attribute: { localName: "val" },
+      objectKind: "paragraph",
+      styleId: "Base",
+      objectId: "unused-for-node-query",
+      role: "body",
+      text: "Same",
+      paragraphRef: "unused-for-node-query",
+      textOffset: 2,
+      textLimit: 30,
+      limit: 1,
+    } as DocxFormatReadQuery);
+    expect(first.nextQuery).toMatchObject({
+      kind: "nodes",
+      part: "/word/document.xml",
+      namespace_uri: W,
+      local_name: "pStyle",
+      attribute: { local_name: "val" },
+      object_kind: "paragraph",
+      style_id: "Base",
+      object_id: "unused-for-node-query",
+      role: "body",
+      text: "Same",
+      paragraph_ref: "unused-for-node-query",
+      text_offset: 2,
+      text_limit: 30,
+      offset: 1,
+      limit: 1,
+    });
+  });
+
+  it("does not select styles when a continuation is scoped to a live paragraph", async () => {
+    const f = fixture(p("Text", '<w:pStyle w:val="Base"/>'));
+    const result = await f.read({
+      kind: "styles",
+      paragraphRef: f.session.listParagraphs()[0]!.handle.ref,
+      styleId: "Base",
+    });
+    expect(result.styles).toEqual([]);
+    expect(result.nextQuery).toBeNull();
+  });
+
+  it("keeps paragraph text windows on whole UTF-16 surrogate pairs", async () => {
+    const f = fixture(p("A😀Z"));
+    const fromLowSurrogate = await f.read({
+      kind: "paragraphs",
+      textOffset: 2,
+      textLimit: 1,
+    });
+    expect(fromLowSurrogate.paragraphs?.[0]).toMatchObject({
+      text: "😀",
+      textOffset: 1,
+      textTruncated: true,
+    });
+
+    const acrossHighSurrogate = await f.read({
+      kind: "paragraphs",
+      textOffset: 0,
+      textLimit: 2,
+    });
+    expect(acrossHighSurrogate.paragraphs?.[0]).toMatchObject({
+      text: "A",
+      textOffset: 0,
+      textTruncated: true,
+    });
+  });
 });
