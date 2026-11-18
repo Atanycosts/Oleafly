@@ -759,16 +759,16 @@ it("loads a retained result with its reply parent and routes the exact dependenc
     />,
   );
 
-  const card = view.getByTestId("work-retained-result");
+  const resolution = view.getByTestId("resolution-retained-result");
   expect(view.getByText("paused")).toBeTruthy();
-  testing.fireEvent.click(testing.within(card).getByText("workReadResult"));
+  testing.fireEvent.click(testing.within(resolution).getByRole("button", { name: "workReadResult" }));
   await testing.waitFor(() => {
-    expect(testing.within(card).getByRole("button", { name: "workOpenResult" })).toBeTruthy();
+    expect(testing.within(resolution).getByRole("button", { name: "workOpenResult" })).toBeTruthy();
   });
   expect(loadMessage.mock.calls).toEqual([[result.id]]);
 
   testing.fireEvent.click(
-    testing.within(view.getByTestId("resolution-retained-result")).getByRole("button", {
+    testing.within(resolution).getByRole("button", {
       name: "workOpenResult",
     }),
   );
