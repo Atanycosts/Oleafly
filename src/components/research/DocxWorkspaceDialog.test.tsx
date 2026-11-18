@@ -1303,7 +1303,10 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     expect(mocks.registerAgentSession).toHaveBeenCalledWith(expect.objectContaining({ baselineId: INITIAL_BASELINE, savedRevision: -1, session: harness.session }));
     fireEvent.click(screen.getByRole("button", { name: text.save }));
     await waitFor(() => expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved));
+    expect(mocks.editorSave).not.toHaveBeenCalled();
     expect(mocks.prepareSave.mock.calls[0][0].baseline_id).toBe(INITIAL_BASELINE);
+    expect(new Uint8Array(mocks.prepareSave.mock.calls[0][2])).toEqual(recovery.bytes);
+    expect(new Uint8Array(mocks.saveRecovery.mock.calls[0][2])).toEqual(recovery.bytes);
     expect(mocks.clearRecovery).toHaveBeenCalledOnce();
   });
 
@@ -2792,4 +2795,133 @@ it("shows an apply refusal and withdraws the suggestion without changing the wor
   expect(screen.queryByRole("button", { name: text.accept })).not.toBeInTheDocument();
   expect(harness.text("first")).toBe("Original");
   expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved);
+});
+
+describe("retained working-copy recovery safety", () => {
+  const recovery = (patch: Partial<DocxRecoverySnapshot> = {}): DocxRecoverySnapshot => ({
+    appProjectId: "app-project",
+    workbenchProjectId: PROJECT.project_id,
+    baseBaselineId: INITIAL_BASELINE,
+    sourceSha256: SOURCE.source_sha256,
+    recoveryKey: "b".repeat(64),
+    contentSha256: "c".repeat(64),
+    revision: 9,
+    updatedAt: "2026-11-12T02:00:00.000Z",
+    bytes: Uint8Array.from([80, 75, 9, 9]),
+    ...patch,
+  });
+
+  it.each([
+    ["application project", { appProjectId: "other-app-project" }],
+    ["workbench project", { workbenchProjectId: "other-workbench-project" }],
+    ["source baseline", { baseBaselineId: "other-baseline" }],
+  ] as const)("refuses a recovery snapshot from a different %s", async (_identity, patch) => {
+    const harness = sessionHarness([paragraph("first", "Recovered text")]);
+    const view = await renderReady(harness, undefined, false, { recovery: recovery(patch) });
+
+    expect(await screen.findByText(text.recovery.sourceChanged, { exact: false })).toHaveAttribute("role", "alert");
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(view.onClose).toHaveBeenCalledOnce();
+    expect(mocks.clearRecovery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an already-cancelled Agent request", false],
+    ["a recovery baseline conflict", true],
+  ] as const)("rejects %s before exporting replacement bytes", async (_description, blockedByRecovery) => {
+    const harness = sessionHarness([paragraph("first", blockedByRecovery ? "Recovered text" : "Original text")]);
+    await renderReady(harness, undefined, true, blockedByRecovery
+      ? { recovery: recovery(), project: { ...PROJECT, baseline_id: SAVED_BASELINE } }
+      : {});
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    const controller = new AbortController();
+    if (!blockedByRecovery) {
+      act(() => harness.setRevision(1));
+      controller.abort();
+    }
+
+    await act(async () => {
+      await expect(registration.save({
+        expectedRevision: blockedByRecovery ? 0 : 1,
+        signal: controller.signal,
+      })).rejects.toThrow(blockedByRecovery
+        ? "cannot be saved while another document operation is pending"
+        : "cancelled before it started");
+    });
+    expect(mocks.editorSave).not.toHaveBeenCalled();
+    expect(mocks.prepareSave).not.toHaveBeenCalled();
+    expect(mocks.saveRecovery).not.toHaveBeenCalled();
+    expect(mocks.commitRecovery).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a late fixed-save commit after its working copy closes", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    let resolveCommit!: (value: { baselineId: string; revision: number; sourceSha256: string }) => void;
+    mocks.commitRecovery.mockReturnValueOnce(new Promise((resolve) => { resolveCommit = resolve; }));
+    const view = await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls[0][0];
+    act(() => harness.edit("first", "Saved before close"));
+
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(mocks.commitRecovery).toHaveBeenCalledOnce());
+    view.unmount();
+    await act(async () => resolveCommit({
+      baselineId: SAVED_BASELINE,
+      revision: 1,
+      sourceSha256: "d".repeat(64),
+    }));
+
+    expect(registration.sessionId).toMatch(/^docx:/);
+    expect(mocks.updateAgentSession).not.toHaveBeenCalled();
+    expect(view.onSaved).not.toHaveBeenCalled();
+    expect(mocks.clearRecovery).not.toHaveBeenCalled();
+  });
+
+  it("does not adopt a different stored checkpoint after recovery writing fails", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    mocks.saveBaseline.mockResolvedValue({
+      baselineId: SAVED_BASELINE,
+      revision: 1,
+    });
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls[0][0];
+    act(() => harness.edit("first", "Fixed save bytes"));
+    mocks.saveRecovery.mockRejectedValueOnce(new Error("checkpoint receipt failed"));
+    mocks.readRecovery.mockResolvedValue({
+      ...recovery({ revision: 1 }),
+      contentSha256: "e".repeat(64),
+      taskState: {
+        document: {
+          sessionId: registration.sessionId,
+          appProjectId: "app-project",
+          workbenchProjectId: PROJECT.project_id,
+          baselineId: INITIAL_BASELINE,
+          sourceSha256: SOURCE.source_sha256,
+          sessionRevision: 1,
+          savedRevision: 0,
+        },
+        applied: [],
+        receipts: [],
+        operations: [],
+      },
+    });
+
+    await act(async () => {
+      await expect(registration.save({ expectedRevision: 1 })).rejects.toThrow(
+        "checkpoint receipt failed",
+      );
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("checkpoint receipt failed");
+    expect(screen.getByRole("button", { name: text.retrySave })).toBeEnabled();
+    expect(mocks.prepareSave).toHaveBeenCalledOnce();
+    expect(mocks.commitRecovery).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: text.retrySave }));
+    await waitFor(() => expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved));
+    expect(mocks.editorSave).toHaveBeenCalledOnce();
+    expect(mocks.prepareSave).toHaveBeenCalledOnce();
+    expect(mocks.saveRecovery).toHaveBeenCalledTimes(2);
+    expect(mocks.saveRecovery.mock.calls[1]?.[2]).toEqual(mocks.saveRecovery.mock.calls[0]?.[2]);
+  });
 });

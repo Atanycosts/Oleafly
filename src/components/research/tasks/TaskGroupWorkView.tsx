@@ -268,7 +268,7 @@ export function TaskGroupWorkView({
       );
     }
     if (work.causeKind === "event") {
-      const event = events[work.causeId] ?? snapshot.events?.find((item) => item.id === work.causeId);
+      const event = snapshot.events?.find((item) => item.id === work.causeId) ?? events[work.causeId];
       return (
         <div className="space-y-1" data-testid={`source-event-${work.id}`}>
           <p className="text-xs font-medium">{t(($) => $.researchTools.tasks.group.workSourceObject)}</p>

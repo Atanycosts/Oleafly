@@ -615,3 +615,210 @@ it("does not publish an annotation resolved for an old group", async () => {
   expect(testing.within(currentSource).getByText("group-two.md")).toBeTruthy();
   expect(currentSource.textContent).not.toContain("Stale group-one annotation");
 });
+
+it("loads a retained result with its reply parent and routes the exact dependency result", async () => {
+  const source = message("source", "Check the retained evidence");
+  const parent = message("result-parent", "Earlier answer in the retained thread");
+  const result = message("result-evidence", "Exact retained result", parent.id);
+  const dependencyResult = message("dependency-evidence", "Exact dependency result");
+  const request = message("wait-request", "Please provide the exact evidence");
+  const completed = work("retained-result", "completed");
+  completed.resultMessageId = result.id;
+  completed.resolution = { summary: "Evidence retained.", resultRefs: [] };
+  completed.waits = [{
+    requestMessageId: request.id,
+    work: [{
+      workId: "dependency-work",
+      memberId: "m1",
+      status: "completed",
+      resultMessageId: dependencyResult.id,
+    }],
+  }];
+  const loadMessage = vi.fn(async (id: string) => {
+    if (id === result.id) return result;
+    if (id === parent.id) return parent;
+    return null;
+  });
+
+  const view = testing.render(
+    <WorkView
+      snapshot={snapshot([completed], [source, request, dependencyResult])}
+      busy={false}
+      loadMessage={loadMessage}
+      loadEvent={async () => null}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+
+  const card = view.getByTestId("work-retained-result");
+  testing.fireEvent.click(testing.within(card).getByText("workReadResult"));
+  await testing.waitFor(() => {
+    expect(testing.within(card).getByRole("button", { name: "workOpenResult" })).toBeTruthy();
+  });
+  expect(loadMessage.mock.calls).toEqual([[result.id]]);
+
+  testing.fireEvent.click(
+    testing.within(view.getByTestId("resolution-retained-result")).getByRole("button", {
+      name: "workOpenResult",
+    }),
+  );
+  await testing.waitFor(() => {
+    expect(view.getByText(parent.body)).toBeTruthy();
+  });
+  expect(view.getByText(result.body)).toBeTruthy();
+  expect(loadMessage.mock.calls).toEqual([[result.id], [parent.id]]);
+
+  testing.fireEvent.click(view.getByRole("button", { name: "Close" }));
+  expect(view.queryByText(parent.body)).toBeNull();
+
+  testing.fireEvent.click(
+    testing.within(view.getByTestId("waits-retained-result")).getByRole("button", {
+      name: "workOpenResult",
+    }),
+  );
+  await testing.waitFor(() => {
+    expect(view.getByText(dependencyResult.body)).toBeTruthy();
+  });
+  expect(loadMessage.mock.calls).toEqual([[result.id], [parent.id]]);
+});
+
+it("keeps unavailable annotations, events and generic sources tied to their cause", async () => {
+  const missingAnnotation = work(
+    "missing-annotation",
+    "pending",
+    "annotation",
+    "annotation-missing",
+  );
+  const missingEvent = eventWork(
+    "missing-event",
+    "event-missing",
+    "g1",
+    "retained/missing-event.md",
+  );
+  const genericObject = work("generic-object", "pending", "material", "file:missing");
+  genericObject.reasons = [{
+    kind: "interest_object",
+    object: {
+      kind: "file",
+      id: "retained/generic.md",
+      revision: "7",
+      path: "retained/generic.md",
+    },
+  }];
+  const genericUnavailable = work(
+    "generic-unavailable",
+    "pending",
+    "material",
+    "opaque-material-cause",
+  );
+  const unavailableThread = work("unavailable-thread", "completed");
+  unavailableThread.waits = [{
+    requestMessageId: "missing-wait-request",
+    work: [{
+      workId: "missing-dependency",
+      memberId: "m1",
+      status: "completed",
+      resultMessageId: "missing-result-message",
+    }],
+  }];
+  const loadEvent = vi.fn(async () => null);
+  const loadAnnotation = vi.fn(async () => null);
+
+  const view = testing.render(
+    <WorkView
+      snapshot={snapshot([
+        missingAnnotation,
+        missingEvent,
+        genericObject,
+        genericUnavailable,
+        unavailableThread,
+      ])}
+      busy={false}
+      loadMessage={async () => null}
+      loadEvent={loadEvent}
+      loadAnnotation={loadAnnotation}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+
+  const annotationSource = view.getByTestId("source-annotation-missing-annotation");
+  testing.fireEvent.click(
+    testing.within(annotationSource).getByRole("button", { name: "workReadSource" }),
+  );
+  await testing.waitFor(() => {
+    expect(testing.within(annotationSource).getByText("workSourceUnavailable")).toBeTruthy();
+  });
+
+  const eventSource = view.getByTestId("source-event-missing-event");
+  expect(testing.within(eventSource).getByText("retained/missing-event.md")).toBeTruthy();
+  testing.fireEvent.click(
+    testing.within(eventSource).getByRole("button", { name: "workReadSource" }),
+  );
+  await testing.waitFor(() => {
+    expect(testing.within(eventSource).getByText("workSourceUnavailable")).toBeTruthy();
+  });
+
+  expect(loadAnnotation).toHaveBeenCalledExactlyOnceWith("annotation-missing");
+  expect(loadEvent).toHaveBeenCalledExactlyOnceWith("event-missing");
+  expect(testing.within(view.getByTestId("work-generic-object")).getByText("retained/generic.md"))
+    .toBeTruthy();
+  expect(testing.within(view.getByTestId("work-generic-unavailable")).getByText("workSourceUnavailable"))
+    .toBeTruthy();
+
+  testing.fireEvent.click(
+    testing.within(view.getByTestId("waits-unavailable-thread")).getByRole("button", {
+      name: "workOpenResult",
+    }),
+  );
+  await testing.waitFor(() => {
+    expect(view.getByText("workThreadUnavailable")).toBeTruthy();
+  });
+});
+
+it("loads the exact waiting request and keeps its reply thread available", async () => {
+  const waiting = work("waiting-request", "waiting");
+  waiting.waits = [{ requestMessageId: "request-message", work: [] }];
+  const request = message("request-message", "Please continue from this request");
+  const loadMessage = vi.fn(async () => request);
+  const view = testing.render(
+    <WorkView
+      snapshot={snapshot([waiting])}
+      busy={false}
+      loadMessage={loadMessage}
+      loadEvent={async () => null}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+
+  const waits = view.getByTestId("waits-waiting-request");
+  expect(testing.within(waits).getByText("workWaitingRequest")).toBeTruthy();
+  testing.fireEvent.click(testing.within(waits).getByText("workReadRequest"));
+  await testing.waitFor(() => {
+    expect(testing.within(waits).getByText(request.body)).toBeTruthy();
+  });
+  expect(loadMessage).toHaveBeenCalledExactlyOnceWith(request.id);
+
+  testing.fireEvent.click(testing.within(waits).getByRole("button", { name: "workViewThread" }));
+  await testing.waitFor(() => {
+    expect(view.getByRole("region", { name: "workThread" })).toBeTruthy();
+  });
+  expect(view.getAllByText(request.body)).toHaveLength(2);
+
+  view.rerender(
+    <WorkView
+      snapshot={snapshot([])}
+      busy={false}
+      loadMessage={loadMessage}
+      loadEvent={async () => null}
+      loadAnnotation={async () => null}
+      renderDiagnostics={() => null}
+      onReply={() => {}}
+    />,
+  );
+  expect(view.getByText("workEmpty")).toBeTruthy();
+});

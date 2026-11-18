@@ -591,6 +591,48 @@ describe("TaskDetailDialog", () => {
     expect(journalReference.load.mock.calls.map(([target]) => target)).toEqual([olderTarget, newerTarget]);
   });
 
+  it("keeps a newer task run's file preview when the older generation finishes late", async () => {
+    const older = deferred<TaskFilePreview>();
+    const first = task("preview-run-race");
+    const current = { ...task("preview-run-race"), executionGeneration: 2 };
+    if (!first.result || !current.result) throw new Error("Missing review fixtures");
+    first.result.changedFiles[0].path = "older/main.tex";
+    current.result.changedFiles[0].path = "current/main.tex";
+    previewMocks.file
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce({ ...preview("current generation"), path: "current/main.tex" });
+    const input = props(first);
+    const view = render(<TaskDetailDialog {...input} initialTab="review" />);
+
+    fireEvent.click(page().getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(previewMocks.file).toHaveBeenCalledWith(
+      first.id,
+      "older/main.tex",
+    ));
+    view.rerender(
+      <TaskDetailDialog
+        {...input}
+        task={current}
+        tasks={[current]}
+        initialTab="review"
+      />,
+    );
+    fireEvent.click(page().getByRole("button", { name: "Preview" }));
+    expect(await page().findByText("before -> current generation")).toBeInTheDocument();
+
+    await act(async () => {
+      older.resolve({ ...preview("stale generation"), path: "older/main.tex" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(page().getByText("before -> current generation")).toBeInTheDocument();
+    expect(page().queryByText("before -> stale generation")).not.toBeInTheDocument();
+    expect(previewMocks.file.mock.calls).toEqual([
+      [first.id, "older/main.tex"],
+      [current.id, "current/main.tex"],
+    ]);
+  });
+
   it.each([
     { explicitRequest: false, sameTask: true, role: "evidence" },
     { explicitRequest: true, sameTask: true, role: "task_input" },
