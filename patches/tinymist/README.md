@@ -117,11 +117,6 @@ git apply --whitespace=error-all \
 
 ## Validation
 
-The patch applies and reverses cleanly against the pinned source. The changed
-Rust files pass the local Rust 1.98.1 formatter with their respective 2021 and
-2024 editions. Compilation, Rust tests and LSP execution of the patched server
-still need hosted validation.
-
 The [source-build workflow](../../.github/workflows/validate-tinymist-patch.yml)
 runs for pull requests that change the patch or its validation inputs. It checks
 out the exact source commit, applies the patch, and runs the targeted Rust
@@ -132,3 +127,8 @@ Linux x86-64 runs first; the other four supported targets follow only after it
 passes. Each successful job uploads a candidate with its SHA-256, source and
 patch metadata, and upstream license. These checks do not publish a release or
 change the shipping manifest.
+
+On 2026-11-18, [the hosted candidate run](https://github.com/Atanycosts/Oleafly/actions/runs/44232534556)
+passed the source tests, binary identity check and LSP smoke on all five targets.
+Run artifacts are short-lived verification evidence. The bundled server still
+comes from the upstream release archive selected by the shipping manifest.
