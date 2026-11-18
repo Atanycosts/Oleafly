@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { saveMaterialAnnotation } from "./material-annotations";
+import { materialAnnotationSnapshot, saveMaterialAnnotation } from "./material-annotations";
 import type { MaterialDocument } from "./material-surface";
-import type { TaskAnnotationDraft } from "./task-collaboration";
+import type { TaskAnnotation, TaskAnnotationDraft } from "./task-collaboration";
 const api = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => api);
 const draft: TaskAnnotationDraft = { target: { projectId: "paper", taskId: null, objectKind: "material", objectId: "file", objectRevision: "old", path: null }, body: "Keep evidence", parentId: null, mentions: [], explicitRequest: false };
@@ -22,5 +22,16 @@ describe("material source retention boundary", () => {
     await saveMaterialAnnotation(document, { kind: "whole" }, { ...draft, parentId: "old-comment" });
     expect(source).not.toHaveBeenCalled();
     expect(api.invoke).toHaveBeenCalledWith("material_annotation_save", expect.objectContaining({ parentId: "old-comment", bytes: [] }));
+  });
+  it("captures the displayed version when the source is a lazy working-copy adapter", async () => {
+    const source = vi.fn().mockResolvedValue({ text: "latest buffer", mediaType: "text/plain" });
+    const document: MaterialDocument = { projectId: "paper", documentId: "buffer", title: "Buffer", path: null, kind: "source", revision: "hash", source };
+    await saveMaterialAnnotation(document, { kind: "whole" }, draft);
+    expect(source).toHaveBeenCalledOnce();
+    expect(api.invoke).toHaveBeenCalledWith("material_annotation_save", expect.objectContaining({ mediaType: "text/plain", bytes: Array.from(new TextEncoder().encode("latest buffer")) }));
+  });
+  it("does not treat ordinary annotation text as a retained material snapshot", () => {
+    const annotation = { source: { kind: "text", content: "ordinary", sha256: "hash" } } as TaskAnnotation;
+    expect(materialAnnotationSnapshot(annotation)).toBeNull();
   });
 });

@@ -11,6 +11,7 @@ import { test, expect } from "../fixtures";
 import { createBlankProject, openRailTab, waitLong } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
+import { webviewScreenshot } from "../webview-screenshot";
 
 const PROVIDER = "docx-task-fixture";
 const MODEL = "gpt/gpt-6.1-sol";
@@ -168,16 +169,24 @@ test("native tasks propose DOCX changes and retain user decisions with exact sav
     const saved = records.at(-1)!.saved;
     const renders = await page.evaluate<DocxRender[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(m => m.loadDocxRenders(${scriptValue(manuscript)}, ${scriptValue(saved.document.baselineId)}))`);
     expect(renders.some((render) => render.manifest.source_sha256 === saved.document.sourceSha256 && render.manifest.page_count > 0)).toBe(true);
-    await page.screenshot({ path: testInfo.outputPath("task-proposal-saved.png") });
+    await webviewScreenshot(page, testInfo.outputPath("task-proposal-saved.png"));
     await writeFile(testInfo.outputPath("task-activity.json"), JSON.stringify({ records, activities: await history(page, projectId, manuscript), renders }, null, 2));
     await clickButton(page, '[aria-label="Task activity"]', "Open bound task");
     await expect(page.getByTestId("research-task-detail")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("docx-workspace")).toBeHidden();
     await page.locator('[data-testid="task-docx-observations"] summary').click();
+    const observations = page.getByTestId("task-observations");
+    const replacement = page.getByTestId("task-docx-observations").getByText(REPLACEMENTS[1], { exact: true });
+    while (await replacement.count() === 0) {
+      const loadMore = observations.getByRole("button", { name: "Load more observations", exact: true });
+      if (await loadMore.count() === 0) throw new Error("The task transcript ended before the second DOCX replacement.");
+      const before = await observations.textContent();
+      await loadMore.click();
+      await expect.poll(() => observations.textContent()).not.toBe(before);
+    }
     await expect(page.getByTestId("task-docx-observations")).toContainText(REPLACEMENTS[1]);
-    await clickButton(page, '[data-testid="task-observations"]', "Load more observations");
     await expect(page.getByTestId("task-docx-observations")).toContainText(saved.document.baselineId);
-    await page.screenshot({ path: testInfo.outputPath("task-history-navigation.png") });
+    await webviewScreenshot(page, testInfo.outputPath("task-history-navigation.png"));
     await page.evaluate(`window.__oleaflyE2EImport('/src/store/research-tasks.ts').then(m => m.useResearchTasksStore.getState().setDetailOpen(false))`);
     await page.getByTestId("workspace-word-tab").getByRole("button", { name: "DOCX task fixture", exact: true }).click();
     await expect(page.getByTestId("docx-workspace")).toBeVisible();

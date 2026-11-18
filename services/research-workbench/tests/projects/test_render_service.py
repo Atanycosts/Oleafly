@@ -25,6 +25,7 @@ from research_file_workbench.projects.models import ProjectStoreError
 from research_file_workbench.projects.render_service import (
     RenderConversionError,
     RendererUnavailableError,
+    _launch_executable,
     load_render_mapping,
     read_render_artifact,
     register_render_bundle,
@@ -360,6 +361,38 @@ def test_missing_libreoffice_is_a_typed_capability_failure(rendered_project, tmp
 
     assert unavailable.value.code == "renderer_unavailable"
     assert open_project(project).list_evidence(baseline, reader_version=READER_VERSION) == before
+
+
+def test_windows_libreoffice_uses_the_console_launcher_when_available(tmp_path, monkeypatch):
+    executable = tmp_path / "soffice.exe"
+    console_launcher = tmp_path / "soffice.com"
+    executable.write_bytes(b"gui launcher")
+    console_launcher.write_bytes(b"console launcher")
+    monkeypatch.setattr("research_file_workbench.projects.render_service.os.name", "nt")
+
+    assert _launch_executable(executable) == console_launcher
+
+
+def test_libreoffice_start_failure_preserves_the_platform_error(rendered_project, tmp_path):
+    project, _, _, _, baseline = rendered_project
+    executable = tmp_path / "LibreOffice"
+    executable.write_bytes(b"fake LibreOffice executable")
+    executable.chmod(0o755)
+
+    def runner(command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
+        raise OSError("[WinError 193] %1 is not a valid Win32 application")
+
+    with pytest.raises(RendererUnavailableError, match="WinError 193"):
+        render_libreoffice_baseline(
+            project,
+            baseline_id=baseline,
+            executable=executable,
+            profile=tmp_path / "profile",
+            actor_id="operator-test",
+            confirmation_reason="Render a failing launcher",
+            surface="browser",
+            runner=runner,
+        )
 
 
 def test_libreoffice_failure_never_registers_a_partial_render(rendered_project, tmp_path):

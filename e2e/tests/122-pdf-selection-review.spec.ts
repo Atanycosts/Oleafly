@@ -14,10 +14,12 @@ import {
   fillTextarea,
   openRailTab,
   setEditorContent,
+  waitForCompileIdle,
   waitLong,
 } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
+import { webviewScreenshot } from "../webview-screenshot";
 
 function decodeToolResult(content: string): Record<string, any> {
   const result = JSON.parse(content);
@@ -30,6 +32,34 @@ function decodeToolResult(content: string): Record<string, any> {
   return result;
 }
 
+function toolResultsByName(
+  request: Record<string, any>,
+  name: string,
+): Array<Record<string, any>> {
+  const messages = request.messages as Array<{
+    role?: string;
+    content?: unknown;
+    tool_call_id?: string;
+    tool_calls?: Array<{ id?: string; function?: { name?: string } }>;
+  }>;
+  const callIds = new Set(messages.flatMap((message) =>
+    message.role === "assistant" && Array.isArray(message.tool_calls)
+      ? message.tool_calls
+        .filter((call) => call.function?.name === name)
+        .map((call) => call.id)
+        .filter((id): id is string => typeof id === "string")
+      : [],
+  ));
+  return messages
+    .filter((message) =>
+      message.role === "tool"
+      && typeof message.tool_call_id === "string"
+      && callIds.has(message.tool_call_id)
+      && typeof message.content === "string"
+    )
+    .map((message) => decodeToolResult(message.content as string));
+}
+
 // Scripted provider + real app IPC, compile, retained material bytes, PDF text
 // tools and storage. Native DOM Range selection; trusted mouse selection is 24.
 test("PDF feedback retains the displayed original through recompile and links its review result", async ({ tauriPage: page }, testInfo) => {
@@ -39,6 +69,8 @@ test("PDF feedback retains the displayed original through recompile and links it
     if (await page.evaluate<boolean>(`!!document.querySelector('[role="dialog"]')`)) await page.press("body", "Escape");
     if (await page.evaluate<boolean>(`!!document.querySelector('[title="Back to library"]')`)) await page.click('[title="Back to library"]');
     await createBlankProject(page, `PDF selection ${Date.now()}`);
+    await page.evaluate(`window.__oleaflyE2EImport('/src/store/compile.ts').then(m => m.useCompileStore.getState().setAutoCompile(false))`);
+    await waitForCompileIdle(page, 90_000);
     await page.evaluate(`window.__oleaflyE2EImport('/src/store/settings.ts').then(m=>m.useSettingsStore.getState().setViewMode('split'))`);
     expect(await page.evaluate(`window.__aiConnect?.("ollama", ${scriptValue(server.url)}, "llava") ?? false`)).toBe(true);
     await page.evaluate(`window.__researchTasksSet?.(true)`);
@@ -63,15 +95,29 @@ test("PDF feedback retains the displayed original through recompile and links it
     await expect(feedbackPanel).toContainText(feedback);
     expect(server.requestCount()).toBe(baseline);
 
-    const objectTarget: AnnotationTarget = {
+    const objectTarget = await page.evaluate<AnnotationTarget>(`
+      Promise.all([
+        window.__oleaflyE2EImport('/src/store/material-annotations.ts'),
+        window.__oleaflyE2EImport('/src/lib/material-annotations.ts'),
+        window.__oleaflyE2EImport('/src/lib/material-surface.ts'),
+      ]).then(([store, annotations, surface]) => {
+        const document = store.useMaterialAnnotationsStore.getState().document;
+        if (!document) throw new Error('The PDF annotation panel has no material document.');
+        return surface.materialTarget(annotations.materialReference(document));
+      })
+    `);
+    expect(objectTarget).toMatchObject({
       projectId,
       taskId: null,
       objectKind: "material",
       objectId: "compiled:main.tex",
       objectRevision: hashA,
       path: null,
-    };
-    const feedbackContext = await page.evaluate<AnnotationContext>(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m=>m.loadObjectAnnotations(${scriptValue(objectTarget)}))`);
+    });
+    const retainedTarget = { ...objectTarget, objectRevision: null };
+    const loadFeedback = () => page.evaluate<AnnotationContext>(`window.__oleaflyE2EImport('/src/lib/task-collaboration.ts').then(m=>m.loadObjectAnnotations(${scriptValue(retainedTarget)}))`);
+    await expect.poll(async () => (await loadFeedback()).annotations.some((annotation) => annotation.body === feedback), { timeout: 20_000 }).toBe(true);
+    const feedbackContext = await loadFeedback();
     const root = feedbackContext.annotations.find((annotation) => annotation.body === feedback);
     if (!root) throw new Error("The material PDF feedback was not retained.");
     expect(root.explicitRequest).toBe(false);
@@ -120,7 +166,8 @@ test("PDF feedback retains the displayed original through recompile and links it
         .filter((message) => message.role === "tool" && typeof message.content === "string")
         .map((message) => decodeToolResult(message.content as string));
       const toolCount = results.length;
-      const compiled = [...results].reverse().find((result) => result.artifact?.generation > 0)?.artifact;
+      const compileResult = toolResultsByName(body, "compile").at(-1);
+      const compiled = compileResult?.artifact;
       if (toolCount === 0) return { name: "discover_tools", args: { query: "read_paper" } };
       if (toolCount === 1) {
         if (!frozenMaterialPath) throw new Error("The material request did not identify its retained PDF.");
@@ -130,7 +177,12 @@ test("PDF feedback retains the displayed original through recompile and links it
       if (toolCount === 3) return { name: "write_file", args: { path: "main.tex", content: revisedSource } };
       if (toolCount === 4) return { name: "compile", args: {} };
       if (toolCount === 5) return { name: "discover_tools", args: { query: "task_pdf_text annotation_handle" } };
-      if (toolCount === 6) return { name: "task_pdf_text", args: { reference: compiled } };
+      if (toolCount === 6) {
+        if (compileResult?.success !== true || !compiled) {
+          throw new Error(`The task compile did not expose a retained PDF artifact: ${JSON.stringify({ compileResult, compiled })}`);
+        }
+        return { name: "task_pdf_text", args: { reference: compiled } };
+      }
       if (toolCount === 7) {
         if (!explicitAnnotationId || !compiled) throw new Error("The task did not expose its annotation or compiled PDF.");
         return {
@@ -171,13 +223,15 @@ test("PDF feedback retains the displayed original through recompile and links it
     expect(readFileSync(join(executionRoot, "main.tex"), "utf8")).toBe(revisedSource);
 
     const bodies = server.requestBodies().map((body) => JSON.parse(body));
-    const results = bodies.flatMap((body) => body.messages).filter((message) => message.role === "tool" && typeof message.content === "string").map((message) => decodeToolResult(message.content));
-    const originalText = results.find((result) => result.source?.pdf?.sha256 === hashA && typeof result.text === "string");
+    const finalBody = bodies.at(-1)!;
+    const originalText = toolResultsByName(finalBody, "read_paper").find((result) => result.source?.pdf?.sha256 === hashA && typeof result.text === "string");
     expect(originalText?.source?.pdf?.pageCount).toBe(2);
     expect(originalText?.text).toContain("ORIGINAL-PDF-SELECTION-A");
     expect(originalText?.text).not.toContain("CURRENT-PDF-SELECTION-B");
-    expect(results.some((result) => result.path === "main.tex" && result.content?.includes("CURRENT-PDF-SELECTION-B"))).toBe(true);
-    const compiledText = results.find((result) => result.artifact?.generation === generation && typeof result.text === "string");
+    expect(toolResultsByName(finalBody, "read_file").some((result) => result.path === "main.tex" && result.content?.includes("CURRENT-PDF-SELECTION-B"))).toBe(true);
+    const taskPdfTexts = toolResultsByName(finalBody, "task_pdf_text");
+    const compiledText = taskPdfTexts.find((result) => result.artifact?.generation === generation && typeof result.text === "string");
+    expect(compiledText, JSON.stringify({ generation, toolResults: taskPdfTexts }, null, 2)).toBeDefined();
     expect(compiledText?.artifact.pdfSha256).not.toBe(hashA);
     expect(compiledText?.text).toContain("CURRENT-PDF-SELECTION-B");
     expect(compiledText?.text).toContain("REVIEWED-CURRENT-SOURCE");
@@ -243,7 +297,7 @@ test("PDF feedback retains the displayed original through recompile and links it
         && textRect.top >= viewport.top
         && textRect.bottom <= viewport.bottom;
     })()`), { timeout: 30_000 }).toBe(true);
-    await page.screenshot({ path: testInfo.outputPath("native-pdf-selection.png") });
+    await webviewScreenshot(page, testInfo.outputPath("native-pdf-selection.png"));
     writeFileSync(testInfo.outputPath("checks.json"), JSON.stringify({
       projectId,
       taskId: task.id,

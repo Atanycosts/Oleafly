@@ -126,6 +126,7 @@ test("historical journal feedback creates an explicit task and links real busine
       await j.loadJournalAnnotationObject(${scriptValue(projectId)},${scriptValue(reference)});
       return j.saveJournalAnnotation(${scriptValue(projectId)},${scriptValue(reference)},'Keep this historical A4 requirement as evidence.',null);
     })`);
+    const retainedReference = await page.evaluate<JournalObjectReference>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(j=>j.journalAnnotationSource(${scriptValue(root)}).reference)`);
     expect(root.explicitRequest).toBe(false);
     expect(root.source?.content).toContain(quote);
     expect(server.requestCount()).toBe(baseline);
@@ -134,7 +135,7 @@ test("historical journal feedback creates an explicit task and links real busine
     const requestBody = "Review this historical journal rule against the retained DOCX and current task source; amend only the task copy and link your handling.";
     const requested = await page.evaluate<JournalAnnotationRequest>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
       const selected=await window.__oleaflyE2EImport('/src/lib/assistant-delegation-capture.ts').then(m=>m.captureAssistantTarget(${scriptValue(projectId)}));
-      return j.requestJournalAnnotation({projectId:${scriptValue(projectId)},reference:${scriptValue(reference)},body:${scriptValue(requestBody)},parentId:${scriptValue(root.id)},mentions:[],taskId:null,draft:{projectId:${scriptValue(projectId)},title:'Historical journal review',prompt:${scriptValue(requestBody)},...selected,skillIds:[],dependencyIds:[]}});
+      return j.requestJournalAnnotation({projectId:${scriptValue(projectId)},reference:${scriptValue(retainedReference)},body:${scriptValue(requestBody)},parentId:${scriptValue(root.id)},mentions:[],taskId:null,draft:{projectId:${scriptValue(projectId)},title:'Historical journal review',prompt:${scriptValue(requestBody)},...selected,skillIds:[],dependencyIds:[]}});
     })`);
     expect(requested.created).toBe(true);
     expect(requested.needsStart).toBe(true);
@@ -146,7 +147,7 @@ test("historical journal feedback creates an explicit task and links real busine
       { name: "discover_tools", args: { query: "annotation_" } },
       { name: "annotation_context", args: { id: requested.annotation.id } },
       { name: "journal_context", args: {} },
-      { name: "journal_read", args: { operation: "object", kind: "rule", object_id: reference.objectId, world_version_id: reference.worldVersionId } },
+      { name: "journal_read", args: { operation: "object", kind: "rule", object_id: retainedReference.objectId, world_version_id: retainedReference.worldVersionId } },
       { name: "journal_read", args: { operation: "content", query: { region: "body", page_size: 20 } } },
       { name: "journal_check", args: {} },
       { name: "read_file", args: { path: "main.tex" } },

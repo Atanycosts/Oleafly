@@ -602,9 +602,9 @@ export async function replaceEditorSource(page: Page, text: string): Promise<voi
       view.focus();
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: ${scriptValue(text)} },
-        selection: { anchor: ${scriptValue(text)}.length },
         userEvent: "input.e2e-fixture",
       });
+      view.dispatch({ selection: { anchor: view.state.doc.length } });
       return true;
     })`,
   );

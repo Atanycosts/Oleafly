@@ -13,11 +13,12 @@ same buttons gets a PDF with zero errors.
   granted only in e2e builds (see `lib.rs`).
 - `@srsholmes/tauri-playwright` (npm) gives Playwright's test API
   (`test`, `expect`, locators, auto-waiting) over that bridge.
-- The local plugin's macOS `screenshot` command uses WKWebView's snapshot API.
-  `webview-screenshot.ts` captures actual webview pixels without screen-recording
-  access. `page.screenshot()` still uses the separate native window capture and
-  needs macOS screen-recording permission. These adaptations remain confined to
-  the optional E2E plugin.
+- The local plugin's `screenshot` command uses WKWebView's snapshot API on macOS
+  and a DOM/SVG fallback on Linux and Windows. `webview-screenshot.ts` therefore
+  captures the app's webview without depending on native window capture.
+  `page.screenshot()` uses the separate native capture path, which needs macOS
+  screen-recording permission and is unavailable on some platforms. These
+  adaptations remain confined to the optional E2E plugin.
 - `OLEAFLY_DATA_DIR` points the app at a throwaway directory, so runs never
   touch `~/.oleafly`. The webview keeps its storage somewhere else, covered in
   [Isolated web storage](#isolated-web-storage).

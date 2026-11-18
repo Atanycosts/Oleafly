@@ -100,6 +100,7 @@ test("external journal revision wakes only the subscribed idle member and dedupl
     const explorer = group.members.find(m=>m.name==="Explorer")!;
     const faultPrefix = process.env.OLEAFLY_E2E_WORKBENCH_SYNC_FAULT;
     let externallyRevised = false;
+    let coordinatorDelegated = false;
     let memberCheckResult: ReturnType<typeof decodeToolResult> | undefined;
     const observedTurns: { phase: string; member: string; prompt: string; lastUser: number; toolResultCount: number; roles: string[] }[] = [];
     server.setResponder(body=>{
@@ -114,8 +115,12 @@ test("external journal revision wakes only the subscribed idle member and dedupl
       const member = /You are (?:the persistent member )?Reviewer\. Responsibility:/.test(prompt) ? "Reviewer" : /You are (?:the persistent member )?Coordinator\. Responsibility:/.test(prompt) ? "Coordinator" : "Explorer";
       if (!results.length) observedTurns.push({phase:externallyRevised?"external":"initial",member,prompt,lastUser,toolResultCount:results.length,roles:messages.map(message=>message.role)});
       if (member === "Coordinator") {
+        if (coordinatorDelegated) return "Reviewer handled the bounded journal read. No further work was requested.";
         if (results.length===0) return {name:"discover_tools",args:{query:"group_message"}};
-        if (results.length===1) return {name:"group_message",args:{body:"Read journal_context and the historical rule, run journal_check once, then wait for external changes.",recipients:[reviewer.id],requestWork:true}};
+        if (results.length===1) {
+          coordinatorDelegated = true;
+          return {name:"group_message",args:{body:"Read journal_context and the historical rule, run journal_check once, then wait for external changes.",recipients:[reviewer.id],requestWork:true}};
+        }
         return "Delegated the bounded journal read. No journal subscription requested.";
       }
       if (member === "Reviewer") {
@@ -214,6 +219,6 @@ test("external journal revision wakes only the subscribed idle member and dedupl
     expect(business.history.checks.map((check: { check_id: string })=>check.check_id).sort()).toEqual([fixture.reference.checkId,memberCheckResult.check.check_id].sort());
     const faultMarker = faultPrefix ? JSON.parse(readFileSync(faultPrefix+".fired.json", "utf8")) : null;
     if (faultMarker) expect(faultMarker.checkId).toBe(memberCheckResult.check.check_id);
-    writeFileSync(testInfo.outputPath("checks.json"),JSON.stringify({mode:"scripted-provider-native-workbench-poll",realModelReasoning:false,projectId,taskId,reference:fixture.reference,revisedWorldVersionId:revised.version_id,initial:idle,memberCheckId:memberCheckResult.check.check_id,memberCheckResult,initialReviewerExecutionCount:1,originPollObservationMs:32_000,syncFailureInjected:Boolean(faultPrefix),faultMarker,delivered,final,observedTurns,business,dedupObservationMs:32_000,externalMutation:"WorkbenchService.revise via Python; no Oleafly IPC kick"},null,2));
+    writeFileSync(testInfo.outputPath("checks.json"),JSON.stringify({mode:"scripted-provider-native-workbench-poll",realModelReasoning:false,projectId,taskId,reference:fixture.reference,revisedWorldVersionId:revised.version_id,initial:idle,memberCheckId:memberCheckResult.check.check_id,memberCheckResult,initialReviewerExecutionCount:1,coordinatorDelegated,originPollObservationMs:32_000,syncFailureInjected:Boolean(faultPrefix),faultMarker,delivered,final,observedTurns,business,dedupObservationMs:32_000,externalMutation:"WorkbenchService.revise via Python; no Oleafly IPC kick"},null,2));
   } finally { await server.close(); }
 });

@@ -3,9 +3,17 @@ import { writeFileSync } from "node:fs";
 import type { ResearchTask, TaskCompiledArtifact } from "../../src/lib/research-tasks";
 import type { PaperText } from "../../src/lib/research-literature";
 import { test, expect } from "../fixtures";
-import { createBlankProject, fillTextarea, openRailTab, setEditorContent, waitLong } from "../helpers";
+import {
+  createBlankProject,
+  fillTextarea,
+  openRailTab,
+  setEditorContent,
+  waitForCompileIdle,
+  waitLong,
+} from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
+import { webviewScreenshot } from "../webview-screenshot";
 
 type ToolCall = { id?: string; function?: { name?: string } };
 type Message = {
@@ -74,6 +82,8 @@ test("ordinary chat reads retained paper windows, revises, compiles and reopens 
   try {
     if (await page.evaluate<boolean>(`!!document.querySelector('[title="Back to library"]')`)) await page.click('[title="Back to library"]');
     await createBlankProject(page, `Shared paper chat ${Date.now()}`);
+    await page.evaluate(`window.__oleaflyE2EImport('/src/store/compile.ts').then(m => m.useCompileStore.getState().setAutoCompile(false))`);
+    await waitForCompileIdle(page, 90_000);
     await setEditorContent(page, ORIGINAL);
     await page.evaluate(`window.__oleaflyE2EImport('/src/store/files.ts').then(m => m.useFilesStore.getState().saveAllDirty())`);
     await page.evaluate(`window.__oleaflyE2EImport('/src/store/settings.ts').then(m => m.useSettingsStore.getState().setViewMode('split'))`);
@@ -110,11 +120,25 @@ test("ordinary chat reads retained paper windows, revises, compiles and reopens 
     expect(first?.text).toContain("VALIDATION_SOURCE_FIRST");
     const requests = server.requestBodies().map((body) => JSON.parse(body) as Record<string, unknown>);
     const final = requests.at(-1)!;
+    const toolResultByName = (request: Record<string, unknown>, name: string) => {
+      const messages = request.messages as Message[];
+      const callIds = new Set(messages.flatMap((message) =>
+        message.role === "assistant" && Array.isArray(message.tool_calls)
+          ? message.tool_calls.filter((call) => call.function?.name === name).map((call) => call.id).filter((id): id is string => typeof id === "string")
+          : [],
+      ));
+      const message = [...messages].reverse().find((candidate) => candidate.role === "tool" && typeof candidate.tool_call_id === "string" && callIds.has(candidate.tool_call_id) && typeof candidate.content === "string");
+      return message && typeof message.content === "string" ? JSON.parse(message.content) as Record<string, unknown> : null;
+    };
     const windows = (final.messages as Message[]).filter((message) => message.role === "tool" && typeof message.content === "string")
       .map((message) => JSON.parse(message.content as string) as Partial<PaperText> & { text?: string; success?: boolean });
     expect(windows.some((value) => value.text?.includes("HELDOUT_SOURCE_SECOND"))).toBe(true);
-    expect(windows.some((value) => value.success === true)).toBe(true);
-    expect(toolResult<{ text: string }>(final, "numPages").text).toContain("test data stay held out");
+    expect(toolResultByName(final, "compile")).toMatchObject({ success: true, has_pdf: true });
+    const pdfText = toolResultByName(final, "get_pdf_text");
+    expect(pdfText, "The final provider request must contain the exact get_pdf_text result.").not.toBeNull();
+    expect(pdfText).not.toHaveProperty("error");
+    expect(pdfText).toHaveProperty("numPages");
+    expect(pdfText?.text).toContain("test data stay held out");
     const native = await page.evaluate<{ source: string; pdf: string; files: string[] }>(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(async api => ({ source: await api.readFileContent(${scriptValue(projectId)}, 'main.tex'), pdf: btoa(String.fromCharCode(...new Uint8Array(await api.readProjectBytes(${scriptValue(projectId)}, 'source.pdf')))), files: (await api.listFiles(${scriptValue(projectId)})).map(f => f.path) }))`);
     expect(native.source).toBe(REVISED);
     expect(native.pdf).toBe(pdf);
@@ -154,7 +178,7 @@ test("ordinary chat reads retained paper windows, revises, compiles and reopens 
         && !viewer.closest('[role="dialog"], [role="alertdialog"]');
     })()`), { timeout: 45_000 }).toBe(true);
     await waitLong(page, `!![...document.querySelectorAll('[data-testid="workspace-material-surface"] .textLayer span')].find(node => node.textContent.includes('VALIDATION_SOURCE_FIRST'))`, 30_000);
-    await page.screenshot({ path: testInfo.outputPath("retained-paper-material-viewer.png") });
+    await webviewScreenshot(page, testInfo.outputPath("retained-paper-material-viewer.png"));
     await viewer.getByRole("button", { name: "Close material", exact: true }).click();
     await expect(viewer).toHaveCount(0);
     expect(await manuscriptText()).toContain("test data stay held out");

@@ -56,6 +56,15 @@ class RenderConversionError(ValueError):
     code = "render_failed"
 
 
+def _launch_executable(executable: Path) -> Path:
+    """Use LibreOffice's console launcher on Windows when it is installed."""
+    if os.name == "nt" and executable.name.casefold() == "soffice.exe":
+        console_launcher = executable.with_name("soffice.com")
+        if console_launcher.is_file():
+            return console_launcher
+    return executable
+
+
 def render_libreoffice_baseline(
     project_root: Path,
     *,
@@ -89,15 +98,16 @@ def render_libreoffice_baseline(
         raise RendererUnavailableError("The LibreOffice profile parent is not a directory.")
     profile.mkdir(parents=True, exist_ok=True)
 
+    launch_executable = _launch_executable(executable)
     invoke = runner or _run_command
     try:
         version_result = invoke(
-            [executable.as_posix(), "--version"],
+            [launch_executable.as_posix(), "--version"],
             LIBREOFFICE_RENDER_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RendererUnavailableError(
-            "The selected LibreOffice executable could not be started."
+            f"The selected LibreOffice executable could not be started: {exc}"
         ) from exc
     version_output = _command_output(version_result)
     version_line = next(
@@ -117,7 +127,7 @@ def render_libreoffice_baseline(
     if sha256_bytes(source_bytes) != source_sha256:
         raise ProjectStoreError("Retained baseline bytes differ from their source identity")
 
-    executable_sha256 = sha256_file(executable)
+    executable_sha256 = sha256_file(launch_executable)
     profile_id = f"libreoffice-headless-{sha256_text(profile.resolve().as_posix())[:16]}"
     scratch = project_root / "var"
     require_no_reparse_points(scratch)
@@ -137,7 +147,7 @@ def render_libreoffice_baseline(
             supplied_fonts = _stage_fonts(font_dirs, render_profile / "user" / "fonts")
             font_cache_sha256 = _font_set_sha256(supplied_fonts)
             command = [
-                executable.as_posix(),
+                launch_executable.as_posix(),
                 f"-env:UserInstallation={render_profile.resolve().as_uri()}",
                 "--headless",
                 "--nologo",

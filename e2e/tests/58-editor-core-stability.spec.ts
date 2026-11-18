@@ -78,7 +78,8 @@ async function activatePreviewControl(
 ) {
   const direct = page.locator(`[aria-label=${JSON.stringify(label)}]`);
   if (await direct.isVisible()) {
-    await direct.click();
+    await direct.focus();
+    await direct.press("Enter");
     return;
   }
 
@@ -92,7 +93,13 @@ async function activatePreviewControl(
   await moreControls.press("Enter");
   const menu = page.getByRole("menu");
   await expect(menu).toBeVisible();
-  await menu.getByText(label, { exact: true }).click();
+  expect(await menu.getByRole("menuitem", { name: label, exact: true }).count()).toBe(1);
+  for (let step = 0; step < await menu.getByRole("menuitem").count(); step += 1) {
+    if (await page.evaluate<string | null>(`document.activeElement?.getAttribute("aria-label") ?? null`) === label) break;
+    await page.keyboard.press("ArrowDown");
+  }
+  expect(await page.evaluate<string | null>(`document.activeElement?.getAttribute("aria-label") ?? null`)).toBe(label);
+  await page.keyboard.press("Enter");
 }
 
 async function editorGeometry(

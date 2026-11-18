@@ -48,6 +48,51 @@ beforeEach(() => {
 });
 
 describe("material feedback panel", () => {
+  it("renders nothing when no material is open", () => {
+    useMaterialAnnotationsStore.getState().close();
+    const view = render(<MaterialAnnotations />);
+    expect(view.container).toBeEmptyDOMElement();
+  });
+  it("shows an object-history failure without closing the material workspace", async () => {
+    api.load.mockRejectedValueOnce(new Error("Object history unavailable"));
+    render(<MaterialAnnotations />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Object history unavailable");
+    expect(useMaterialAnnotationsStore.getState().document).toBe(document);
+    expect(screen.getByRole("textbox", { name: labels.body })).toBeVisible();
+  });
+  it("keeps annotations readable when their task is no longer listed", async () => {
+    saved = [annotation({ target: { ...materialTarget(document), taskId: "removed-task" } })];
+    api.list.mockResolvedValue([]);
+    render(<MaterialAnnotations />);
+    expect(await screen.findByTestId("task-annotation")).toHaveTextContent("Inspect this figure");
+    expect(api.list).toHaveBeenCalledExactlyOnceWith("paper");
+    expect(screen.queryByRole("button", { name: `${en.materialAnnotations.openTask} · Task removed-task` })).not.toBeInTheDocument();
+  });
+  it("shows the selected quote only for quote-bearing anchors", () => {
+    useMaterialAnnotationsStore.getState().open(document, { kind: "html", selector: "#figure", quote: "Selected caption" });
+    render(<MaterialAnnotations />);
+    expect(screen.getByText("Selected caption")).toBeVisible();
+    act(() => useMaterialAnnotationsStore.getState().open(document, { kind: "page", page: 2, rects: [] }));
+    expect(screen.queryByText("Selected caption")).not.toBeInTheDocument();
+  });
+  it("exposes a recovered task without starting work already present", async () => {
+    api.request.mockResolvedValue({
+      annotation: annotation({ id: "requested-without-start", explicitRequest: true }),
+      task: researchTaskFixture({ id: "ready-task", status: "awaiting_review" }),
+      needsStart: false,
+    });
+    render(<MaterialAnnotations />);
+    await screen.findByText(labels.empty);
+    fillRequest();
+    await waitFor(() => expect(api.request).toHaveBeenCalledOnce());
+    expect(api.start).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: `${en.materialAnnotations.openTask} · Task ready-task` })).toBeVisible();
+  });
+  it("labels non-material results without a path by their result role", async () => {
+    showResult({ ...materialTarget(document), objectKind: "artifact", objectId: "result", taskId: "result-task", path: null });
+    render(<MaterialAnnotations />);
+    expect(await screen.findByRole("button", { name: en.materialAnnotations.result })).toBeVisible();
+  });
   it("offers optional minimization without clearing its draft or closing the material", async () => {
     const minimize = vi.fn();
     const view = render(<MaterialAnnotations onMinimize={minimize} />);
