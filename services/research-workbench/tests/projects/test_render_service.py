@@ -29,6 +29,7 @@ from research_file_workbench.projects.render_service import (
     _file_uri,
     _launch_executable,
     _normalized_windows_path,
+    _run_command,
     load_render_mapping,
     read_render_artifact,
     register_render_bundle,
@@ -44,6 +45,27 @@ from research_file_workbench.projects.service import (
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = "s1-figures-tables"
+
+
+def test_libreoffice_runner_does_not_inherit_stdin(monkeypatch):
+    captured = {}
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    command = ["soffice", "--headless"]
+
+    assert _run_command(command, 120).returncode == 0
+    assert captured == {
+        "command": command,
+        "stdin": subprocess.DEVNULL,
+        "capture_output": True,
+        "check": False,
+        "timeout": 120,
+    }
 
 
 @pytest.fixture

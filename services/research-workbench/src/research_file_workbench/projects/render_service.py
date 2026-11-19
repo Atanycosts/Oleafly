@@ -550,8 +550,10 @@ def read_render_artifact(
 
 
 def _run_command(command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
+    """Run LibreOffice without inheriting the desktop owner's control pipe."""
     return subprocess.run(
         command,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         check=False,
         timeout=timeout,

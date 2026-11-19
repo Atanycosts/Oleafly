@@ -390,6 +390,17 @@ def test_network_binding_is_not_silently_exposed(tmp_path):
         WorkbenchHttpServer(("0.0.0.0", 0), service)
 
 
+def test_loopback_binding_does_not_require_reverse_dns(tmp_path, monkeypatch):
+    def unexpected_lookup(host):
+        pytest.fail(f"Unexpected DNS lookup for {host}")
+
+    monkeypatch.setattr("socket.getfqdn", unexpected_lookup)
+    service = WorkbenchService.create(tmp_path / "library")
+    with WorkbenchHttpServer(("127.0.0.1", 0), service) as server:
+        assert server.server_name == "127.0.0.1"
+        assert server.server_port == server.server_address[1] > 0
+
+
 @pytest.mark.parametrize("token", ["invalid-\u00e9", "\u00ff"])
 def test_non_ascii_session_token_is_refused_without_crashing_or_writing(running_server, token):
     status, denied = _request(running_server, "POST", "/api/worlds", _world_payload(), token)
