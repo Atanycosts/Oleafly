@@ -882,6 +882,30 @@ export async function openRailTab(page: Page, ariaLabel: string) {
   throw new Error(`openRailTab: ${ariaLabel} never became the active tab`);
 }
 
+export async function expectJournalPanelReady(page: Page, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const state = await page.evaluate<{ ready: boolean; error: string }>(
+      `(() => {
+        const panel = document.querySelector('[data-testid="journal-checks-panel"]');
+        const importButton = Array.from(panel?.querySelectorAll('button') ?? [])
+          .find(candidate => candidate.textContent?.trim() === 'Import DOCX');
+        const alert = panel?.querySelector('[role="alert"]');
+        return {
+          ready: !!importButton && !importButton.disabled && importButton.getClientRects().length > 0,
+          error: alert?.textContent?.trim() ?? '',
+        };
+      })()`,
+    );
+    if (state.ready) return;
+    if (state.error) throw new Error(`Journal Workbench unavailable: ${state.error}`);
+    if (Date.now() > deadline) {
+      throw new Error(`Journal Workbench did not become ready within ${timeoutMs}ms.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
 export async function shellStateSnapshot(page: Page): Promise<string> {
   return page.evaluate<string>(`(() => {
     const library = document.querySelector('[data-testid="library"]');

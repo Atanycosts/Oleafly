@@ -9,7 +9,7 @@ import type {
   JournalWorld,
 } from "../../src/lib/journal-workbench";
 import { test, expect } from "../fixtures";
-import { createBlankProject, openRailTab } from "../helpers";
+import { createBlankProject, evaluateLong, expectJournalPanelReady, openRailTab } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 
@@ -45,7 +45,7 @@ test("historical journal feedback creates an explicit task and links real busine
     await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m=>m.writeFileContent(${scriptValue(projectId)},'main.tex',${scriptValue(source)}))`);
     await openRailTab(page, "Journal checks");
     const panel = page.getByTestId("journal-checks-panel");
-    await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled({ timeout: 30_000 });
+    await expectJournalPanelReady(page);
     const docx = Buffer.from(zipSync({
       "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
       "_rels/.rels": strToU8('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'),
@@ -80,7 +80,7 @@ test("historical journal feedback creates an explicit task and links real busine
         { property: "page_height_twips", expected: 16838, unit: "twips", source_refs: ["page-size"] },
       ],
     };
-    const world = await page.evaluate<JournalWorld>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
+    const world = await evaluateLong<JournalWorld>(page, `window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
       const base=await j.journalRequest('/api/worlds',{
         journal_id:${scriptValue(journalId)},
         journal_name:'Historical journal',
@@ -98,7 +98,7 @@ test("historical journal feedback creates an explicit task and links real busine
           {property:'page_height_twips',expected:16838,reason:'Operator confirmed A4 height against the captured guide.'},
         ],
       });
-    })`);
+    })`, 120_000);
     await panel.locator('button[aria-label="Refresh journal checks"]').click();
     await expect.poll(() => page.evaluate<string[]>(`Array.from(
       document.querySelector('[data-testid="journal-world-select"]')?.options ?? []
@@ -115,28 +115,28 @@ test("historical journal feedback creates an explicit task and links real busine
       const card = cards.find((item) => item.children[0]?.textContent === 'Violation');
       return card?.children[1]?.textContent ?? null;
     })()`)).toBe("2");
-    const reference = await page.evaluate<JournalObjectReference>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
+    const reference = await evaluateLong<JournalObjectReference>(page, `window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
       const w=await window.__oleaflyE2EImport('/src/lib/research-workspace.ts').then(m=>m.getResearchWorkspace(${scriptValue(projectId)}));
       const state=await j.journalRequest('/api/state'); const p=state.projects.find(p=>p.project_id===w.journalProjectId);
       const world=await j.journalRequest('/api/world?version_id='+p.binding.world_version_id);
       return {libraryRoot:(await j.connectJournalWorkbench()).libraryRoot,workbenchProjectId:p.project_id,kind:'rule',objectId:world.rules.find(r=>r.property==='page_width_twips').rule_id,worldVersionId:world.version_id,checkId:p.latest_check.check_id};
-    })`);
+    })`, 90_000);
     const baseline = server.requestCount();
-    const root = await page.evaluate<TaskAnnotation>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
+    const root = await evaluateLong<TaskAnnotation>(page, `window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
       await j.loadJournalAnnotationObject(${scriptValue(projectId)},${scriptValue(reference)});
       return j.saveJournalAnnotation(${scriptValue(projectId)},${scriptValue(reference)},'Keep this historical A4 requirement as evidence.',null);
-    })`);
+    })`, 90_000);
     const retainedReference = await page.evaluate<JournalObjectReference>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(j=>j.journalAnnotationSource(${scriptValue(root)}).reference)`);
     expect(root.explicitRequest).toBe(false);
     expect(root.source?.content).toContain(quote);
     expect(server.requestCount()).toBe(baseline);
-    const revised = await page.evaluate<{ version_id: string }>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(j=>j.journalRequest('/api/revise',{version_id:${scriptValue(reference.worldVersionId)},rule_id:${scriptValue(reference.objectId)},expected:12240,reason:'New operator revision; retain previous binding.'}))`);
+    const revised = await evaluateLong<{ version_id: string }>(page, `window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(j=>j.journalRequest('/api/revise',{version_id:${scriptValue(reference.worldVersionId)},rule_id:${scriptValue(reference.objectId)},expected:12240,reason:'New operator revision; retain previous binding.'}))`, 60_000);
     expect(revised.version_id).not.toBe(reference.worldVersionId);
     const requestBody = "Review this historical journal rule against the retained DOCX and current task source; amend only the task copy and link your handling.";
-    const requested = await page.evaluate<JournalAnnotationRequest>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
+    const requested = await evaluateLong<JournalAnnotationRequest>(page, `window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
       const selected=await window.__oleaflyE2EImport('/src/lib/assistant-delegation-capture.ts').then(m=>m.captureAssistantTarget(${scriptValue(projectId)}));
       return j.requestJournalAnnotation({projectId:${scriptValue(projectId)},reference:${scriptValue(retainedReference)},body:${scriptValue(requestBody)},parentId:${scriptValue(root.id)},mentions:[],taskId:null,draft:{projectId:${scriptValue(projectId)},title:'Historical journal review',prompt:${scriptValue(requestBody)},...selected,skillIds:[],dependencyIds:[]}});
-    })`);
+    })`, 90_000);
     expect(requested.created).toBe(true);
     expect(requested.needsStart).toBe(true);
     expect(requested.task.status).toBe("queued");

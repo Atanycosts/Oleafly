@@ -1,6 +1,6 @@
 import { test, expect } from "../fixtures";
 import type { TauriPage } from "@srsholmes/tauri-playwright";
-import { openZoomMenu, pressVisibleMenuItem } from "../preview-menu";
+import { openVisibleMenu, openZoomMenu, pressVisibleMenuItem } from "../preview-menu";
 import {
   compileAndProbe,
   createBlankProject,
@@ -158,14 +158,25 @@ async function expectPreviewControlAvailable(
   tauriPage: TauriPage,
   label: string,
 ) {
-  const direct = tauriPage.locator(`[aria-label=${JSON.stringify(label)}]`);
-  if (await direct.isVisible()) return;
+  const visibleControl = (selector: string) => `Array.from(
+    document.querySelectorAll(${JSON.stringify(selector)})
+  ).some((element) => element.getClientRects().length > 0)`;
+  const directSelector = `[aria-label=${JSON.stringify(label)}]`;
+  const overflowSelector = '[aria-label="More preview controls"]';
 
-  const moreControls = tauriPage.locator('[aria-label="More preview controls"]');
-  await expect(moreControls).toBeVisible();
-  await moreControls.focus();
-  await moreControls.press("Enter");
-  await expect(tauriPage.getByRole("menu").getByText(label, { exact: true })).toBeVisible();
+  // Leaving fullscreen remounts the toolbar at a different width. Give the
+  // overflow calculation one settled layout before deciding where the control went.
+  await expect.poll(() => tauriPage.evaluate<boolean>(
+    `(${visibleControl(directSelector)}) || (${visibleControl(overflowSelector)})`,
+  )).toBe(true);
+  if (await tauriPage.evaluate<boolean>(visibleControl(directSelector))) return;
+
+  await openVisibleMenu(tauriPage, overflowSelector);
+  expect(await tauriPage.evaluate<boolean>(`Array.from(
+    document.querySelectorAll('[role="menuitem"]')
+  ).some((item) => item.getClientRects().length > 0 &&
+    (item.textContent?.trim() === ${JSON.stringify(label)} ||
+      item.getAttribute('aria-label') === ${JSON.stringify(label)}))`)).toBe(true);
   await tauriPage.keyboard.press("Escape");
 }
 

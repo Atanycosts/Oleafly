@@ -1,14 +1,20 @@
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-import type { TauriPage } from "@srsholmes/tauri-playwright";
 import type { DocxDocumentRead } from "../../packages/ai-tools/src/tools";
 import type { DocxActivity, DocxActivityPage, DocxActivityTarget } from "../../src/lib/docx-task-activity";
 import type { ResearchTask } from "../../src/lib/research-tasks";
 import type { GroupSnapshot } from "../../src/lib/task-collaboration";
 import type { DocxRender } from "../../src/lib/docx-render";
 import { test, expect } from "../fixtures";
-import { createBlankProject, openRailTab, waitLong } from "../helpers";
+import {
+  createBlankProject,
+  evaluateLong,
+  expectJournalPanelReady,
+  openRailTab,
+  type Page,
+  waitLong,
+} from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 import { webviewScreenshot } from "../webview-screenshot";
@@ -42,10 +48,10 @@ function result<T>(request: Request, field: string): T {
   throw new Error(`No DOCX tool result containing ${field}.`);
 }
 
-const live = (page: TauriPage) => page.evaluate<DocxDocumentRead>(`window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m => m.DOCX_AGENT_HOST.readDocument())`);
-const history = (page: TauriPage, projectId: string, manuscript: string) => page.evaluate<DocxActivityPage>(`window.__TAURI_INTERNALS__.invoke('research_docx_activities', { projectId: ${scriptValue(projectId)}, workbenchProjectId: ${scriptValue(manuscript)}, afterCursor: 0, limit: 50 })`);
+const live = (page: Page) => page.evaluate<DocxDocumentRead>(`window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m => m.DOCX_AGENT_HOST.readDocument())`);
+const history = (page: Page, projectId: string, manuscript: string) => page.evaluate<DocxActivityPage>(`window.__TAURI_INTERNALS__.invoke('research_docx_activities', { projectId: ${scriptValue(projectId)}, workbenchProjectId: ${scriptValue(manuscript)}, afterCursor: 0, limit: 50 })`);
 
-async function clickButton(page: TauriPage, root: string, label: string) {
+async function clickButton(page: Page, root: string, label: string) {
   await page.evaluate(`(() => {
     const surface = document.querySelector(${scriptValue(root)});
     const button = Array.from(surface.querySelectorAll('button')).find(item => item.textContent.trim() === ${scriptValue(label)});
@@ -59,17 +65,18 @@ test("native tasks propose DOCX changes and retain user decisions with exact sav
   test.setTimeout(480_000);
   const server = await startMockAiServer();
   try {
+    await page.evaluate("window.__oleaflyE2EImport('/src/store/settings.ts').then(({ useSettingsStore }) => useSettingsStore.getState().setUiLocalePreference('en'))");
     if (await page.evaluate<boolean>(`!!document.querySelector('[title="Back to library"]')`)) await page.click('[title="Back to library"]');
     await createBlankProject(page, `DOCX task attribution ${Date.now()}`);
     const projectId = await page.evaluate<string>(`window.__oleaflyE2EImport('/src/store/files.ts').then(m => m.useFilesStore.getState().projectId)`);
     await page.evaluate(`window.__researchTasksSet?.(true)`);
-    await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(async api => {
+    await evaluateLong<void>(page, `window.__oleaflyE2EImport('/src/lib/tauri.ts').then(async api => {
       const config = await api.getConfig();
       await api.setConfig({ ...config, ai_custom_providers: [...(config.ai_custom_providers ?? []).filter(p => p.id !== ${scriptValue(PROVIDER)}), { id: ${scriptValue(PROVIDER)}, name: 'Scripted DOCX task fixture', baseURL: ${scriptValue(`${server.url}/v1`)}, keyOptional: true }], ai_provider_models: { ...config.ai_provider_models, [${scriptValue(PROVIDER)}]: [{ id: ${scriptValue(MODEL)}, name: ${scriptValue(MODEL)}, enabled: true, source: 'user' }] } });
-    })`);
+    })`, 90_000);
     await openRailTab(page, "Journal checks");
     const panel = page.getByTestId("journal-checks-panel");
-    await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled({ timeout: 30_000 });
+    await expectJournalPanelReady(page);
     await panel.getByText("Import DOCX", { exact: true }).click();
     await page.fill('[role="dialog"] input:not([type="file"])', "DOCX task fixture");
     await page.setInputFiles('[role="dialog"] input[type="file"]', [{ name: "task-fixture.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: Buffer.from(fixture()) }]);
@@ -165,33 +172,50 @@ test("native tasks propose DOCX changes and retain user decisions with exact sav
       await writeFile(testInfo.outputPath(`task-${index}-saved.docx`), bytes);
       records.push({ task: settled, proposed, saved, group: snapshot });
     }
-    await expect(page.getByTestId("docx-render-state")).toContainText("PDF matches the saved working copy", { timeout: 150_000 });
-    const saved = records.at(-1)!.saved;
+    await expect.poll(async () => {
+      const state = await page.evaluate<{ state: string | null; error: string | null }>(`(() => ({
+        state: document.querySelector('[data-testid="docx-render-state"]')?.textContent ?? null,
+        error: document.querySelector('[data-testid="docx-render-error"]')?.textContent ?? null,
+      }))()`);
+      if (state.error) throw new Error(state.error);
+      return state.state;
+    }, { timeout: 150_000 }).toContain("PDF matches the saved working copy");
+    const { task, saved } = records.at(-1)!;
     const renders = await page.evaluate<DocxRender[]>(`window.__oleaflyE2EImport('/src/lib/docx-render.ts').then(m => m.loadDocxRenders(${scriptValue(manuscript)}, ${scriptValue(saved.document.baselineId)}))`);
     expect(renders.some((render) => render.manifest.source_sha256 === saved.document.sourceSha256 && render.manifest.page_count > 0)).toBe(true);
     await webviewScreenshot(page, testInfo.outputPath("task-proposal-saved.png"));
     await writeFile(testInfo.outputPath("task-activity.json"), JSON.stringify({ records, activities: await history(page, projectId, manuscript), renders }, null, 2));
     await clickButton(page, '[aria-label="Task activity"]', "Open bound task");
     await expect(page.getByTestId("research-task-detail")).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator("#research-task-detail-title")).toHaveText(task.title);
     await expect(page.getByTestId("docx-workspace")).toBeHidden();
-    await page.locator('[data-testid="task-docx-observations"] summary').click();
-    const observations = page.getByTestId("task-observations");
-    await expect(observations).toHaveAttribute("aria-busy", "false", { timeout: 30_000 });
-    const replacement = page.getByTestId("task-docx-observations").getByText(REPLACEMENTS[1], { exact: true });
-    while (await replacement.count() === 0) {
-      const loadMore = observations.getByRole("button", { name: "Load more observations", exact: true });
-      if (await loadMore.count() === 0) throw new Error("The task transcript ended before the second DOCX replacement.");
-      await loadMore.click();
-      await expect(observations).toHaveAttribute("aria-busy", "false");
+    const observations = '[data-testid="task-observations"]';
+    const docxObservations = '[data-testid="task-docx-observations"]';
+    const loadMoreLabel = "Load more observations";
+    for (;;) {
+      await expect(page.locator(observations)).toHaveAttribute("aria-busy", "false", { timeout: 30_000 });
+      // The native bridge's count() only works for CSS selectors, not text or role locators.
+      const state = await page.evaluate<{ hasReplacement: boolean; hasSavedBaseline: boolean; hasMore: boolean }>(`(() => {
+        const entries = document.querySelector(${scriptValue(docxObservations)});
+        return {
+          hasReplacement: Array.from(entries?.querySelectorAll('li > p') ?? []).some(row => row.textContent === ${scriptValue(REPLACEMENTS[1])}),
+          hasSavedBaseline: entries?.textContent.includes(${scriptValue(saved.document.baselineId)}) ?? false,
+          hasMore: Array.from(document.querySelectorAll(${scriptValue(`${observations} button`)})).some(button => button.textContent.trim() === ${scriptValue(loadMoreLabel)}),
+        };
+      })()`);
+      if (state.hasReplacement && state.hasSavedBaseline) break;
+      expect(state.hasMore, `The ${task.title} transcript ended before the replacement (${state.hasReplacement}) and saved baseline (${state.hasSavedBaseline}) were both recorded.`).toBe(true);
+      await clickButton(page, observations, loadMoreLabel);
     }
+    await page.locator(`${docxObservations} summary`).click();
     await expect(page.getByTestId("task-docx-observations")).toContainText(REPLACEMENTS[1]);
     await expect(page.getByTestId("task-docx-observations")).toContainText(saved.document.baselineId);
     await webviewScreenshot(page, testInfo.outputPath("task-history-navigation.png"));
     await page.evaluate(`window.__oleaflyE2EImport('/src/store/research-tasks.ts').then(m => m.useResearchTasksStore.getState().setDetailOpen(false))`);
-    await page.getByTestId("workspace-word-tab").getByRole("button", { name: "DOCX task fixture", exact: true }).click();
+    await clickButton(page, '[data-testid="workspace-word-tab"]', "DOCX task fixture");
     await expect(page.getByTestId("docx-workspace")).toBeVisible();
     expect((await live(page)).document.sessionId).toBe(initial.document.sessionId);
-    await page.getByTestId("docx-workspace").getByRole("button", { name: "Close", exact: true }).click();
+    await page.locator('[data-testid="docx-workspace"] button[aria-label="Close"]').click();
     await expect(page.getByTestId("docx-workspace")).toHaveCount(0);
     expect((await history(page, projectId, manuscript)).activities.some(({ activity }) => activity.id === records[0].proposed.id)).toBe(true);
     await openRailTab(page, "Journal checks");

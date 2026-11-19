@@ -7,6 +7,7 @@ import struct
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPConnection
 from io import BytesIO
 from pathlib import Path
@@ -838,6 +839,82 @@ def test_http_libreoffice_render_registers_pdf_after_explicit_baseline(
     assert status == 200
     assert manuscript["render_bundles"] == []
     assert any(item["kind"] == "derived_render" for item in manuscript["evidence"])
+
+
+def test_http_libreoffice_renders_are_serialized_per_workbench_service(
+    running_server, tmp_path, monkeypatch
+):
+    token = running_server.session_token
+    status, project = _request(
+        running_server,
+        "POST",
+        "/api/projects",
+        {
+            "name": "Concurrent LibreOffice manuscript",
+            "filename": "source.docx",
+            "content_base64": base64.b64encode(template_bytes()).decode("ascii"),
+        },
+        token,
+    )
+    assert status == 200
+    executable = tmp_path / "soffice"
+    executable.write_bytes(b"fake LibreOffice")
+    executable.chmod(0o755)
+    first_started = threading.Event()
+    second_started = threading.Event()
+    second_dispatched = threading.Event()
+    release_first = threading.Event()
+    state_lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+    calls = 0
+
+    def render(*args, **kwargs):
+        nonlocal active, maximum_active, calls
+        with state_lock:
+            calls += 1
+            active += 1
+            maximum_active = max(maximum_active, active)
+            current_call = calls
+            (first_started if current_call == 1 else second_started).set()
+        try:
+            if current_call == 1:
+                assert release_first.wait(5)
+        finally:
+            with state_lock:
+                active -= 1
+        return {"baseline_id": kwargs["baseline_id"]}
+
+    monkeypatch.setattr(
+        "research_file_workbench.projects.render_service.render_libreoffice_baseline",
+        render,
+    )
+    payload = {
+        "project_id": project["project_id"],
+        "baseline_id": project["baseline_id"],
+        "reason": "Verify concurrent render requests",
+        "libreoffice_executable": executable.as_posix(),
+    }
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            _request, running_server, "POST", "/api/render-baseline", payload, token
+        )
+        assert first_started.wait(5)
+
+        def second_request():
+            second_dispatched.set()
+            return _request(running_server, "POST", "/api/render-baseline", payload, token)
+
+        second = executor.submit(second_request)
+        assert second_dispatched.wait(5)
+        assert not second_started.wait(0.25)
+        release_first.set()
+        assert second_started.wait(5)
+        first_response = first.result(timeout=5)
+        second_response = second.result(timeout=5)
+
+    assert first_response[0] == second_response[0] == 200
+    assert maximum_active == 1
 
 
 def test_http_render_baseline_reports_missing_libreoffice_without_fallback(

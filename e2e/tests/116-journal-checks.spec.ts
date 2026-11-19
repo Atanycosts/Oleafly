@@ -1,7 +1,7 @@
 import type { TauriPage } from "@srsholmes/tauri-playwright";
 import { strToU8, zipSync } from "fflate";
 import { test, expect, reloadNativePage } from "../fixtures";
-import { openRailTab } from "../helpers";
+import { evaluateLong, expectJournalPanelReady, openRailTab } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 import type { JournalComponent, JournalWorld } from "../../src/lib/journal-workbench";
@@ -54,7 +54,7 @@ async function createConfirmedWorld(
     expected: rule.expected,
     reason: "Operator confirmed the explicit component against the captured guide evidence.",
   }));
-  return page.evaluate<JournalWorld>(`import("/src/lib/journal-workbench.ts").then(async (j) => {
+  return evaluateLong<JournalWorld>(page, `import("/src/lib/journal-workbench.ts").then(async (j) => {
     await j.connectJournalWorkbench();
     const base = await j.journalRequest("/api/worlds", {
       journal_id: ${scriptValue(journalId)},
@@ -74,7 +74,7 @@ async function createConfirmedWorld(
       content_base64: ${scriptValue(Buffer.from(JSON.stringify(requirementComponent)).toString("base64"))},
       decisions: ${scriptValue(decisions)},
     });
-  })`);
+  })`, 120_000);
 }
 
 async function addCandidateComponent(
@@ -82,13 +82,13 @@ async function addCandidateComponent(
   worldVersionId: string,
   document: JournalComponent,
 ): Promise<JournalWorld> {
-  return page.evaluate<JournalWorld>(`import("/src/lib/journal-workbench.ts").then((j) =>
+  return evaluateLong<JournalWorld>(page, `import("/src/lib/journal-workbench.ts").then((j) =>
     j.journalRequest("/api/world-component", {
       version_id: ${scriptValue(worldVersionId)},
       name: "typography.json",
       content_base64: ${scriptValue(Buffer.from(JSON.stringify(document)).toString("base64"))},
     })
-  )`);
+  )`, 90_000);
 }
 
 async function refreshAndSelectWorld(
@@ -141,8 +141,7 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   await openRailTab(tauriPage, "Journal checks");
   const panel = tauriPage.getByTestId("journal-checks-panel");
   const workspace = tauriPage.getByTestId("journal-workspace");
-  await expect(panel.getByText("Import DOCX", { exact: true })).toBeVisible({ timeout: 30_000 });
-  await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled();
+  await expectJournalPanelReady(tauriPage);
   await panel.getByText("Import DOCX", { exact: true }).click();
   await tauriPage.fill('[role="dialog"] input:not([type="file"])', "Retained manuscript");
   await tauriPage.setInputFiles('[role="dialog"] input[type="file"]', [{
@@ -233,7 +232,11 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
   await panel.getByText("Run check", { exact: true }).click();
   await expectVerdictCount(tauriPage, "Compliant", 7);
-  const saved = await tauriPage.evaluate(`(async () => {
+  const saved = await evaluateLong<{
+    workspace: { journalProjectId: string | null };
+    checks: { id: string; baseline: string; validity: string; summary: Record<string, number> }[];
+    reads: number;
+  }>(tauriPage, `(async () => {
     const { getResearchWorkspace } = await import("/src/lib/research-workspace.ts");
     const { journalRequest } = await import("/src/lib/journal-workbench.ts");
     const workspace = await getResearchWorkspace(${scriptValue(projectId)});
@@ -248,7 +251,7 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
       })),
       reads: history.reads.length,
     };
-  })()`);
+  })()`, 90_000);
   expect(saved.checks).toHaveLength(2);
   expect(saved.checks[0].summary.violation).toBe(3);
   expect(saved.checks[0].validity).toBe("STALE");
@@ -281,12 +284,12 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   await expect(tauriPage.getByText("210.01 mm · Confirmed requirement → 215.9 mm · Confirmed requirement", { exact: true })).toBeVisible();
   await tauriPage.press('[role="dialog"]', "Escape");
 
-  const revisedVersionId = await tauriPage.evaluate<string>(`import("/src/lib/journal-workbench.ts").then(async (j) => {
+  const revisedVersionId = await evaluateLong<string>(tauriPage, `import("/src/lib/journal-workbench.ts").then(async (j) => {
     const state = await j.journalRequest("/api/state");
     return state.worlds
       .filter((world) => world.journal_id === ${scriptValue(journalId)})
       .sort((a, b) => b.version_ordinal - a.version_ordinal)[0].version_id;
-  })`);
+  })`, 60_000);
   const typography = component(
     journalId,
     [{ property: "body_font_size_halfpoints", expected: 19, unit: "half_points", source_refs: ["type-guide"] }],
@@ -308,7 +311,17 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   await expect(tauriPage.getByText("Save requirement version", { exact: true })).toBeEnabled();
   await tauriPage.getByText("Save requirement version", { exact: true }).click();
   await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
-  const reviewed = await tauriPage.evaluate(`(async () => {
+  const reviewed = await evaluateLong<{
+    binding: string;
+    current: {
+      world_version_id: string;
+      validity: string;
+      summary: Record<string, number>;
+      dispositions: { note: string }[];
+    };
+    sources: number;
+    rules: { property: string; expected: unknown; basis: string }[];
+  }>(tauriPage, `(async () => {
     const { journalRequest } = await import("/src/lib/journal-workbench.ts");
     const state = await journalRequest("/api/state");
     const project = state.projects.find(p => p.project_id === ${scriptValue(saved.workspace.journalProjectId)});
@@ -324,13 +337,15 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
         basis: r.basis_status,
       })),
     };
-  })()`);
+  })()`, 90_000);
   expect(reviewed.binding).toBe(reviewed.current.world_version_id);
   expect(reviewed.current.validity).toBe("CURRENT");
   expect(reviewed.current.summary.compliant).toBe(7);
   expect(reviewed.current.dispositions[0].note).toBe("Keep the original finding; review the next guide version.");
   expect(reviewed.sources).toBe(3);
-  expect(reviewed.rules.find((rule: { property: string }) => rule.property === "page_width_twips").expected).toBe(LETTER_WIDTH_TWIPS);
+  expect(reviewed.rules.find((rule: { property: string }) => rule.property === "page_width_twips")).toMatchObject({
+    expected: LETTER_WIDTH_TWIPS,
+  });
   expect(reviewed.rules.find((rule: { property: string }) => rule.property === "body_font_size_halfpoints")).toMatchObject({
     expected: 19,
     basis: "confirmed",
@@ -372,7 +387,7 @@ test("analyze with agent prepares a bounded review from the current journal chec
       ],
       [{ source_id: "a4", title: "Page-size guidance", locator: "line:1", quote }],
     );
-    await tauriPage.evaluate(`import("/src/lib/journal-workbench.ts").then(async (j) => {
+    await evaluateLong<void>(tauriPage, `import("/src/lib/journal-workbench.ts").then(async (j) => {
       const manuscript = await j.journalRequest("/api/projects", {
         name: "Agent review manuscript",
         filename: "manuscript.docx",
@@ -385,7 +400,7 @@ test("analyze with agent prepares a bounded review from the current journal chec
         expected_binding_id: null,
       });
       await j.journalRequest("/api/check", { project_id: manuscript.project_id });
-    })`);
+    })`, 120_000);
     await openRailTab(tauriPage, "Journal checks");
     const workspace = tauriPage.getByTestId("journal-workspace");
     await expect(workspace.locator('[aria-label="Check results"]')).toBeVisible();

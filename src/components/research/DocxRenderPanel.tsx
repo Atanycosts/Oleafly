@@ -92,7 +92,7 @@ export function DocxRenderPanel({ projectId, baselineId, dirty, fontRevision = 0
     </div>
     <label className="flex items-center gap-2"><input type="checkbox" checked={auto} onChange={(event) => setAuto(event.target.checked)} />{text.auto}</label>
     {(rendererUnavailable || (!executable && render.isFetched)) && <p className="text-muted-foreground">{text.unavailable}</p>}
-    {render.error && <p role="alert" className="break-words text-destructive">{workspace.docxRender.renderFailed}</p>}
+    {render.error && <p role="alert" data-testid="docx-render-error" className="break-words text-destructive">{workspace.docxRender.renderFailed}</p>}
     <div className="flex flex-wrap gap-2">
       <Button size="sm" variant="outline" disabled={!executable || render.isFetching} onClick={() => {
         setAuto(true);

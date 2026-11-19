@@ -1,6 +1,7 @@
 """Local journal worlds, explicit manuscript bindings and evidence-backed checks."""
 
 import shutil
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
@@ -52,6 +53,7 @@ class WorkbenchService:
         self.store.validate_library()
         self.root = root.resolve()
         self.font_dirs = font_dirs
+        self._render_lock = threading.Lock()
 
     @classmethod
     def create(
@@ -297,16 +299,17 @@ class WorkbenchService:
         path = self.project_root(project_id)
         if not path.is_dir():
             raise ValueError("论文不在当前工作台库中。")
-        return render_libreoffice_baseline(
-            path,
-            baseline_id=baseline_id,
-            executable=Path(libreoffice_executable),
-            profile=self.root / "var" / "libreoffice-profile",
-            actor_id="local-operator",
-            confirmation_reason=f"Rendered from the {surface} surface: {reason}",
-            surface=surface,
-            font_dirs=self.font_dirs,
-        )
+        with self._render_lock:
+            return render_libreoffice_baseline(
+                path,
+                baseline_id=baseline_id,
+                executable=Path(libreoffice_executable),
+                profile=self.root / "var" / "libreoffice-profile",
+                actor_id="local-operator",
+                confirmation_reason=f"Rendered from the {surface} surface: {reason}",
+                surface=surface,
+                font_dirs=self.font_dirs,
+            )
 
     def derived_renders(self, project_id: str, baseline_id: str) -> JsonObject:
         """List derived PDF registrations for one explicit retained baseline."""

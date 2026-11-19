@@ -8,7 +8,7 @@ import type {
   JournalObjectReference,
 } from "../../src/lib/journal-workbench";
 import { test, expect } from "../fixtures";
-import { createBlankProject } from "../helpers";
+import { createBlankProject, evaluateLong } from "../helpers";
 import { startMockAiServer } from "../mock-ai-server";
 import { scriptValue } from "../script-value";
 
@@ -67,7 +67,7 @@ test("external journal revision wakes only the subscribed idle member and dedupl
         source_refs: ["page-size"],
       }],
     };
-    const fixture = await page.evaluate<{ reference: JournalObjectReference; requested: JournalAnnotationRequest }>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
+    const fixture = await evaluateLong<{ reference: JournalObjectReference; requested: JournalAnnotationRequest }>(page, `window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
       const connection=await j.connectJournalWorkbench();
       const manuscript=await j.journalRequest('/api/projects',{name:'Subscription manuscript',filename:'manuscript.docx',content_base64:${scriptValue(docx.toString("base64"))}});
       const base=await j.journalRequest('/api/worlds',{journal_id:${scriptValue(journalId)},journal_name:'Subscription journal',article_type:'research_article',stage:'initial_submission',language:'en',sources:[{name:'guide.txt',kind:'guide_text',content_base64:${scriptValue(Buffer.from(quote).toString("base64"))}}]});
@@ -86,7 +86,7 @@ test("external journal revision wakes only the subscribed idle member and dedupl
       const selected=await window.__oleaflyE2EImport('/src/lib/assistant-delegation-capture.ts').then(m=>m.captureAssistantTarget(${scriptValue(projectId)}));
       const requested=await j.requestJournalAnnotation({projectId:${scriptValue(projectId)},reference:retainedReference,body:'Coordinate bounded journal monitoring.',parentId:root.id,mentions:[],taskId:null,draft:{projectId:${scriptValue(projectId)},title:'Journal poll subscription',prompt:'Coordinate bounded journal monitoring.',...selected,skillIds:[],dependencyIds:[]}});
       return {reference,requested};
-    })`);
+    })`, 150_000);
     expect(fixture.requested.task.startRequested).toBe(false);
     const taskId = fixture.requested.task.id;
     const members = [
@@ -208,10 +208,10 @@ test("external journal revision wakes only the subscribed idle member and dedupl
       expect((await snapshot()).work.map(w=>w.id).sort()).toEqual(workIds);
     }
     const final=await snapshot();
-    const business=await page.evaluate<{binding:{world_version_id:string};check:{validity:string;update_available:boolean};history:{checks:{check_id:string}[]}}>(`window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
+    const business=await evaluateLong<{binding:{world_version_id:string};check:{validity:string;update_available:boolean};history:{checks:{check_id:string}[]}}>(page, `window.__oleaflyE2EImport('/src/lib/journal-workbench.ts').then(async j=>{
       const state=await j.journalRequest('/api/state');const p=state.projects.find(p=>p.project_id===${scriptValue(fixture.reference.workbenchProjectId)});
       return {binding:p.binding,check:await j.journalRequest('/api/check?check_id='+p.latest_check.check_id),history:await j.journalRequest('/api/history?project_id='+p.project_id)};
-    })`);
+    })`, 90_000);
     expect(business.binding.world_version_id).toBe(fixture.reference.worldVersionId);
     expect(business.check.validity).toBe("CURRENT");
     expect(business.check.update_available).toBe(true);
