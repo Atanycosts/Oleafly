@@ -95,6 +95,26 @@ Citation Search **Review** mode streams Friendly (constructive mentor) or Fire
 (Reviewer #2) feedback for the active document or captured selection, using the
 configured AI provider.
 
+## Agent paper reading
+
+The ordinary assistant and research tasks use the same `read_paper` service to
+read an actual PDF from a DOI's open-access copy, arXiv ID, HTTPS PDF URL,
+project file, or linked research folder. Results contain page anchors, the PDF
+and extracted-text hashes, the exact byte range read, and `nextOffset` for
+continuation. Citation metadata alone does not establish that a paper supports
+a claim.
+
+Ordinary chat retains its PDF and text in Oleafly's application data, leaving
+the source project and linked folders unchanged. Its later windows pass the
+returned `pdfReference` as `reference`, keeping the reading on the same version
+even when the original file changes. A new first read of a changed local file
+selects its new version. The tool card's **Open retained PDF** action opens the
+exact retained bytes at the pages read; unavailable or mismatched bytes report
+an error. This tool remains available when Research Tasks are turned off.
+
+Research tasks retain their existing isolated-copy and source-snapshot behavior;
+edits return through the existing review/apply workflow.
+
 ## BibTeX editing
 
 A `.bib` file has its own completion and its own checks. Neither waits for the
@@ -139,6 +159,9 @@ and incomplete metadata are reported as states rather than silently guessed.
 - `src-tauri/src/citation.rs`: DOI, arXiv, and Crossref transport.
 - `src-tauri/src/literature.rs`: literature search adapters (including OpenAlex
   User-Agent polite pool).
+- `crates/oleafly-research/src/literature/paper.rs` and
+  `src-tauri/src/paper_reader.rs`: shared PDF reading, retained versions, and the
+  ordinary assistant's application-data adapter.
 - `src/lib/document-citation/`: paragraph split, bibliography filter, ranking,
   document scan orchestration, and paper-review helpers.
 - `src/components/tools/DocumentCitationScanPanel.tsx`: From document UI.

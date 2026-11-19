@@ -1298,6 +1298,7 @@ function hasVisibleOutcome(tools: readonly ToolEntry[]): boolean {
       view.status === "declined" ||
       view.kind === "literature" ||
       view.kind === "citation" ||
+      view.name === "read_paper" ||
       view.kind === "compile" ||
       view.kind === "artifact" ||
       view.kind === "delegation"

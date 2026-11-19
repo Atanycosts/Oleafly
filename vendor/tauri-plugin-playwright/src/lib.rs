@@ -9,6 +9,8 @@ use tauri::{
 
 mod commands;
 mod native_capture;
+#[cfg(target_os = "macos")]
+mod webview_capture;
 mod server;
 
 use server::PendingResults;

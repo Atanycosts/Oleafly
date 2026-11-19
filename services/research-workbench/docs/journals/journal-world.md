@@ -1,11 +1,9 @@
 # Journal-world workbench
 
 This document defines the first journal-world slice. It is an implemented local workflow for
-page geometry; it is not a full journal compliance engine. The machine-readable contract is
-`contracts/journals/world-contract.json` (journal-world-1.1.0).
-
-Current method identities are `journal-world-analyzer-1.4.0`,
-`journal-geometry-checker-1.1.0` and `journal-http-1.5.0`.
+page geometry; it is not a full journal compliance engine. The
+[machine-readable world contract](../../contracts/journals/world-contract.json) owns the current
+world, analyzer, checker and HTTP identity strings.
 
 ## User flow
 
@@ -85,17 +83,20 @@ is equal. Cross-journal comparison likewise does not authorize automatic rebindi
 
 ## Browser and local service contract
 
-The existing machine-readable world contract also owns the HTTP contract; there is no separate
-client-side rule or publication system.
+The existing [machine-readable world contract](../../contracts/journals/world-contract.json) also
+owns the HTTP contract; there is no separate client-side rule or publication system.
 
 - `GET /api/session` returns a process token, `contract_version` and `asset_version`. POST requests
-  carry `X-RFW-Token`. The HTTP contract must be `journal-http-1.5.0` for this UI.
+  carry `X-RFW-Token`. The browser accepts only the HTTP contract declared by that owning contract.
 - The server binds IPv4 loopback and verifies local Host/Origin. It snapshots static assets when it
   starts. `asset_version` identifies those served bytes, not the latest files subsequently edited on
   disk. Restart the server after code changes, then reload the page. A changed asset identity during
   a session requires a reload; the UI does not keep mutating through a mixed version session.
 - Manuscript import sends `{name, filename, content_base64}`: `name` is the display label and may
   omit the extension; `filename` is the original DOCX basename; only captured bytes cross HTTP.
+- `GET /api/manuscript-source` requires `project_id` and an explicit `baseline_id`. It returns that
+  retained DOCX artifact and recorded hash; it never reads the original author path or creates a
+  structured read receipt.
 - World input and state summaries use `journal_name`. There is no fallback `name` alias. Every
   source has its explicitly selected `kind`, original label and captured bytes.
 - `POST /api/world-component` takes `{version_id, name, content_base64}` and optional

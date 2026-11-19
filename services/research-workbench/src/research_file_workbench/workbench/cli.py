@@ -95,7 +95,7 @@ def _build_parser() -> argparse.ArgumentParser:
     revise = commands.add_parser("revise", help="Record a reasoned rule correction")
     revise.add_argument("--version-id", required=True)
     revise.add_argument("--rule-id", required=True)
-    revise.add_argument("--expected", type=int, required=True)
+    revise.add_argument("--expected", required=True)
     revise.add_argument("--reason", required=True)
 
     import_manuscript = commands.add_parser(
@@ -168,7 +168,17 @@ def _run(args: argparse.Namespace) -> None:
     elif args.command == "diff":
         _emit(service.diff_worlds(args.from_version, args.to_version))
     elif args.command == "revise":
-        _emit(service.revise(args.version_id, args.rule_id, args.expected, args.reason))
+        original = service.store.get_world(args.version_id)
+        rules = original["rules"]
+        assert isinstance(rules, list)
+        rule = next(
+            (rule for rule in rules if isinstance(rule, dict) and rule["rule_id"] == args.rule_id),
+            None,
+        )
+        if rule is None:
+            raise ValueError("Rule decision must select one existing rule")
+        expected = args.expected if rule["property"] == "body_font_family" else int(args.expected)
+        _emit(service.revise(args.version_id, args.rule_id, expected, args.reason))
     elif args.command == "import-manuscript":
         content = args.docx.read_bytes()
         _emit(service.import_manuscript(args.name, args.filename, content, surface="cli"))

@@ -21,6 +21,9 @@ use oleafly_sandbox::process::identity::{ProcessIdentity, ProcessProbe};
 mod annotations;
 pub mod approvals;
 pub(crate) mod collaboration;
+mod docx;
+#[cfg(test)]
+mod event_sequence_tests;
 mod findings;
 mod observations;
 pub mod runs;
@@ -66,6 +69,27 @@ pub struct EventWrite {
     pub event_json: String,
     pub created_at: i64,
     pub replace: bool,
+}
+
+/// Every transcript producer reserves from the same transaction-owned counter, including
+/// recorder rows that will be persisted by a later writer batch.
+fn reserve_event_sequence_on(
+    transaction: &Transaction<'_>,
+    id: &str,
+    generation: u64,
+) -> Result<u64, String> {
+    transaction
+        .query_row(
+            "INSERT INTO research_task_generations (task_id, execution_generation, event_sequence)
+             SELECT ?1, ?2, COALESCE(MAX(sequence), 0) + 1 FROM research_task_events
+             WHERE task_id = ?1 AND execution_generation = ?2
+             ON CONFLICT(task_id, execution_generation) DO UPDATE
+               SET event_sequence = research_task_generations.event_sequence + 1
+             RETURNING event_sequence",
+            params![id, generation as i64],
+            |row| row.get::<_, u64>(0),
+        )
+        .map_err(store_error)
 }
 
 fn delete_task_records_on(transaction: &Transaction<'_>, id: &str) -> Result<(), String> {
@@ -640,9 +664,11 @@ impl TaskStore {
         }
         transaction
             .execute(
-                "INSERT OR REPLACE INTO research_task_generations
+                "INSERT INTO research_task_generations
                    (task_id, execution_generation, resumed_from)
-                 SELECT id, execution_generation, resumed_from FROM research_tasks WHERE id = ?1",
+                 SELECT id, execution_generation, resumed_from FROM research_tasks WHERE id = ?1
+                 ON CONFLICT(task_id, execution_generation) DO UPDATE
+                   SET resumed_from = excluded.resumed_from",
                 [&id],
             )
             .map_err(store_error)?;
@@ -720,14 +746,7 @@ impl TaskStore {
             transaction.commit().map_err(store_error)?;
             return Ok(None);
         }
-        let sequence: i64 = transaction
-            .query_row(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM research_task_events
-                 WHERE task_id = ?1 AND execution_generation = ?2",
-                params![id, generation as i64],
-                |row| row.get(0),
-            )
-            .map_err(store_error)?;
+        let sequence = reserve_event_sequence_on(&transaction, id, generation)? as i64;
         let created_at = now_ms();
         transaction
             .execute(
@@ -809,16 +828,14 @@ impl TaskStore {
         }))
     }
 
-    pub fn next_event_sequence(&self, id: &str, generation: u64) -> Result<u64, String> {
-        self.open()?
-            .query_row(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM research_task_events
-                 WHERE task_id = ?1 AND execution_generation = ?2",
-                params![id, generation as i64],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|sequence| sequence.max(1) as u64)
-            .map_err(store_error)
+    pub(crate) fn reserve_event_sequence(&self, id: &str, generation: u64) -> Result<u64, String> {
+        let mut connection = self.open()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let sequence = reserve_event_sequence_on(&transaction, id, generation)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(sequence)
     }
 
     pub fn write_events(&self, writes: &[EventWrite]) -> Result<(), String> {
@@ -848,20 +865,53 @@ impl TaskStore {
             if write.event_json.len() > MAX_EVENT_BYTES {
                 continue;
             }
+            let existing: Option<(String, i64, String)> = transaction
+                .query_row(
+                    "SELECT event_json, created_at, kind FROM research_task_events
+                     WHERE task_id = ?1 AND execution_generation = ?2 AND sequence = ?3",
+                    params![
+                        write.task_id,
+                        write.generation as i64,
+                        write.sequence as i64
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
             if write.replace {
+                if let Some((_, created_at, kind)) = &existing {
+                    let updated: serde_json::Value =
+                        decode_json(&write.event_json, "text segment")?;
+                    if !TEXT_EVENT_KINDS.contains(&kind.as_str())
+                        || updated["kind"].as_str() != Some(kind.as_str())
+                        || *created_at != write.created_at
+                    {
+                        return Err("A text segment cannot replace a different task event.".into());
+                    }
+                }
                 transaction
                     .execute(
                         "UPDATE research_task_events SET event_json = ?4
-                         WHERE task_id = ?1 AND execution_generation = ?2 AND sequence = ?3 AND kind != 'observation'
+                         WHERE task_id = ?1 AND execution_generation = ?2 AND sequence = ?3
+                           AND kind IN ('text','reasoning')
                            AND EXISTS (SELECT 1 FROM research_tasks
                                        WHERE id = ?1 AND status = 'running' AND execution_generation = ?2)",
                         params![write.task_id, write.generation as i64, write.sequence as i64, write.event_json],
                     )
                     .map_err(store_error)?;
             } else {
+                if let Some((encoded, created_at, _)) = existing {
+                    if encoded != write.event_json || created_at != write.created_at {
+                        return Err(
+                            "A task event sequence is already assigned to a different event."
+                                .into(),
+                        );
+                    }
+                    continue;
+                }
                 let inserted = transaction
                     .execute(
-                        "INSERT OR IGNORE INTO research_task_events (
+                        "INSERT INTO research_task_events (
                            task_id, execution_generation, sequence, event_json, created_at)
                          SELECT ?1, ?2, ?3, ?4, ?5
                          WHERE EXISTS (SELECT 1 FROM research_tasks
@@ -884,6 +934,15 @@ impl TaskStore {
             }
         }
         for ((task_id, generation), sequence) in appended {
+            transaction
+                .execute(
+                    "INSERT INTO research_task_generations (task_id, execution_generation, event_sequence)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(task_id, execution_generation) DO UPDATE
+                       SET event_sequence = MAX(research_task_generations.event_sequence, excluded.event_sequence)",
+                    params![task_id, generation as i64, sequence],
+                )
+                .map_err(store_error)?;
             prune_text_events(&transaction, &task_id, generation, sequence)?;
         }
         transaction.commit().map_err(store_error)
@@ -3051,7 +3110,7 @@ const BRIEF_SCHEMA_VERSION: i64 = 2;
 const HANDOFF_SCHEMA_VERSION: i64 = 3;
 const EVENT_KIND_SCHEMA_VERSION: i64 = 4;
 const RUN_CONTROL_SCHEMA_VERSION: i64 = 5;
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 17;
 
 fn migrate(connection: &mut Connection) -> Result<(), String> {
     if schema_version(connection)? >= SCHEMA_VERSION {
@@ -3293,6 +3352,31 @@ fn migrate(connection: &mut Connection) -> Result<(), String> {
                 ))?;
             }
         }
+    }
+    if version < 16 {
+        upgrade(docx::SCHEMA_SQL)?;
+    }
+    if version < 17 {
+        let has_counter = transaction
+            .prepare("PRAGMA table_info(research_task_generations)")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(store_error)?
+            .iter()
+            .any(|column| column == "event_sequence");
+        if !has_counter {
+            upgrade("ALTER TABLE research_task_generations ADD COLUMN event_sequence INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        upgrade(
+            "INSERT INTO research_task_generations (task_id, execution_generation, event_sequence)
+             SELECT task_id, execution_generation, MAX(sequence) FROM research_task_events
+             GROUP BY task_id, execution_generation
+             ON CONFLICT(task_id, execution_generation) DO UPDATE
+               SET event_sequence = MAX(research_task_generations.event_sequence, excluded.event_sequence);",
+        )?;
     }
     upgrade(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     transaction.commit().map_err(store_error)

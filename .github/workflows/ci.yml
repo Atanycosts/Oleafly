@@ -11,6 +11,7 @@ on:
       - "docs/**"
       - ".github/badges/**"
   pull_request:
+    # Run the full matrix on the integration PR, not each layer of a stack.
     branches: [main]
     paths-ignore:
       - "**.md"
@@ -28,12 +29,68 @@ on:
 permissions:
   contents: read
 
+# Hosted runners can compile in parallel without competing with a local desktop.
+env:
+  CARGO_BUILD_JOBS: "2"
+
 # Cancel superseded runs on the same ref (e.g. rapid pushes to a PR).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  workbench:
+    name: Workbench (Python, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    defaults:
+      run:
+        working-directory: services/research-workbench
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Workbench development dependencies
+        run: python -m pip install -e ".[dev,fixture-building]"
+
+      - name: Install PDF inspection tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils
+          pdfinfo -v
+
+      - name: Install PDF inspection tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install poppler --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $pdfinfo = Get-ChildItem "$env:ProgramData\chocolatey\lib\poppler" -Filter pdfinfo.exe -Recurse | Select-Object -First 1
+          if (-not $pdfinfo) { throw 'Poppler did not provide pdfinfo.exe' }
+          $pdfinfo.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $pdfinfo.FullName -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check Python formatting and lint
+        run: |
+          python -m ruff format --check --no-cache .
+          python -m ruff check --no-cache .
+
+      - name: Check Python types
+        run: python -m mypy
+
+      - name: Test Workbench storage and document contracts
+        run: python -m pytest -rs
+
   markdown-platform-smoke:
     name: Markdown smoke (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -84,7 +141,9 @@ jobs:
   frontend:
     name: Frontend (typecheck + build)
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    # The assembled stack needs about 40 minutes for build and coverage.
+    # Leave room to upload reports and save caches after those checks finish.
+    timeout-minutes: 60
     env:
       # The 0.4.8 vite build peaks near Node's default 4 GB heap (same
       # setting as release.yml).
@@ -154,6 +213,9 @@ jobs:
       - name: Test the e2e runner lock and launchers
         run: bash scripts/e2e-run-lock.test.sh
 
+      - name: Test lightweight commit and explicit full checks
+        run: node --test scripts/local-checks.node-tests.mjs
+
       - name: Test the release notes extraction
         run: bash scripts/changelog-extract.test.sh
 
@@ -167,8 +229,8 @@ jobs:
       # backlog is reported as (non-blocking) warnings. See biome.json.
       - name: Lint
         run: pnpm lint
-      - name: i18n types and catalogs
-        run: pnpm i18n:types:check && pnpm i18n:validate
+      - name: i18n types and English / Simplified Chinese catalogs
+        run: pnpm i18n:types:check && pnpm i18n:validate --locale zh-Hans
 
       # `pnpm build` runs `tsc -b` (typecheck) then `vite build` (bundle). The
       # frontend build needs no Tectonic sidecar.
@@ -195,12 +257,46 @@ jobs:
       - name: Check performance budgets
         run: pnpm check:performance
 
+      # Deterministic p95 gates for the core editor's book-scale synchronous
+      # paths. The native E2E jobs below cover WebView rendering and scrolling.
+      - name: Test book-scale editor performance
+        run: pnpm test:editor:performance
+
+  frontend-tests:
+    # Keep the coverage gate independent of the production build. A coverage
+    # failure must stay red without hiding the browser and native E2E results.
+    name: Frontend (tests + coverage)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test retained Word acceptance helpers
+        run: pnpm exec vitest run --config e2e/vitest.config.ts
+
       - name: Test with coverage
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: pnpm test:coverage
 
       - name: Upload frontend coverage
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        if: >-
+          !cancelled() &&
+          (github.event_name == 'push' || github.event_name == 'pull_request') &&
+          hashFiles('coverage/frontend/lcov.info') != ''
         uses: actions/upload-artifact@v7
         with:
           name: frontend-coverage
@@ -212,15 +308,11 @@ jobs:
         if: github.event_name != 'push' && github.event_name != 'pull_request'
         run: pnpm test
 
-      # Deterministic p95 gates for the core editor's book-scale synchronous
-      # paths. The native E2E jobs below cover WebView rendering and scrolling.
-      - name: Test book-scale editor performance
-        run: pnpm test:editor:performance
-
   frontend-windows:
     name: Frontend (Windows)
     runs-on: windows-2022
-    timeout-minutes: 45
+    # A passing suite reached 45 minutes and timed out during cache saving.
+    timeout-minutes: 60
     env:
       # The 0.4.8 vite build peaks near Node's default 4 GB heap (same
       # setting as release.yml).
@@ -238,8 +330,8 @@ jobs:
         run: pnpm lint
       - name: Check generated translation types
         run: pnpm i18n:types:check
-      - name: Validate translations
-        run: pnpm i18n:validate
+      - name: Validate English and Simplified Chinese translations
+        run: pnpm i18n:validate --locale zh-Hans
       - name: Test dictionary catalogs, Windows download confinement and the Tauri version check
         run: node --test scripts/dictionaries/build-catalog.node-tests.mjs scripts/fetch-language-servers.node-tests.mjs scripts/hunspell.node-tests.mjs scripts/check-tauri-versions.node-tests.mjs scripts/typst/build-toolchain-catalog.node-tests.mjs scripts/stage-windows-vcruntime.node-tests.mjs
       - name: Typecheck and build
@@ -250,6 +342,26 @@ jobs:
         run: pnpm test
       - name: Test editor performance
         run: pnpm test:editor:performance
+
+  tinymist-diagnostics:
+    # Keep the shipping diagnostics gate independent of Rust and desktop E2E
+    # so a sidecar failure does not hide failures in the application itself.
+    name: Tinymist (packaged diagnostics)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Stage checksum-pinned Tinymist resource archive
+        run: node scripts/fetch-language-servers.mjs --server tinymist --target x86_64-unknown-linux-gnu --install-mode resource
+
+      - name: Smoke-test Tinymist resource extraction and diagnostic ordering
+        run: node scripts/smoke-language-servers.mjs --server tinymist
 
   rust:
     name: Rust (test + clippy)
@@ -329,9 +441,6 @@ jobs:
       - name: Stage checksum-pinned Tinymist resource archive
         run: node scripts/fetch-language-servers.mjs --server tinymist --target x86_64-unknown-linux-gnu --install-mode resource
 
-      - name: Smoke-test Tinymist resource extraction and LSP handshake
-        run: node scripts/smoke-language-servers.mjs --server tinymist
-
       - name: Smoke-test Typst sidecar
         run: bash scripts/smoke-typst.sh x86_64-unknown-linux-gnu
 
@@ -365,6 +474,10 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.8.7
 
+      - name: Test vendored trash date conversion
+        run: >-
+          cargo test --manifest-path vendor/trash/Cargo.toml --locked --lib deletion_time::
+
       - name: Test with coverage
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: |
@@ -372,7 +485,10 @@ jobs:
           cargo llvm-cov --workspace --all-targets --lcov --output-path coverage/rust/lcov.info
 
       - name: Upload Rust coverage
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        if: >-
+          !cancelled() &&
+          (github.event_name == 'push' || github.event_name == 'pull_request') &&
+          hashFiles('coverage/rust/lcov.info') != ''
         uses: actions/upload-artifact@v7
         with:
           name: rust-coverage
@@ -403,9 +519,9 @@ jobs:
           -p oleafly-sandbox -p oleafly-forge
           -p oleafly-agent
 
-      # Preflight and research read PDFs with lopdf 0.42 (research through
-      # pdf-extract), which uses let chains, so they need Rust 1.88 although
-      # lopdf declares 1.85. The ACP client needs 1.88 for the official ACP SDK
+      # Preflight reads PDFs with lopdf 0.42, which uses let chains, so it
+      # needs Rust 1.88 although lopdf declares 1.85. Research also needs
+      # patched SQLite below. The ACP client needs 1.88 for the official ACP SDK
       # and schema crates. Lint builds on 1.88 without its proofread feature;
       # harper-core's dependencies need 1.90. Downloads needs 1.88 for zip 9,
       # the first zip release with the fixes for its 2026 advisories.
@@ -414,20 +530,21 @@ jobs:
         with:
           toolchain: 1.88.0
 
-      - name: Check the PDF crates, the ACP client, downloads and lint against their Rust 1.88 MSRV
+      - name: Check preflight, the ACP client, downloads and lint against their Rust 1.88 MSRV
         run: |
-          cargo +1.88.0 check -p oleafly-preflight -p oleafly-research -p oleafly-acp -p oleafly-downloads --all-targets
+          cargo +1.88.0 check -p oleafly-preflight -p oleafly-acp -p oleafly-downloads --all-targets
           cargo +1.88.0 check -p oleafly-lint --no-default-features --all-targets
 
-      # The CLI links the collaboration client, and online import decrypts
-      # browser cookies with aes 0.9. Both need Rust 1.89.
+      # Patched bundled SQLite requires rusqlite 0.41 and Rust 1.89 in history
+      # and research too. The CLI also links the collaboration client, and
+      # online import decrypts browser cookies with aes 0.9.
       - name: Install the CLI's minimum supported Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.89.0
 
-      - name: Check the CLI and online import against their Rust 1.89 MSRV
-        run: cargo +1.89.0 check -p oleafly-cli -p oleafly-online --all-targets
+      - name: Check the CLI, online import, history and research against their Rust 1.89 MSRV
+        run: cargo +1.89.0 check -p oleafly-cli -p oleafly-online -p oleafly-history -p oleafly-research --all-targets
 
   server-web:
     name: Server with browser access
@@ -505,13 +622,13 @@ jobs:
       - name: Lint all native Windows targets
         run: cargo clippy --workspace --exclude oleafly-server --all-targets -- -D warnings
 
-      - name: Install minimum supported Rust toolchain
+      - name: Install history's minimum supported Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
-          toolchain: 1.87.0
+          toolchain: 1.89.0
 
-      - name: Test history on Rust 1.87
-        run: cargo +1.87.0 test -p oleafly-history --all-targets
+      - name: Test history on Rust 1.89
+        run: cargo +1.89.0 test -p oleafly-history --all-targets
 
   cargo-deny:
     # RustSec advisories plus a permissive-only license gate for the Rust workspace.
@@ -531,8 +648,10 @@ jobs:
 
   sonarqube:
     name: SonarQube Cloud
-    needs: [frontend, rust]
+    needs: [frontend-tests, rust]
     if: >-
+      vars.SONAR_ORGANIZATION != '' &&
+      vars.SONAR_PROJECT_KEY != '' &&
       github.actor != 'dependabot[bot]' &&
       (github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
@@ -585,9 +704,10 @@ jobs:
     name: E2E app build (macOS)
     needs: [frontend, rust]
     runs-on: macos-15
-    # About 30 minutes with a warm cache, before the shared crates' macOS tests
-    # and clippy were added below.
-    timeout-minutes: 55
+    # A cold run spends about 15 minutes on the shared crates before packaging.
+    # The assembled Word workspace then needs more than the old 38-minute
+    # remainder; retain every check and allow the cold bundle to finish.
+    timeout-minutes: 90
     env:
       # The vite build graph exceeds Node's default ~4GB heap on the 7GB
       # macOS arm64 runners (same setting as release.yml).
@@ -958,6 +1078,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install the Word acceptance runtime
+        uses: ./.github/actions/workbench-runtime
+
       - name: Download the packaged e2e app
         uses: actions/download-artifact@v8
         with:
@@ -1082,6 +1205,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install the Word acceptance runtime
+        uses: ./.github/actions/workbench-runtime
 
       - name: Download the packaged e2e app
         uses: actions/download-artifact@v8
@@ -1300,7 +1426,7 @@ jobs:
           if-no-files-found: ignore
 
   e2e-browser-harness:
-    # The four browser-harness specs drive Playwright's own Chromium against
+    # The browser-harness specs drive Playwright's own Chromium against
     # fixture pages that Vite serves from e2e/, with the Tauri bridge mocked
     # inside the page. They need no app build, and every packaged shard skips
     # them, so this lane is where they run now that Windows no longer runs the
@@ -1309,7 +1435,9 @@ jobs:
     name: E2E (browser harness, Linux)
     needs: frontend
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Workbench, LibreOffice and Chromium installation consume most of this
+    # runner's first 20 minutes before the browser specs begin.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -1324,6 +1452,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install the Word acceptance runtime
+        uses: ./.github/actions/workbench-runtime
 
       - name: Cache Playwright browser
         uses: actions/cache@v6
@@ -1349,6 +1480,7 @@ jobs:
       - name: Run the browser-harness specs
         env:
           CI: 1
+          OLEAFLY_LIBREOFFICE: /usr/bin/soffice
         run: bash scripts/e2e-browser-harness.sh
 
       # The compile, click-to-source both ways and the upload. Runs even when
@@ -1566,6 +1698,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install the Word acceptance runtime
+        uses: ./.github/actions/workbench-runtime
 
       - name: Download the app build
         uses: actions/download-artifact@v8

@@ -2,11 +2,11 @@
   "contract_version": "journal-world-1.1.0",
   "method_versions": {
     "world_schema": "journal-world-1.1.0",
-    "analyzer": "journal-world-analyzer-1.4.0",
-    "checker": "journal-geometry-checker-1.1.0",
-    "http": "journal-http-1.5.0"
+    "analyzer": "journal-world-analyzer-1.6.0",
+    "checker": "journal-geometry-checker-1.2.0",
+    "http": "journal-http-1.13.0"
   },
-  "scope": "local_page_geometry_slice",
+  "scope": "journal_sources_and_selected_docx_template_comparison",
   "workflow": [
     "import_sources",
     "analyze_world",
@@ -21,7 +21,9 @@
     "guide_text",
     "guide_docx",
     "guide_pdf",
-    "rule_component_json"
+    "rule_component_json",
+    "template_original",
+    "docx_format_snapshot"
   ],
   "properties": [
     "page_width_twips",
@@ -32,7 +34,8 @@
     "left_margin_twips",
     "columns",
     "body_font_size_halfpoints",
-    "body_line_spacing_twips"
+    "body_line_spacing_twips",
+    "body_font_family"
   ],
   "rule_fields": [
     "rule_id",
@@ -46,22 +49,22 @@
     "evidence",
     "limitations"
   ],
-  "rule_scope": "all_sections only when explicitly supported by a supplied guideline or a template-wide candidate; per-template-section observations do not imply manuscript section correspondence",
+  "rule_scope": "Legacy geometry rules use all_sections. Selected-template rules use kind + role selectors; heading levels and caption types are resolved from the retained core snapshot by the object comparator.",
   "basis_states": [
     "confirmed",
     "candidate",
     "conflict"
   ],
-  "source_assurance": "operator_supplied; deterministic recognition of explicit requirements does not authenticate a publisher or prove the supplied guide is current",
+  "source_assurance": "user_supplied_sources_and_explicit_structured_decisions; prose never automatically creates or confirms requirements",
   "source_semantics": [
     "Captured sources are immutable and retained with exact hashes and locators.",
     "Template formatting produces candidate expectations, never normative requirements by itself.",
-    "Only explicitly supported unambiguous guideline patterns can be confirmed by deterministic extraction.",
     "Unparsed text, mixed section geometry, unsupported input and absent properties remain explicit coverage gaps.",
     "Shared components are declarative data with exact versions and per-journal applicability evidence; no dynamic imports, eval, commands or script execution.",
     "New world storage validates captured source bytes and reproduces analysis plus the ordered local decisions; a self-consistent manifest hash alone cannot authorize invented rules.",
-    "PDF guidance feeds the same narrow deterministic requirement recognizer as text guidance, with page/block evidence locators; conditional, negative or unparsed blocks remain explicit gaps and never become confirmed rules.",
-    "Page-format definition sentences (for example 'A double column page is defined as a 7.875″ x 10.75″ page') yield the column count and page dimensions; qualifiers in the same sentence without a checkable geometry property are carried as rule limitations."
+    "Text, DOCX and PDF guides are retained with exact source locators for user or Agent interpretation. No fixed-sentence or regex requirement recognition runs.",
+    "User or Agent supplied structured components retain applicability and provenance; explicit decisions establish selected requirements. Existing deterministic comparison checks remain available.",
+    "Historical guide-pattern worlds and checks remain readable unchanged. Their obsolete analyzer versions cannot execute new checks or silently upgrade their requirements."
   ],
   "check_semantics": [
     "An applicable confirmed expectation produces compliant only when every required section is observed and matches; a known mismatch produces violation even when other section values are missing.",
@@ -72,7 +75,8 @@
     "Checks bind immutable manuscript baseline, world version and checker dependencies.",
     "A newer world only creates update_available; it does not stale a check still bound to unchanged inputs.",
     "Changing a binding, source baseline, analyzer, reader or checker version makes the retained check STALE; historical conclusions remain intact. Corrupt retained source or world evidence is a read failure, never a fabricated current result.",
-    "Disposition records do not change check verdicts or rule confirmation."
+    "Disposition records do not change check verdicts or rule confirmation.",
+    "body_font_family is retained for exact-font acquisition, not compared by the geometry checker. Its verdict is not_checked with zero observed sections; font installation alone never establishes manuscript compliance."
   ],
   "result_axes": {
     "rule_basis": [
@@ -113,7 +117,8 @@
     "A supported retained world schema can be read after its analyzer method changes; historical access does not re-execute or restore that older analyzer.",
     "A new check or local rule correction requires the current analyzer and DOCX reader semantics; re-import captured sources to create a current version instead of relabeling an old world.",
     "Retained checker 1.0.0 records keep their original missing-value aggregation and absent per-finding verdicts. They are validated as historical records, not generated by an active legacy checker.",
-    "New checks require checker 1.1.0 and the current DOCX reader. A historical embedded world is verified against its retained identity; new writes reject world duplication."
+    "New checks require checker 1.2.0 and the current DOCX reader. A historical embedded world is verified against its retained identity; new writes reject world duplication.",
+    "Retained checker 1.1.0 checks retain their numeric geometry semantics and can be recovered unchanged. Analyzer 1.5.0 creates new world versions for exact body-font requirements; prior worlds require source reanalysis for new checks."
   ],
   "presentation": [
     "Rule bubbles expose separate verdict, basis, validity and disposition axes. Formal violations, candidate differences, undetermined rules and unchecked rules are counted separately.",
@@ -122,7 +127,7 @@
     "Rule evidence and manuscript section observations are shown side by side. A manual resolution displays its reason, actor and previous-to-selected value alongside unchanged original evidence quotes.",
     "Version comparisons expose changes in expectation, basis, scope, unit, evidence and resolution; same-value rules with different applicability or provenance are not presented as identical requirements.",
     "No full-journal compliance claim is made from page-geometry checks alone.",
-    "No source document edits, Office rendering or publication actions occur in this slice.",
+    "Source document edits and publication actions do not occur in this slice. LibreOffice headless PDF rendering is available only through an explicit capability-gated operation and does not create page mappings.",
     "Source review fragments retain stable source-bound identity, parent hierarchy and exact text spans. Suggestions never become rule evidence solely through similarity.",
     "Text vector similarity is an explainable retrieval score, not a neural embedding, calibrated probability, or compliance verdict. It never merges components or alters retained worlds.",
     "World, component, rule, source and manuscript observations are separately addressable review levels with return navigation.",
@@ -134,7 +139,7 @@
     "Disposition actions are note or defer and retain the original check verdict."
   ],
   "http": {
-    "contract_version": "journal-http-1.5.0",
+    "contract_version": "journal-http-1.13.0",
     "transport": "same_origin_json_on_ipv4_loopback_only",
     "session": {
       "route": "GET /api/session",
@@ -176,6 +181,20 @@
         ]
       },
       {
+        "method": "GET",
+        "path": "/api/derived-renders",
+        "query_fields": [
+          "project_id",
+          "baseline_id"
+        ],
+        "response_fields": [
+          "project_id",
+          "baseline_id",
+          "font_cache_sha256",
+          "derived_renders"
+        ]
+      },
+      {
         "method": "POST",
         "path": "/api/worlds",
         "body_fields": [
@@ -200,10 +219,22 @@
           "name",
           "content_base64"
         ],
-        "optional_body_fields": ["sources", "decisions", "preview"],
-        "source_fields": ["name", "kind", "content_base64"],
-        "decision_fields": ["property", "expected", "reason"],
-        "semantics": "Analyze a captured rule component and optional captured sources with all retained sources of the selected world. Carry prior operator decisions, then apply explicit operator-confirmed decisions, and save one immutable version. preview=true returns the analyzed world without saving sources or a version. Imported declarations remain candidates unless an existing confirmed guide or operator decision determines the same property. Existing manuscript bindings are unchanged. Invalid input saves nothing."
+        "optional_body_fields": [
+          "sources",
+          "decisions",
+          "preview"
+        ],
+        "source_fields": [
+          "name",
+          "kind",
+          "content_base64"
+        ],
+        "decision_fields": [
+          "property",
+          "expected",
+          "reason"
+        ],
+        "semantics": "Analyze a captured rule component and optional captured sources with all retained sources of the selected world. Carry prior operator decisions, then apply explicit operator-confirmed decisions, and save one immutable version. preview=true returns the analyzed world without saving sources or a version. Imported declarations remain candidates unless an explicit operator decision determines the same property. Existing manuscript bindings are unchanged. Invalid input saves nothing."
       },
       {
         "method": "POST",
@@ -276,6 +307,22 @@
       },
       {
         "method": "GET",
+        "path": "/api/manuscript-source",
+        "query_fields": [
+          "project_id",
+          "baseline_id"
+        ],
+        "response_fields": [
+          "project_id",
+          "baseline_id",
+          "source_sha256",
+          "filename",
+          "content_base64"
+        ],
+        "semantics": "Return the exact retained DOCX bytes for one explicit baseline without reading an author path or recording a structured read receipt."
+      },
+      {
+        "method": "GET",
         "path": "/api/history",
         "query_fields": [
           "project_id"
@@ -321,6 +368,7 @@
       {
         "method": "POST",
         "path": "/api/baseline",
+        "refusal_response": "Persisted BASELINE_CONFLICT returns HTTP 409; REJECTED and IDEMPOTENCY_CONFLICT return HTTP 400. Each preserves error plus the exact recorded request_id, request_digest, status and null result_baseline_id. An idempotency conflict may name a different original_result_baseline_id; it is not a saved result for the submitted digest. Unrecorded errors carry no confirmed refusal result.",
         "body_fields": [
           "project_id",
           "expected_baseline_id",
@@ -351,6 +399,16 @@
           "page_number",
           "content_base64"
         ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/render-baseline",
+        "body_fields": [
+          "project_id",
+          "baseline_id",
+          "reason",
+          "libreoffice_executable"
+        ]
       }
     ],
     "field_semantics": {
@@ -359,11 +417,14 @@
       "content_base64": "Captured file bytes; the HTTP API never accepts an author input path.",
       "journal_name": "Journal display name in world records and state summaries; no name alias.",
       "expected_binding_id": "Explicit null for the initial binding, otherwise the current binding identity used for compare-and-swap.",
-      "expected": "Integer in the rule's stored unit: twips for dimensions and margins, count for columns.",
+      "expected": "Integer in the numeric rule stored unit, or the exact nonempty font family name string for body_font_family (font_family).",
       "baseline_id": "GET manuscript accepts current or an exact retained baseline ID; POST read accepts explicit null for current or a retained ID. Render operations require exact retained baseline IDs.",
       "render_bundle_id": "Explicit retained render evidence selection for a physical-page query; null for source object queries.",
       "query": "All six fields are present. Selectors/cursor are nullable; page_size is a positive bounded integer enforced by ReadQuery.",
       "request_id": "A stable per-submission kebab-case identity for recoverable baseline updates. Replay returns the same saved outcome.",
+      "libreoffice_executable": "Absolute path to the explicitly selected LibreOffice executable. Missing or non-LibreOffice capabilities return code renderer_unavailable with no fallback.",
+      "libreoffice_profile": "Not accepted over HTTP. The service creates a private temporary profile below its selected library var/libreoffice-profile directory for every render.",
+      "font_cache_sha256": "GET /api/derived-renders reports the identity of the current font cache; a render record retains the identity of the bytes supplied to that render.",
       "render_record/page_index/pdf/document_annotation/page_evidence": "Each supplied upload contains only content_base64. Annotation and page evidence are both null or both supplied. Uploaded historical paths are never opened.",
       "pages": "Captured page PNG bytes with explicit unique positive page_number, validated against the original index and physical PDF."
     },
@@ -400,11 +461,21 @@
       "journal_changed",
       "changes"
     ],
+    "derived_render_record_fields": [
+      "bundle_id",
+      "baseline_id",
+      "manifest",
+      "registered_at",
+      "actor_id",
+      "confirmation_reason"
+    ],
     "error_field": "error",
+    "error_code_field": "code",
     "failure_rules": [
       "POST bodies require their exact declared keys, application/json and a unique bounded Content-Length; malformed input is not converted to empty success.",
       "GET query parameters must exactly match the declared query_fields; unknown or repeated parameters return HTTP 400.",
       "Binding compare-and-swap conflicts return HTTP 409; invalid local origin or session returns 403.",
+      "Baseline rendering returns HTTP 503 with code renderer_unavailable when the selected LibreOffice executable is absent or does not identify as LibreOffice, and HTTP 502 with code render_failed after a failed conversion or unreadable PDF. No fallback renderer is attempted.",
       "Storage corruption and internal persistence failures return a generic HTTP 500 without local paths or database details; unsupported methods return JSON HTTP 405 with an Allow header.",
       "The frontend rejects malformed response records and commits a refreshed view only after all required reads succeed.",
       "If a write succeeded but the following refresh failed, report the saved operation explicitly and require refresh instead of encouraging a duplicate submission."
@@ -430,7 +501,7 @@
   "runtime_entry_point": "rfw-workbench serve",
   "runtime_boundary": "Local operator workbench; session and origin checks do not provide remote user authentication.",
   "source_review": {
-    "method_version": "journal-source-evidence-1.1.0",
+    "method_version": "journal-source-evidence-1.3.0",
     "relation_method_version": "journal-lexical-relations-1.0.0",
     "fields": [
       "method_version",
@@ -460,6 +531,168 @@
     "offset_unit": "unicode_code_points",
     "relation_score": "lexical cosine in [0,1], retrieval ranking only; no probability, merging or compliance inference",
     "pdf_source_version": "journal-pdf-source-1.0.0",
-    "pdf_fragment_binding": "PDF fragment identifiers bind pdf_source_version instead of the DOCX reader version; bbox values are PDF points with a top-left origin."
+    "pdf_fragment_binding": "PDF fragment identifiers bind pdf_source_version instead of the DOCX reader version; bbox values are PDF points with a top-left origin.",
+    "template_fragment_binding": "Selected-template object and style fragments bind snapshot method plus core engine version and use normalized_source_id plus exact object/style part/path. Snapshot JSON supplies their facts. Style fragments use kind template_style. Original and normalized descriptors retain their source roles even when content IDs coincide; fragment_count counts unique fragments for that content ID."
+  },
+  "template_comparison": {
+    "contract_version": "docx-template-comparison-1.1.0",
+    "analyzer": "docx-template-analyzer-1.3.0",
+    "checker": "docx-template-checker-1.1.0",
+    "snapshot_method": "docx-core-format-snapshot-1.2.0",
+    "findings_evidence_method": "docx-template-comparison-1.1.0",
+    "snapshot_schema_version": 1,
+    "snapshot_method_binding": "New imports and baseline captures require method_version equal to snapshot_method. Historical snapshots without it retain docx-core-format-snapshot-1.0.0 identity and remain queryable; new checks require recapture. Historical evidence is never relabelled as the current method.",
+    "style_definitions": "Current snapshots retain every declared style, including unused paragraph, character, table and numbering styles. Identity, inheritance and declared XML remain queryable. effective_status distinguishes paragraph_and_run, character run, and declaration_only; declaration_only does not assert computed layout. Only paragraph definitions supply missing semantic/heading paragraph and run comparison candidates. Manuscript definitions do not generate document findings. Font acquisition includes these fallback run candidates; unknown roles, non-paragraph definitions and definitions superseded by corresponding non-table instances do not add fonts. Earlier 1.1.0 and 1.0.0 snapshots remain readable; new execution requires 1.2.0 capture. Historical analyzer worlds preserve their stored font requirements; new checks require the current analyzer.",
+    "paragraph_controls": "Effective paragraph properties include keepNext, keepLines, widowControl, pageBreakBefore, framePresent and frame. Frame attributes inherit individually; numeric distances are points, absent attributes remain null. These facts do not establish rendered pagination or pixel equivalence.",
+    "object_table_context": "Optional metadata on tr/tc/paragraph/run and descendants: source-local table_object_id, zero-based row_index, row_count, optional column_index/column_count, and conditions. Conditions originate in tblLook, active positive cnfStyle bits and structural position, not formatting values. Table objects do not fabricate row positions. The context refines internal component scope independently of example dimensions, source IDs and cross-document order; raw table_style/cache/node identities are not format requirements.",
+    "table_band_size_limit": "The pinned core computes one-row and one-column bands. Effective tblStyleRowBandSize or tblStyleColBandSize greater than one, from direct table properties or the table style basedOn chain, produces unsupported code table_band_size_unsupported bound to the table object. Affected table-internal manuscript objects and profiles containing affected template candidates return cannot_determine. Unrelated components and table-level stable properties remain comparable. Exact authored XML stays queryable.",
+    "adoption": "Explicit template-world import selects the captured template as a project comparison basis without per-property confirmation. It does not authenticate publisher requirements.",
+    "storage": "Original bytes, normalized DOCX and snapshot JSON use existing content-addressed sources; baseline snapshots use artifact/evidence; comparisons use world/binding/check_record. No parallel database.",
+    "template_fields": [
+      "source_id",
+      "normalized_source_id",
+      "snapshot_source_id",
+      "source_sha256",
+      "original_sha256",
+      "provenance",
+      "authority"
+    ],
+    "optional_template_fields": {
+      "font_requirements": "Array of {family,roles:string[],scripts:string[]}; exact unique nonblank family names from textual run effective font slots and missing-role/heading style run candidates adopted by the comparator, active under script_usage. Excludes paragraph marks, empty text instances, unused slots and unused complex lanes. Uses template authority=user_designated_template for existing exact-family acquisition; implies no publisher authentication or compliance verdict."
+    },
+    "provenance": {
+      "engine": "string",
+      "version": "string",
+      "method": "string",
+      "converted_sha256": "normalized DOCX SHA-256"
+    },
+    "comparison": "Compare stable common effective properties by kind and semantic role. Heading level and figure/table caption context refine pairing. Explicit semantic regions refine section/paragraph/run/table/tr/tc profiles by region role, never section order, path, object ID or the values being compared. Mixed/unknown regions use common-property profiles; variable values remain cannot_determine. Old snapshots without regions retain common-property behavior. Do not compare text, IDs, direct declarations, paragraph marks, script usage, or example table dimensions as requirements. Font slots follow actual script usage.",
+    "object_region": {
+      "optional": true,
+      "fields": ["section_object_id", "role", "role_basis"],
+      "roles": ["front_matter", "body", "references", "appendix", "mixed", "unknown"],
+      "section_object_id": "Source-local retained section object ID for location; never cross-document pairing identity.",
+      "role_basis": "Same evidence shape as object role_basis; semantic section block membership supplied by the DOCX core adapter."
+    },
+    "verdicts": [
+      "observed_match",
+      "observed_difference",
+      "cannot_determine"
+    ],
+    "finding_fields": [
+      "case_id",
+      "object_id",
+      "kind",
+      "role",
+      "role_basis",
+      "part",
+      "path",
+      "property_path",
+      "observed",
+      "expected",
+      "template_object_ids",
+      "template_role_basis",
+      "verdict",
+      "template_object_count",
+      "expected_value_count"
+    ],
+    "case_identity": "case-sha256(object_id + NUL + property_path); stable for the same canonical object and property within a source version. Not a cross-document object identity.",
+    "optional_finding_fields": ["region", "table_context", "reason"],
+    "coverage": "Missing semantic/region profiles with effective facts yield object cannot_determine with reason No corresponding template profile. World coverage_gaps aggregate template core unsupported codes and unknown/mixed role-region counts with representative object locators; exact facts remain in docx-query. They do not imply publisher violations or complete rendering interpretation.",
+    "http": {
+      "GET /api/template-source": {
+        "required_query": ["world_version_id"],
+        "returns": ["world_version_id", "source_sha256", "content_base64"],
+        "semantics": "Exact retained normalized Word template bytes for a selected world, with source hash verified before returning. Used by the editor's existing style dependency importer; no manuscript is created or changed."
+      },
+      "POST /api/template-copy": {
+        "required": ["world_version_id", "name", "request_id"],
+        "returns": "project and origin containing request/world/initial baseline/source identities",
+        "semantics": "Create an editable managed manuscript from the exact retained normalized template, preserve original/template sources, capture its current format snapshot and bind the selected world. No author path is written. A repeated request ID recovers the same project and initial origin without resetting later edits or bindings. Conflicting request reuse returns 409."
+      },
+      "POST /api/template-world": {
+        "required": [
+          "journal_id",
+          "journal_name",
+          "article_type",
+          "stage",
+          "language",
+          "original",
+          "normalized",
+          "snapshot"
+        ],
+        "optional": [
+          "sources"
+        ],
+        "returns": "world with template metadata; sources from the same import are retained"
+      },
+      "POST /api/docx-format": {
+        "required": [
+          "project_id",
+          "baseline_id",
+          "snapshot"
+        ],
+        "returns": [
+          "baseline_id",
+          "snapshot_id",
+          "source_sha256",
+          "engine"
+        ]
+      },
+      "POST /api/template-check": {
+        "required": [
+          "project_id",
+          "expected_baseline_id",
+          "world_version_id",
+          "expected_binding_id",
+          "request_id",
+          "origin"
+        ],
+        "origin": {
+          "surface": "user | agent",
+          "reason": "optional string"
+        },
+        "returns": "existing check envelope plus template_comparison and typed object findings",
+        "idempotency": "Same project/request_id and exact payload replay the retained check; conflicting reuse returns 409. Replay does not rebind a newer baseline.",
+        "pagination": "template_comparison carries first 100 findings, total/has_more/next_offset and findings_artifact_version_id. Complete findings live once in existing project artifact/evidence. rule_results carry finding_selector and finding_summary, not duplicated object findings."
+      },
+      "POST /api/docx-query": {
+        "required": [
+          "target",
+          "operation"
+        ],
+        "target": "snapshot/part/nodes/relationships: {world_version_id} or {project_id,baseline_id}; findings: {check_id}",
+        "operations": [
+          "snapshot",
+          "part",
+          "nodes",
+          "relationships",
+          "findings"
+        ],
+        "part": "original part bytes as content_base64 with hash/content_type/length",
+        "pagination": "nodes, relationships and findings return total, has_more, next_offset; offset default 0, limit default 100, maximum 1000. Findings filters apply before pagination, so total counts filtered findings.",
+        "snapshot_pagination": "Without offset/limit/collection, returns the complete retained snapshot. Otherwise collection selects objects (default) or style_definitions; offset defaults to 0, limit defaults to 100, maximum 1000. Only the selected collection is included, avoiding repeated full style definitions in object pages. Envelope collection/total/has_more/next_offset describe that collection; parts/capabilities/unsupported metadata remains complete. A page is a view, not a replacement snapshot for POST /api/docx-format.",
+        "findings_target": {
+          "check_id": "retained check ID"
+        },
+        "findings_filters": [
+          "verdict",
+          "role",
+          "property_path"
+        ],
+        "findings_filter_semantics": "Optional exact-match string verdict/role/property_path filters are combined with AND.",
+        "findings_response": [
+          "schema_version",
+          "operation",
+          "check_id",
+          "source_sha256",
+          "findings",
+          "total",
+          "has_more",
+          "next_offset"
+        ]
+      }
+    },
+    "additional_guides": "Additional guide prose is retained as located source material without automatic rules. Explicit structured components use the existing component/decision and deterministic checker service; template observations remain separate."
   }
 }

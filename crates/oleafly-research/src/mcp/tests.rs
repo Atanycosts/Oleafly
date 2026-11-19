@@ -121,6 +121,34 @@ impl super::ApplicationTools for EchoApplication {
     }
 }
 
+struct ImageApplication;
+
+impl super::ApplicationTools for ImageApplication {
+    fn definitions(&self) -> Vec<super::protocol::ToolMeta> {
+        vec![super::protocol::ToolMeta::new(
+            "application_image",
+            "Return one controlled application image.",
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+        )]
+    }
+
+    fn call(&self, _name: String, _args: Value) -> TaskRuntimeFuture<Value> {
+        Box::pin(async { Err("raw JSON must not be the multimodal path".into()) })
+    }
+
+    fn call_content(&self, _name: String, _args: Value) -> TaskRuntimeFuture<Value> {
+        Box::pin(async {
+            super::application_multimodal_content(
+                json!({"source":"fixture","complete":true}),
+                vec![super::ApplicationImage {
+                    mime_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                }],
+            )
+        })
+    }
+}
+
 #[tokio::test]
 async fn application_tools_work_through_http_direct_calls_and_task_bridge() {
     let root = tempfile::tempdir().unwrap();
@@ -200,6 +228,119 @@ async fn application_tools_work_through_http_direct_calls_and_task_bridge() {
         .await
         .unwrap_err()
         .contains("closed"));
+}
+
+#[tokio::test]
+async fn application_call_content_preserves_one_text_result_and_its_image() {
+    let root = tempfile::tempdir().unwrap();
+    let mut services = no_services();
+    services.application = Some(Arc::new(ImageApplication));
+    let bridge = Arc::new(
+        transport::serve(
+            "project-a".into(),
+            FileScope::open(root.path(), None).unwrap(),
+            Vec::new(),
+            services,
+            None,
+        )
+        .await
+        .unwrap(),
+    );
+    let response: Value = client()
+        .post(&bridge.url)
+        .bearer_auth(bridge.context.token.as_str())
+        .json(&json!({
+            "jsonrpc":"2.0",
+            "id":4,
+            "method":"tools/call",
+            "params":{"name":"application_image","arguments":{}}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let content = response["result"]["content"].as_array().unwrap();
+    assert_eq!(
+        decode(&response["result"]),
+        json!({"source":"fixture","complete":true})
+    );
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["mimeType"], "image/png");
+    assert_eq!(content[1]["data"], "iVBORw0KGgo=");
+    assert!(super::application_multimodal_content(
+        json!({"text":"bad"}),
+        vec![super::ApplicationImage {
+            mime_type: "image/svg+xml".into(),
+            data: "PHN2Zz4=".into(),
+        }],
+    )
+    .is_err());
+    bridge.shutdown().await;
+}
+
+#[tokio::test]
+async fn application_tools_apply_the_owners_timeout_and_still_obey_shutdown() {
+    struct WaitingApplication;
+    impl super::ApplicationTools for WaitingApplication {
+        fn definitions(&self) -> Vec<super::protocol::ToolMeta> {
+            super::ApplicationTools::definitions(&EchoApplication {
+                names: vec!["application_wait".into(), "application_until_closed".into()],
+            })
+        }
+
+        fn call(&self, _: String, _: Value) -> TaskRuntimeFuture<Value> {
+            Box::pin(std::future::pending())
+        }
+
+        fn call_timeout(&self, name: &str) -> Duration {
+            if name == "application_wait" {
+                Duration::from_millis(10)
+            } else {
+                Duration::from_secs(150)
+            }
+        }
+    }
+
+    assert_eq!(
+        super::ApplicationTools::call_timeout(&EchoApplication { names: vec![] }, "echo"),
+        Duration::from_secs(30)
+    );
+    let root = tempfile::tempdir().unwrap();
+    let mut services = no_services();
+    services.application = Some(Arc::new(WaitingApplication));
+    let bridge = Arc::new(
+        transport::serve(
+            "project-a".into(),
+            FileScope::open(root.path(), None).unwrap(),
+            Vec::new(),
+            services,
+            None,
+        )
+        .await
+        .unwrap(),
+    );
+    let timeout = tokio::time::timeout(
+        Duration::from_secs(2),
+        bridge.call_tool("application_wait", &json!({})),
+    )
+    .await
+    .expect("the application owner's short deadline must be used")
+    .unwrap_err();
+    assert_eq!(
+        timeout,
+        "The research tool timed out. Try a narrower request."
+    );
+    let arguments = json!({});
+    let pending = bridge.call_tool("application_until_closed", &arguments);
+    tokio::pin!(pending);
+    assert!(futures_util::poll!(pending.as_mut()).is_pending());
+    bridge.shutdown().await;
+    assert_eq!(
+        pending.await.unwrap_err(),
+        "This research session has closed."
+    );
 }
 
 #[tokio::test]

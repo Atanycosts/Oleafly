@@ -260,13 +260,16 @@ describe("pending range under local edits", () => {
     expect(view.state.doc.toString()).toBe("Oh, hello there\nsecond line");
   });
 
-  it("keeps the suggestion acceptable after a local edit inside it", () => {
+  it("withdraws after a local edit inside it and never overwrites the user's text", () => {
     open(6, 11, "world");
     update({ phase: "reviewing", proposed: "there" });
-    local({ from: 8, insert: "x" });
-    expect(session()).toMatchObject({ phase: "reviewing", from: 6, to: 12 });
+    local({ from: 8, to: 9, insert: "R" });
+    expect(view.state.doc.toString()).toBe("hello woRld\nsecond line");
+    expect(session()).toMatchObject({ phase: "withdrawn", from: 6, to: 11 });
+    expect(marked(".cm-inline-del, .cm-inline-add")).toEqual([]);
     acceptInlineEdit(view);
-    expect(view.state.doc.toString()).toBe("hello there\nsecond line");
+    expect(view.state.doc.toString()).toBe("hello woRld\nsecond line");
+    expect(session()?.phase).toBe("withdrawn");
   });
 
   it("closes the suggestion when the editor moves to another file", () => {

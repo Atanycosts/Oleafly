@@ -330,6 +330,62 @@ def test_persistent_store_remains_usable_without_author_source(project):
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
+def test_captured_initial_import_replay_and_expected_baseline_remain_version_bound(project):
+    root, author, _ = project
+    before = snapshot_directory(author)
+    content = SOURCE_A.read_bytes()
+    initial = import_captured_document(
+        root,
+        content,
+        filename="manuscript.docx",
+        request_id="captured-initial",
+        expected_baseline_id=None,
+        confirmation_reason="Retain the first captured version",
+    )
+    assert initial["status"] == "APPLIED"
+    baseline_id = initial["result_baseline_id"]
+    store = open_project(root)
+    baseline = store.get_baseline(baseline_id)
+    assert baseline["source_kind"] == "initial_import"
+    assert baseline["source_path"] == "manuscript.docx"
+    assert store.read_artifact(baseline["artifact_version_ids"][0]) == content
+
+    unexpected_initial = import_captured_document(
+        root,
+        SOURCE_B.read_bytes(),
+        filename="new.docx",
+        request_id="captured-second-initial",
+        expected_baseline_id=None,
+        confirmation_reason="None must not replace an existing baseline",
+    )
+    assert unexpected_initial["status"] == "BASELINE_CONFLICT"
+    assert unexpected_initial["previous_baseline_id"] == baseline_id
+    assert store.info()["current_baseline_id"] == baseline_id
+    assert len(store.list_baselines()) == 1
+
+    update = import_captured_document(
+        root,
+        SOURCE_B.read_bytes(),
+        filename="revised.docx",
+        request_id="captured-update",
+        expected_baseline_id=baseline_id,
+        confirmation_reason="Retain an explicitly based update",
+    )
+    assert update["status"] == "APPLIED"
+    replay = import_captured_document(
+        root,
+        content,
+        filename="manuscript.docx",
+        request_id="captured-initial",
+        expected_baseline_id=None,
+        confirmation_reason="Recover the original result after updating",
+    )
+    assert replay == initial
+    assert store.info()["current_baseline_id"] == update["result_baseline_id"]
+    assert len(store.list_baselines()) == 2
+    assert snapshot_directory(author) == before
+
+
 @pytest.mark.parametrize("filename", ["source.txt", "source", "source.docx.txt"])
 def test_captured_document_rejects_non_docx_filename_without_publishing(project, filename):
     root, _, _ = project

@@ -190,23 +190,46 @@ function decodeDb(text: string): string {
 interface DbVertex {
   id: string;
   text: string;
+  type?: string;
+  icon?: string;
+  pos?: string;
+  constraint?: string;
+  classes?: string[];
+  styles?: string[];
 }
 interface DbEdge {
   start: string;
   end: string;
   text: string;
   stroke: string;
+  id?: string;
+  isUserDefinedId: boolean;
+  type?: string;
+  style?: string[];
+  length?: number;
+  interpolate?: string;
 }
 interface DbSubgraph {
   id: string;
   title: string;
   nodes: string[];
 }
+interface DbClass {
+  id: string;
+  styles: string[];
+}
 interface FlowDb {
   getVertices(): Map<string, DbVertex>;
   getEdges(): DbEdge[];
   getSubGraphs(): DbSubgraph[];
+  getClasses(): Map<string, DbClass>;
   getDirection(): string;
+}
+
+async function loadMermaidDb(code: string): Promise<FlowDb> {
+  const mermaid = (await import("mermaid")).default;
+  await mermaid.parse(code);
+  return (await mermaid.mermaidAPI.getDiagramFromText(code)).db as unknown as FlowDb;
 }
 
 async function mermaidParse(code: string): Promise<boolean> {
@@ -215,10 +238,7 @@ async function mermaidParse(code: string): Promise<boolean> {
 }
 
 async function mermaidDb(code: string) {
-  const mermaid = (await import("mermaid")).default;
-  await mermaid.parse(code);
-  const diagram = await mermaid.mermaidAPI.getDiagramFromText(code);
-  const db = diagram.db as unknown as FlowDb;
+  const db = await loadMermaidDb(code);
   const subgraphs = db.getSubGraphs();
   const subIds = new Set(subgraphs.map((s) => s.id));
   return {
@@ -620,6 +640,156 @@ describe("hand-written code survives canvas edits", () => {
     expect(modelToMermaid(moved, { extras })).toBe(HAND);
   });
 
+  it("keeps explicit edge ids, labels and both-way heads while rewriting links", async () => {
+    const source = ["flowchart TD", "  A e1@--> B", "  B <--> C"].join("\n");
+    const { model: m, extras } = read(source);
+    const edited = patchEdge(patchEdge(m, "A", "B", { label: "Next", style: "dashed" }), "B", "C", {
+      label: "Back",
+    });
+    const out = modelToMermaid(edited, { extras });
+    expect(out).toBe(
+      ["flowchart TD", "  A e1@-.->|Next| B", "  B <-->|Back| C", "  linkStyle 0 stroke-dasharray:6 4"].join("\n"),
+    );
+    expect(await mermaidParse(out)).toBe(true);
+
+    const parsed = await loadMermaidDb(out);
+    expect(
+      parsed.getEdges().map(({ start, end, text, id, isUserDefinedId, type }) => ({
+        start,
+        end,
+        text,
+        id: isUserDefinedId ? id : undefined,
+        isUserDefinedId,
+        type,
+      })),
+    ).toEqual([
+      { start: "A", end: "B", text: "Next", id: "e1", isUserDefinedId: true, type: "arrow_point" },
+      { start: "B", end: "C", text: "Back", id: undefined, isUserDefinedId: false, type: "double_arrow_point" },
+    ]);
+    const { direction, ...oracle } = await mermaidDb(out);
+    expect(ourDb(read(out).model)).toEqual(oracle);
+    expect(direction).toBe("TB");
+    expect(readMermaid(out, { hint: edited }).model).toEqual(edited);
+  });
+
+  it("keeps data shapes and unmapped node settings when labels change", async () => {
+    const source = [
+      "flowchart LR",
+      '  A@{ shape: proc, label: "Process", icon: fa:gear }',
+      '  B@{ shape: event, label: "Event" }',
+      "  A <--> B",
+    ].join("\n");
+    const { model: m, extras } = read(source);
+    const edited = patchNode(patchNode(m, "A", { label: "Process step" }), "B", { label: "Event done" });
+    const out = modelToMermaid(edited, { extras });
+    expect(out).toBe(
+      [
+        "flowchart LR",
+        '  A@{ shape: proc, label: "Process step", icon: fa:gear }',
+        '  B@{ shape: event, label: "Event done" }',
+        "  A <--> B",
+      ].join("\n"),
+    );
+    expect(await mermaidParse(out)).toBe(true);
+
+    const vertices = (await loadMermaidDb(out)).getVertices();
+    expect(vertices.get("A")).toMatchObject({ text: "Process step", type: "proc", icon: "fa:gear" });
+    expect(vertices.get("B")).toMatchObject({ text: "Event done", type: "event" });
+    const { direction, ...oracle } = await mermaidDb(out);
+    expect(ourDb(read(out).model)).toEqual(oracle);
+    expect(direction).toBe("LR");
+    expect(readMermaid(out, { hint: edited }).model).toEqual(edited);
+  });
+
+  it("keeps nested groups, node styles and linkStyle targets when members change", async () => {
+    const source = [
+      "flowchart TB",
+      "  subgraph Outer [Outer]",
+      "    style Outer fill:#e0f2fe",
+      "    subgraph Inner [Inner]",
+      "      style Inner fill:#f0f9ff",
+      "      A e1@--> B",
+      "      B <--> C",
+      "      C --> D",
+      "    end",
+      "    E[E]",
+      "    D --> E",
+      "  end",
+      "  style A fill:#fef3c7,stroke:#92400e",
+      "  linkStyle 0,3 stroke:#dc2626,stroke-dasharray:6 4",
+    ].join("\n");
+    const { model: m, extras } = read(source);
+    const inner = m.nodes.find((n) => n.id === "Inner");
+    if (!inner) throw new Error("missing inner group");
+    const edited: DiagramModel = {
+      ...m,
+      nodes: [
+        ...m.nodes.filter((n) => n.id !== "C").map((n) => (n.id === "A" ? { ...n, fill: "#fde68a" } : n)),
+        node({ id: "replacement", label: "Replacement", x: inner.x + 30, y: inner.y + 30, w: 10, h: 10, fill: "#dcfce7" }),
+      ],
+      edges: [
+        ...m.edges.filter((e) => e.source !== "C" && e.target !== "C"),
+        edge({ id: "b-replacement", source: "B", target: "replacement", label: "new path" }),
+      ],
+    };
+    const out = modelToMermaid(edited, { extras });
+    expect(await mermaidParse(out)).toBe(true);
+    expect(out).toContain("linkStyle 0,1 stroke:#dc2626,stroke-dasharray:6 4");
+    expect(out).toContain("replacement[Replacement]");
+    expect(out).not.toMatch(/\bC\b/);
+
+    const parsed = await loadMermaidDb(out);
+    expect(
+      parsed
+        .getSubGraphs()
+        .map((group) => ({ id: group.id, members: [...group.nodes].sort() }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    ).toEqual([
+      { id: "Inner", members: ["A", "B", "D", "replacement"] },
+      { id: "Outer", members: ["E", "Inner"] },
+    ]);
+    expect(parsed.getVertices().get("A")?.styles).toEqual(expect.arrayContaining(["fill:#fde68a", "stroke:#92400e"]));
+    expect(parsed.getVertices().get("replacement")?.styles).toEqual(["fill:#dcfce7"]);
+    expect(parsed.getEdges()[0].style).toEqual(
+      expect.arrayContaining(["stroke:#dc2626", "stroke-dasharray:6 4"]),
+    );
+    expect(parsed.getEdges()[1].style).toEqual(
+      expect.arrayContaining(["stroke:#dc2626", "stroke-dasharray:6 4"]),
+    );
+    const { direction, ...oracle } = await mermaidDb(out);
+    expect(ourDb(read(out).model)).toEqual(oracle);
+    expect(direction).toBe("TB");
+    const roundTrip = readMermaid(out, { hint: edited }).model;
+    if (!roundTrip) throw new Error("Edited Mermaid did not produce a model");
+    expect(roundTrip.edges).toEqual(edited.edges);
+    expect([...roundTrip.nodes].sort((a, b) => a.id.localeCompare(b.id))).toEqual(
+      [...edited.nodes].sort((a, b) => a.id.localeCompare(b.id)),
+    );
+  });
+
+  it("patches several declarations in one statement without shifting later offsets", async () => {
+    const source = [
+      "flowchart TD",
+      "  A[One] & B[Two] --> C[Three]",
+      "  C --> D[Four]",
+    ].join("\n");
+    const { model: m, extras } = read(source);
+    expect(modelToMermaid(m, { extras })).toBe(source);
+
+    const edited = patchNode(patchNode(m, "A", { label: "Uno" }), "B", { label: "Dos" });
+    const output = modelToMermaid(edited, { extras });
+    expect(output).toBe(source.replace("A[One] & B[Two]", "A[Uno] & B[Dos]"));
+    expect(await mermaidParse(output)).toBe(true);
+    expect(
+      readMermaid(output, { hint: m }).model?.nodes.map((n) => [n.id, n.label]),
+    ).toEqual([
+      ["A", "Uno"],
+      ["B", "Dos"],
+      ["C", "Three"],
+      ["D", "Four"],
+    ]);
+  });
+
   it("regenerates only the declaration of a relabeled node", () => {
     const { model: m, extras } = read(HAND);
     const out = modelToMermaid(patchNode(m, "B", { label: "Is it ok?" }), { extras });
@@ -720,6 +890,68 @@ describe("hand-written code survives canvas edits", () => {
     const out = modelToMermaid(added, { extras });
     expect(out).toBe(["flowchart TD", "  subgraph S [Side]", "    A --> B", "    D", "  end", "  B --> C"].join("\n"));
     expect(await mermaidParse(out)).toBe(true);
+  });
+
+  it("keeps group and top-level additions after a subgraph closed at end of file", async () => {
+    const source = ["flowchart TD", "  subgraph S [Side]", "    A"].join("\n");
+    const { model: m, extras } = read(source);
+    const group = m.nodes.find((n) => n.id === "S");
+    if (!group) throw new Error("missing group");
+    const added = {
+      ...m,
+      nodes: [
+        ...m.nodes,
+        node({ id: "D", x: group.x + 30, y: group.y + 30, w: 10, h: 10 }),
+        node({ id: "X", label: "Top", x: 3000, y: 3000 }),
+      ],
+    };
+    const out = modelToMermaid(added, { extras });
+    expect(out).toBe(
+      ["flowchart TD", "  subgraph S [Side]", "    A", "    D", "  end", "  X[Top]"].join("\n"),
+    );
+    expect(await mermaidParse(out)).toBe(true);
+    expect((await mermaidDb(out)).groups).toEqual([{ id: "S", label: "Side", members: ["A", "D"] }]);
+  });
+
+  it("keeps nested and top-level additions after subgraphs closed at end of file", async () => {
+    const source = [
+      "flowchart TD",
+      "  subgraph Outer [Outer]",
+      "    subgraph Inner [Inner]",
+      "      A",
+    ].join("\n");
+    const { model: m, extras } = read(source);
+    const outer = m.nodes.find((n) => n.id === "Outer");
+    const inner = m.nodes.find((n) => n.id === "Inner");
+    if (!outer || !inner) throw new Error("missing nested groups");
+    const added = {
+      ...m,
+      nodes: [
+        ...m.nodes,
+        node({ id: "D", x: inner.x + 30, y: inner.y + 30, w: 10, h: 10 }),
+        node({ id: "E", x: outer.x + outer.w - 10, y: outer.y + 10, w: 5, h: 5 }),
+        node({ id: "X", label: "Top", x: 5000, y: 5000 }),
+      ],
+    };
+    const out = modelToMermaid(added, { extras });
+    expect(out).toBe(
+      [
+        "flowchart TD",
+        "  subgraph Outer [Outer]",
+        "    subgraph Inner [Inner]",
+        "      A",
+        "      D",
+        "    end",
+        "    E",
+        "  end",
+        "  X[Top]",
+      ].join("\n"),
+    );
+    expect(await mermaidParse(out)).toBe(true);
+    expect((await mermaidDb(out)).groups).toEqual([
+      { id: "Inner", label: "Inner", members: ["A", "D"] },
+      { id: "Outer", label: "Outer", members: ["E", "Inner"] },
+    ]);
   });
 });
 
@@ -1045,6 +1277,25 @@ describe("mermaidBlocks and mermaidFence", () => {
     for (const block of blocks) expect(markdown.slice(block.from, block.to)).toBe(block.code);
   });
 
+  it("rejects unsupported fences and never closes inside a four-space-indented line", () => {
+    const markdown = [
+      "    ```mermaid",
+      "ignored because the opening line is indented too far",
+      "    ```",
+      "``mermaid",
+      "ignored because the marker is shorter than three characters",
+      "``",
+      "```mermaid",
+      "flowchart TD",
+      "    ```",
+      "  A --> B",
+      "```",
+    ].join("\n");
+    const [block] = mermaidBlocks(markdown);
+    expect(block?.code).toBe(["flowchart TD", "    ```", "  A --> B"].join("\n"));
+    expect(markdown.slice(block?.from, block?.to)).toBe(block?.code);
+  });
+
   it("wraps code in a mermaid fence without trailing newlines", () => {
     expect(mermaidFence("flowchart TD\n  A --> B\n\n")).toBe("```mermaid\nflowchart TD\n  A --> B\n```");
     expect(mermaidBlocks(mermaidFence("graph LR"))[0].code).toBe("graph LR");
@@ -1145,5 +1396,236 @@ describe("reader and writer edge inputs", () => {
       edges: m.edges.filter((e) => e.source !== "B"),
     };
     expect(modelToMermaid(edited, { extras })).toBe("flowchart TD\nA --> B\nC\n  Z[Zed]");
+  });
+});
+
+interface ParserRoundTripCase {
+  name: string;
+  source: string;
+  edit: (m: DiagramModel) => DiagramModel;
+  direction: string;
+  notes: string[];
+  verify: (db: FlowDb) => unknown;
+  expected: unknown;
+}
+
+const PARSER_ROUND_TRIPS: ParserRoundTripCase[] = [
+  {
+    name: "preserves a solid link with circle heads",
+    source: ["flowchart LR", "  A o--o B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "round" }),
+    direction: "LR",
+    notes: ["approximated:mermaidArrowHead"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "round", type: "double_arrow_circle", stroke: "normal", length: 1 },
+  },
+  {
+    name: "preserves a solid link with cross heads",
+    source: ["flowchart LR", "  A x--x B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "blocked" }),
+    direction: "LR",
+    notes: ["approximated:mermaidArrowHead"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "blocked", type: "double_arrow_cross", stroke: "normal", length: 1 },
+  },
+  {
+    name: "preserves a dotted link with cross heads",
+    source: ["flowchart LR", "  A x-.-x B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "rejected" }),
+    direction: "LR",
+    notes: ["approximated:mermaidArrowHead"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "rejected", type: "double_arrow_cross", stroke: "dotted", length: 1 },
+  },
+  {
+    name: "preserves a thick link with arrow heads",
+    source: ["flowchart LR", "  A <==> B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "fast" }),
+    direction: "LR",
+    notes: ["approximated:mermaidThickLink"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "fast", type: "double_arrow_point", stroke: "thick", length: 1 },
+  },
+  {
+    name: "preserves a long dotted link",
+    source: ["flowchart LR", "  A -...-> B"].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "retry" }),
+    direction: "LR",
+    notes: ["kept:mermaidLinkLength"],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke, length: edge.length };
+    },
+    expected: { text: "retry", type: "arrow_point", stroke: "dotted", length: 3 },
+  },
+  {
+    name: "preserves a quoted pipe label while editing its separators",
+    source: ["flowchart LR", '  A -->|"left | right, stay"| B'].join("\n"),
+    edit: (m) => patchEdge(m, "A", "B", { label: "left | right; edited" }),
+    direction: "LR",
+    notes: [],
+    verify: (db) => {
+      const edge = db.getEdges()[0];
+      return { text: decodeDb(edge.text), type: edge.type, stroke: edge.stroke };
+    },
+    expected: { text: "left | right; edited", type: "arrow_point", stroke: "normal" },
+  },
+  {
+    name: "preserves data shape and position while relabelling",
+    source: [
+      "flowchart LR",
+      '  A@{ shape: diam, label: "Choice", pos: "b" }',
+      "  A --> B",
+    ].join("\n"),
+    edit: (m) => patchNode(m, "A", { label: "Decision" }),
+    direction: "LR",
+    notes: ["kept:mermaidNodeSetting:pos"],
+    verify: (db) => {
+      const vertex = db.getVertices().get("A");
+      return { text: vertex?.text, type: vertex?.type, pos: vertex?.pos };
+    },
+    expected: { text: "Decision", type: "diam", pos: "b" },
+  },
+  {
+    name: "preserves an approximated data shape and its constraint",
+    source: [
+      "flowchart LR",
+      '  A@{ shape: sm-circ, label: "Start", constraint: "on" }',
+      "  A --> B",
+    ].join("\n"),
+    edit: (m) => patchNode(m, "A", { label: "Begin" }),
+    direction: "LR",
+    notes: ["approximated:mermaidShape:sm-circ", "kept:mermaidNodeSetting:constraint"],
+    verify: (db) => {
+      const vertex = db.getVertices().get("A");
+      return { text: vertex?.text, type: vertex?.type, constraint: vertex?.constraint };
+    },
+    expected: { text: "Begin", type: "sm-circ", constraint: "on" },
+  },
+  {
+    name: "preserves class definitions and assignments while relabelling",
+    source: [
+      "flowchart LR",
+      "  classDef warm fill:#fee2e2,stroke:#991b1b,rx:6",
+      "  A[Start] --> B[End]",
+      "  class A,B warm",
+    ].join("\n"),
+    edit: (m) => patchNode(m, "A", { label: "Begin" }),
+    direction: "LR",
+    notes: ["kept:mermaidClassProperty:rx"],
+    verify: (db) => ({
+      definition: db.getClasses().get("warm")?.styles,
+      a: db.getVertices().get("A")?.classes,
+      b: db.getVertices().get("B")?.classes,
+    }),
+    expected: {
+      definition: ["fill:#fee2e2", "stroke:#991b1b", "rx:6"],
+      a: ["warm"],
+      b: ["warm"],
+    },
+  },
+  {
+    name: "updates mapped style properties and retains unknown style properties",
+    source: ["flowchart LR", "  A --> B", "  style A fill:#fef3c7,opacity:0.4"].join("\n"),
+    edit: (m) => patchNode(m, "A", { fill: "#fde68a" }),
+    direction: "LR",
+    notes: ["kept:mermaidStyleProperty:opacity"],
+    verify: (db) => db.getVertices().get("A")?.styles,
+    expected: ["fill:#fde68a", "opacity:0.4"],
+  },
+  {
+    name: "preserves interpolated link style properties while relabelling",
+    source: [
+      "flowchart LR",
+      "  A --> B",
+      "  B --> C",
+      "  linkStyle 1 interpolate basis stroke:#2563eb,stroke-width:2px",
+    ].join("\n"),
+    edit: (m) => patchEdge(m, "B", "C", { label: "second" }),
+    direction: "LR",
+    notes: [
+      "kept:mermaidLinkStyleProperty:interpolate",
+      "kept:mermaidLinkStyleProperty:stroke",
+      "kept:mermaidLinkStyleProperty:stroke-width",
+    ],
+    verify: (db) => {
+      const edge = db.getEdges()[1];
+      return {
+        text: decodeDb(edge.text),
+        interpolate: edge.interpolate,
+        style: edge.style?.filter((prop) => !prop.startsWith("fill:")),
+      };
+    },
+    expected: {
+      text: "second",
+      interpolate: "basis",
+      style: ["stroke:#2563eb", "stroke-width:2px"],
+    },
+  },
+  {
+    name: "drops a deleted node from class assignments",
+    source: [
+      "flowchart LR",
+      "  classDef hot fill:#fecaca",
+      "  A --> B",
+      "  B --> C",
+      "  class A,B,C hot",
+    ].join("\n"),
+    edit: (m) => ({
+      ...m,
+      nodes: m.nodes.filter((n) => n.id !== "B"),
+      edges: m.edges.filter((e) => e.source !== "B" && e.target !== "B"),
+    }),
+    direction: "LR",
+    notes: [],
+    verify: (db) => ({
+      definition: db.getClasses().get("hot")?.styles,
+      a: db.getVertices().get("A")?.classes,
+      b: db.getVertices().get("B")?.classes,
+      c: db.getVertices().get("C")?.classes,
+    }),
+    expected: {
+      definition: ["fill:#fecaca"],
+      a: ["hot"],
+      b: undefined,
+      c: ["hot"],
+    },
+  },
+];
+
+describe("real Mermaid hand-written parser round trips", () => {
+  it.each(PARSER_ROUND_TRIPS)("$name", async ({ source, edit, direction, notes, verify, expected }) => {
+    expect(await mermaidParse(source)).toBe(true);
+    const parsedSource = read(source);
+    expect(codes(parsedSource.notes)).toEqual(expect.arrayContaining(notes));
+
+    const edited = edit(parsedSource.model);
+    const out = modelToMermaid(edited, { extras: parsedSource.extras });
+    expect(await mermaidParse(out)).toBe(true);
+    expect(verify(await loadMermaidDb(out))).toEqual(expected);
+    const normalized = read(out);
+    expect(codes(normalized.notes)).toEqual(expect.arrayContaining(notes));
+
+    const { direction: oracleDirection, ...oracle } = await mermaidDb(out);
+    expect(ourDb(normalized.model)).toEqual(oracle);
+    expect(oracleDirection).toBe(direction);
+
+    const roundTrip = readMermaid(out, { hint: edited }).model;
+    expect(roundTrip?.edges).toEqual(edited.edges);
+    expect([...(roundTrip?.nodes ?? [])].sort((a, b) => a.id.localeCompare(b.id))).toEqual(
+      [...edited.nodes].sort((a, b) => a.id.localeCompare(b.id)),
+    );
   });
 });

@@ -17,8 +17,15 @@ historical design input.
 The historical **Phase 0** baseline and the unreleased, partial S1 read-only DOCX
 implementation retain their original scope. Phase 0 covers project contracts, source inventory, environment
 inventory, workspace fingerprinting and validation fixtures. The reader handles selected OOXML
-structures for fixture-driven review; it does not yet represent a complete DOCX reader and does
-not modify manuscripts.
+structures for fixture-driven review and does not modify manuscripts. Selected Word templates
+now use the application's pinned DOCX core for effective formatting, with complete captured
+package bytes and object snapshots retained here. Template checks compare semantic objects;
+bounded queries expose snapshot objects, raw package parts, XML nodes, relationships and findings.
+The Python reader remains the read-only document projection and deterministic checker. Guide
+prose is retained for user or Agent interpretation; it never automatically creates requirements.
+Structured components and explicit decisions use the existing world/version service.
+See the [selected-template status](docs/s1-progress.md#selected-word-template-comparison-2026-11-14)
+and [journal contract](contracts/journals/world-contract.json) for the current route.
 
 ## Repository layout
 
@@ -57,37 +64,22 @@ remains for its existing boundary tests; Oleafly is the active application and A
 
 ## Development commands
 
-```powershell
+```sh
 python -m pip install -e ".[dev,fixture-building]"
-pwsh -NoProfile -File tools/verify.ps1
-```
-
-The verification script stops at the first failed gate and isolates temporary test data under
-`var/`. See the [development guide](docs/engineering/development-guide.md) and
-[module responsibilities](docs/engineering/layout-and-naming.md). Individual commands:
-
-```powershell
 ruff format --check --no-cache .
 ruff check --no-cache .
 mypy
 python -m pytest
-rfw-phase0 validate
-rfw-phase0 build-reports
 ```
+
+See the [development guide](docs/engineering/development-guide.md) and
+[module responsibilities](docs/engineering/layout-and-naming.md).
 
 Earlier integration audits and private execution reports are retained locally under
 `.private/workspace-consolidation-20261109/workbench-original-source/reports/`, outside the
 public clean checkout. Their verified scope and remaining acceptance limits stay separate
 from the frozen requirement baseline; current integration status is maintained in the
 [Oleafly integration guide](../../docs/research-workbench-integration.md).
-
-The CLI may also be run without installation:
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m research_file_workbench.phase0 validate
-python -m research_file_workbench.phase0 build-reports
-```
 
 Pinned WPS rendering is performed with `tools/phase0/export-pdf-with-wps.ps1`. The script refuses
 to run while an existing WPS Writer process is active, renders an application-owned copy, and
@@ -127,7 +119,8 @@ result is separate from the portable regression suite. Frozen private bytes are 
 - Phase 0 fixes samples, environment, schemas, annotations, capability boundaries, and acceptance
   fixtures.
 - S1 implements and validates the DOCX read-only vertical slice.
-- S2A adds journal template and rule-pack processing.
+- The selected Word template portion of S2A is implemented through the core-snapshot route above;
+  general rule-pack processing retains its separate scope.
 - S2B adds proposal preflight and approved DOCX text replacement.
 
 See [docs/phase0/README.md](docs/phase0/README.md) for the Phase 0 deliverables.

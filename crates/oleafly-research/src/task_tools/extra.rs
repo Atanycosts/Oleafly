@@ -781,6 +781,7 @@ async fn paper(binding: &TaskBinding, args: &Value) -> Result<Value, String> {
         &binding.host.literature(),
         request,
         &files,
+        &files,
         &binding.record_dir,
         linked_base,
         extractor.as_deref(),

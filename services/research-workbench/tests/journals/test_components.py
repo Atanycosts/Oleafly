@@ -63,6 +63,31 @@ def test_component_is_candidate_with_captured_provenance():
     )
 
 
+def test_exact_font_component_remains_a_candidate():
+    document = component()
+    document["rules"] = [
+        {
+            "property": "body_font_family",
+            "expected": "SimSun",
+            "unit": "font_family",
+            "source_refs": ["guide-reference"],
+        }
+    ]
+    document["sources"][0]["quote"] = "Body text must use SimSun font."
+    rule = analyzed(document)["rules"][0]
+    assert rule["expected"] == "SimSun"
+    assert rule["basis_status"] == "candidate"
+    assert rule["evidence"][1]["quote"] == document["sources"][0]["quote"]
+
+
+@pytest.mark.parametrize("value", [400, "", " SimSun ", "SimSun\n"])
+def test_font_component_rejects_invalid_family_values(value):
+    document = component()
+    document["rules"][0].update(property="body_font_family", expected=value, unit="font_family")
+    with pytest.raises(WorldAnalysisError):
+        analyzed(document)
+
+
 @pytest.mark.parametrize(
     "change",
     [

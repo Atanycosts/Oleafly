@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 from pathlib import Path
@@ -21,8 +22,13 @@ def run(root: Path, control: BinaryIO, ready: TextIO) -> None:
     Write the bound loopback URL only after storage and browser assets validate.
     Storage, bind and pipe errors propagate to the executable boundary.
     """
+    font_dirs = tuple(
+        Path(path) for path in os.environ.get("OLEAFLY_FONT_DIRS", "").split(os.pathsep) if path
+    )
     service = (
-        WorkbenchService(root) if (root / DATABASE_NAME).exists() else WorkbenchService.create(root)
+        WorkbenchService(root, font_dirs=font_dirs)
+        if (root / DATABASE_NAME).exists()
+        else WorkbenchService.create(root, font_dirs=font_dirs)
     )
     with WorkbenchHttpServer(("127.0.0.1", 0), service) as server:
         ready.write(f"http://127.0.0.1:{server.server_port}/\n")

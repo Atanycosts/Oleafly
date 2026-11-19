@@ -1,11 +1,22 @@
 use std::sync::Arc;
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 
 use super::protocol::ToolMeta;
 use super::{files, Context};
 
 const MAX_RESULT_BYTES: usize = 512 * 1024;
+pub const MAX_APPLICATION_TEXT_CHARS: usize = 10_000;
+pub const MAX_APPLICATION_IMAGES: usize = 6;
+pub const MAX_APPLICATION_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_APPLICATION_IMAGE_DATA_BYTES: usize = 14 * 1024 * 1024;
+const MAX_APPLICATION_IMAGES_BYTES: usize = 84 * 1024 * 1024;
+
+pub struct ApplicationImage {
+    pub mime_type: String,
+    pub data: String,
+}
 
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> ToolMeta {
     ToolMeta::new(
@@ -169,6 +180,76 @@ pub(super) fn payload(value: Value) -> Result<Value, String> {
         return Err("The result is too large. Narrow the query or read fewer bytes.".into());
     }
     Ok(json!({"content": [{"type": "text", "text": text}], "isError": false}))
+}
+
+pub fn application_json_content(value: Value) -> Result<Value, String> {
+    payload(value)
+}
+
+pub fn application_multimodal_content(
+    text: Value,
+    images: Vec<ApplicationImage>,
+) -> Result<Value, String> {
+    let text = serde_json::to_string(&text)
+        .map_err(|_| "The tool result could not be encoded.".to_string())?;
+    if text.chars().count() > MAX_APPLICATION_TEXT_CHARS {
+        return Err("The application tool text exceeds its 10,000-character limit.".into());
+    }
+    if images.len() > MAX_APPLICATION_IMAGES {
+        return Err(format!(
+            "An application tool result may contain at most {MAX_APPLICATION_IMAGES} images."
+        ));
+    }
+    let mut total_data_bytes = 0usize;
+    let mut parts = Vec::with_capacity(images.len() + 1);
+    parts.push(json!({"type": "text", "text": text}));
+    for image in images {
+        let mime_type = image.mime_type.to_ascii_lowercase();
+        if !matches!(mime_type.as_str(), "image/png" | "image/jpeg" | "image/gif") {
+            return Err("Application tool images must be PNG, JPEG or GIF.".into());
+        }
+        if image.data.is_empty()
+            || image.data.len() > MAX_APPLICATION_IMAGE_DATA_BYTES
+            || !image
+                .data
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+        {
+            return Err(
+                "An application tool image has invalid base64 data or is too large.".into(),
+            );
+        }
+        total_data_bytes = total_data_bytes.saturating_add(image.data.len());
+        if total_data_bytes > MAX_APPLICATION_IMAGES_BYTES {
+            return Err("Application tool images exceed their combined limit.".into());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(image.data.as_bytes())
+            .map_err(|_| "An application tool image is not valid base64.".to_string())?;
+        if bytes.is_empty()
+            || bytes.len() > MAX_APPLICATION_IMAGE_BYTES
+            || !image_signature_matches(&mime_type, &bytes)
+        {
+            return Err(
+                "An application tool image is empty, too large or has the wrong format.".into(),
+            );
+        }
+        parts.push(json!({
+            "type": "image",
+            "mimeType": mime_type,
+            "data": image.data,
+        }));
+    }
+    Ok(json!({"content": parts, "isError": false}))
+}
+
+fn image_signature_matches(mime_type: &str, bytes: &[u8]) -> bool {
+    match mime_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        _ => false,
+    }
 }
 
 fn source_payload(body: String) -> Result<Value, String> {

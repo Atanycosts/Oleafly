@@ -14,6 +14,7 @@ import pytest
 
 from research_file_workbench.common.json_io import decode_json_object
 from research_file_workbench.journals.store import DATABASE_NAME
+from research_file_workbench.workbench import launcher
 from research_file_workbench.workbench.launcher import run
 from research_file_workbench.workbench.service import WorkbenchService
 
@@ -99,6 +100,39 @@ def test_service_processes_get_distinct_ports_and_sessions(tmp_path: Path):
     ):
         assert first != second
         assert session(first)["token"] != session(second)["token"]
+
+
+def test_run_passes_environment_font_dirs_to_service(tmp_path: Path, monkeypatch):
+    font_dirs = (tmp_path / "first-fonts", tmp_path / "second-fonts")
+    monkeypatch.setenv("OLEAFLY_FONT_DIRS", os.pathsep.join(str(path) for path in font_dirs))
+    captured = {}
+
+    class RecordingServer:
+        def __init__(self, address, service):
+            self.server_port = 43123
+            captured["address"] = address
+            captured["service"] = service
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def shutdown(self):
+            pass
+
+        def serve_forever(self, *, poll_interval):
+            assert poll_interval == 0.1
+
+    monkeypatch.setattr(launcher, "WorkbenchHttpServer", RecordingServer)
+    ready = StringIO()
+
+    run(tmp_path / "library", BytesIO(), ready)
+
+    assert captured["address"] == ("127.0.0.1", 0)
+    assert captured["service"].font_dirs == font_dirs
+    assert ready.getvalue() == "http://127.0.0.1:43123/\n"
 
 
 def test_existing_library_is_reopened_without_reinitialization(tmp_path: Path):

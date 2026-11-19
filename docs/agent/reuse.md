@@ -1,6 +1,6 @@
 # Agent 组件复用依据
 
-范围：截至 2026-11-09 已完成的固定源码调查及隔离探针。以下版本是研究输入，
+范围：截至 2026-11-13 已完成的固定源码调查、隔离探针和工作副本/任务接入。以下版本是固定输入，
 不代表今天的上游最新状态。当前产品能力见[状态页](status.md)，工作合同见[架构](architecture.md)。
 
 ## 已采用的底座
@@ -8,6 +8,11 @@
 产品继续使用 Oleafly 自己的 ResearchTask、SQLite/TaskStore、Rust ACP client、
 文件隔离、SharedDocument、应用服务和既有工具 host。Workbench 继续拥有领域数据。
 没有引入 Orca、T3、Flock 或 Lody 的运行时、数据库或产品依赖。
+
+DOCX 任务活动接入继续复用 EigenPal 活动会话、现有 TaskBridge/ApplicationTools、TaskStore 不可变 observation、
+真实成员执行和 Workbench captured-bytes 保存。用户接受/保存与模型提出候选分别记录，不复制执行器或领域库，
+也不把流式 token 当成已保存编辑。本轮没有新增外部依赖；新增的稀疏自增游标索引只引用现有事件，
+解决任务删除后的行号复用，不存另一份正文或执行状态。
 
 引用旧回答与当前评论分离、精确历史文件字节回读等合同受到上游研究启发，
 实现落在已有 Rust 服务和存储中。机制借鉴、隔离探针和直接产品代码复用应分别描述。
@@ -31,6 +36,12 @@
 
 ## 固定版本与取舍
 
+普通聊天的论文全文读取复用现有 `oleafly-research` paper 服务、`PaperCache`、`TaskFiles` 和应用 PDF 文本桥，
+解析与回看沿用已经锁定的 [Mozilla pdf.js v6.3.289](https://github.com/mozilla/pdf.js/tree/1c8020a7d4e43668ac287a3ecf9a8dbea17e4c56)。
+已回查该版本 [PDF 读取与 getTextContent API](https://github.com/mozilla/pdf.js/blob/1c8020a7d4e43668ac287a3ecf9a8dbea17e4c56/src/display/api.js)，
+直接使用现有 `pdfjs-dist` 依赖与 `PdfViewer`，没有引入另一套 PDF 解析器或 Agent 框架。
+本地来源捕获和版本引用属于应用适配；pdf.js 的文本提取不证明论文主张或模型结论正确。
+
 | 项目及固定版本 | 核对到的机制与边界 | Oleafly 的选择 |
 | --- | --- | --- |
 | [Orca](https://github.com/stablyai/orca/tree/fc8dcd65ebe7e8205bb885d733704e3ba7230820) | SQLite mailbox、consumer fencing、结构化操作回执；take/ACK 不等于工作完成。 | 本地消息/work 与中断重领已有实现。外部执行端出现实际缺口时再借对应 receipt/fencing 合同。 |
@@ -49,6 +60,161 @@
 所查 Orca 是 stablyai/orca，Flock 是 whiteducksoftware/flock；同名项目不能混用能力或许可结论。
 上游来源、固定版本与已有归因继续保留，实际移植前按采用版本复核接口。
 
+## DOCX 编辑与实时工作机制
+
+2026-11-10 的调查分别核对编辑内核、宿主控制、保存及会话位置机制。
+2026-11-11 已将 EigenPal 的公开 core/react/fonts 2.36.0 固定安装到应用，接入受管工作副本，
+以 ONLYOFFICE、Collabora 作为完整 Office 内核对照。真实浏览器已验证即时页面、键盘输入、
+一项流式建议、一次接受/撤销/重做及实际 DOCX 保存；英文和中文真实论文还完成了首屏 session、复杂对象拒绝、
+编辑保存与重开往返。字体替代、固定度量和跨引擎分页差异仍使真实论文排版保真未获证明。
+2026-11-13 的字体增量继续复用该内核公开 FontResolver、应用已有 fontdb/skrifa 和本机字体，
+没有安装第二套编辑服务；Vite 开发预打包的相对字体 URL 已修正。运行与验收范围由当前状态页维护。
+接入与扩展合同见[架构](architecture.md#docx-实时工作表面)，
+当前运行结果见[状态页](status.md#docx-工作副本首个闭环2026-11-11)。
+
+| 项目及固定输入 | 实际核对到的机制 | 取舍与未证明事项 |
+| --- | --- | --- |
+| [EigenPal DOCX Editor](https://github.com/eigenpal/docx-editor/tree/6eb82e66205208bd7ff94f27b7de3a5b1e6bc1c6)，`@docx-editor.dev/core@2.36.0` | Apache-2.0 core 的 automation host 提供文档 handle、expectedRevision、批量操作、变更订阅、DOCX 保存和带作者的替换修订。当前应用借用浏览器 host 读取/修改会话，使用 React 内公开实例的 `editor.save()` 导出实际字节。 | 已采用 core/react/fonts 构建首版工作副本。合成流程和英文、中文真实论文流程均覆盖局部人工干预、接受/撤销/重做、基线与检查；真实论文结构往返通过，字体、分页和 Office 往返保真仍未证明。 |
+| [ONLYOFFICE sdkjs](https://github.com/ONLYOFFICE/sdkjs/tree/9d2138866d929be32f1d107e8b5bfae36156e097) | AGPLv3 源码中有 Search/Range.Select/InsertContent、ReplaceTextSmart、修订与 assistant 作者 API；官方 Docs API 有保存回调。 | 成熟 Office 内核候选。`createConnector` 官方限定 Developer 版，社区接入需插件或源码适配。选区、版本与任务定位须由集成验证；分组 API 的存在没有证明跨异步流的一次撤销。未启动 Docs Server/桌面版。 |
+| [Collabora Online mirror](https://github.com/CollaboraOnline/online.mirror/tree/68215017b21f2579f107470964e3ef4eb6997594) | 宿主 postMessage 的 Send_UNO_Command 可驱动 UNO 操作；Action_Save 有 Notify/ExtendedData，另有 Action_Export 与保存响应路径。 | 另一完整 Office 内核候选，需接 WOPI/本地服务生命周期。命令投递与保存响应不能自行证明锚点有效、编辑版本一致或 Workbench 字节已留存；这些窄语义尚未集成验证。 |
+| [SuperDoc](https://github.com/superdoc/docx-editor)，`superdoc@2.29.0` 的发布包 | 公开包元数据依赖 `@superdoc/docx-engine@0.28.0`；外层 AGPL 与该专有内核分开许可。 | 不能按“整套可修改的 AGPL 编辑内核”选型。其许可允许特定集成使用，同时限制内核研究/替代用途；本轮只查公开元数据和许可，未安装或运行内核，暂不作为首选。 |
+
+EigenPal 的固定源码入口是 [protocol.ts](https://github.com/eigenpal/docx-editor/blob/6eb82e66205208bd7ff94f27b7de3a5b1e6bc1c6/packages/core/src/automation/protocol.ts)、
+[host.ts](https://github.com/eigenpal/docx-editor/blob/6eb82e66205208bd7ff94f27b7de3a5b1e6bc1c6/packages/core/src/automation/host.ts) 和
+[server-host.ts](https://github.com/eigenpal/docx-editor/blob/6eb82e66205208bd7ff94f27b7de3a5b1e6bc1c6/packages/core/src/automation/server-host.ts)。
+合同将一个 batch 定义为一次事务、数字 revision 和撤销单位；本轮实测两个替换在一个 batch 中
+只推进一个数字 revision 并发一次变更事件；连续三次累计替换各推进一个 revision 并发一次事件，
+不能据此声称 token 流天然属于一次撤销。
+server host 拥有字节并能 save；当前安装版本的 browser host 也公开保存入口，但应用选择编辑器拥有的异步
+`editor.save()`，以纳入待完成输入并取得明确字节。2026-11-10 源码调查中的 browser-save 限制是当时固定输入的结论，
+不再代表当前安装 API。
+引擎内数字 revision、OOXML 修订标记和 Workbench baseline 是三种身份。
+公开 [core 包](https://www.npmjs.com/package/@docx-editor.dev/core/v/2.36.0) 的探针锁文件保留实际依赖与完整 integrity，
+应用依赖与完整 integrity 现由根 `pnpm-lock.yaml` 拥有。[Pro 许可](https://github.com/eigenpal/docx-editor/blob/6eb82e66205208bd7ff94f27b7de3a5b1e6bc1c6/packages/pro/LICENSE.md)
+与 core 区分，不把未启用的 Pro 模块算作探针成果。
+
+HarfBuzz 初始化的 top-level await 复用 `vite-plugin-top-level-await@1.6.0`，保留原有 WebView 构建目标。
+其与 SWC 1.16 AST 的已知兼容问题按[上游 issue #79](https://github.com/Menci/vite-plugin-top-level-await/issues/79)
+在该依赖路径锁定 SWC 1.15.47。构建适配保留合法注释并恢复 UTF-8/Terser 压缩，
+同时禁用 SWC 自身的压缩打印，以免破坏 JSON 中的 LaTeX 反斜杠转义；独立构建用例实际导入产物并核对文本。
+编辑内核按需加载；包体积与启动图检查仍执行。上游 core/react/fonts 的许可和字体归因由
+[`scripts/sync-docx-notices.mjs`](../../scripts/sync-docx-notices.mjs)从安装包原文同步至应用资源，
+`--check` 核对一致性。
+
+当前 npm `core@2.36.0` 发布元数据的 gitHead 是
+[`86869eedede5b793c910be804db6280b036b0b50`](https://github.com/eigenpal/docx-editor/tree/86869eedede5b793c910be804db6280b036b0b50)；
+上表 `6eb82e…` 保留最初选型调查输入，不代替这个发布包的源码身份。
+模板读取继续复用该版本的 `openHeadlessDocument`、样式级联、有效 run／段落布局、分节枚举和表格结构 API。
+`docx-format` 适配层保留源包字节和 canonical XML 路径，不再在 Python 重写一份 Word 样式计算器。
+旧 `.doc` 规范化复用现有本机 LibreOffice 定位与受控进程，来源和临时 profile 由应用保留与清理。
+Workbench 复用既有 source/world/baseline/check/artifact/evidence 存储，分页 findings 与大 world 引用沿已有工具表面读取。
+这套复用覆盖原始事实和有依据的有效格式比较，不把保留 XML 等同于全部 OOXML 渲染语义已实现。
+字体解析复用公开 `defineFontResolver`／`useFonts`／`setFonts`，下载复用应用既有字体包服务和缓存。
+按准确族、字重与 style 返回实际字节及 hash，不再接入跨族替代或近似 face。
+现有 fontdb、skrifa 用于字体识别，不新增字体转换器；无法直接交给内核的 TTC／可变字体如实缺失。
+期刊要求和下载后的实际字体分别核对，当前边界见[架构](architecture.md#当前接入范围2026-11-11)。
+同一发布源码的 [`semantic-layout.ts`](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/core/src/layout/semantic-layout.ts#L831)
+原版只在单栏节启用段落 frame；
+[`section-preparation.test.ts`](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/core/src/layout/__tests__/section-preparation.test.ts#L128)
+明确断言双栏 frame 缺失。英文原稿首页在双栏节内用 468 pt 页锚定标题框，
+原版因此把它按普通栏宽排版。Oleafly 通过现有 pnpm 补丁机制支持明确宽于各栏、
+页／页边距水平锚定、`none`／`notBeside` 环绕的固定宽 frame。沿既有排除区域为每个相交栏登记避让，
+相邻的 text-relative frame 组按源顺序堆叠，保留同属性作者段落的共享框及序列化。
+可读源码、固定版本、回归及两种发布运行格式的重建方法见[内核补丁说明](../../patches/docx-core/README.md)。
+窄框、自动宽度、文字水平锚定及侧绕框仍走原多栏行为；没有修改作者 XML。
+
+LibreOffice 26.8.2.2 的固定 [DomainMapper 源码](https://github.com/LibreOffice/core/blob/libreoffice-26.8.2.2/writerfilter/source/dmapper/DomainMapper.cxx)
+另有样式 frame 继承 TODO，导致原稿 PDF 忽略该标题框。隔离副本将 frame 物化到段落后又命中
+[tdf#164445](https://bugs.documentfoundation.org/show_bug.cgi?id=164445) 的相邻框倒序问题。
+该探针只定位上游缺陷；产品未采用 XML 物化，也没有将编辑器修复宣称为 LibreOffice PDF 版式修复。
+
+ONLYOFFICE 的 [plugin bridge](https://github.com/ONLYOFFICE/sdkjs/blob/9d2138866d929be32f1d107e8b5bfae36156e097/common/plugins/plugin_base_api.js)
+注明：online coediting 的 callCommand/Document Builder 限于创建并 InsertContent，桌面本地文件不受同一限制。
+[ReplaceTextSmart](https://github.com/ONLYOFFICE/sdkjs/blob/9d2138866d929be32f1d107e8b5bfae36156e097/common/apiBase_plugins.js)
+依赖当前选区，[SearchAndReplace](https://github.com/ONLYOFFICE/sdkjs/blob/9d2138866d929be32f1d107e8b5bfae36156e097/word/api_plugins.js)
+会替换全部匹配；两者都不能当成已定位并核对版本的段落事务。
+[SetAssistantTrackRevisions](https://github.com/ONLYOFFICE/sdkjs/blob/9d2138866d929be32f1d107e8b5bfae36156e097/word/apiBuilder.js)
+暂存全局作者状态，不证明长异步生成期间用户输入与多任务归因隔离。
+所查 [apiBase.js](https://github.com/ONLYOFFICE/sdkjs/blob/9d2138866d929be32f1d107e8b5bfae36156e097/common/apiBase.js)
+的 group-actions 基类只是事件/空实现；尚未找到 Word 覆写足以证明分组撤销，需实际部署验证。
+
+官方 [ONLYOFFICE 保存回调](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)
+区分 status 2 的待存储文件、编辑中 force-save 的 6 和失败 3/7。集成方仍须下载回调 URL、留存实际字节，
+存储成功后才返回成功；onDocumentStateChange 变 false 只说明变更已送到编辑服务。
+users 的最后编辑者不是逐事务作者，userdata 关联请求也不替代会话修订校验。
+[Connector 的版本限制](https://api.onlyoffice.com/docs/docs-api/usage-api/methods/#createconnector)另有明确说明。
+Collabora 的具体控制路径见固定 [Map.WOPI.js](https://github.com/CollaboraOnline/online.mirror/blob/68215017b21f2579f107470964e3ef4eb6997594/browser/src/map/handler/Map.WOPI.js)。
+另有 [ChildSession.cpp](https://github.com/CollaboraOnline/online.mirror/blob/68215017b21f2579f107470964e3ef4eb6997594/kit/ChildSession.cpp)
+中的结构提取/变换与结果回执，值得作为成熟内核的后续探针；text 提取读取内存，其他过滤器仍可能重读磁盘。
+所查 [ClientSession.cpp](https://github.com/CollaboraOnline/online.mirror/blob/68215017b21f2579f107470964e3ef4eb6997594/wsd/ClientSession.cpp)
+的结果消费主要服务内部 AI/转换通道，未证明标准 WOPI 宿主可直接调用同一结构事务。
+原 `CollaboraOnline/online` 仓已转到 Gerrit/mirror，不能只查部署仓就判定控制源码不存在。
+SuperDoc 的 [2.29.0 发布元数据](https://registry.npmjs.org/superdoc/2.29.0)与
+[0.28.0 内核许可](https://unpkg.com/@superdoc/docx-engine@0.28.0/DOCX-ENGINE-LICENSE.md)是该取舍的实际依据，
+不能把它概括为“所有使用都必须付费”。
+
+会话位置与事务机制另参考三个成熟先例，不因此替换现有 Loro/OT：
+
+- [ProseMirror transform 1.10.5](https://github.com/ProseMirror/prosemirror-transform/blob/1.10.5/src/map.ts)
+  用 Mapping/mapResult 表达移动与删除，Step.map 可返回 null。适合参考建议跟随及明确失效，
+  不提供独立 DOCX 重导入后的身份对应或 Word 排版。
+- [Yjs v13.6.27 RelativePosition](https://github.com/yjs/yjs/blob/v13.6.27/src/utils/RelativePosition.js)
+  关联 CRDT item/方向，不能解析时返回 null；[UndoManager](https://github.com/yjs/yjs/blob/v13.6.27/src/utils/UndoManager.js)
+  的 trackedOrigins/stopCapturing 给出按来源、按编辑动作撤销的机制对照。需要同一 CRDT 历史，不能靠普通 DOCX 重存恢复。
+- [LSP 3.17 TextDocumentEdit](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/types/textDocumentEdit.md)
+  把编辑绑定输入版本，[applyEdit](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/workspace/applyEdit.md)
+  分开应用与失败回执；applied 不代表磁盘保存，跨文件失败处理也依客户端能力。
+
+完成快照的 PDF 转换已采用 [LibreOffice 无界面/转换参数](https://help.libreoffice.org/latest/en-US/text/shared/guide/start_parameters.html)，并保留
+[Gotenberg v8.0.0 的 LibreOffice route](https://github.com/gotenberg/gotenberg/blob/v8.0.0/pkg/modules/libreoffice/routes.go) 作为后续服务化对照。
+Oleafly 当前在 Workbench 内按每次转换创建临时 profile，检查输出页数并登记 derived PDF；它属于保存后的渲染链，不能替代交互编辑内核。
+WPS 的既有导出可继续作为外部引擎来源，新的转换结果须按实际引擎登记，不能套用历史 WPS 过程证明。
+
+## 准确中文字体来源（2026-11-13）
+
+已核对 Oleafly 上游固定提交
+[`9d525d1`](https://github.com/Oleafly/Oleafly/tree/9d525d151ce951449033b4d2f5a0cb7019c29123)。
+其[字体目录](https://github.com/Oleafly/Oleafly/blob/9d525d151ce951449033b4d2f5a0cb7019c29123/src-tauri/resources/font-packs.json)
+提供 Noto、Fandol、LXGW 等开源中文字体，没有 SimSun、SimHei、KaiTi 或 DengXian 原字体包。
+[下载服务](https://github.com/Oleafly/Oleafly/blob/9d525d151ce951449033b4d2f5a0cb7019c29123/src-tauri/src/assets.rs)
+已有摘要、分阶段下载和第二来源机制；第二来源是同一文件的备用 URL，不是准确字体的新来源。
+EigenPal 已安装的 2.36.0 发布源码和调查时 main
+[`845bd85`](https://github.com/eigenpal/docx-editor/tree/845bd85f8c0a27c299ec4c4bb9ca6bf81cdc15b9)
+在相关表中一致：其 [CJK 包](https://github.com/eigenpal/docx-editor/blob/86869eedede5b793c910be804db6280b036b0b50/packages/fonts-cjk/src/families.ts)
+把上述家族缺失时的请求交给 Noto Sans CJK JP，源码明确说明字形、换行和页数可能变化。
+这些上游机制不能直接满足本项目的准确字体策略。
+
+GitHub 的可复用入口是 Fontist 的固定配方和官方包提取流程，已下载实际包核对以下路径。
+调查已进入应用接入：宋体、黑体和楷体选用下表 HTTPS Office 包，等线选用独立 HTTPS 包。
+沿原下载／缓存机制增加指定成员提取，准确家族规则触发获取后在同一编辑会话刷新；
+应用缓存也供给保存后的 LibreOffice 私有 profile。实际原生验收范围由[当前状态](status.md#docx-准确字体获取2026-11-13)拥有。
+
+| 来源与固定配方 | 实际取得的字体 | 本轮核验与边界 |
+| --- | --- | --- |
+| [Fontist DengXian](https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/dengxian.yml) 指向 Microsoft HTTPS `eadengfontpack.exe` | DengXian Regular／Bold／Light 1.14，三个静态独立 TTF | 实际下载 30,664,304 bytes，SHA-256 与配方一致，7zz 解 EXE→MSI→字体；已读实际 family、PostScript name、版本及输出 SHA-256。 |
+| [Fontist Office Preview](https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/office_preview.yml) 指向 Microsoft Excel for Mac 15.11.1 更新包；实测使用同地址 HTTPS | SimSun 5.04i、SimHei 5.03i、KaiTi 5.01i；DengXian Regular／Light 1.11、Bold 1.05（Mac） | 完整包 736,800,648 bytes，SHA-256 与配方一致；7zz／系统 tar 从 Payload 提出六个静态 TTF，实际族名与版本吻合。首次下载超时，续传后才通过完整摘要。该包字体较旧，不能当成当前 Windows 字体版本。 |
+| [BatUtil 26100 Hans 清单](https://github.com/abbodi1406/BatUtil/blob/9421f53a75b432b25fd96fde422fd70886b476c4/W10MUI/OnDemand/26100-OnDemand.txt#L1470) 指向 Microsoft CDN 的简中补充字体 CAB | DengXian 1.21、SimHei 5.04、KaiTi 5.02、FangSong 5.02，均为静态独立 TTF；不含标准 SimSun | 实际下载 43,883,622 bytes，SHA-1 对上固定清单；解包、准确族名、版本和输出 SHA-256 已核对。清单仅 HTTP，两个 HTTPS 主机均发生证书名不匹配；未验证 CAB 签名，不能宣称已验证官方签名或 HTTPS 传输。 |
+
+[`kugland/nix-ttf-ms-win11-auto`](https://github.com/kugland/nix-ttf-ms-win11-auto/blob/9e298e2aab68c1bfc22a039012b29595f04b4ac9/pkgs/ttf-ms-win11-auto-zh_cn.json)
+提供固定 Windows 11 官方介质、`install.wim/Windows/Fonts/simsun.ttc` 和 Nix 产物摘要，适合作为较新 SimSun 的来源对照；
+本轮没有下载大 ISO 或运行 Nix。其 [Hans 配方](https://github.com/kugland/nix-ttf-ms-win11-auto/blob/9e298e2aab68c1bfc22a039012b29595f04b4ac9/pkgs/ttf-ms-win11-fod-auto-hans.json)
+也来自官方介质，不能把整包递归摘要当成单字体文件的 SHA-256。
+Fontist 的 [Windows Hans 配方](https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/windows/chinese_simplified_supplemental_fonts.yml)
+本身只是 Windows capability 安装／导入声明，不是跨平台 CAB 下载器。
+其 [SimSun-18030 配方](https://github.com/fontist/formulas/blob/78a7195b56d073de453036c50c57513b27e1ce85/Formulas/simsun_18030.yml)
+产生另一家族，不能用于满足标准 SimSun。第三方直接提交字体二进制的镜像没有优于官方包的来源证据。
+
+Fontist [ArchiveResource](https://github.com/fontist/fontist/blob/8065f1939a89926856cf5eb216e087c4f348cc97/lib/fontist/resources/archive_resource.rb)
+委托 Excavate 递归解包；[TTC 提取入口](https://github.com/fontist/fontist/blob/8065f1939a89926856cf5eb216e087c4f348cc97/lib/fontist/font_installer.rb#L212)
+只在显式指定集合索引时调用 [Fontisan](https://github.com/fontist/fontist/blob/8065f1939a89926856cf5eb216e087c4f348cc97/lib/fontist/font_operations/extract.rb)。
+已借用配方和成员选择规则，沿已有下载／缓存服务加入按包提取，没有引入 Ruby、Nix 或另一套字体服务。
+本机解包工具由 Homebrew `sevenzip` 26.06 和既有 tar 提供；当前 macOS 私用接法依赖这些本机工具，未随应用打包。
+缺少 7-Zip 会在下载前报出可操作的安装错误。大包完整校验后可复用，字体缓存保留来源回执；
+中断下载暂不续传，卸载解出的字体仍保留共享整包供下次使用。
+字体来源可取得与是否可直接被应用载入是两个问题：当前产品仍只提供静态独立 TTF／OTF，TTC 提取未实现。
+同一家族的不同版本也可能改变度量；接入应保留包摘要、成员路径、实际字体版本和提取后摘要，实际渲染另行验收。
+Microsoft 包附带各自的 Office／Windows 使用条款，Fontist 的开源许可不改变字体包的条款。
+
 ## 证据范围
 
 隔离探针验证了部分源码函数、协议和失败语义，使用合成输入；它们不能代替产品集成、
@@ -59,6 +225,10 @@
 不再各建一份实施入口。
 
 本机保留的 `.private/upstream-reuse/` 包含固定源码和探针结果；
+其中 `docx-live-research-20261110/` 保留本轮合成脚本、锁文件、输出及必要源码摘录，
+区分无界面引擎实测、源码调查与未运行的交互验收。
 `.private/agent-documentation-history/agent-evidence-and-reuse-20261109.md`
 保留更完整的调查、其他框架对照及原始证据定位。这些本地材料不随干净 checkout 提供。
 后续研究在对应选择发生变化时更新本页，不为每轮调查新增综合报告。
+准确中文字体的本机隔离输入及核验结果位于 `.private/docx-layout-investigation/exact-font-research/`，
+`font-inspection.json` 记录各输出的实际元数据和 SHA-256；该目录不随干净 checkout 提供，也未进入作者输入目录。

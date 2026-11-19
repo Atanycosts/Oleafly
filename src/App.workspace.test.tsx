@@ -183,6 +183,7 @@ vi.mock("@/components/open-folder/OpenFolderKeeper", () => ({ OpenFolderKeeper: 
 vi.mock("@/components/layout/ProjectAvailabilityKeeper", () => ({ ProjectAvailabilityKeeper: () => null }));
 vi.mock("@/components/layout/FolderWatchKeeper", () => ({ FolderWatchKeeper: () => null }));
 vi.mock("@/components/editor/Editor", () => ({
+  EditorTabBar: () => null,
   Editor: () => {
     mocks.editorRenders++;
     return <div data-testid="editor-surface" />;
@@ -270,10 +271,12 @@ import { useSettingsStore } from "@/store/settings";
 import { usePreviewDetachedStore } from "@/store/preview-detached";
 import { useProjectAnalysisStore } from "@/store/project-analysis";
 import { useTypstFormsStore } from "@/store/typst-forms";
+import { registerDocxHistory } from "@/lib/docx-history";
 
 const initialFiles = useFilesStore.getState();
 const initialCompile = useCompileStore.getState();
 const initialSettings = useSettingsStore.getState();
+const docxHistoryCleanups: (() => void)[] = [];
 
 function emit(event: string, payload: unknown) {
   const handler = mocks.listeners.get(event);
@@ -347,6 +350,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const unregister of docxHistoryCleanups.splice(0)) unregister();
   vi.useRealTimers();
   document.documentElement.removeAttribute("style");
 });
@@ -862,6 +866,62 @@ describe("keyboard shortcuts", () => {
     keydown(window, { key: "z", ctrlKey: true, shiftKey: true });
     expect(mocks.editorVimRedo).toHaveBeenCalledTimes(1);
     expect(mocks.editorRedo).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes Word keyboard and native menu history to the registered working editor", async () => {
+    mocks.tauri = true;
+    await renderApp();
+    await waitFor(() => expect(mocks.listeners.has("menu://undo")).toBe(true));
+    const root = document.createElement("section");
+    root.dataset.docxHistory = "working";
+    const toolbar = document.createElement("button");
+    toolbar.type = "button";
+    root.append(toolbar);
+    document.body.append(root);
+    const exec = vi.fn();
+    docxHistoryCleanups.push(registerDocxHistory(root, () => ({ exec })));
+    toolbar.focus();
+
+    expect(keydown(toolbar, { key: "z", ctrlKey: true }).defaultPrevented).toBe(true);
+    keydown(toolbar, { key: "y", ctrlKey: true });
+    emit("menu://undo", null);
+    emit("menu://redo", null);
+
+    expect(exec.mock.calls).toEqual([
+      [{ type: "undo" }],
+      [{ type: "redo" }],
+      [{ type: "undo" }],
+      [{ type: "redo" }],
+    ]);
+    expect(mocks.editorUndo).not.toHaveBeenCalled();
+    expect(mocks.editorRedo).not.toHaveBeenCalled();
+    root.remove();
+  });
+
+  it("keeps Word read-only history away from both the working editor and the source editor", async () => {
+    mocks.tauri = true;
+    await renderApp();
+    await waitFor(() => expect(mocks.listeners.has("menu://undo")).toBe(true));
+    const root = document.createElement("section");
+    root.dataset.docxHistory = "working";
+    const original = document.createElement("div");
+    original.dataset.docxHistory = "readonly";
+    const target = document.createElement("button");
+    target.type = "button";
+    original.append(target);
+    root.append(original);
+    document.body.append(root);
+    const exec = vi.fn();
+    docxHistoryCleanups.push(registerDocxHistory(root, () => ({ exec })));
+    target.focus();
+
+    keydown(target, { key: "z", ctrlKey: true });
+    emit("menu://redo", null);
+
+    expect(exec).not.toHaveBeenCalled();
+    expect(mocks.editorUndo).not.toHaveBeenCalled();
+    expect(mocks.editorRedo).not.toHaveBeenCalled();
+    root.remove();
   });
 
   it("leaves history keys to Vim inside the source editor and to secondary editors", async () => {

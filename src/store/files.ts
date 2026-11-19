@@ -57,6 +57,7 @@ import { useDiffStore } from "@/store/diff";
 import { projectFolderIsReadOnly, readOnlyFolderMessage } from "@/store/folder-access";
 import { dismissEngineHint, engineHintDismissed } from "@/store/engine-picker";
 import { useSettingsStore } from "@/store/settings";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import { useMcpApprovalStore } from "@/store/mcp-approvals";
 import { nextTabSeq } from "@/store/tab-order";
 import { recordProjectStateRevision } from "@/lib/project-state-revision";
@@ -581,6 +582,7 @@ let lastProjectStateRevision = 0;
 let fileReloadRevision = 0;
 let projectTransition: Promise<void> = Promise.resolve();
 let openSeq = 0;
+let treeRefreshSeq = 0;
 let mainDocSeq = 0;
 let projectsInFlight: Promise<ProjectInfo[]> | null = null;
 let fileOpenSeq = 0;
@@ -1860,8 +1862,11 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
   renameProject: async (name) => {
     const { projectId } = get();
     if (!projectId) return;
+    const projectSeq = openSeq;
     const meta = await renameProjectCmd(projectId, name);
-    set({ projectName: meta.name });
+    if (projectSeq === openSeq && get().projectId === projectId) {
+      set({ projectName: meta.name });
+    }
     await get().refreshProjects();
   },
 
@@ -1905,16 +1910,24 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
 
   refreshTree: async (options) => {
     const { projectId } = get();
-    if (!projectId || !projectFolderAvailable(projectId)) return false;
+    if (!projectId) return false;
+    const refreshSeq = ++treeRefreshSeq;
+    const projectSeq = openSeq;
+    const stillCurrent = () =>
+      refreshSeq === treeRefreshSeq &&
+      projectSeq === openSeq &&
+      get().projectId === projectId;
+    if (!projectFolderAvailable(projectId)) return false;
     let listing: Awaited<ReturnType<typeof listFileTree>>;
     try {
       listing = await listFileTree(projectId);
     } catch (error) {
+      if (!stillCurrent()) return false;
       if (reportLocationError(projectId, error)) return false;
       throw error;
     }
+    if (!stillCurrent()) return false;
     const current = get();
-    if (current.projectId !== projectId) return false;
     if (
       options?.keepUnchanged &&
       current.treeTruncated === listing.truncated &&
@@ -1970,6 +1983,7 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
       return;
     }
     useDiffStore.getState().clearActiveDiff();
+    useWorkspaceSurfaceStore.getState().showFiles();
     set((s) => {
       const isNew = !s.openTabs.includes(path);
       return {
@@ -1984,6 +1998,7 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
 
   setActive: (path) => {
     useDiffStore.getState().clearActiveDiff();
+    useWorkspaceSurfaceStore.getState().showFiles();
     set({ activePath: path });
   },
 
@@ -2080,8 +2095,9 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
   reloadFromDisk: async (path) => {
     const { projectId } = get();
     if (!projectId) return;
+    const projectSeq = openSeq;
     const { content, snapshot } = await readDiskText(projectId, path);
-    if (get().projectId !== projectId) return;
+    if (projectSeq !== openSeq || get().projectId !== projectId) return;
     pendingSaves.delete(path);
     fileReloadRevision++;
     rememberDiskSnapshot(projectId, path, snapshot);
@@ -2174,7 +2190,12 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
       conflictStrategy,
       expectedGeneration,
     );
-    await refreshMutationGeneration(projectId);
+    try {
+      await refreshMutationGeneration(projectId);
+    } catch (error) {
+      resetMutationGeneration(projectId);
+      void logError("refresh mutation generation after rename", error);
+    }
     const remap = (p: string) => {
       if (p === from) return destination;
       return p.startsWith(`${from}/`)

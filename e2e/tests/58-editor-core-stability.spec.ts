@@ -1,4 +1,5 @@
 import { test, expect } from "../fixtures";
+import type { TauriPage } from "@srsholmes/tauri-playwright";
 import {
   compileAndProbe,
   compileAndWait,
@@ -71,69 +72,36 @@ async function goToLine(
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
-// Preview controls sit in the toolbar until it narrows, then move into the
-// "More preview controls" overflow menu. The bridge's synthetic click is
-// sometimes discarded before React commits, which left the outline panel
-// `inert` and made this spec flaky. Toggles expose aria-pressed, so retry until
-// it actually flips, measured against a baseline fixed the first time the
-// control is present so a late commit cannot be toggled straight back off.
 async function activatePreviewControl(
-  page: Parameters<typeof expectDesktopShellAnchored>[0],
+  page: TauriPage,
   label: string,
 ) {
-  const selector = JSON.stringify(`[aria-label=${JSON.stringify(label)}]`);
-  const pressedExpression = `(() => {
-    const control = document.querySelector(${selector});
-    return control ? (control.getAttribute('aria-pressed') ?? 'none') : 'absent';
-  })()`;
-  const clickDirectExpression = `(() => {
-    const control = document.querySelector(${selector});
-    if (!control || control.getClientRects().length === 0) return "gone";
-    control.click();
-    return "clicked";
-  })()`;
-  const revealExpression = `(() => {
-    const trigger = document.querySelector('[aria-label="More preview controls"]');
-    if (!trigger) return "missing";
-    return trigger.getAttribute('aria-expanded') === 'true' ? "open" : "closed";
-  })()`;
-  const deadline = Date.now() + 15_000;
-  let baseline: string | null = null;
-  let last = "";
-  for (;;) {
-    const current = await page.evaluate<string>(pressedExpression);
-    if (baseline !== null && current !== "absent" && current !== baseline) return;
-    if (current === "absent") {
-      last = await page.evaluate<string>(revealExpression);
-      if (last === "closed") {
-        // Radix DropdownMenu opens from pointer input. HTMLElement.click()
-        // skips that path, which made the overflow-only CI layout loop forever
-        // even though the row was correctly rendered and labelled. Exercise
-        // the same pointer sequence a user does through the bridge instead.
-        await page.click('[aria-label="More preview controls"]');
-        last = "opening";
-      }
-    } else {
-      baseline ??= current;
-      last = await page.evaluate<string>(clickDirectExpression);
-      if (baseline === "none" && last === "clicked") return;
-      if (last === "clicked") {
-        try {
-          await page.waitForFunction(
-            `${pressedExpression} !== ${JSON.stringify(baseline)}`,
-            2_000,
-          );
-          return;
-        } catch {
-          // Discarded before React committed; the loop re-checks and retries.
-        }
-      }
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`preview control ${label} never activated (${last})`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+  const direct = page.locator(`[aria-label=${JSON.stringify(label)}]`);
+  if (await direct.isVisible()) {
+    // Synthetic key events do not trigger a button's native click action.
+    // Radix menu items handle those events themselves; a plain toolbar button
+    // needs the DOM click so the same action reaches React on every webview.
+    await direct.evaluate((element) => element.click());
+    return;
   }
+
+  const moreControls = page.locator(
+    '[aria-label="More preview controls"]',
+  );
+  await expect(moreControls).toBeVisible();
+  // Radix opens this trigger from keyboard activation consistently across
+  // WebKitGTK; the bridge's synthetic pointer click can be discarded.
+  await moreControls.focus();
+  await moreControls.press("Enter");
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+  expect(await menu.getByRole("menuitem", { name: label, exact: true }).count()).toBe(1);
+  for (let step = 0; step < await menu.getByRole("menuitem").count(); step += 1) {
+    if (await page.evaluate<string | null>(`document.activeElement?.getAttribute("aria-label") ?? null`) === label) break;
+    await page.keyboard.press("ArrowDown");
+  }
+  expect(await page.evaluate<string | null>(`document.activeElement?.getAttribute("aria-label") ?? null`)).toBe(label);
+  await page.keyboard.press("Enter");
 }
 
 async function editorGeometry(
@@ -1334,9 +1302,10 @@ The integrated preview renders a second page.
     timeout: 30_000,
   });
   await activatePreviewControl(tauriPage, "Document outline");
-  await expect(
-    tauriPage.locator('[aria-label="PDF document outline"]'),
-  ).not.toHaveAttribute("inert", "");
+  await expect.poll(() => tauriPage.evaluate<boolean>(`(() => {
+    const panel = document.querySelector('[aria-label="PDF document outline"]');
+    return panel instanceof HTMLElement && !panel.inert;
+  })()`)).toBe(true);
   await tauriPage.click('[aria-label="Close document outline"]');
   await activatePreviewControl(tauriPage, "Search PDF");
   await expect(

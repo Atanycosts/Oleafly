@@ -1105,6 +1105,8 @@ export interface PdfOutlineState {
 export interface PdfViewerProps {
   data: Uint8Array | null;
   documentIdentity?: string;
+  /** Register as the manuscript target for global PDF navigation and SyncTeX. */
+  registerGlobalController?: boolean;
   scale: number;
   onInverse?: (
     page: number,
@@ -1168,6 +1170,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
   {
     data,
     documentIdentity = "unidentified-pdf",
+    registerGlobalController = true,
     scale,
     onInverse,
     onPageChange,
@@ -2943,13 +2946,15 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
       }
       reconcileVisiblePages();
 
-      registerPdfView({
-        pages: [...wrapsRef.current.entries()].map(([pageNo, el]) => ({ pageNo, el })),
-        scale: s,
-        ensurePageRendered,
-        pageGeometry: syncPageGeometry,
-        pageText: syncPageText,
-      });
+      if (registerGlobalController) {
+        registerPdfView({
+          pages: [...wrapsRef.current.entries()].map(([pageNo, el]) => ({ pageNo, el })),
+          scale: s,
+          ensurePageRendered,
+          pageGeometry: syncPageGeometry,
+          pageText: syncPageText,
+        });
+      }
 
       onPageChangeRef.current?.(currentPageRef.current, doc.numPages);
     },
@@ -2966,6 +2971,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
       ensurePageRendered,
       syncPageGeometry,
       syncPageText,
+      registerGlobalController,
     ]
   );
 
@@ -3271,7 +3277,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
         cancelAnimationFrame(placeholderResizeFrameRef.current);
         placeholderResizeFrameRef.current = null;
       }
-      clearPdfView();
+      if (registerGlobalController) clearPdfView();
       docRef.current = null;
       pdfViewerRuntimeRef.current = null;
       try {
@@ -3310,6 +3316,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
     loadOutline,
     password,
     reconcileVisiblePages,
+    registerGlobalController,
     releasePendingRenders,
     releaseStaleRasters,
     dropPreviews,
@@ -3419,13 +3426,15 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
         if (!visibleRef.current.has(p) && !viewportPagesRef.current.has(p)) unrenderPage(p);
       }
       reconcileVisiblePages();
-      registerPdfView({
-        pages: [...wrapsRef.current.entries()].map(([pageNo, el]) => ({ pageNo, el })),
-        scale: target,
-        ensurePageRendered,
-        pageGeometry: syncPageGeometry,
-        pageText: syncPageText,
-      });
+      if (registerGlobalController) {
+        registerPdfView({
+          pages: [...wrapsRef.current.entries()].map(([pageNo, el]) => ({ pageNo, el })),
+          scale: target,
+          ensurePageRendered,
+          pageGeometry: syncPageGeometry,
+          pageText: syncPageText,
+        });
+      }
     }, 120);
 
     return () => {
@@ -3443,6 +3452,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function Pd
     reconcileVisiblePages,
     syncPageGeometry,
     syncPageText,
+    registerGlobalController,
   ]);
 
   const handleDevicePixelRatioChange = useCallback(() => {

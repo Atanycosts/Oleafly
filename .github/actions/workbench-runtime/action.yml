@@ -1,0 +1,53 @@
+name: Install the Word acceptance runtime
+description: Install Workbench and LibreOffice for the browser and packaged Word tests.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: "3.12"
+
+    - name: Install Workbench
+      shell: bash
+      run: |
+        python -m venv services/research-workbench/.venv
+        python - <<'PY'
+        import os
+        from pathlib import Path
+        import subprocess
+        root = Path.cwd()
+        interpreter = root / "services/research-workbench/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        subprocess.run([str(interpreter), "-m", "pip", "install", "-e", "./services/research-workbench"], check=True)
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+            output.write(f"OLEAFLY_WORKBENCH_PYTHON={interpreter}\n")
+        PY
+
+    - name: Install LibreOffice Writer (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libreoffice-writer
+        /usr/bin/soffice --version
+        echo 'OLEAFLY_LIBREOFFICE=/usr/bin/soffice' >> "$GITHUB_ENV"
+
+    - name: Install LibreOffice (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install --cask libreoffice
+        /Applications/LibreOffice.app/Contents/MacOS/soffice --version
+        echo 'OLEAFLY_LIBREOFFICE=/Applications/LibreOffice.app/Contents/MacOS/soffice' >> "$GITHUB_ENV"
+
+    - name: Install LibreOffice (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        choco install libreoffice-fresh --yes --no-progress
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $soffice = 'C:\Program Files\LibreOffice\program\soffice.exe'
+        & $soffice --version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        "OLEAFLY_LIBREOFFICE=$soffice" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

@@ -247,10 +247,11 @@ fn read_existing(root: &PreviewRoot, path: &Path) -> Result<TaskPreviewContent, 
         }
     }
     let base64 = if size <= MAX_IMAGE_BYTES
-        && media_type
-            .as_deref()
-            .is_some_and(|value| value.starts_with("image/"))
-    {
+        && media_type.as_deref().is_some_and(|value| {
+            value.starts_with("image/")
+                || value
+                    == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }) {
         bytes.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
     } else {
         None
@@ -366,6 +367,7 @@ fn media_type(path: &Path) -> Option<String> {
         "svg" => "image/svg+xml",
         "webp" => "image/webp",
         "pdf" => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "json" => "application/json",
         "csv" => "text/csv",
         "html" => "text/html",
@@ -387,6 +389,37 @@ mod tests {
         now_ms, ManifestEntry, ResearchTaskDraft, TaskArtifact, TaskFileChange, TaskFileChangeKind,
         TaskIsolation, TaskIsolationKind, TaskResultMetadata,
     };
+
+    #[test]
+    fn docx_preview_retains_exact_bytes_and_hash_within_existing_binary_cap() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = b"PK\x03\x04\0retained-docx-bytes\xff";
+        fs::write(temp.path().join("result.DOCX"), bytes).unwrap();
+        let root = PreviewRoot::open(temp.path()).unwrap();
+        let preview = read_existing(&root, Path::new("result.DOCX")).unwrap();
+        assert_eq!(
+            preview.media_type.as_deref(),
+            Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        );
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(preview.base64.unwrap())
+                .unwrap(),
+            bytes
+        );
+        assert_eq!(
+            preview.sha256.unwrap(),
+            format!("{:x}", Sha256::digest(bytes))
+        );
+        assert!(!preview.truncated);
+        assert!(preview.binary);
+        assert!(media_type(Path::new("legacy.doc")).is_none());
+        let large = fs::File::create(temp.path().join("large.docx")).unwrap();
+        large.set_len(MAX_IMAGE_BYTES + 1).unwrap();
+        let capped = read_existing(&root, Path::new("large.docx")).unwrap();
+        assert!(capped.base64.is_none());
+        assert!(capped.truncated);
+    }
 
     #[test]
     fn preview_uses_the_pinned_baseline_and_rejects_changed_output() {

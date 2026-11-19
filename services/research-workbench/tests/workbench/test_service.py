@@ -1,16 +1,111 @@
 """End-to-end journal-world workflow over application-owned temporary storage."""
 
+import base64
 from pathlib import Path
 
 import pytest
 
+from research_file_workbench.common.hashing import sha256_bytes
 from research_file_workbench.common.json_io import load_json_object
+from research_file_workbench.docx.report import READER_VERSION
 from research_file_workbench.journals import models
 from research_file_workbench.journals.models import SourceInput
+from research_file_workbench.projects import service as project_service
 from research_file_workbench.projects.models import BaselineConflictError
 from research_file_workbench.workbench import service as service_module
 from research_file_workbench.workbench.service import WorkbenchService
 from tests.journals.test_analysis import docx_bytes, template_bytes
+
+
+def test_initial_manuscript_import_parses_once_and_preserves_retained_evidence(
+    tmp_path, monkeypatch
+):
+    content = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures/docx/normal/s1-regions-fields/s1-regions-fields.docx"
+    ).read_bytes()
+    author_root = tmp_path / "reference-input"
+    author_root.mkdir()
+    source = author_root / "manuscript.docx"
+    source.write_bytes(content)
+    reference_root = tmp_path / "reference-project"
+    project_service.create_project(reference_root, author_workspace_root=author_root)
+    reference = project_service.import_document(
+        reference_root,
+        source,
+        source_sha256=sha256_bytes(content),
+        request_id="reference-import",
+        expected_baseline_id=None,
+        actor_id="local-operator",
+        confirmation_reason="Compare retained evidence with the existing path import",
+    )
+    reference_store = project_service.open_project(reference_root)
+    expected_evidence = reference_store.list_evidence(
+        reference["result_baseline_id"], reader_version=READER_VERSION
+    )
+    assert expected_evidence
+
+    real_read = project_service.read_docx_bytes
+    parsed = []
+
+    def counted_read(payload, *, source_label):
+        parsed.append(payload)
+        return real_read(payload, source_label=source_label)
+
+    monkeypatch.setattr(project_service, "read_docx_bytes", counted_read)
+    monkeypatch.setattr(service_module, "read_docx_bytes", counted_read)
+    service = WorkbenchService.create(tmp_path / "library")
+    project = service.import_manuscript("用户稿件", "original-name.docx", content)
+    assert parsed == [content]
+    retained = service.manuscript_source(project["project_id"], project["baseline_id"])
+    assert retained["filename"] == "manuscript.docx"
+    assert retained["source_sha256"] == sha256_bytes(content)
+    assert base64.b64decode(retained["content_base64"]) == content
+    store = project_service.open_project(service.project_root(project["project_id"]))
+    assert store.get_baseline()["source_kind"] == "initial_import"
+    assert store.list_evidence(project["baseline_id"], reader_version=READER_VERSION) == (
+        expected_evidence
+    )
+    assert store.list_reads() == []
+    assert (service.root / "inputs" / project["project_id"] / "manuscript.docx").read_bytes() == (
+        content
+    )
+    display = load_json_object(service.project_root(project["project_id"]) / "display.json")
+    assert display == {"name": "用户稿件", "filename": "original-name.docx"}
+
+
+@pytest.mark.parametrize("content", [b"not a DOCX package", docx_bytes("<w:p>")])
+def test_invalid_initial_manuscript_import_leaves_no_retained_files(tmp_path, content):
+    service = WorkbenchService.create(tmp_path / "library")
+    with pytest.raises(ValueError):
+        service.import_manuscript("Broken", "broken.docx", content)
+    assert service.state()["projects"] == []
+    for name in ("inputs", "projects", "var"):
+        path = service.root / name
+        assert not path.exists() or list(path.iterdir()) == []
+
+
+def test_initial_manuscript_evidence_failure_rolls_back_and_cleans_staging(tmp_path, monkeypatch):
+    from research_file_workbench.projects import evidence_records
+
+    service = WorkbenchService.create(tmp_path / "library")
+    store_evidence = evidence_records.store_evidence
+    transactions = []
+
+    def fail_after_evidence(connection, *args, **kwargs):
+        store_evidence(connection, *args, **kwargs)
+        assert connection.execute("SELECT count(*) FROM baseline").fetchone()[0] == 1
+        transactions.append(True)
+        raise OSError("injected evidence failure")
+
+    monkeypatch.setattr(evidence_records, "store_evidence", fail_after_evidence)
+    with pytest.raises(OSError, match="injected evidence failure"):
+        service.import_manuscript("Display", "source.docx", template_bytes())
+    assert transactions == [True]
+    assert service.state()["projects"] == []
+    for name in ("inputs", "projects", "var"):
+        path = service.root / name
+        assert not path.exists() or list(path.iterdir()) == []
 
 
 def test_import_bind_check_revision_and_disposition_preserve_history(tmp_path: Path) -> None:
@@ -32,7 +127,7 @@ def test_import_bind_check_revision_and_disposition_preserve_history(tmp_path: P
     disposition = service.disposition(
         check["check_id"], width_rule["rule_id"], "note", "Reviewed against the supplied guide."
     )
-    assert disposition["verdict"] == "compliant"
+    assert disposition["verdict"] == "observed_match"
     revised = service.revise(
         world["version_id"], width_rule["rule_id"], 12240, "Use the confirmed revision guide."
     )
@@ -119,7 +214,7 @@ def test_manuscript_update_refusals_carry_their_reasons(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "failure_point", ["create_project", "import_document", "write_json_object"]
+    "failure_point", ["create_project", "import_captured_document", "write_json_object"]
 )
 def test_failed_manuscript_import_leaves_no_published_project(tmp_path, monkeypatch, failure_point):
     service = WorkbenchService.create(tmp_path / "library")

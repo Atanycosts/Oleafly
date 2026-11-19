@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   writeBytesFile: vi.fn(),
   logError: vi.fn(),
   openCompiledHtml: vi.fn(async (_projectId: string) => {}),
+  readHtmlPreview: vi.fn(),
+  closeHtmlPreview: vi.fn(async (_url: string) => {}),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => mocks.native }));
@@ -28,7 +30,11 @@ vi.mock("@/lib/tauri", () => ({
 }));
 vi.mock("@/lib/native-file-dialog", () => ({ pickSavePath: mocks.pickSavePath }));
 vi.mock("@/lib/log", () => ({ logError: mocks.logError }));
-vi.mock("@/lib/notebook-commands", () => ({ openCompiledHtml: mocks.openCompiledHtml }));
+vi.mock("@/lib/notebook-commands", () => ({
+  openCompiledHtml: mocks.openCompiledHtml,
+  readHtmlPreview: mocks.readHtmlPreview,
+  closeHtmlPreview: mocks.closeHtmlPreview,
+}));
 
 vi.mock("@tauri-apps/api/event", () => ({
   emitTo: vi.fn(async () => {}),
@@ -175,6 +181,14 @@ beforeEach(() => {
   mocks.pickSavePath.mockReset();
   mocks.writeBytesFile.mockReset();
   mocks.logError.mockReset();
+  mocks.readHtmlPreview.mockReset().mockResolvedValue({
+    url: "http://127.0.0.1:1234/preview/report.html",
+    bundle: '{"html":"<p>Built notebook</p>"}',
+    revision: "html-revision",
+    path: "/alpha/.oleafly/build/report.html",
+  });
+  mocks.closeHtmlPreview.mockClear();
+  mocks.openCompiledHtml.mockClear();
 });
 
 describe("detached preview download", () => {
@@ -598,6 +612,10 @@ describe("detached preview of a notebook", () => {
     act(() => mocks.listeners.get("preview:workspace")?.({ payload: quartoWorkspace }));
     const user = userEvent.setup();
     expect(screen.getByTestId("html-output-panel")).toHaveTextContent(enPreview.html.builtTitle);
+    const frame = await screen.findByTitle("HTML");
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    expect(frame).toHaveAttribute("src", "http://127.0.0.1:1234/preview/report.html");
+    expect(mocks.readHtmlPreview).toHaveBeenCalledWith("alpha", undefined);
     await user.click(screen.getByRole("button", { name: enPreview.html.open }));
     expect(mocks.openCompiledHtml).toHaveBeenCalledExactlyOnceWith("alpha");
 

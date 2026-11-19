@@ -69,6 +69,52 @@ struct PaperCache {
     source_url: Option<String>,
 }
 
+pub fn retained_paper_window(
+    files: &TaskFiles,
+    pdf_path: &str,
+    pdf_sha256: &str,
+    offset: usize,
+    max_chars: usize,
+) -> Result<PaperText, String> {
+    let path = crate::task_tools::relative_path(pdf_path, false)?;
+    let key = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .ok_or("Choose a retained paper PDF.")?;
+    let bytes = files.read_bytes(pdf_path, MAX_LOCAL_BYTES)?;
+    let cached: PaperCache =
+        serde_json::from_str(&files.read(&path.with_extension("json").to_string_lossy())?)
+            .map_err(|error| error.to_string())?;
+    let text_path = path.with_extension("txt").to_string_lossy().into_owned();
+    let text = files.read(&text_path)?;
+    if content_hash(&bytes) != pdf_sha256
+        || cached.pdf_sha256 != pdf_sha256
+        || content_hash(text.as_bytes()) != cached.text_sha256
+    {
+        return Err("The retained paper no longer matches its reference. Read the paper again from offset 0.".into());
+    }
+    let (window, next_offset) = window(&text, offset, max_chars)?;
+    let source = read_source(
+        text_path,
+        pdf_path.into(),
+        &bytes,
+        cached.pages,
+        &text,
+        &cached.page_offsets,
+        offset..offset + window.len(),
+    );
+    Ok(PaperText {
+        key: key.into(),
+        title: cached.title,
+        source_url: cached.source_url,
+        pages: cached.pages,
+        text: window,
+        next_offset,
+        stored: Vec::new(),
+        source,
+    })
+}
+
 pub struct PageText {
     pub text: String,
     pub page_offsets: Vec<usize>,
@@ -429,6 +475,7 @@ fn check_forms(
 pub async fn read_paper(
     client: &LiteratureClient,
     request: PaperRequest,
+    input_files: &TaskFiles,
     files: &TaskFiles,
     record_dir: &str,
     linked_base: Option<PathBuf>,
@@ -535,13 +582,17 @@ pub async fn read_paper(
                     (Some(_), None) => {
                         return Err("That data folder isn't linked to this project.".into())
                     }
-                    (None, _) => files.read_bytes(&path, MAX_LOCAL_BYTES).map_err(|error| {
-                        if error.contains("too large") {
-                            TOO_LARGE_LOCAL.to_string()
-                        } else {
-                            error
-                        }
-                    })?,
+                    (None, _) => {
+                        input_files
+                            .read_bytes(&path, MAX_LOCAL_BYTES)
+                            .map_err(|error| {
+                                if error.contains("too large") {
+                                    TOO_LARGE_LOCAL.to_string()
+                                } else {
+                                    error
+                                }
+                            })?
+                    }
                 };
                 (bytes, None, None)
             }
@@ -662,6 +713,7 @@ mod tests {
                 &client,
                 PaperRequest::Url { url: url.into() },
                 &files,
+                &files,
                 "research/r-0000",
                 None,
                 None,
@@ -693,6 +745,7 @@ mod tests {
                     path: "research/huge.pdf".into(),
                     root_id: None,
                 },
+                &files,
                 &files,
                 "research/r-0000",
                 None,
@@ -864,6 +917,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn input_pdf_and_retained_paper_can_live_in_separate_workspaces() {
+        let (input_root, _) = workspace_with_pdf(&one_page_pdf("Author source"));
+        let input = TaskFiles::open(input_root.path(), &["research/paper.pdf".into()]).unwrap();
+        let retained_root = tempfile::tempdir().unwrap();
+        let retained = TaskFiles::open(retained_root.path(), &["sources".into()]).unwrap();
+        let client = LiteratureClient::new(retained_root.path().join("cache.sqlite3"));
+        let viewer = bridge(Ok(vec!["First page".into(), "Second page".into()]));
+        let original = std::fs::read(input_root.path().join("research/paper.pdf")).unwrap();
+        let first = read_paper(
+            &client,
+            workspace_paper(),
+            &input,
+            &retained,
+            "sources",
+            None,
+            Some(&viewer),
+            0,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            first.source.pdf.as_ref().unwrap().sha256,
+            content_hash(&original)
+        );
+        assert_eq!(
+            std::fs::read(input_root.path().join("research/paper.pdf")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read_dir(input_root.path().join("research"))
+                .unwrap()
+                .count(),
+            1
+        );
+        std::fs::remove_file(input_root.path().join("research/paper.pdf")).unwrap();
+        let rest = read_paper(
+            &client,
+            workspace_paper(),
+            &input,
+            &retained,
+            "sources",
+            None,
+            Some(&viewer),
+            first.next_offset.unwrap(),
+            DEFAULT_WINDOW_CHARS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            format!("{}{}", first.text, rest.text),
+            "[p. 1]\nFirst page\n\n[p. 2]\nSecond page\n\n"
+        );
+        assert_eq!(first.source.file_sha256, rest.source.file_sha256);
+        let pinned = retained_paper_window(
+            &retained,
+            &first.source.pdf.as_ref().unwrap().path,
+            &first.source.pdf.as_ref().unwrap().sha256,
+            first.next_offset.unwrap(),
+            DEFAULT_WINDOW_CHARS,
+        )
+        .unwrap();
+        assert_eq!(pinned, rest);
+        assert!(retained_paper_window(
+            &retained,
+            &first.source.pdf.as_ref().unwrap().path,
+            "wrong hash",
+            0,
+            DEFAULT_WINDOW_CHARS,
+        )
+        .is_err());
+        assert_eq!(viewer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(retained
+            .read(&first.source.path)
+            .unwrap()
+            .contains("Second page"));
+    }
+
+    #[tokio::test]
     async fn read_paper_stores_page_anchored_text_in_the_record() {
         let (root, files) = workspace_with_pdf(&one_page_pdf("Oleafly"));
         let client = LiteratureClient::new(root.path().join("cache.sqlite3"));
@@ -874,6 +1006,7 @@ mod tests {
         let paper = read_paper(
             &client,
             workspace_paper(),
+            &files,
             &files,
             RECORD,
             None,
@@ -913,6 +1046,7 @@ mod tests {
             &client,
             workspace_paper(),
             &files,
+            &files,
             RECORD,
             None,
             Some(&viewer),
@@ -929,6 +1063,7 @@ mod tests {
         let rest = read_paper(
             &client,
             workspace_paper(),
+            &files,
             &files,
             RECORD,
             None,
@@ -1009,6 +1144,7 @@ mod tests {
             &client,
             workspace_paper(),
             &files,
+            &files,
             RECORD,
             None,
             Some(&viewer),
@@ -1063,6 +1199,7 @@ mod tests {
                 id: "arXiv:2410.16464v2".into(),
             },
             &files,
+            &files,
             RECORD,
             None,
             None,
@@ -1089,6 +1226,7 @@ mod tests {
             &client,
             workspace_paper(),
             &files,
+            &files,
             RECORD,
             None,
             Some(&viewer),
@@ -1101,6 +1239,7 @@ mod tests {
         let second = read_paper(
             &client,
             workspace_paper(),
+            &files,
             &files,
             RECORD,
             None,
@@ -1117,6 +1256,7 @@ mod tests {
         let refreshed = read_paper(
             &client,
             workspace_paper(),
+            &files,
             &files,
             RECORD,
             None,
@@ -1138,6 +1278,7 @@ mod tests {
         let error = read_paper(
             &client,
             workspace_paper(),
+            &files,
             &files,
             RECORD,
             None,

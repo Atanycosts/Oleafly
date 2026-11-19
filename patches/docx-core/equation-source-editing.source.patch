@@ -1,0 +1,2617 @@
+diff --git a/packages/core/src/layout/__tests__/equation-matrix-delimiter.test.ts b/packages/core/src/layout/__tests__/equation-matrix-delimiter.test.ts
+index e02e3e9..fb0c22d 100644
+--- a/packages/core/src/layout/__tests__/equation-matrix-delimiter.test.ts
++++ b/packages/core/src/layout/__tests__/equation-matrix-delimiter.test.ts
+@@ -84,6 +84,66 @@ test('stretches a one-sided delimiter to the matrix height and keeps its source
+   expect(canonicalOoxmlFingerprint(reopened.part)).toBe(before);
+ });
+ 
++test('keeps a delimiter at its glyph height when growth is off', () => {
++  const content =
++    '<m:d><m:dPr><m:begChr m:val="{"/><m:endChr m:val=""/><m:grow m:val="0"/>' +
++    `</m:dPr><m:e>${matrix}</m:e></m:d>`;
++  const node = find(layout(content).geometry, 'delimiter');
++  if (node?.kind !== 'delimiter') throw new Error('No delimiter');
++  const sign = node.items[0]!;
++  if (sign.kind !== 'text') throw new Error('No delimiter sign');
++  expect(sign.text).toBe('{');
++  expect(sign.stretchY).toBeUndefined();
++  expect(sign.box.height).toBeLessThan(node.items[1]!.box.height);
++});
++
++test('aligns Pandoc equation-array rows around the source ampersand', () => {
++  const content =
++    '<m:eqArr>' +
++    `<m:e>${run('x')}${run('&amp;')}${run('=')}${run('1')}</m:e>` +
++    `<m:e>${run('verylong')}${run('&amp;')}${run('=')}${run('2')}</m:e>` +
++    '</m:eqArr>';
++  const node = find(layout(content).geometry, 'matrix');
++  if (node?.kind !== 'matrix') throw new Error('No equation array');
++  const [first, second] = node.rows;
++  expect(first![0]!.box.x + first![0]!.box.width).toBeCloseTo(
++    second![0]!.box.x + second![0]!.box.width,
++    6
++  );
++  expect(first![1]!.box.x).toBe(second![1]!.box.x);
++});
++
++test('uses equation-array base justification for the matrix baseline', () => {
++  const equationArray = (baseJustification: 'top' | 'center' | 'bottom') =>
++    `<m:eqArr><m:eqArrPr><m:baseJc m:val="${baseJustification}"/></m:eqArrPr>` +
++    `<m:e>${run('top')}</m:e><m:e>${run('bottom')}</m:e></m:eqArr>`;
++  const matrixAt = (baseJustification: 'top' | 'center' | 'bottom') => {
++    const node = find(layout(equationArray(baseJustification)).geometry, 'matrix');
++    if (node?.kind !== 'matrix') throw new Error('No equation array matrix');
++    return node;
++  };
++
++  const top = matrixAt('top');
++  const center = matrixAt('center');
++  const bottom = matrixAt('bottom');
++  expect(top.baseline).toBeLessThan(center.baseline);
++  expect(center.baseline).toBeLessThan(bottom.baseline);
++});
++
++test('draws the function application gap from a func structure', () => {
++  const content =
++    '<m:func><m:funcPr/><m:fName>' +
++    `<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>sin</m:t></m:r>` +
++    `</m:fName><m:e>${run('x')}</m:e></m:func>`;
++  const node = find(layout(content).geometry, 'row');
++  if (node?.kind !== 'row') throw new Error('No function row');
++  expect(node.items.flatMap((item) => (item.kind === 'text' ? [item.text] : []))).toEqual([
++    'sin',
++    '\u2009',
++    '\u{1d465}',
++  ]);
++});
++
+ test('omits hidden n-ary limits from geometry without exposing their width or height', () => {
+   const content =
+     '<m:nary><m:naryPr><m:chr m:val="∑"/><m:supHide m:val="1"/>' +
+diff --git a/packages/core/src/layout/equation-layout.ts b/packages/core/src/layout/equation-layout.ts
+index 1af2bd2..ccb0201 100644
+--- a/packages/core/src/layout/equation-layout.ts
++++ b/packages/core/src/layout/equation-layout.ts
+@@ -1,13 +1,22 @@
+ // Deterministic DOM-free geometry for the bounded equation expression tree.
+ 
+ import type { EquationExpression, OmmlEquationProjection } from '@docx-editor.dev/core/store';
+-import { measureDisplayText, withFontFamily, type ResolvedRunStyle } from './run-style.ts';
++import { withFontFamily, type ResolvedRunStyle } from './run-style.ts';
+ import type { LayoutBox, TextMeasurer } from './semantic-records.ts';
+-import { equationDisplayText } from './equation-display-text.ts';
+ import { equationInk } from './equation-ink.ts';
+ import { fitEquationLineExtent, type EquationTextBand } from './equation-line-extent.ts';
+ import { attachScripts, box, naryLimitsBeside, shifted } from './equation-scripts.ts';
+ import { layoutBorderBox } from './equation-border-box.ts';
++import {
++  layoutText,
++  metricsAt,
++  rowGeometry,
++  scaledSizePt,
++  scaledStyle,
++  textGeometry,
++  textSizePt,
++  type EquationLayoutCache,
++} from './equation-text-layout.ts';
+ import {
+   equationAtomSpaces,
+   equationTextAtoms,
+@@ -193,25 +202,6 @@ export interface EquationLayoutInput {
+   readonly textFontFamily?: string | null;
+ }
+ 
+-interface EquationLayoutCache {
+-  readonly textStyle: ResolvedRunStyle;
+-  /** The size of the text around the equation: the structure size without `m:ctrlPr`. */
+-  readonly surroundingSizePt: number;
+-  /** The equation is a display equation, so its fractions keep the padded placement. */
+-  readonly display: boolean;
+-  /**
+-   * The size of the first atom, and that atom. Scripts and fractions after it take their
+-   * offsets from this size, not from their own (`laterStructureSizePt`).
+-   */
+-  leading?: { readonly sizePt: number; readonly first: EquationExpression };
+-  readonly formats: WeakMap<
+-    object,
+-    Map<boolean, { readonly style: ResolvedRunStyle; readonly cache: EquationLayoutCache }>
+-  >;
+-  readonly styles: Map<number, ResolvedRunStyle>;
+-  readonly metrics: Map<number, ReturnType<TextMeasurer['lineMetrics']>>;
+-}
+-
+ interface SharedEquationLayouts {
+   readonly projections: WeakMap<OmmlEquationProjection, Map<string, EquationSpanRecord>>;
+ }
+@@ -274,11 +264,6 @@ function scriptScale(scale: number): number {
+   return scale >= 1 ? scale * SCRIPT_SCALE : Math.min(scale, SCRIPT_SCRIPT_SCALE);
+ }
+ 
+-// A reduced size rounds down to whole half points, the unit of authored run sizes.
+-function scaledSizePt(sizePt: number, scale: number): number {
+-  return scale < 1 ? Math.max(0.5, Math.floor(sizePt * scale * 2 + 1e-9) / 2) : sizePt * scale;
+-}
+-
+ /**
+  * The size that sizes the offsets and rules of one structure: its `m:ctrlPr` size, or the
+  * size of the text around the equation, reduced to the structure's script level.
+@@ -305,180 +290,6 @@ function laterStructureSizePt(
+   return leading && leading.first !== expression ? scaledSizePt(leading.sizePt, scale) : undefined;
+ }
+ 
+-function scaledStyle(
+-  style: ResolvedRunStyle,
+-  scale: number,
+-  cache: EquationLayoutCache
+-): ResolvedRunStyle {
+-  const cached = cache.styles.get(scale);
+-  if (cached) return cached;
+-  const resolved =
+-    scale === 1
+-      ? style
+-      : Object.freeze({
+-          ...style,
+-          fontSizePt: scaledSizePt(style.fontSizePt, scale),
+-          characterSpacingPt: style.characterSpacingPt * scale,
+-        });
+-  cache.styles.set(scale, resolved);
+-  return resolved;
+-}
+-
+-function metricsAt(
+-  measurer: TextMeasurer,
+-  style: ResolvedRunStyle,
+-  scale: number,
+-  cache: EquationLayoutCache
+-): ReturnType<TextMeasurer['lineMetrics']> {
+-  const cached = cache.metrics.get(scale);
+-  if (cached) return cached;
+-  const metrics = measurer.lineMetrics(scaledStyle(style, scale, cache));
+-  cache.metrics.set(scale, metrics);
+-  return metrics;
+-}
+-
+-function textGeometry(
+-  kind: 'text' | 'fallback',
+-  text: string,
+-  measurer: TextMeasurer,
+-  style: ResolvedRunStyle,
+-  scale: number,
+-  cache: EquationLayoutCache
+-): EquationTextGeometry {
+-  const resolved = scaledStyle(style, scale, cache);
+-  const metrics = metricsAt(measurer, style, scale, cache);
+-  return Object.freeze({
+-    kind,
+-    text,
+-    fontSizePt: resolved.fontSizePt,
+-    runStyle: resolved,
+-    box: box(0, 0, measureDisplayText(text, resolved, measurer), metrics.height),
+-    baseline: metrics.baseline,
+-  });
+-}
+-
+-function rowGeometry(
+-  items: readonly EquationGeometry[],
+-  fallbackMetrics: { readonly height: number; readonly baseline: number },
+-  /** The space, in points, before each item. */
+-  spaces?: readonly number[]
+-): EquationRowGeometry {
+-  if (items.length === 0) {
+-    return Object.freeze({
+-      kind: 'row',
+-      items: Object.freeze([]),
+-      box: box(0, 0, 0, fallbackMetrics.height),
+-      baseline: fallbackMetrics.baseline,
+-    });
+-  }
+-  const baseline = Math.max(...items.map((child) => child.baseline));
+-  const descent = Math.max(...items.map((child) => child.box.height - child.baseline));
+-  let x = 0;
+-  const placed = items.map((child, index) => {
+-    x += spaces?.[index] ?? 0;
+-    const result = shifted(child, x, baseline - child.baseline);
+-    x += child.box.width;
+-    return result;
+-  });
+-  return Object.freeze({
+-    kind: 'row',
+-    items: Object.freeze(placed),
+-    box: box(0, 0, x, baseline + descent),
+-    baseline,
+-  });
+-}
+-
+-type TextExpression = Extract<EquationExpression, { readonly kind: 'text' }>;
+-
+-function layoutText(
+-  expression: TextExpression,
+-  measurer: TextMeasurer,
+-  style: ResolvedRunStyle,
+-  scale: number,
+-  cache: EquationLayoutCache,
+-  // A part of a split run shares the faces derived for the whole run.
+-  source: object = expression
+-): EquationGeometry {
+-  const authoredFamily = expression.format?.fontFamily;
+-  const textFace = authoredFamily && authoredFamily.trim().toLowerCase() !== 'cambria math';
+-  const digitParts =
+-    textFace && !expression.format?.normalText && (expression.format?.mathStyle ?? 'i') === 'i'
+-      ? expression.value.match(/(?:[0-9]\p{M}*)+|[^0-9]+/gu)
+-      : null;
+-  if (digitParts && digitParts.length > 1) {
+-    return rowGeometry(
+-      digitParts.map((value) =>
+-        layoutText({ ...expression, value }, measurer, style, scale, cache, source)
+-      ),
+-      metricsAt(measurer, style, scale, cache)
+-    );
+-  }
+-  const display = equationDisplayText(expression, authoredFamily ?? style.fontFamily);
+-  const familyStyle =
+-    authoredFamily && !display.mathematicalGlyphs
+-      ? withFontFamily(style, authoredFamily)
+-      : expression.format?.normalText
+-        ? cache.textStyle
+-        : style;
+-  const formatKey = expression.format ?? source;
+-  const digits = Boolean(textFace && display.mathStyle && !display.mathematicalGlyphs);
+-  let formats = cache.formats.get(formatKey);
+-  let formatted = formats?.get(digits);
+-  if (!formatted) {
+-    const face = Object.freeze({
+-      ...familyStyle,
+-      fontSizePt: textSizePt(expression, familyStyle),
+-      ...(expression.appearance?.kerningMinPt !== undefined
+-        ? {
+-            kerningMinPt: expression.appearance.kerningMinPt,
+-            kerningEnabled: expression.appearance.kerningMinPt > 0,
+-          }
+-        : {}),
+-      ...(expression.appearance?.ligatures ? { ligatures: expression.appearance.ligatures } : {}),
+-      // Mathematical alphanumeric glyphs already carry their style in this
+-      // regular face. Do not request a second italic or bold font program.
+-      bold:
+-        display.mathStyle === null
+-          ? (expression.format?.bold ?? familyStyle.bold)
+-          : !display.mathematicalGlyphs &&
+-            (digits && expression.format?.bold !== undefined
+-              ? expression.format.bold
+-              : display.mathStyle === 'b' || display.mathStyle === 'bi'),
+-      italic:
+-        display.mathStyle === null || digits
+-          ? (expression.format?.italic ??
+-            (digits
+-              ? display.mathStyle === 'i' || display.mathStyle === 'bi'
+-              : expression.format?.normalText
+-                ? false
+-                : familyStyle.italic))
+-          : !display.mathematicalGlyphs &&
+-            (display.mathStyle === 'i' || display.mathStyle === 'bi'),
+-    });
+-    formatted = {
+-      style: face,
+-      cache: {
+-        textStyle: cache.textStyle,
+-        surroundingSizePt: cache.surroundingSizePt,
+-        display: cache.display,
+-        styles: new Map(),
+-        metrics: new Map(),
+-        formats: new WeakMap(),
+-      },
+-    };
+-    if (!formats) {
+-      formats = new Map();
+-      cache.formats.set(formatKey, formats);
+-    }
+-    formats.set(digits, formatted);
+-  }
+-  return textGeometry('text', display.text, measurer, formatted.style, scale, formatted.cache);
+-}
+-
+-function textSizePt(expression: TextExpression, style: ResolvedRunStyle): number {
+-  return expression.format?.fontSizePt ?? expression.fontSizePt ?? style.fontSizePt;
+-}
+-
+ function collectLeaves(items: readonly EquationExpression[], leaves: EquationExpression[]): void {
+   for (const item of items) {
+     if (item.kind === 'row') collectLeaves(item.items, leaves);
+@@ -775,12 +586,16 @@ function layoutExpression(
+       const rowGap = em * 0.3;
+       const metrics = metricsAt(measurer, style, scale, cache);
+       let y = 0;
++      const rowBaselines: number[] = [];
++      const rowDescents: number[] = [];
+       const placed = rows.map((row) => {
+         const baseline = Math.max(metrics.baseline, ...row.map((cell) => cell.baseline));
+         const descent = Math.max(
+           metrics.height - metrics.baseline,
+           ...row.map((cell) => cell.box.height - cell.baseline)
+         );
++        rowBaselines.push(baseline);
++        rowDescents.push(descent);
+         let x = 0;
+         const cells = row.map((cell, index) => {
+           const alignment = expression.columns[index] ?? 'center';
+@@ -798,6 +613,13 @@ function layoutExpression(
+         return Object.freeze(cells);
+       });
+       const height = rows.length ? y - rowGap : metrics.height;
++      const centredBaseline = Math.min(height, height / 2 + MATH_AXIS_HEIGHT * em);
++      const baseline =
++        expression.baseJustification === 'top'
++          ? (rowBaselines[0] ?? metrics.baseline)
++          : expression.baseJustification === 'bottom'
++            ? Math.max(0, height - (rowDescents.at(-1) ?? metrics.height - metrics.baseline))
++            : centredBaseline;
+       return Object.freeze({
+         kind: 'matrix',
+         rows: Object.freeze(placed),
+@@ -807,7 +629,7 @@ function layoutExpression(
+           widths.reduce((sum, width) => sum + width, 0) + Math.max(0, columnCount - 1) * columnGap,
+           height
+         ),
+-        baseline: Math.min(height, height / 2 + MATH_AXIS_HEIGHT * em),
++        baseline,
+       });
+     }
+     case 'delimiter': {
+@@ -827,14 +649,16 @@ function layoutExpression(
+       const sign = (value: string) => {
+         if (!value) return;
+         const glyph = textGeometry('text', value, measurer, style, scale, cache);
+-        const stretchY = Math.max(1, height / glyph.box.height);
++        const stretchY = expression.grow ? Math.max(1, height / glyph.box.height) : 1;
+         items.push(
+-          Object.freeze({
+-            ...glyph,
+-            box: box(x, 0, glyph.box.width, height),
+-            baseline,
+-            ...(stretchY > 1 ? { stretchY } : {}),
+-          })
++          stretchY > 1
++            ? Object.freeze({
++                ...glyph,
++                box: box(x, 0, glyph.box.width, height),
++                baseline,
++                stretchY,
++              })
++            : shifted(glyph, x, baseline - glyph.baseline)
+         );
+         x += glyph.box.width + gap;
+       };
+diff --git a/packages/core/src/store/__tests__/equation-snippet.test.ts b/packages/core/src/store/__tests__/equation-snippet.test.ts
+index dff3db5..96cf4c0 100644
+--- a/packages/core/src/store/__tests__/equation-snippet.test.ts
++++ b/packages/core/src/store/__tests__/equation-snippet.test.ts
+@@ -15,6 +15,7 @@ import {
+ } from './equation-snippet-fixtures.ts';
+ 
+ const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
++const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+ 
+ function load(body: string): OoxmlPart {
+   const read = readOoxmlPart(`<w:document xmlns:w="${W}"><w:body>${body}</w:body></w:document>`, {
+@@ -168,6 +169,87 @@ describe('insertEquation', () => {
+     );
+   });
+ 
++  test('places equations before and after a simple field without entering its result', () => {
++    const part = load(
++      '<w:p><w:r><w:t>A</w:t></w:r>' +
++        '<w:fldSimple w:instr="PAGE"><w:r><w:t>7</w:t></w:r></w:fldSimple>' +
++        '<w:r><w:t>B</w:t></w:r></w:p>'
++    );
++    const paragraphId = firstParagraphId(part);
++    const { nodes, length } = snippet();
++
++    const before = applyTreeOp(part, {
++      op: 'insertEquation',
++      paragraphId,
++      offset: 1,
++      nodes,
++      length,
++    });
++    if (!before.ok) throw new Error(before.reason);
++    expect(serializeOoxmlPart(before.part)).toMatch(
++      /<w:t>A<\/w:t><\/w:r><m:oMath>.*<\/m:oMath><w:fldSimple /
++    );
++
++    const after = applyTreeOp(part, {
++      op: 'insertEquation',
++      paragraphId,
++      offset: 2,
++      nodes,
++      length,
++    });
++    if (!after.ok) throw new Error(after.reason);
++    expect(serializeOoxmlPart(after.part)).toMatch(
++      /<\/w:fldSimple><m:oMath>.*<\/m:oMath><w:r><w:t>B<\/w:t>/
++    );
++  });
++
++  test('places adjacent equations after a trailing simple field', () => {
++    const part = load(
++      `<w:p xmlns:m="${M}">` +
++        '<w:r><w:t xml:space="preserve">Before </w:t></w:r>' +
++        X_SQUARED +
++        '<w:r><w:t xml:space="preserve"> after </w:t></w:r>' +
++        '<w:fldSimple w:instr=" REF theorem1 \\h "><w:r><w:t>1</w:t></w:r></w:fldSimple>' +
++        '</w:p>'
++    );
++    const paragraphId = firstParagraphId(part);
++    const { nodes, length } = snippet();
++    const first = applyTreeOp(part, {
++      op: 'insertEquation',
++      paragraphId,
++      offset: 16,
++      nodes,
++      length,
++    });
++    if (!first.ok) throw new Error(first.reason);
++    const second = applyTreeOp(first.part, {
++      op: 'insertEquation',
++      paragraphId,
++      offset: 17,
++      nodes,
++      length,
++    });
++    if (!second.ok) throw new Error(second.reason);
++
++    expect(serializeOoxmlPart(second.part)).toMatch(
++      /<\/w:fldSimple><m:oMath>.*<\/m:oMath><m:oMath>/
++    );
++  });
++
++  test('places an inserted equation beside an existing equation atom', () => {
++    const part = load(`<w:p xmlns:m="${M}">${X_SQUARED}</w:p>`);
++    const { nodes, length } = snippet();
++    const applied = applyTreeOp(part, {
++      op: 'insertEquation',
++      paragraphId: firstParagraphId(part),
++      offset: 1,
++      nodes,
++      length,
++    });
++    if (!applied.ok) throw new Error(applied.reason);
++    expect(serializeOoxmlPart(applied.part)).toMatch(/<\/m:oMath><m:oMath>/);
++  });
++
+   test('refuses another shape, a wrong length, and an empty author', () => {
+     const part = load('<w:p><w:r><w:t>ab</w:t></w:r></w:p>');
+     const { nodes, length } = snippet();
+diff --git a/packages/core/src/store/__tests__/math-equation-atom.test.ts b/packages/core/src/store/__tests__/math-equation-atom.test.ts
+index e7f51f6..a075b56 100644
+--- a/packages/core/src/store/__tests__/math-equation-atom.test.ts
++++ b/packages/core/src/store/__tests__/math-equation-atom.test.ts
+@@ -4,11 +4,14 @@ import {
+   canonicalOoxmlFingerprint,
+   paragraphTextOf,
+   projectOmmlEquation,
++  readMathEquationOoxml,
+   readOoxmlPart,
+   segmentsOf,
+   serializeOoxmlPart,
++  TreeDocumentStore,
+   type OoxmlElement,
+   type OoxmlPart,
++  type SetMathEquationOp,
+ } from '../index.ts';
+ 
+ const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+@@ -34,6 +37,26 @@ function paragraphOf(part: OoxmlPart): OoxmlElement {
+   return paragraph;
+ }
+ 
++function equationOf(part: OoxmlPart): OoxmlElement {
++  const paragraph = paragraphOf(part);
++  const display = paragraph.children.find(
++    (child) =>
++      child.kind !== 'textValue' && child.namespaceUri === M && child.localName === 'oMathPara'
++  );
++  const equation =
++    display && display.kind !== 'textValue'
++      ? display.children.find(
++          (child) =>
++            child.kind !== 'textValue' && child.namespaceUri === M && child.localName === 'oMath'
++        )
++      : paragraph.children.find(
++          (child) =>
++            child.kind !== 'textValue' && child.namespaceUri === M && child.localName === 'oMath'
++        );
++  if (!equation || equation.kind === 'textValue') throw new Error('missing equation');
++  return equation;
++}
++
+ const equation = '<m:oMath><m:r><m:t>x</m:t></m:r></m:oMath>';
+ 
+ describe('OMML equation model atom', () => {
+@@ -150,4 +173,120 @@ describe('OMML equation model atom', () => {
+     expect(result).toEqual({ ok: false, reason: 'invalid-property-value' });
+     expect(canonicalOoxmlFingerprint(part)).toBe(canonicalOoxmlFingerprint(parse(equation)));
+   });
++
++  test('requires exactly one equation replacement payload', () => {
++    const part = parse(equation);
++    const equationId = equationOf(part).id;
++    const before = canonicalOoxmlFingerprint(part);
++    const applyInvalid = (payload: object) =>
++      applyTreeOp(part, payload as unknown as SetMathEquationOp);
++
++    expect(
++      applyInvalid({
++        op: 'setMathEquation',
++        equationId,
++        linear: 'x',
++        equation: equationOf(part),
++      })
++    ).toEqual({ ok: false, reason: 'invalid-property-value' });
++    expect(applyInvalid({ op: 'setMathEquation', equationId })).toEqual({
++      ok: false,
++      reason: 'invalid-property-value',
++    });
++    expect(canonicalOoxmlFingerprint(part)).toBe(before);
++  });
++
++  test('replaces complex source OMML atomically and keeps display and paragraph structure', () => {
++    const part = parse(
++      '<w:pPr><w:jc w:val="center"/></w:pPr>' +
++        '<m:oMathPara><m:oMathParaPr><m:jc m:val="left"/></m:oMathParaPr>' +
++        '<m:oMath><m:r><m:t>old</m:t></m:r></m:oMath></m:oMathPara>'
++    );
++    const paragraph = paragraphOf(part);
++    const display = paragraph.children.find(
++      (child) =>
++        child.kind !== 'textValue' && child.namespaceUri === M && child.localName === 'oMathPara'
++    );
++    if (!display || display.kind === 'textValue') throw new Error('missing display');
++    const original = display.children.find(
++      (child) =>
++        child.kind !== 'textValue' && child.namespaceUri === M && child.localName === 'oMath'
++    );
++    if (!original) throw new Error('missing equation');
++    const read = readMathEquationOoxml(
++      '<m:oMath><m:eqArr>' +
++        '<m:e><m:r><m:t>x</m:t></m:r><m:r><m:t>&amp;</m:t></m:r>' +
++        '<m:r><m:t>=</m:t></m:r><m:r><m:t>1</m:t></m:r></m:e>' +
++        '<m:e><m:r><m:t>y</m:t></m:r><m:r><m:t>&amp;</m:t></m:r>' +
++        '<m:r><m:t>=</m:t></m:r><m:r><m:t>2</m:t></m:r></m:e>' +
++        '</m:eqArr></m:oMath>'
++    );
++    expect(read.ok).toBe(true);
++    if (!read.ok) return;
++
++    const store = new TreeDocumentStore(part);
++    const committed = store.transact((ctx) =>
++      ctx.apply({
++        op: 'setMathEquation',
++        equationId: original.id,
++        equation: read.equation,
++      })
++    );
++    expect(committed.ok).toBe(true);
++    if (!committed.ok) return;
++    expect(store.historyDepth).toBe(1);
++    expect(paragraphOf(store.part).id).toBe(paragraph.id);
++    const nextDisplay = paragraphOf(store.part).children.find((child) => child.id === display.id);
++    expect(nextDisplay?.kind).not.toBe('textValue');
++    const nextEquation = nextDisplay?.children.find((child) => child.id === original.id);
++    expect(projectOmmlEquation(nextEquation!)).toMatchObject({
++      expression: { kind: 'matrix', columns: ['right', 'left'] },
++    });
++
++    const saved = serializeOoxmlPart(store.part);
++    expect(saved).toContain(
++      '<m:oMathPara><m:oMathParaPr><m:jc m:val="left"/></m:oMathParaPr><m:oMath><m:eqArr>'
++    );
++    const reopened = readOoxmlPart(saved, metadata);
++    expect(reopened.ok).toBe(true);
++
++    store.undo();
++    expect(projectOmmlEquation(equationOf(store.part))).toMatchObject({
++      expression: { kind: 'text', value: 'old' },
++    });
++    store.redo();
++    expect(projectOmmlEquation(equationOf(store.part))).toMatchObject({
++      expression: { kind: 'matrix' },
++    });
++  });
++
++  test('inserts one checked equation as a display without raw OMML attributes', () => {
++    const part = parse('<w:pPr><w:jc w:val="center"/></w:pPr>');
++    const paragraph = paragraphOf(part);
++    const read = readMathEquationOoxml(
++      '<m:oMath><m:f><m:num><m:r><m:t>a</m:t></m:r></m:num>' +
++        '<m:den><m:r><m:t>b</m:t></m:r></m:den></m:f></m:oMath>'
++    );
++    expect(read.ok).toBe(true);
++    if (!read.ok) return;
++    const result = applyTreeOp(part, {
++      op: 'insertEquation',
++      paragraphId: paragraph.id,
++      offset: 0,
++      nodes: [read.equation],
++      length: 1,
++      display: true,
++    });
++    expect(result.ok).toBe(true);
++    if (!result.ok) return;
++    expect(serializeOoxmlPart(result.part)).toContain(
++      '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><m:oMathPara><m:oMath><m:f>'
++    );
++  });
++
++  test('refuses extra paragraph roots instead of reading only the first', () => {
++    expect(
++      readMathEquationOoxml(`${equation}</w:p><w:p>${equation}`)
++    ).toEqual({ ok: false, reason: 'ooxml-invalid' });
++  });
+ });
+diff --git a/packages/core/src/store/__tests__/omml-equation.test.ts b/packages/core/src/store/__tests__/omml-equation.test.ts
+index 1292b06..80b10a1 100644
+--- a/packages/core/src/store/__tests__/omml-equation.test.ts
++++ b/packages/core/src/store/__tests__/omml-equation.test.ts
+@@ -159,7 +159,12 @@ describe('bounded OMML equation projection', () => {
+                 { kind: 'text', value: 'b' },
+               ],
+             },
+-            { cells: [{ kind: 'text', value: 'c' }, { kind: 'text', value: 'd' }] },
++            {
++              cells: [
++                { kind: 'text', value: 'c' },
++                { kind: 'text', value: 'd' },
++              ],
++            },
+           ],
+         },
+       ],
+@@ -169,6 +174,90 @@ describe('bounded OMML equation projection', () => {
+     expect(canonicalOoxmlFingerprint(part)).toBe(before);
+   });
+ 
++  test('projects Pandoc aligned equations as rows aligned around the ampersand', () => {
++    const part = readDocument(
++      '<m:oMath><m:eqArr>' +
++        '<m:e><m:r><m:t>x</m:t></m:r><m:r><m:t>&amp;</m:t></m:r>' +
++        '<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>=</m:t></m:r>' +
++        '<m:r><m:t>1</m:t></m:r></m:e>' +
++        '<m:e><m:r><m:t>y</m:t></m:r><m:r><m:t>&amp;</m:t></m:r>' +
++        '<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>=</m:t></m:r>' +
++        '<m:r><m:t>2</m:t></m:r></m:e>' +
++        '</m:eqArr></m:oMath>'
++    );
++    const projection = projectOmmlEquation(equationOf(part))!;
++    expect(projection.expression).toMatchObject({
++      kind: 'matrix',
++      columns: ['right', 'left'],
++      preserveSource: true,
++      rows: [
++        {
++          cells: [
++            { kind: 'text', value: 'x' },
++            { kind: 'row', items: [{ value: '=' }, { value: '1' }] },
++          ],
++        },
++        {
++          cells: [
++            { kind: 'text', value: 'y' },
++            { kind: 'row', items: [{ value: '=' }, { value: '2' }] },
++          ],
++        },
++      ],
++    });
++    expect(projection.fallbackText).toBe('x&=1y&=2');
++    expect(equationExpressionToLinearMath(projection.expression)).toBe('');
++  });
++
++  test('projects functions and Pandoc cases properties with their visible semantics', () => {
++    const functionPart = readDocument(
++      '<m:oMath><m:func><m:funcPr/><m:fName><m:r><m:rPr><m:sty m:val="p"/></m:rPr>' +
++        '<m:t>sin</m:t></m:r></m:fName><m:e><m:r><m:t>x</m:t></m:r></m:e></m:func></m:oMath>'
++    );
++    const functionProjection = projectOmmlEquation(equationOf(functionPart))!;
++    expect(functionProjection.expression).toMatchObject({
++      kind: 'row',
++      preserveSource: true,
++      items: [
++        { kind: 'text', value: 'sin' },
++        { kind: 'text', value: '\u2009' },
++        { kind: 'text', value: 'x' },
++      ],
++    });
++    expect(functionProjection.fallbackText).toBe('sin\u2009x');
++
++    const matrix =
++      '<m:m><m:mPr><m:baseJc m:val="center"/><m:plcHide m:val="on"/><m:mcs>' +
++      '<m:mc><m:mcPr><m:count m:val="1"/><m:mcJc m:val="left"/></m:mcPr></m:mc>' +
++      '<m:mc><m:mcPr><m:count m:val="1"/><m:mcJc m:val="left"/></m:mcPr></m:mc>' +
++      '</m:mcs></m:mPr><m:mr><m:e><m:r><m:t>x</m:t></m:r></m:e>' +
++      '<m:e><m:r><m:t>x&gt;0</m:t></m:r></m:e></m:mr><m:mr>' +
++      '<m:e><m:r><m:t>-x</m:t></m:r></m:e><m:e><m:r><m:t>x≤0</m:t></m:r></m:e>' +
++      '</m:mr></m:m>';
++    const casesPart = readDocument(
++      '<m:oMath><m:d><m:dPr><m:begChr m:val="{"/><m:sepChr m:val=""/>' +
++        '<m:endChr m:val=""/><m:grow/></m:dPr>' +
++        `<m:e>${matrix}</m:e></m:d></m:oMath>`
++    );
++    const casesProjection = projectOmmlEquation(equationOf(casesPart))!;
++    expect(casesProjection.expression).toMatchObject({
++      kind: 'delimiter',
++      begin: '{',
++      end: '',
++      grow: true,
++      preserveSource: true,
++      items: [
++        {
++          kind: 'matrix',
++          baseJustification: 'center',
++          hidePlaceholders: true,
++          columns: ['left', 'left'],
++          preserveSource: true,
++        },
++      ],
++    });
++  });
++
+   test('retains hidden n-ary limits but refuses compact replacement', () => {
+     const projection = projectOmmlEquation(
+       equationOf(
+@@ -195,9 +284,7 @@ describe('bounded OMML equation projection', () => {
+   test('rejects a non-trailing argument control with a source diagnostic', () => {
+     const projection = projectOmmlEquation(
+       equationOf(
+-        readDocument(
+-          '<m:oMath><m:d><m:e><m:ctrlPr/><m:r><m:t>x</m:t></m:r></m:e></m:d></m:oMath>'
+-        )
++        readDocument('<m:oMath><m:d><m:e><m:ctrlPr/><m:r><m:t>x</m:t></m:r></m:e></m:d></m:oMath>')
+       )
+     )!;
+     expect(projection.expression).toMatchObject({
+diff --git a/packages/core/src/store/package/index.ts b/packages/core/src/store/package/index.ts
+index 1034de0..5d01bc2 100644
+--- a/packages/core/src/store/package/index.ts
++++ b/packages/core/src/store/package/index.ts
+@@ -191,6 +191,7 @@ export {
+   type EquationMatrixRow,
+   type EquationSourcePreservation,
+   type EquationTextAppearance,
++  type MathScriptName,
+   type LinearMathOmmlResult,
+   type LinearMathParseResult,
+   type LinearMathRejection,
+diff --git a/packages/core/src/store/package/omml-equation-expression.ts b/packages/core/src/store/package/omml-equation-expression.ts
+index e873314..0623b32 100644
+--- a/packages/core/src/store/package/omml-equation-expression.ts
++++ b/packages/core/src/store/package/omml-equation-expression.ts
+@@ -1,3 +1,6 @@
++/** Mathematical alphabet authored by OMML's `m:scr`, independent of `m:sty`. */
++export type MathScriptName = 'roman' | 'script' | 'fraktur' | 'double-struck' | 'sans-serif' | 'monospace';
++
+ // The bounded expression tree that the Office Math projection reads OMML into.
+ 
+ /**
+@@ -106,6 +109,8 @@ export type EquationExpression =
+         readonly literal?: boolean;
+         readonly normalText?: boolean;
+         readonly mathStyle?: 'p' | 'b' | 'i' | 'bi';
++        /** The mathematical script requested by `m:scr`; see {@link MathScriptName}. */
++        readonly mathScript?: MathScriptName;
+       };
+       /** Shaping source that the simplified fields above do not fully express. */
+       readonly appearance?: EquationTextAppearance;
+@@ -176,6 +181,16 @@ export type EquationExpression =
+       readonly kind: 'matrix';
+       readonly rows: readonly EquationMatrixRow[];
+       readonly columns: readonly EquationColumnAlignment[];
++      /**
++       * `m:mPr/m:baseJc`: which edge of the matrix participates in the surrounding baseline.
++       * A missing property uses the centred baseline.
++       */
++      readonly baseJustification?: 'top' | 'center' | 'bottom';
++      /**
++       * `m:mPr/m:plcHide`: hide placeholders for omitted cells. Populated cells keep their
++       * source order and remain drawable.
++       */
++      readonly hidePlaceholders?: true;
+     } & EquationControlSource &
+       EquationSourcePreservation)
+   | ({
+@@ -188,6 +203,8 @@ export type EquationExpression =
+       readonly end: string;
+       readonly separator: string;
+       readonly items: readonly EquationExpression[];
++      /** `m:dPr/m:grow`: stretch the delimiter signs to the argument height. */
++      readonly grow: boolean;
+     } & EquationControlSource &
+       EquationSourcePreservation)
+   | {
+diff --git a/packages/core/src/store/package/omml-equation.ts b/packages/core/src/store/package/omml-equation.ts
+index 03f7860..f6344df 100644
+--- a/packages/core/src/store/package/omml-equation.ts
++++ b/packages/core/src/store/package/omml-equation.ts
+@@ -13,14 +13,17 @@ import {
+ import {
+   equationStructureHasControlProperties,
+   isSupportedExpressionNode,
+-  mathOnOff,
+-  mathVal,
+ } from './omml-structure-support.ts';
+ import {
+   cloneEquationControl,
+   equationDefaultFormatting,
+   equationSharedRunSizePt,
+ } from './omml-control-defaults.ts';
++import {
++  delimiterCharacter,
++  naryOperator,
++  projectStructuredExpression,
++} from './omml-equation-structured-projection.ts';
+ import { isValidXmlText } from './sinks.ts';
+ import { renderReversibleLinearMath } from './linear-math-render.ts';
+ import type {
+@@ -41,9 +44,6 @@ export const DEFAULT_OMML_LIMITS = Object.freeze({
+   maxTextLength: 512,
+ });
+ 
+-/** The operator of an `m:nary` that names no `m:chr`. */
+-const DEFAULT_NARY_OPERATOR = '\u222b';
+-
+ /** Shared work limits for untrusted OMML and linear-math input. */
+ export interface OmmlLimits {
+   readonly maxDepth?: number;
+@@ -63,7 +63,6 @@ export type {
+   EquationTextAppearance,
+ } from './omml-equation-expression.ts';
+ import type {
+-  EquationColumnAlignment,
+   EquationControlSource,
+   EquationExpression,
+   EquationFallbackReason,
+@@ -197,9 +196,7 @@ function childPaths(node: OoxmlElement, path: string): readonly string[] {
+   const counts = new Map<string, number>();
+   return node.children.map((child) => {
+     const key =
+-      child.kind === 'textValue'
+-        ? '#text'
+-        : `${child.namespaceUri}\u0000${child.localName}`;
++      child.kind === 'textValue' ? '#text' : `${child.namespaceUri}\u0000${child.localName}`;
+     const index = (counts.get(key) ?? 0) + 1;
+     counts.set(key, index);
+     return `${path}/${sourcePathSegment(child, index)}`;
+@@ -224,20 +221,6 @@ function fallbackOf(
+   });
+ }
+ 
+-/** The `m:val` of one `m:naryPr` property of an `m:nary`, when present. */
+-function naryProperty(node: OoxmlGenericElementNode, name: string): string | undefined {
+-  const property = namedChild(node, 'naryPr');
+-  return (property ? namedChild(property, name) : null)?.attributes.find(
+-    (attribute) =>
+-      attribute.namespaceUri === OFFICE_MATH_NAMESPACE_URI && attribute.localName === 'val'
+-  )?.value;
+-}
+-
+-/** The operator an `m:nary` draws. Without `m:chr` it stands for an integral. */
+-function naryOperator(node: OoxmlGenericElementNode): string {
+-  return naryProperty(node, 'chr') ?? DEFAULT_NARY_OPERATOR;
+-}
+-
+ function collectFallbackText(node: OoxmlNode, state: ProjectionState, depth: number): void {
+   if (!enterProjectionNode(state, depth)) return;
+   if (node.kind === 'textValue') {
+@@ -256,6 +239,14 @@ function collectFallbackText(node: OoxmlNode, state: ProjectionState, depth: num
+     appendProjectionText(state, delimiterCharacter(node, 'endChr', ')'));
+     return;
+   }
++  if (isMathElement(node, 'func')) {
++    const name = namedChild(node, 'fName');
++    const body = namedChild(node, 'e');
++    if (name) collectFallbackText(name, state, depth + 1);
++    appendProjectionText(state, '\u2009');
++    if (body) collectFallbackText(body, state, depth + 1);
++    return;
++  }
+   for (const child of childrenOf(node)) {
+     collectFallbackText(child, state, depth + 1);
+     if (state.truncated && state.text.length >= state.limits.maxTextLength) return;
+@@ -308,6 +299,8 @@ const SUPPORTED_MATH_NODES: ReadonlySet<string> = new Set([
+   'sSub',
+   'sSubSup',
+   'nary',
++  'eqArr',
++  'func',
+   'm',
+   'd',
+ ]);
+@@ -318,205 +311,6 @@ function unsupportedReason(node: OoxmlGenericElementNode): EquationFallbackReaso
+     : 'unsupported-math-node';
+ }
+ 
+-function matrixColumns(node: OoxmlGenericElementNode, cellCount: number): EquationColumnAlignment[] {
+-  const property = namedChild(node, 'mPr');
+-  const columnsProperty = property ? namedChild(property, 'mcs') : null;
+-  const columns = columnsProperty
+-    ? namedChildren(columnsProperty, 'mc').flatMap((column) => {
+-        const properties = namedChild(column, 'mcPr');
+-        const count = properties ? namedChild(properties, 'count') : null;
+-        const alignment = properties ? namedChild(properties, 'mcJc') : null;
+-        const repeat = count ? Number(mathVal(count)) : 1;
+-        const value = mathVal(alignment ?? column);
+-        const result: EquationColumnAlignment =
+-          value === 'left' || value === 'right' ? value : 'center';
+-        return Array.from({ length: repeat }, () => result);
+-      })
+-    : [];
+-  while (columns.length < cellCount) columns.push('center');
+-  return columns;
+-}
+-
+-function delimiterCharacter(
+-  node: OoxmlGenericElementNode,
+-  name: 'begChr' | 'endChr' | 'sepChr',
+-  fallback: string
+-): string {
+-  const property = namedChild(node, 'dPr');
+-  const character = property ? namedChild(property, name) : null;
+-  return character ? (mathVal(character) ?? '') : fallback;
+-}
+-
+-function projectStructured(
+-  node: OoxmlGenericElementNode,
+-  state: ProjectionState,
+-  depth: number,
+-  path: string
+-): EquationExpression | null {
+-  if (!isSupportedExpressionNode(node)) return null;
+-  const paths = childPaths(node, path);
+-  const containerPath = (name: string, occurrence = 0): string => {
+-    const container = namedChildren(node, name)[occurrence]!;
+-    return paths[node.children.indexOf(container)]!;
+-  };
+-  if (node.localName === 'bar') {
+-    const property = namedChild(node, 'barPr');
+-    const position = property ? namedChild(property, 'pos') : null;
+-    return Object.freeze({
+-      kind: 'bar',
+-      body: projectContainer(namedChildren(node, 'e')[0]!, state, depth + 1, containerPath('e')),
+-      position: position && mathVal(position) === 'top' ? 'top' : 'bottom',
+-      ...controlSource(node, 'barPr', state),
+-    });
+-  }
+-  if (node.localName === 'borderBox') {
+-    const property = namedChild(node, 'borderBoxPr');
+-    const flag = (name: string) => (property ? mathOnOff(namedChild(property, name)) : false);
+-    return Object.freeze({
+-      kind: 'borderBox',
+-      body: projectContainer(namedChildren(node, 'e')[0]!, state, depth + 1, containerPath('e')),
+-      hidden: Object.freeze({
+-        top: flag('hideTop'),
+-        bottom: flag('hideBot'),
+-        left: flag('hideLeft'),
+-        right: flag('hideRight'),
+-      }),
+-      strikes: Object.freeze({
+-        horizontal: flag('strikeH'),
+-        vertical: flag('strikeV'),
+-        bottomLeftToTopRight: flag('strikeBLTR'),
+-        topLeftToBottomRight: flag('strikeTLBR'),
+-      }),
+-      ...controlSource(node, 'borderBoxPr', state),
+-    });
+-  }
+-  if (node.localName === 'f') {
+-    const numerator = namedChild(node, 'num');
+-    const denominator = namedChild(node, 'den');
+-    if (!numerator || !denominator) return null;
+-    return Object.freeze({
+-      kind: 'fraction',
+-      numerator: projectContainer(numerator, state, depth + 1, containerPath('num')),
+-      denominator: projectContainer(denominator, state, depth + 1, containerPath('den')),
+-      ...controlSource(node, 'fPr', state),
+-    });
+-  }
+-  if (node.localName === 'rad') {
+-    const radicand = namedChild(node, 'e');
+-    if (!radicand) return null;
+-    const degree = namedChild(node, 'deg');
+-    const projectedDegree =
+-      degree && childrenOf(degree).length > 0
+-        ? projectContainer(degree, state, depth + 1, containerPath('deg'))
+-        : undefined;
+-    return Object.freeze({
+-      kind: 'radical',
+-      radicand: projectContainer(radicand, state, depth + 1, containerPath('e')),
+-      ...(projectedDegree === undefined ? {} : { degree: projectedDegree }),
+-      ...controlSource(node, 'radPr', state),
+-    });
+-  }
+-  if (node.localName === 'sSup' || node.localName === 'sSub' || node.localName === 'sSubSup') {
+-    const base = namedChild(node, 'e');
+-    const subscript = node.localName === 'sSup' ? null : namedChild(node, 'sub');
+-    const superscript = node.localName === 'sSub' ? null : namedChild(node, 'sup');
+-    if (
+-      !base ||
+-      (node.localName !== 'sSup' && !subscript) ||
+-      (node.localName !== 'sSub' && !superscript)
+-    ) {
+-      return null;
+-    }
+-    return Object.freeze({
+-      kind: 'script',
+-      base: projectContainer(base, state, depth + 1, containerPath('e')),
+-      ...(subscript
+-        ? {
+-            subscript: projectContainer(
+-              subscript,
+-              state,
+-              depth + 1,
+-              containerPath('sub')
+-            ),
+-          }
+-        : {}),
+-      ...(superscript
+-        ? {
+-            superscript: projectContainer(
+-              superscript,
+-              state,
+-              depth + 1,
+-              containerPath('sup')
+-            ),
+-          }
+-        : {}),
+-      ...controlSource(node, `${node.localName}Pr`, state),
+-    });
+-  }
+-  if (node.localName === 'nary') {
+-    const body = namedChild(node, 'e');
+-    if (!body) return null;
+-    const lower = namedChild(node, 'sub');
+-    const upper = namedChild(node, 'sup');
+-    const limitLocation = naryProperty(node, 'limLoc');
+-    const property = namedChild(node, 'naryPr');
+-    const lowerHidden = property ? mathOnOff(namedChild(property, 'subHide')) : false;
+-    const upperHidden = property ? mathOnOff(namedChild(property, 'supHide')) : false;
+-    return Object.freeze({
+-      kind: 'nary',
+-      operator: appendProjectionText(state, naryOperator(node)),
+-      body: projectContainer(body, state, depth + 1, containerPath('e')),
+-      ...(lower && childrenOf(lower).length > 0
+-        ? { lowerLimit: projectContainer(lower, state, depth + 1, containerPath('sub')) }
+-        : {}),
+-      ...(upper && childrenOf(upper).length > 0
+-        ? { upperLimit: projectContainer(upper, state, depth + 1, containerPath('sup')) }
+-        : {}),
+-      ...(limitLocation === 'undOvr' || limitLocation === 'subSup' ? { limitLocation } : {}),
+-      ...(lowerHidden ? { hideLowerLimit: true as const } : {}),
+-      ...(upperHidden ? { hideUpperLimit: true as const } : {}),
+-      ...(lowerHidden || upperHidden ? { preserveSource: true as const } : {}),
+-      ...controlSource(node, 'naryPr', state),
+-    });
+-  }
+-  if (node.localName === 'm') {
+-    const rows = namedChildren(node, 'mr').map((row, rowIndex) => ({
+-      cells: namedChildren(row, 'e').map((cell, cellIndex) =>
+-        projectContainer(
+-          cell,
+-          state,
+-          depth + 2,
+-          childPaths(row, paths[node.children.indexOf(row)]!)[row.children.indexOf(cell)]!
+-        )
+-      ),
+-    }));
+-    const cellCount = Math.max(0, ...rows.map((row) => row.cells.length));
+-    const columns = matrixColumns(node, cellCount);
+-    return Object.freeze({
+-      kind: 'matrix',
+-      rows: Object.freeze(rows.map((row) => Object.freeze(row))),
+-      columns: Object.freeze(columns),
+-      preserveSource: true,
+-      ...controlSource(node, 'mPr', state),
+-    });
+-  }
+-  if (node.localName === 'd') {
+-    const items = namedChildren(node, 'e').map((item, index) =>
+-      projectContainer(item, state, depth + 1, containerPath('e', index))
+-    );
+-    return Object.freeze({
+-      kind: 'delimiter',
+-      begin: delimiterCharacter(node, 'begChr', '('),
+-      end: delimiterCharacter(node, 'endChr', ')'),
+-      separator: delimiterCharacter(node, 'sepChr', '|'),
+-      items: Object.freeze(items),
+-      preserveSource: true,
+-      ...controlSource(node, 'dPr', state),
+-    });
+-  }
+-  return null;
+-}
+-
+ function projectNode(
+   node: OoxmlNode,
+   state: ProjectionState,
+@@ -534,8 +328,7 @@ function projectNode(
+   if (node.kind === 'textValue') {
+     return Object.freeze({ kind: 'text', value: appendProjectionText(state, node.value) });
+   }
+-  if (!isMathElement(node))
+-    return fallbackOf(node, state, depth + 1, 'non-math-node', path);
++  if (!isMathElement(node)) return fallbackOf(node, state, depth + 1, 'non-math-node', path);
+   if (node.localName === 'oMath') {
+     return projectContainer(node, state, depth, path);
+   }
+@@ -557,9 +350,7 @@ function projectNode(
+           ...(Object.keys(format).length ? { format } : {}),
+           ...(segment.appearance === undefined ? {} : { appearance: segment.appearance }),
+           ...(!state.defaultRuns &&
+-          (Object.keys(format).length ||
+-            segment.appearance !== undefined ||
+-            segment.preserveSource)
++          (Object.keys(format).length || segment.appearance !== undefined || segment.preserveSource)
+             ? { preserveSource: true as const }
+             : {}),
+         });
+@@ -571,16 +362,20 @@ function projectNode(
+       ? projectContainer(node, state, depth, path)
+       : fallbackOf(node, state, depth + 1, unsupportedReason(node), path);
+   }
+-  const structured = projectStructured(node, state, depth, path);
++  const structured = projectStructuredExpression(node, depth, {
++    paths: childPaths(node, path),
++    projectContainer: (container, childDepth, childPath) =>
++      projectContainer(container, state, childDepth, childPath),
++    controlSource: (child, propertyName) => controlSource(child, propertyName, state),
++    appendText: (value) => appendProjectionText(state, value),
++  });
+   return (
+     structured ??
+     fallbackOf(
+       node,
+       state,
+       depth + 1,
+-      isSupportedExpressionNode(node)
+-        ? 'invalid-omml-structure'
+-        : unsupportedReason(node),
++      isSupportedExpressionNode(node) ? 'invalid-omml-structure' : unsupportedReason(node),
+       path
+     )
+   );
+@@ -1148,3 +943,4 @@ export function linearMathReplacementOmml(
+     equation: ommlEquationFromExpression(parsed.expression, context),
+   });
+ }
++export type { MathScriptName } from './omml-equation-expression.ts';
+diff --git a/packages/core/src/store/package/omml-run-format.ts b/packages/core/src/store/package/omml-run-format.ts
+index cb3b325..ae36f47 100644
+--- a/packages/core/src/store/package/omml-run-format.ts
++++ b/packages/core/src/store/package/omml-run-format.ts
+@@ -1,6 +1,7 @@
+ // Read only the run properties whose typography the equation lane represents.
+ // Unknown properties retain the bounded fallback rather than being discarded.
+ import { classifyFontSlot, type FontSlot } from './font-slot-classes.ts';
++import type { MathScriptName } from './omml-equation-expression.ts';
+ import { WML_NAMESPACE_URI, XML_NAMESPACE_URI } from './ooxml-shared.ts';
+ import { isChineseFace } from './default-font-faces.ts';
+ import {
+@@ -24,6 +25,7 @@ export interface EquationRunFormat {
+   readonly literal?: boolean;
+   readonly normalText?: boolean;
+   readonly mathStyle?: 'p' | 'b' | 'i' | 'bi';
++  readonly mathScript?: MathScriptName;
+ }
+ 
+ function element(node: OoxmlNode, namespace: string, localName: string): boolean {
+@@ -346,6 +348,23 @@ function readRunProperties(
+       const value = attribute?.value ?? 'i';
+       if (value !== 'p' && value !== 'b' && value !== 'i' && value !== 'bi') return false;
+       format.mathStyle = value;
++    } else if (!word && property.localName === 'scr') {
++      if (property.children.length !== 0 || property.attributes.length > 1) return false;
++      const attribute = property.attributes[0];
++      if (attribute && (attribute.namespaceUri !== namespace || attribute.localName !== 'val'))
++        return false;
++      const value = attribute?.value;
++      if (
++        value !== undefined &&
++        value !== 'roman' &&
++        value !== 'script' &&
++        value !== 'fraktur' &&
++        value !== 'double-struck' &&
++        value !== 'sans-serif' &&
++        value !== 'monospace'
++      )
++        return false;
++      format.mathScript = value === undefined ? 'roman' : value;
+     } else {
+       const key = word
+         ? property.localName === 'b'
+@@ -437,6 +456,10 @@ function readParsedRun(run: OoxmlElement): ParsedRun | null {
+     seen.add(namespace);
+     if (!readRunProperties(child, word, format, typography)) return null;
+   }
++  // These alphabets have no bold Unicode representation in the bounded layout lane.
++  // Keep that source visibly unsupported instead of substituting another alphabet.
++  if (!format.normalText && (format.mathScript === 'double-struck' || format.mathScript === 'monospace') &&
++      (format.mathStyle === 'b' || format.mathStyle === 'bi')) return null;
+   const frozenFormat = Object.freeze(format);
+   const parsed = {
+     format: frozenFormat,
+diff --git a/packages/core/src/store/package/omml-structure-support.ts b/packages/core/src/store/package/omml-structure-support.ts
+index 02de95d..81574d7 100644
+--- a/packages/core/src/store/package/omml-structure-support.ts
++++ b/packages/core/src/store/package/omml-structure-support.ts
+@@ -137,8 +137,25 @@ export function mathOnOff(node: OoxmlGenericElementNode | null): boolean {
+ function matrixPropertiesSupported(property: OoxmlGenericElementNode | null): boolean {
+   if (!property) return true;
+   if (
+-    !hasOnlyMathChildren(property, { mcs: OPTIONAL, ctrlPr: OPTIONAL }) ||
+-    !propertyIsSupported(property, { mcs: OPTIONAL })
++    !hasOnlyMathChildren(property, {
++      baseJc: OPTIONAL,
++      plcHide: OPTIONAL,
++      mcs: OPTIONAL,
++      ctrlPr: OPTIONAL,
++    }) ||
++    !propertyIsSupported(
++      property,
++      { baseJc: OPTIONAL, plcHide: OPTIONAL, mcs: OPTIONAL },
++      (value) => {
++        const baseJustification = namedChild(value, 'baseJc');
++        const placeholders = namedChild(value, 'plcHide');
++        return (
++          (!baseJustification ||
++            hasOnlyMathVal(baseJustification, new Set(['top', 'center', 'bottom']))) &&
++          (!placeholders || isOnOffProperty(placeholders))
++        );
++      }
++    )
+   )
+     return false;
+   const columns = namedChild(property, 'mcs');
+@@ -153,8 +170,7 @@ function matrixPropertiesSupported(property: OoxmlGenericElementNode | null): bo
+         const count = namedChild(value, 'count');
+         const alignment = namedChild(value, 'mcJc');
+         return (
+-          (!count ||
+-            (hasOnlyMathVal(count) && MATRIX_COUNT.test(mathVal(count) ?? ''))) &&
++          (!count || (hasOnlyMathVal(count) && MATRIX_COUNT.test(mathVal(count) ?? ''))) &&
+           (!alignment || hasOnlyMathVal(alignment, new Set(['center', 'left', 'right'])))
+         );
+       })
+@@ -175,15 +191,20 @@ function delimiterPropertiesSupported(property: OoxmlGenericElementNode | null):
+   if (!property) return true;
+   return propertyIsSupported(
+     property,
+-    { begChr: OPTIONAL, endChr: OPTIONAL, sepChr: OPTIONAL },
+-    (value) =>
+-      (['begChr', 'endChr', 'sepChr'] as const).every((name) => {
+-        const character = namedChild(value, name);
+-        return (
+-          !character ||
+-          (hasOnlyMathVal(character) && Array.from(mathVal(character) ?? '').length <= 1)
+-        );
+-      })
++    { begChr: OPTIONAL, endChr: OPTIONAL, sepChr: OPTIONAL, grow: OPTIONAL },
++    (value) => {
++      const grow = namedChild(value, 'grow');
++      return (
++        (!grow || isOnOffProperty(grow)) &&
++        (['begChr', 'endChr', 'sepChr'] as const).every((name) => {
++          const character = namedChild(value, name);
++          return (
++            !character ||
++            (hasOnlyMathVal(character) && Array.from(mathVal(character) ?? '').length <= 1)
++          );
++        })
++      );
++    }
+   );
+ }
+ 
+@@ -271,6 +292,26 @@ export function isSupportedExpressionNode(node: OoxmlNode): boolean {
+       containersSupported(node, ['e', 'sub', 'sup'])
+     );
+   }
++  if (node.localName === 'eqArr') {
++    return (
++      hasOnlyMathChildren(node, { eqArrPr: OPTIONAL, e: MANY }) &&
++      propertyIsSupported(namedChild(node, 'eqArrPr'), { baseJc: OPTIONAL }, (property) => {
++        const baseJustification = namedChild(property, 'baseJc');
++        return (
++          !baseJustification ||
++          hasOnlyMathVal(baseJustification, new Set(['top', 'center', 'bottom']))
++        );
++      }) &&
++      containersSupported(node, ['e'])
++    );
++  }
++  if (node.localName === 'func') {
++    return (
++      hasOnlyMathChildren(node, { funcPr: OPTIONAL, fName: REQUIRED, e: REQUIRED }) &&
++      propertyIsSupported(namedChild(node, 'funcPr'), {}) &&
++      containersSupported(node, ['fName', 'e'])
++    );
++  }
+   if (node.localName === 'm') {
+     return (
+       hasOnlyMathChildren(node, { mPr: OPTIONAL, mr: MANY }) &&
+diff --git a/packages/core/src/store/store/equation-snippet.ts b/packages/core/src/store/store/equation-snippet.ts
+index 43f9045..d0ab0a4 100644
+--- a/packages/core/src/store/store/equation-snippet.ts
++++ b/packages/core/src/store/store/equation-snippet.ts
+@@ -21,7 +21,12 @@
+ import { OFFICE_MATH_NAMESPACE_URI } from '../package/omml-equation.ts';
+ import { isOmmlEquationAtom } from '../package/omml-display.ts';
+ import { WML_NAMESPACE_URI } from '../package/ooxml-shared.ts';
+-import { readOoxmlPart, type OoxmlNode, type OoxmlParagraphNode } from '../package/ooxml-tree.ts';
++import {
++  readOoxmlPart,
++  type OoxmlGenericElementNode,
++  type OoxmlNode,
++  type OoxmlParagraphNode,
++} from '../package/ooxml-tree.ts';
+ import { escapeXml, escapeXmlAttribute, isValidXmlText } from '../package/sinks.ts';
+ import { storyParagraphs } from '../package/story-blocks.ts';
+ import { readXml, type XmlNode } from '../package/xml-reader.ts';
+@@ -61,6 +66,11 @@ export type EquationSnippetResult =
+   | { readonly ok: true; readonly snippet: EquationSnippet }
+   | { readonly ok: false; readonly reason: EquationSnippetRefusal };
+ 
++/** One checked inline equation root for whole-atom source replacement. */
++export type MathEquationOoxmlResult =
++  | { readonly ok: true; readonly equation: OoxmlGenericElementNode }
++  | { readonly ok: false; readonly reason: EquationSnippetRefusal };
++
+ /** Character formatting a plain run, or a math run, may carry. */
+ const RUN_PROPERTIES: ReadonlySet<string> = new Set([
+   'rStyle',
+@@ -434,6 +444,38 @@ export function readEquationSnippet(ooxml: unknown): EquationSnippetResult {
+   };
+ }
+ 
++/**
++ * Read exactly one inline `m:oMath` root through the same bounded OMML allowlist as an
++ * inserted equation snippet. This is the explicit source-takeover boundary; callers do not
++ * receive raw XML in the tree-op payload.
++ */
++export function readMathEquationOoxml(ooxml: unknown): MathEquationOoxmlResult {
++  if (typeof ooxml !== 'string') return { ok: false, reason: 'ooxml-invalid' };
++  const read = readOoxmlPart(
++    `<w:document xmlns:w="${WML_NAMESPACE_URI}" xmlns:m="${OFFICE_MATH_NAMESPACE_URI}">` +
++      `<w:body><w:p>${ooxml}</w:p></w:body></w:document>`,
++    { name: '/word/document.xml', contentType: MAIN_CONTENT_TYPE },
++    { maxBytes: MAX_EQUATION_SNIPPET_BYTES * 2, maxElements: MAX_EQUATION_SNIPPET_ELEMENTS }
++  );
++  if (!read.ok) return { ok: false, reason: 'ooxml-invalid' };
++  const bodies = read.part.root.children.filter((node) => node.kind === 'body');
++  const body = bodies[0];
++  const paragraph = body?.kind === 'body' ? body.children[0] : undefined;
++  if (
++    read.part.root.children.length !== 1 ||
++    bodies.length !== 1 ||
++    body?.kind !== 'body' ||
++    body.children.length !== 1 ||
++    paragraph?.kind !== 'paragraph' ||
++    paragraph.children.length !== 1
++  ) {
++    return { ok: false, reason: 'ooxml-invalid' };
++  }
++  const equation = paragraph.children[0]!;
++  if (!isMathEquationShape(equation)) return { ok: false, reason: 'ooxml-unsupported' };
++  return { ok: true, equation };
++}
++
+ /** Budget for one shape check: nodes left to visit. */
+ interface ShapeBudget {
+   nodes: number;
+@@ -541,6 +583,12 @@ function isMathShape(node: OoxmlNode, depth: number, budget: ShapeBudget): boole
+   );
+ }
+ 
++/** Whether `node` is exactly one bounded Office Math `m:oMath` subtree. */
++export function isMathEquationShape(node: unknown): node is OoxmlGenericElementNode {
++  if (!isElementNode(node) || !hasName(node, OFFICE_MATH_NAMESPACE_URI, 'oMath')) return false;
++  return isMathShape(node, 0, { nodes: MAX_EQUATION_SNIPPET_ELEMENTS + 1 });
++}
++
+ /**
+  * Whether `nodes` is a shape {@link readEquationSnippet} answers: plain runs and exactly one
+  * inline `m:oMath`, every element on the reader's allowlists. The tree op checks it again,
+diff --git a/packages/core/src/store/store/index.ts b/packages/core/src/store/store/index.ts
+index 66cfa09..abd5a23 100644
+--- a/packages/core/src/store/store/index.ts
++++ b/packages/core/src/store/store/index.ts
+@@ -230,6 +230,16 @@ export type { InsertTextOp, DeleteTextOp } from './text-edit-op-types.ts';
+ export type { InsertComplexFieldOp, InsertPageFieldOp } from './tree-op-field-insert.ts';
+ export type { SetFieldResultOp } from './tree-op-field-result-write.ts';
+ export type { InsertEquationOp } from './tree-op-equation-insert.ts';
++export type { SetMathEquationOp } from './tree-op-types.ts';
++export {
++  readEquationSnippet,
++  readMathEquationOoxml,
++  isEquationSnippetShape,
++  type EquationSnippet,
++  type EquationSnippetRefusal,
++  type EquationSnippetResult,
++  type MathEquationOoxmlResult,
++} from './equation-snippet.ts';
+ export type { SetTextFormFieldDefaultOp } from './text-form-fields.ts';
+ 
+ export { type TextFormFieldOptions, type TextFormFieldType } from './text-form-field-options.ts';
+diff --git a/packages/core/src/store/store/tree-op-apply.ts b/packages/core/src/store/store/tree-op-apply.ts
+index 7c547f6..379d927 100644
+--- a/packages/core/src/store/store/tree-op-apply.ts
++++ b/packages/core/src/store/store/tree-op-apply.ts
+@@ -74,6 +74,7 @@ import {
+   applyInsertTracked,
+   applyInsertTrackedElement,
+   applyInsertTrackedElements,
++  copy,
+   insertedRunProperties,
+ } from './tree-op-tracked.ts';
+ import { splicedJoined } from './revision-piece-seams.ts';
+@@ -154,6 +155,7 @@ import { applyInsertComplexField } from './tree-op-field-insert.ts';
+ import { applySetFieldResult } from './tree-op-field-result-write.ts';
+ import { withoutOriginalMark } from './tree-op-split-mark.ts';
+ import { applyInsertEquation } from './tree-op-equation-insert.ts';
++import { withRequiredNamespaceBindings } from './tree-op-fragment.ts';
+ import { applyTrackedContentControl } from './tracked-content-control-insert.ts';
+ import {
+   applyContentControlValueOp,
+@@ -380,8 +382,18 @@ function applyValidatedTreeOp(part: OoxmlPart, op: TreeDocOp, options?: EditOpti
+           : equation.id;
+       return fromEdit(removeNode(part, target, options), effect);
+     }
++    if (op.equation !== undefined) {
++      // The incoming root came through the bounded OMML reader and validation ran again here.
++      // Bind its prefixes at the target root, then mint every internal id for this part.
++      const bound = withRequiredNamespaceBindings(part, [op.equation]);
++      const copied = copy(createNodeIdAllocator(bound), op.equation);
++      if (copied.kind === 'textValue') return { ok: false, reason: 'tree-invariant' };
++      // The complete atom keeps its identity; the display wrapper and paragraph stay in place.
++      const replacement = { ...copied, id: equation.id };
++      return fromEdit(replaceNode(bound, equation.id, replacement, options), effect);
++    }
+     // Default control properties of the replaced equation carry over to each new structure.
+-    const generated = linearMathReplacementOmml(op.linear, createNodeIdAllocator(part), equation);
++    const generated = linearMathReplacementOmml(op.linear!, createNodeIdAllocator(part), equation);
+     if (!generated.ok) return { ok: false, reason: 'invalid-property-value' };
+     // Retain the equation identity. An open popover and an undo record both address the
+     // complete math atom, while every internal OMML node receives a fresh part-scoped id.
+diff --git a/packages/core/src/store/store/tree-op-equation-insert.ts b/packages/core/src/store/store/tree-op-equation-insert.ts
+index b00d241..27fdc6f 100644
+--- a/packages/core/src/store/store/tree-op-equation-insert.ts
++++ b/packages/core/src/store/store/tree-op-equation-insert.ts
+@@ -10,8 +10,14 @@
+ // so Accept keeps the equation and Reject removes it whole.
+ 
+ import { findNode, type EditOptions } from '../package/ooxml-edit.ts';
++import { OFFICE_MATH_NAMESPACE_URI } from '../package/omml-equation.ts';
+ import { WML_NAMESPACE_URI } from '../package/ooxml-shared.ts';
+-import type { OoxmlNode, OoxmlParagraphNode, OoxmlPart } from '../package/ooxml-tree.ts';
++import type {
++  OoxmlGenericElementNode,
++  OoxmlNode,
++  OoxmlParagraphNode,
++  OoxmlPart,
++} from '../package/ooxml-tree.ts';
+ import { isEquationSnippetShape } from './equation-snippet.ts';
+ import { withRequiredNamespaceBindings } from './tree-op-fragment.ts';
+ import { applyPlaceRunNodes } from './tree-op-run-placement.ts';
+@@ -31,6 +37,11 @@ export interface InsertEquationOp {
+   readonly nodes: readonly OoxmlNode[];
+   /** Model length of `nodes`: their text, plus one for the equation. */
+   readonly length: number;
++  /**
++   * Wrap the one equation as an `m:oMathPara` display. Display insertion takes exactly one
++   * node and does not yet support a tracked revision.
++   */
++  readonly display?: true;
+   /** Write the nodes as ONE tracked insertion, on the same terms as `insertText`. */
+   readonly revision?: RevisionAttributionInput;
+ }
+@@ -51,6 +62,19 @@ export function validateInsertEquation(
+   // field: the fragment path splits the wrapper around the equation, and the tracked path
+   // places it inside the wrapper the way typed text goes.
+   if (!isEquationSnippetShape(op.nodes)) return 'fragment-invalid-block';
++  if (op.display !== undefined) {
++    if (op.display !== true || op.nodes.length !== 1 || op.revision !== undefined) {
++      return 'invalid-property-value';
++    }
++    const equation = op.nodes[0]!;
++    if (
++      equation.kind === 'textValue' ||
++      equation.namespaceUri !== OFFICE_MATH_NAMESPACE_URI ||
++      equation.localName !== 'oMath'
++    ) {
++      return 'fragment-invalid-block';
++    }
++  }
+   const measured = paragraphLength(snippetParagraph(op.nodes));
+   if (!Number.isInteger(op.length) || op.length !== measured) return 'invalidArgs';
+   // `CT_TrackChange` makes `@w:author` required.
+@@ -80,18 +104,40 @@ export function applyInsertEquation(
+   options?: EditOptions
+ ): TreeOpResult {
+   // The `m:` prefix must be bound at the root before the commit validator sees it.
+-  const bound = withRequiredNamespaceBindings(part, op.nodes);
++  const nodes = op.display ? [displayEquation(op.nodes[0] as OoxmlGenericElementNode)] : op.nodes;
++  const bound = withRequiredNamespaceBindings(part, nodes);
+   const paragraph = findNode(bound, op.paragraphId);
+   if (!paragraph || paragraph.kind !== 'paragraph')
+     return { ok: false, reason: 'unknown-paragraph' };
+-  if (!op.revision) return applyPlaceRunNodes(bound, paragraph, op.offset, op.nodes, options);
++  if (!op.revision) return applyPlaceRunNodes(bound, paragraph, op.offset, nodes, options);
+   return applyInsertTrackedRun(
+     bound,
+     paragraph,
+     op.offset,
+-    (mint) => op.nodes.map((node) => copy(mint, node)),
++    (mint) => nodes.map((node) => copy(mint, node)),
+     op.revision,
+     options,
+     op.length
+   );
+ }
++
++function mathElement(
++  id: string,
++  localName: string,
++  children: readonly OoxmlNode[]
++): OoxmlGenericElementNode {
++  return Object.freeze({
++    id,
++    kind: 'generic',
++    namespaceUri: OFFICE_MATH_NAMESPACE_URI,
++    localName,
++    prefix: 'm',
++    namespaceBindings: Object.freeze([]),
++    attributes: Object.freeze([]),
++    children: Object.freeze([...children]),
++  });
++}
++
++function displayEquation(equation: OoxmlGenericElementNode): OoxmlGenericElementNode {
++  return mathElement(`${equation.id}:display`, 'oMathPara', [equation]);
++}
+diff --git a/packages/core/src/store/store/tree-op-run-placement.ts b/packages/core/src/store/store/tree-op-run-placement.ts
+index 7b61072..4a3975a 100644
+--- a/packages/core/src/store/store/tree-op-run-placement.ts
++++ b/packages/core/src/store/store/tree-op-run-placement.ts
+@@ -57,13 +57,17 @@ function placementOf(
+   const run =
+     site.kind === 'appendToRun' || site.kind === 'atRunIndex'
+       ? site.run
+-      : findNode(part, site.segment.runId);
++      : findNode(part, site.segment.runId || site.segment.node.id);
+   if (!run || run.kind === 'textValue') return null;
+   const holder = parentOf(part, run.id);
+   if (!holder) return null;
+   const at = holder.children.findIndex((node) => node.id === run.id);
+   if (site.kind === 'appendToRun') return { holder, index: at + 1 };
+-  if (run.kind !== 'run') return { holder, index: at };
++  if (run.kind !== 'run') {
++    const span = paragraphOffsetIndex(paragraph).spanOf(run);
++    if (!span) return null;
++    return { holder, index: at + (offset >= span.end ? 1 : 0) };
++  }
+   let halves: OoxmlNode[];
+   if (site.kind === 'atRunIndex') {
+     const properties = run.children.filter((child) => child.kind === 'runProperties');
+diff --git a/packages/core/src/store/store/tree-op-section.ts b/packages/core/src/store/store/tree-op-section.ts
+index fe563b7..d5628e6 100644
+--- a/packages/core/src/store/store/tree-op-section.ts
++++ b/packages/core/src/store/store/tree-op-section.ts
+@@ -1,5 +1,4 @@
+ // Section and list property ops (tree-ops seam).
+-//
+ // `w:sectPr` and `w:numPr` are the two `w:pPr` children that carry their meaning in
+ // CHILDREN rather than attributes, so neither can be expressed through the flat
+ // `setParagraphProperties` path. They get their own appliers, and those are bulky enough
+@@ -77,7 +76,6 @@ export function withoutSectionMark(pPr: OoxmlNode): OoxmlNode | undefined {
+ 
+ type SetSectionPropertiesOp = Extract<TreeDocOp, { op: 'setSectionProperties' }>;
+ type SetSectionMarkOp = Extract<TreeDocOp, { op: 'setSectionMark' }>;
+-
+ function wmlAttribute(localName: string, value: string) {
+   return {
+     kind: 'genericExtension' as const,
+@@ -113,7 +111,6 @@ const attributesOf = (node: OoxmlNode | null): readonly { localName: string; val
+ 
+ const childrenOf = (node: OoxmlNode | null): readonly OoxmlNode[] =>
+   node && node.kind !== 'textValue' ? (node.children ?? []) : [];
+-
+ /**
+  * Merge the op's fields into its TARGET sections — every `w:sectPr` in the part
+  * (Word's "Apply to: Whole document", the default), or only the section governing
+diff --git a/packages/core/src/store/store/tree-op-segments.ts b/packages/core/src/store/store/tree-op-segments.ts
+index bc4345f..fd18745 100644
+--- a/packages/core/src/store/store/tree-op-segments.ts
++++ b/packages/core/src/store/store/tree-op-segments.ts
+@@ -808,6 +808,7 @@ function rawInsertionSite(
+         (child) => child.id === segmentAncestryNodeId(trailing)
+       );
+       if (direct?.kind === 'run') return { kind: 'appendToRun', run: direct };
++      if (direct) return { kind: 'atBoundary', segment: trailing };
+     }
+   }
+ 
+diff --git a/packages/core/src/store/store/tree-op-types.ts b/packages/core/src/store/store/tree-op-types.ts
+index 8ea1d15..f21a87b 100644
+--- a/packages/core/src/store/store/tree-op-types.ts
++++ b/packages/core/src/store/store/tree-op-types.ts
+@@ -22,7 +22,12 @@ import type {
+ 
+ import type { ParagraphTabStop } from '../../contracts/types.ts';
+ import type { ContentControlLock } from '../package/content-control-nodes.ts';
+-import type { OoxmlDrawingNode, OoxmlNode, OoxmlPart } from '../package/ooxml-tree.ts';
++import type {
++  OoxmlDrawingNode,
++  OoxmlGenericElementNode,
++  OoxmlNode,
++  OoxmlPart,
++} from '../package/ooxml-tree.ts';
+ import type {
+   DrawingLocksInput,
+   DrawingPositionInput,
+@@ -167,6 +172,27 @@ export {
+   type RevisionAttributionInput,
+ } from './tree-op-revision-attribution.ts';
+ 
++/**
++ * Replace one equation through the compact editor syntax or one checked canonical `m:oMath`.
++ *
++ * Both payloads replace the complete equation atom and retain its node identity. The OMML
++ * arm is the explicit source-takeover path for formulas that compact linear syntax cannot
++ * represent.
++ */
++export type SetMathEquationOp = {
++  readonly op: 'setMathEquation';
++  readonly equationId: string;
++} & (
++  | {
++      readonly linear: string;
++      readonly equation?: never;
++    }
++  | {
++      readonly equation: OoxmlGenericElementNode;
++      readonly linear?: never;
++    }
++);
++
+ /**
+  * Every mutation the store accepts, as one JSON-safe discriminated union.
+  *
+@@ -469,7 +495,11 @@ export type TreeDocOp =
+       readonly marginRightTwips?: number;
+       readonly marginBottomTwips?: number;
+       readonly marginLeftTwips?: number;
+-      readonly columns?: { readonly count: number; readonly spaceTwips?: number; readonly separator?: boolean };
++      readonly columns?: {
++        readonly count: number;
++        readonly spaceTwips?: number;
++        readonly separator?: boolean;
++      };
+       /**
+        * Word's "Apply to: This section": update only the section GOVERNING this
+        * paragraph — the nearest mid-body `w:sectPr` at or after it, else the body-level
+@@ -554,17 +584,7 @@ export type TreeDocOp =
+       /** Optional exact paragraph offsets for an ordinary text subrange of this link. */
+       readonly range?: { readonly start: number; readonly end: number };
+     }
+-  | {
+-      /**
+-       * Replace one preserved `m:oMath` atom from bounded linear-math input.
+-       *
+-       * The complete equation changes as one unit. Internal OMML text never enters the
+-       * paragraph offset space, so callers cannot leave a partially edited math tree.
+-       */
+-      readonly op: 'setMathEquation';
+-      readonly equationId: string;
+-      readonly linear: string;
+-    }
++  | SetMathEquationOp
+   | {
+       /** Remove one complete `m:oMath` atom. */
+       readonly op: 'removeMathEquation';
+diff --git a/packages/core/src/store/store/tree-op-validate.ts b/packages/core/src/store/store/tree-op-validate.ts
+index 74d9013..f4c6277 100644
+--- a/packages/core/src/store/store/tree-op-validate.ts
++++ b/packages/core/src/store/store/tree-op-validate.ts
+@@ -6,6 +6,7 @@ import { validateSetFieldCode } from './tree-op-field-code.ts';
+ import { validateFieldInsertion } from './tree-op-field-insert.ts';
+ import { validateSetFieldResult } from './tree-op-field-result-write.ts';
+ import { validateInsertEquation } from './tree-op-equation-insert.ts';
++import { validateMathEquationOp } from './tree-op-math-equation.ts';
+ import { validateTableAuthoring } from './tree-op-table-batch.ts';
+ import { validateTableProperties } from './tree-op-table-authoring.ts';
+ import { validateCommitTextFormField } from './tree-op-field-results.ts';
+@@ -25,7 +26,6 @@ import type { OoxmlNode, OoxmlParagraphNode, OoxmlPart } from '../package/ooxml-
+ import { findNode, type EditOptions } from '../package/ooxml-edit.ts';
+ import { restylePassesContentLock } from './content-lock-policy.ts';
+ import { changesOnlyLockFreeParagraphProperties } from './content-lock-paragraph-properties.ts';
+-import { OFFICE_MATH_NAMESPACE_URI, parseLinearMath } from '../package/omml-equation.ts';
+ import { isValidXmlText } from '../package/sinks.ts';
+ import { isDangerousKey } from '../package/safe-record.ts';
+ import { isAuthorableDataBinding } from '../package/custom-node-payloads.ts';
+@@ -447,7 +447,8 @@ export function validateTreeOp(
+     if (
+       dims.every((value) => value === undefined) &&
+       margins.every((value) => value === undefined) &&
+-      op.orientation === undefined && op.columns === undefined
++      op.orientation === undefined &&
++      op.columns === undefined
+     ) {
+       return 'invalid-property-value';
+     }
+@@ -472,11 +473,18 @@ export function validateTreeOp(
+     ) {
+       return 'invalid-property-value';
+     }
+-    if (op.columns !== undefined && (
+-      !Number.isInteger(op.columns.count) || op.columns.count < 1 || op.columns.count > 45 ||
+-      (op.columns.spaceTwips !== undefined && (!Number.isInteger(op.columns.spaceTwips) || op.columns.spaceTwips < 0 || op.columns.spaceTwips > 31680)) ||
+-      (op.columns.separator !== undefined && typeof op.columns.separator !== 'boolean')
+-    )) return 'invalid-property-value';
++    if (
++      op.columns !== undefined &&
++      (!Number.isInteger(op.columns.count) ||
++        op.columns.count < 1 ||
++        op.columns.count > 45 ||
++        (op.columns.spaceTwips !== undefined &&
++          (!Number.isInteger(op.columns.spaceTwips) ||
++            op.columns.spaceTwips < 0 ||
++            op.columns.spaceTwips > 31680)) ||
++        (op.columns.separator !== undefined && typeof op.columns.separator !== 'boolean'))
++    )
++      return 'invalid-property-value';
+     if (op.anchorParagraphId !== undefined) {
+       const anchor = findNode(part, op.anchorParagraphId);
+       if (!anchor) return 'unknown-paragraph';
+@@ -579,22 +587,7 @@ export function validateTreeOp(
+   }
+ 
+   if (op.op === 'setMathEquation' || op.op === 'removeMathEquation') {
+-    const equation = findNode(part, op.equationId);
+-    if (!equation) return 'unknown-paragraph';
+-    if (
+-      equation.kind === 'textValue' ||
+-      equation.kind !== 'generic' ||
+-      equation.namespaceUri !== OFFICE_MATH_NAMESPACE_URI ||
+-      equation.localName !== 'oMath'
+-    ) {
+-      return 'not-a-paragraph';
+-    }
+-    const restriction = nodeTouchesContentRestriction(part, op.equationId);
+-    if (restriction) return restriction;
+-    if (op.op === 'setMathEquation' && !parseLinearMath(op.linear).ok) {
+-      return 'invalid-property-value';
+-    }
+-    return null;
++    return validateMathEquationOp(part, op);
+   }
+ 
+   if (op.op === 'insertCommentMarker') {
+diff --git a/packages/core/src/layout/__tests__/equation-math-script.test.ts b/packages/core/src/layout/__tests__/equation-math-script.test.ts
+new file mode 100644
+index 0000000..5c5c13d
+--- /dev/null
++++ b/packages/core/src/layout/__tests__/equation-math-script.test.ts
+@@ -0,0 +1,129 @@
++import { describe, expect, test } from 'bun:test';
++import {
++  readOoxmlPart,
++  serializeOoxmlPart,
++  canonicalOoxmlFingerprint,
++  projectOmmlEquation,
++  type OoxmlGenericElementNode,
++} from '@docx-editor.dev/core/store';
++import { layoutEquation, type EquationGeometry } from '../equation-layout.ts';
++import { resolveRunStyle } from '../run-style.ts';
++import { createFixedMeasurer } from '../fixed-measurer.ts';
++import { equationMathScriptText } from '../equation-math-alphabet.ts';
++
++const w = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
++const m = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
++const run = (text: string, properties = '') => `<m:r>${properties}<m:t>${text}</m:t></m:r>`;
++
++function project(body: string) {
++  const read = readOoxmlPart(`<m:oMath xmlns:w="${w}" xmlns:m="${m}">${body}</m:oMath>`, {
++    name: '/word/document.xml',
++    contentType: 'app/xml',
++  });
++  if (!read.ok) throw new Error(read.reason);
++  return {
++    part: read.part,
++    projection: projectOmmlEquation(read.part.root as OoxmlGenericElementNode),
++  };
++}
++
++function texts(node: EquationGeometry): string[] {
++  if (node.kind === 'text' || node.kind === 'fallback') return [node.text];
++  if (node.kind === 'row') return node.items.flatMap(texts);
++  if (node.kind === 'script')
++    return [node.base, node.subscript, node.superscript].flatMap((n) => (n ? texts(n) : []));
++  if (node.kind === 'bar') return texts(node.body);
++  throw new Error('Unexpected test geometry');
++}
++
++describe('OMML mathematical scripts', () => {
++  test.each([
++    ['', 'RQ', '𝑅𝑄', 'roman italic default'],
++    [' m:val="script"', 'RQ', 'ℛ𝒬', 'script'],
++    [' m:val="script"', 'BFeHL', 'ℬℱℯℋℒ', 'script'],
++    [' m:val="fraktur"', 'CHIRZ', 'ℭℌℑℜℨ', 'fraktur'],
++    [' m:val="double-struck"', 'RCHNZld', 'ℝℂℍℕℤ𝕝𝕕', 'double-struck'],
++    [' m:val="sans-serif"/><m:sty m:val="p"', 'A', '𝖠', 'sans-serif plain'],
++    [' m:val="sans-serif"/><m:sty m:val="b"', 'A', '𝗔', 'sans-serif bold'],
++    [' m:val="script"/><m:sty m:val="b"', 'ABfz', '𝓐𝓑𝓯𝔃', 'bold script'],
++    [' m:val="sans-serif"/><m:sty m:val="i"', 'AT', '𝘈𝘛', 'sans-serif italic'],
++    [' m:val="sans-serif"/><m:sty m:val="bi"', 'ATα∂', '𝘼𝙏𝞪𝟃', 'sans-serif bold italic'],
++    [' m:val="double-struck"', '09defg', '𝟘𝟡𝕕𝕖𝕗𝕘', 'double-struck digits'],
++    [' m:val="monospace"', 'a1', '𝚊𝟷', 'monospace'],
++  ] as const)(
++    'maps script %s text to the mathematical alphabet (%s)',
++    (attribute, source, expected, label) => {
++      void label;
++      const { part, projection } = project(
++        run(source, `<m:rPr><m:scr${attribute}/></m:rPr>`)
++      );
++      const before = canonicalOoxmlFingerprint(part);
++      const result = layoutEquation(projection, createFixedMeasurer(), resolveRunStyle([]));
++      expect(texts(result.geometry)).toEqual([expected]);
++      expect(result.geometry.kind === 'text' ? result.geometry.runStyle?.bold : undefined).toBe(
++        false
++      );
++      expect(result.geometry.kind === 'text' ? result.geometry.runStyle?.italic : undefined).toBe(
++        false
++      );
++      expect(serializeOoxmlPart(part)).toContain(`<m:t>${source}</m:t>`);
++      expect(canonicalOoxmlFingerprint(part)).toBe(before);
++    }
++  );
++
++  test('does not substitute bold double-struck with a different mathematical alphabet', () => {
++    const { projection } = project(
++      run('A', '<m:rPr><m:scr m:val="double-struck"/><m:sty m:val="b"/></m:rPr>')
++    );
++    const result = layoutEquation(projection, createFixedMeasurer(), resolveRunStyle([]));
++    expect(result.geometry.kind).toBe('fallback');
++    if (result.geometry.kind !== 'fallback') throw new Error('Expected fallback');
++    expect(result.geometry.text).toBe('A');
++  });
++
++  test('combines script with m:sty without changing the source', () => {
++    const { part, projection } = project(
++      run('AB1', '<m:rPr><m:scr m:val="sans-serif"/><m:sty m:val="b"/></m:rPr>')
++    );
++    const result = layoutEquation(projection, createFixedMeasurer(), resolveRunStyle([]));
++    expect(texts(result.geometry)).toEqual(['𝗔𝗕𝟭']);
++    expect(serializeOoxmlPart(part)).toContain('<m:t>AB1</m:t>');
++    expect(canonicalOoxmlFingerprint(part)).toContain('AB1');
++  });
++
++  test('an unsupported script keeps unrepresented characters in their source form', () => {
++    const { projection } = project(
++      run('Z9甲', '<m:rPr><m:scr m:val="double-struck"/></m:rPr>')
++    );
++    expect(texts(layoutEquation(projection, createFixedMeasurer(), resolveRunStyle([])).geometry)).toEqual(['ℤ𝟡甲']);
++  });
++
++  test('rejects unknown m:scr values as unsupported OMML properties', () => {
++    const { projection } = project(run('A', '<m:rPr><m:scr m:val="chancery"/></m:rPr>'));
++    expect(projection.expression.kind).toBe('fallback');
++    if (projection.expression.kind !== 'fallback') throw new Error('Expected fallback');
++    expect(projection.expression.reason).toBe('unsupported-omml-property');
++  });
++
++  test('maps without the projection boundary when only display text changes', () => {
++    expect(
++      equationMathScriptText({
++        value: 'Rl',
++        format: { mathScript: 'script', mathStyle: 'i' },
++      })
++    ).toEqual({ text: 'ℛ𝓁', mathScript: 'script' });
++    expect(
++      equationMathScriptText({ value: 'R', format: { mathScript: 'roman' } })
++    ).toEqual({ text: 'R', mathScript: null });
++  });
++
++  test('normal text overrides the mathematical alphabet inside a structured formula', () => {
++    const { projection } = project(
++      `<m:f><m:num>${run('Text1', '<m:rPr><m:scr m:val="script"/><m:nor/></m:rPr>')}</m:num><m:den>${run('x')}</m:den></m:f>`
++    );
++    const result = layoutEquation(projection, createFixedMeasurer(), resolveRunStyle([]));
++    expect(result.geometry.kind).toBe('fraction');
++    if (result.geometry.kind !== 'fraction') throw new Error('Expected fraction');
++    expect(texts(result.geometry.numerator)).toEqual(['Text1']);
++  });
++});
+diff --git a/packages/core/src/layout/equation-math-alphabet.ts b/packages/core/src/layout/equation-math-alphabet.ts
+new file mode 100644
+index 0000000..1f1206a
+--- /dev/null
++++ b/packages/core/src/layout/equation-math-alphabet.ts
+@@ -0,0 +1,86 @@
++// A derived display string. Source characters, offsets and serialized OMML never change.
++import type { MathScriptName } from '../store/package/omml-equation-expression.ts';
++
++type MathStyle = 'p' | 'b' | 'i' | 'bi';
++type Alphabet = { capital: number; small: number; digit?: number; holes?: ReadonlyMap<number, number> };
++
++const scriptHoles = new Map([
++  [0x42, 0x212c], [0x45, 0x2130], [0x46, 0x2131], [0x48, 0x210b],
++  [0x49, 0x2110], [0x4c, 0x2112], [0x4d, 0x2133], [0x52, 0x211b],
++  [0x65, 0x212f], [0x67, 0x210a], [0x6f, 0x2134],
++]);
++const frakturHoles = new Map([
++  [0x43, 0x212d], [0x48, 0x210c], [0x49, 0x2111], [0x52, 0x211c], [0x5a, 0x2128],
++]);
++const doubleStruckHoles = new Map([
++  [0x43, 0x2102], [0x48, 0x210d], [0x4e, 0x2115], [0x50, 0x2119],
++  [0x51, 0x211a], [0x52, 0x211d], [0x5a, 0x2124],
++]);
++
++function alphabetFor(script: Exclude<MathScriptName, 'roman'>, style: MathStyle): Alphabet | null {
++  const bold = style === 'b' || style === 'bi';
++  switch (script) {
++    case 'script':
++      return bold ? { capital: 0x1d4d0, small: 0x1d4ea }
++        : { capital: 0x1d49c, small: 0x1d4b6, holes: scriptHoles };
++    case 'fraktur':
++      return bold ? { capital: 0x1d56c, small: 0x1d586 }
++        : { capital: 0x1d504, small: 0x1d51e, holes: frakturHoles };
++    case 'double-struck':
++      return bold ? null : { capital: 0x1d538, small: 0x1d552, digit: 0x1d7d8, holes: doubleStruckHoles };
++    case 'monospace':
++      return bold ? null : { capital: 0x1d670, small: 0x1d68a, digit: 0x1d7f6 };
++    case 'sans-serif':
++      if (style === 'bi') return { capital: 0x1d63c, small: 0x1d656, digit: 0x1d7ec };
++      if (style === 'i') return { capital: 0x1d608, small: 0x1d622, digit: 0x1d7e2 };
++      return bold ? { capital: 0x1d5d4, small: 0x1d5ee, digit: 0x1d7ec }
++        : { capital: 0x1d5a0, small: 0x1d5ba, digit: 0x1d7e2 };
++  }
++}
++
++const greekSymbols = new Map([
++  [0x3f4, 17], [0x2207, 25], [0x2202, 51], [0x3f5, 52], [0x3d1, 53],
++  [0x3f0, 54], [0x3d5, 55], [0x3f1, 56], [0x3d6, 57],
++]);
++
++function greekGlyph(code: number, base: number): number | undefined {
++  if (code >= 0x391 && code <= 0x3a9 && code !== 0x3a2) return base + code - 0x391;
++  if (code >= 0x3b1 && code <= 0x3c9) return base + 26 + code - 0x3b1;
++  const symbol = greekSymbols.get(code);
++  return symbol === undefined ? undefined : base + symbol;
++}
++
++export interface MathScriptTextExpression {
++  readonly value: string;
++  readonly format?: { readonly mathScript?: MathScriptName; readonly mathStyle?: MathStyle };
++}
++
++/** Null means an alphabet combination has no faithful representation in this layout lane. */
++export function equationMathScriptText(expression: MathScriptTextExpression): {
++  readonly text: string | null;
++  readonly mathScript: MathScriptName | null;
++} {
++  const script = expression.format?.mathScript;
++  if (!script || script === 'roman') return { text: expression.value, mathScript: null };
++  const style = expression.format?.mathStyle ?? 'i';
++  const alphabet = alphabetFor(script, style);
++  if (!alphabet) return { text: null, mathScript: script };
++  const greek = script === 'sans-serif' && (style === 'b' || style === 'bi')
++    ? (style === 'b' ? 0x1d756 : 0x1d790) : undefined;
++  const text = Array.from(expression.value, (character) => {
++    const code = character.codePointAt(0)!;
++    const hole = alphabet.holes?.get(code);
++    if (hole !== undefined) return String.fromCodePoint(hole);
++    if (code >= 0x41 && code <= 0x5a) return String.fromCodePoint(alphabet.capital + code - 0x41);
++    if (code >= 0x61 && code <= 0x7a) return String.fromCodePoint(alphabet.small + code - 0x61);
++    if (alphabet.digit !== undefined && code >= 0x30 && code <= 0x39)
++      return String.fromCodePoint(alphabet.digit + code - 0x30);
++    if (greek !== undefined) {
++      const mapped = greekGlyph(code, greek);
++      if (mapped !== undefined) return String.fromCodePoint(mapped);
++    }
++    // Operators, combining marks and text without a mathematical alphabet keep their value.
++    return character === '-' ? '−' : character === '*' ? '∗' : character;
++  }).join('');
++  return { text, mathScript: script };
++}
+diff --git a/packages/core/src/layout/equation-text-layout.ts b/packages/core/src/layout/equation-text-layout.ts
+new file mode 100644
+index 0000000..08d6f70
+--- /dev/null
++++ b/packages/core/src/layout/equation-text-layout.ts
+@@ -0,0 +1,224 @@
++// Text, metrics, and row geometry for the bounded equation layout.
++
++import type { EquationExpression } from '@docx-editor.dev/core/store';
++import type {
++  EquationGeometry,
++  EquationRowGeometry,
++  EquationTextGeometry,
++} from './equation-layout.ts';
++import { measureDisplayText, withFontFamily, type ResolvedRunStyle } from './run-style.ts';
++import type { TextMeasurer } from './semantic-records.ts';
++import { equationDisplayText } from './equation-display-text.ts';
++import { equationMathScriptText } from './equation-math-alphabet.ts';
++import { box, shifted } from './equation-scripts.ts';
++
++export interface EquationLayoutCache {
++  readonly textStyle: ResolvedRunStyle;
++  /** The size of the text around the equation: the structure size without `m:ctrlPr`. */
++  readonly surroundingSizePt: number;
++  /** The equation is a display equation, so its fractions keep the padded placement. */
++  readonly display: boolean;
++  /**
++   * The size of the first atom, and that atom. Scripts and fractions after it take their
++   * offsets from this size, not from their own (`laterStructureSizePt`).
++   */
++  leading?: { readonly sizePt: number; readonly first: EquationExpression };
++  readonly formats: WeakMap<
++    object,
++    Map<boolean, { readonly style: ResolvedRunStyle; readonly cache: EquationLayoutCache }>
++  >;
++  readonly styles: Map<number, ResolvedRunStyle>;
++  readonly metrics: Map<number, ReturnType<TextMeasurer['lineMetrics']>>;
++}
++
++// A reduced size rounds down to whole half points, the unit of authored run sizes.
++export function scaledSizePt(sizePt: number, scale: number): number {
++  return scale < 1 ? Math.max(0.5, Math.floor(sizePt * scale * 2 + 1e-9) / 2) : sizePt * scale;
++}
++
++export function scaledStyle(
++  style: ResolvedRunStyle,
++  scale: number,
++  cache: EquationLayoutCache
++): ResolvedRunStyle {
++  const cached = cache.styles.get(scale);
++  if (cached) return cached;
++  const resolved =
++    scale === 1
++      ? style
++      : Object.freeze({
++          ...style,
++          fontSizePt: scaledSizePt(style.fontSizePt, scale),
++          characterSpacingPt: style.characterSpacingPt * scale,
++        });
++  cache.styles.set(scale, resolved);
++  return resolved;
++}
++
++export function metricsAt(
++  measurer: TextMeasurer,
++  style: ResolvedRunStyle,
++  scale: number,
++  cache: EquationLayoutCache
++): ReturnType<TextMeasurer['lineMetrics']> {
++  const cached = cache.metrics.get(scale);
++  if (cached) return cached;
++  const metrics = measurer.lineMetrics(scaledStyle(style, scale, cache));
++  cache.metrics.set(scale, metrics);
++  return metrics;
++}
++
++export function textGeometry(
++  kind: 'text' | 'fallback',
++  text: string,
++  measurer: TextMeasurer,
++  style: ResolvedRunStyle,
++  scale: number,
++  cache: EquationLayoutCache
++): EquationTextGeometry {
++  const resolved = scaledStyle(style, scale, cache);
++  const metrics = metricsAt(measurer, style, scale, cache);
++  return Object.freeze({
++    kind,
++    text,
++    fontSizePt: resolved.fontSizePt,
++    runStyle: resolved,
++    box: box(0, 0, measureDisplayText(text, resolved, measurer), metrics.height),
++    baseline: metrics.baseline,
++  });
++}
++
++export function rowGeometry(
++  items: readonly EquationGeometry[],
++  fallbackMetrics: { readonly height: number; readonly baseline: number },
++  /** The space, in points, before each item. */
++  spaces?: readonly number[]
++): EquationRowGeometry {
++  if (items.length === 0) {
++    return Object.freeze({
++      kind: 'row',
++      items: Object.freeze([]),
++      box: box(0, 0, 0, fallbackMetrics.height),
++      baseline: fallbackMetrics.baseline,
++    });
++  }
++  const baseline = Math.max(...items.map((child) => child.baseline));
++  const descent = Math.max(...items.map((child) => child.box.height - child.baseline));
++  let x = 0;
++  const placed = items.map((child, index) => {
++    x += spaces?.[index] ?? 0;
++    const result = shifted(child, x, baseline - child.baseline);
++    x += child.box.width;
++    return result;
++  });
++  return Object.freeze({
++    kind: 'row',
++    items: Object.freeze(placed),
++    box: box(0, 0, x, baseline + descent),
++    baseline,
++  });
++}
++
++type TextExpression = Extract<EquationExpression, { readonly kind: 'text' }>;
++
++export function layoutText(
++  expression: TextExpression,
++  measurer: TextMeasurer,
++  style: ResolvedRunStyle,
++  scale: number,
++  cache: EquationLayoutCache,
++  // A part of a split run shares the faces derived for the whole run.
++  source: object = expression
++): EquationGeometry {
++  const authoredFamily = expression.format?.fontFamily;
++  const textFace = authoredFamily && authoredFamily.trim().toLowerCase() !== 'cambria math';
++  const digitParts =
++    textFace && !expression.format?.normalText && (expression.format?.mathStyle ?? 'i') === 'i'
++      ? expression.value.match(/(?:[0-9]\p{M}*)+|[^0-9]+/gu)
++      : null;
++  if (digitParts && digitParts.length > 1) {
++    const parts = digitParts.map((value) =>
++      layoutText({ ...expression, value }, measurer, style, scale, cache, source)
++    );
++    return rowGeometry(parts, metricsAt(measurer, style, scale, cache));
++  }
++  const scriptSource =
++    !expression.format?.normalText && expression.format?.mathScript && expression.format.mathScript !== 'roman'
++      ? equationMathScriptText(expression)
++      : null;
++  if (scriptSource?.text === null) {
++    return textGeometry('fallback', expression.value || '…', measurer, style, scale, cache);
++  }
++  const display = scriptSource
++    ? {
++        ...equationDisplayText(
++          { ...expression, value: scriptSource.text },
++          authoredFamily ?? style.fontFamily
++        ),
++        mathematicalGlyphs: true,
++      }
++    : equationDisplayText(expression, authoredFamily ?? style.fontFamily);
++  const familyStyle =
++    authoredFamily && !display.mathematicalGlyphs
++      ? withFontFamily(style, authoredFamily)
++      : expression.format?.normalText
++        ? cache.textStyle
++        : style;
++  const formatKey = expression.format ?? source;
++  const digits = Boolean(textFace && display.mathStyle && !display.mathematicalGlyphs);
++  let formats = cache.formats.get(formatKey);
++  let formatted = formats?.get(digits);
++  if (!formatted) {
++    const face = Object.freeze({
++      ...familyStyle,
++      fontSizePt: textSizePt(expression, familyStyle),
++      ...(expression.appearance?.kerningMinPt !== undefined
++        ? {
++            kerningMinPt: expression.appearance.kerningMinPt,
++            kerningEnabled: expression.appearance.kerningMinPt > 0,
++          }
++        : {}),
++      ...(expression.appearance?.ligatures ? { ligatures: expression.appearance.ligatures } : {}),
++      // Mathematical alphanumeric glyphs already carry their style in this
++      // regular face. Do not request a second italic or bold font program.
++      bold:
++        display.mathStyle === null
++          ? (expression.format?.bold ?? familyStyle.bold)
++          : !display.mathematicalGlyphs &&
++            (digits && expression.format?.bold !== undefined
++              ? expression.format.bold
++              : display.mathStyle === 'b' || display.mathStyle === 'bi'),
++      italic:
++        display.mathStyle === null || digits
++          ? (expression.format?.italic ??
++            (digits
++              ? display.mathStyle === 'i' || display.mathStyle === 'bi'
++              : expression.format?.normalText
++                ? false
++                : familyStyle.italic))
++          : !display.mathematicalGlyphs &&
++            (display.mathStyle === 'i' || display.mathStyle === 'bi'),
++    });
++    formatted = {
++      style: face,
++      cache: {
++        textStyle: cache.textStyle,
++        surroundingSizePt: cache.surroundingSizePt,
++        display: cache.display,
++        styles: new Map(),
++        metrics: new Map(),
++        formats: new WeakMap(),
++      },
++    };
++    if (!formats) {
++      formats = new Map();
++      cache.formats.set(formatKey, formats);
++    }
++    formats.set(digits, formatted);
++  }
++  return textGeometry('text', display.text, measurer, formatted.style, scale, formatted.cache);
++}
++
++export function textSizePt(expression: TextExpression, style: ResolvedRunStyle): number {
++  return expression.format?.fontSizePt ?? expression.fontSizePt ?? style.fontSizePt;
++}
+diff --git a/packages/core/src/store/package/omml-equation-structured-projection.ts b/packages/core/src/store/package/omml-equation-structured-projection.ts
+new file mode 100644
+index 0000000..b85ff88
+--- /dev/null
++++ b/packages/core/src/store/package/omml-equation-structured-projection.ts
+@@ -0,0 +1,314 @@
++import type {
++  EquationColumnAlignment,
++  EquationControlSource,
++  EquationExpression,
++} from './omml-equation-expression.ts';
++import {
++  equationMathChild as namedChild,
++  equationMathChildren as namedChildren,
++} from './omml-run-format.ts';
++import { isSupportedExpressionNode, mathOnOff, mathVal } from './omml-structure-support.ts';
++import type { OoxmlGenericElementNode } from './ooxml-tree.ts';
++
++interface StructuredProjectionContext {
++  readonly paths: readonly string[];
++  projectContainer(node: OoxmlGenericElementNode, depth: number, path: string): EquationExpression;
++  controlSource(node: OoxmlGenericElementNode, propertyName: string): EquationControlSource;
++  appendText(value: string): string;
++}
++
++/** The operator of one n-ary structure, including OMML's default integral. */
++export function naryOperator(node: OoxmlGenericElementNode): string {
++  const property = namedChild(node, 'naryPr');
++  const character = property ? namedChild(property, 'chr') : null;
++  return character ? (mathVal(character) ?? '∫') : '∫';
++}
++
++/** One delimiter character after OMML defaults. */
++export function delimiterCharacter(
++  node: OoxmlGenericElementNode,
++  name: 'begChr' | 'endChr' | 'sepChr',
++  fallback: string
++): string {
++  const property = namedChild(node, 'dPr');
++  const character = property ? namedChild(property, name) : null;
++  return character ? (mathVal(character) ?? '') : fallback;
++}
++
++function matrixColumns(
++  node: OoxmlGenericElementNode,
++  cellCount: number
++): EquationColumnAlignment[] {
++  const property = namedChild(node, 'mPr');
++  const columnsProperty = property ? namedChild(property, 'mcs') : null;
++  const columns = columnsProperty
++    ? namedChildren(columnsProperty, 'mc').flatMap((column) => {
++        const properties = namedChild(column, 'mcPr');
++        const count = properties ? namedChild(properties, 'count') : null;
++        const alignment = properties ? namedChild(properties, 'mcJc') : null;
++        const repeat = count ? Number(mathVal(count)) : 1;
++        const value = mathVal(alignment ?? column);
++        const result: EquationColumnAlignment =
++          value === 'left' || value === 'right' ? value : 'center';
++        return Array.from({ length: repeat }, () => result);
++      })
++    : [];
++  while (columns.length < cellCount) columns.push('center');
++  return columns;
++}
++
++function matrixBaseJustification(
++  node: OoxmlGenericElementNode,
++  propertyName: 'mPr' | 'eqArrPr'
++): 'top' | 'center' | 'bottom' | undefined {
++  const property = namedChild(node, propertyName);
++  const baseJustification = property ? namedChild(property, 'baseJc') : null;
++  const value = baseJustification ? mathVal(baseJustification) : undefined;
++  return value === 'top' || value === 'center' || value === 'bottom' ? value : undefined;
++}
++
++function matrixHidePlaceholders(node: OoxmlGenericElementNode): true | undefined {
++  const property = namedChild(node, 'mPr');
++  return property && mathOnOff(namedChild(property, 'plcHide')) ? true : undefined;
++}
++
++function delimiterGrows(node: OoxmlGenericElementNode): boolean {
++  const property = namedChild(node, 'dPr');
++  const grow = property ? namedChild(property, 'grow') : null;
++  return grow ? mathOnOff(grow) : true;
++}
++
++/**
++ * Pandoc's OMML equation array carries TeX's `&` alignment marker as literal run text.
++ * Split only the projected row, leaving the original OMML untouched. Each marker starts the
++ * next cell, and the matrix layout right-aligns all but the final cell.
++ */
++function equationArrayCells(row: EquationExpression): EquationExpression[] {
++  const cells: EquationExpression[][] = [[]];
++  const visit = (item: EquationExpression): void => {
++    if (item.kind === 'row') {
++      item.items.forEach(visit);
++      return;
++    }
++    if (item.kind !== 'text') {
++      cells.at(-1)!.push(item);
++      return;
++    }
++    const parts = item.value.split('&');
++    parts.forEach((value, index) => {
++      if (value.length > 0) cells.at(-1)!.push(Object.freeze({ ...item, value }));
++      if (index + 1 < parts.length) cells.push([]);
++    });
++  };
++  visit(row);
++  return cells.map((items) =>
++    items.length === 1
++      ? items[0]!
++      : Object.freeze({ kind: 'row', items: Object.freeze(items), preserveSource: true as const })
++  );
++}
++
++/**
++ * Project one structure that owns layout semantics beyond run text. The caller supplies the
++ * projection state through callbacks, so this module changes neither source nor work limits.
++ */
++export function projectStructuredExpression(
++  node: OoxmlGenericElementNode,
++  depth: number,
++  context: StructuredProjectionContext
++): EquationExpression | null {
++  if (!isSupportedExpressionNode(node)) return null;
++  const containerPath = (name: string, occurrence = 0): string => {
++    const container = namedChildren(node, name)[occurrence]!;
++    return context.paths[node.children.indexOf(container)]!;
++  };
++  const control = (propertyName: string) => context.controlSource(node, propertyName);
++
++  if (node.localName === 'bar') {
++    const property = namedChild(node, 'barPr');
++    const position = property ? namedChild(property, 'pos') : null;
++    return Object.freeze({
++      kind: 'bar',
++      body: context.projectContainer(namedChildren(node, 'e')[0]!, depth + 1, containerPath('e')),
++      position: position && mathVal(position) === 'top' ? 'top' : 'bottom',
++      ...control('barPr'),
++    });
++  }
++  if (node.localName === 'borderBox') {
++    const property = namedChild(node, 'borderBoxPr');
++    const flag = (name: string) => (property ? mathOnOff(namedChild(property, name)) : false);
++    return Object.freeze({
++      kind: 'borderBox',
++      body: context.projectContainer(namedChildren(node, 'e')[0]!, depth + 1, containerPath('e')),
++      hidden: Object.freeze({
++        top: flag('hideTop'),
++        bottom: flag('hideBot'),
++        left: flag('hideLeft'),
++        right: flag('hideRight'),
++      }),
++      strikes: Object.freeze({
++        horizontal: flag('strikeH'),
++        vertical: flag('strikeV'),
++        bottomLeftToTopRight: flag('strikeBLTR'),
++        topLeftToBottomRight: flag('strikeTLBR'),
++      }),
++      ...control('borderBoxPr'),
++    });
++  }
++  if (node.localName === 'f') {
++    const numerator = namedChild(node, 'num');
++    const denominator = namedChild(node, 'den');
++    if (!numerator || !denominator) return null;
++    return Object.freeze({
++      kind: 'fraction',
++      numerator: context.projectContainer(numerator, depth + 1, containerPath('num')),
++      denominator: context.projectContainer(denominator, depth + 1, containerPath('den')),
++      ...control('fPr'),
++    });
++  }
++  if (node.localName === 'rad') {
++    const radicand = namedChild(node, 'e');
++    if (!radicand) return null;
++    const degree = namedChild(node, 'deg');
++    const projectedDegree =
++      degree && degree.children.length > 0
++        ? context.projectContainer(degree, depth + 1, containerPath('deg'))
++        : undefined;
++    return Object.freeze({
++      kind: 'radical',
++      radicand: context.projectContainer(radicand, depth + 1, containerPath('e')),
++      ...(projectedDegree === undefined ? {} : { degree: projectedDegree }),
++      ...control('radPr'),
++    });
++  }
++  if (node.localName === 'sSup' || node.localName === 'sSub' || node.localName === 'sSubSup') {
++    const base = namedChild(node, 'e');
++    const subscript = node.localName === 'sSup' ? null : namedChild(node, 'sub');
++    const superscript = node.localName === 'sSub' ? null : namedChild(node, 'sup');
++    if (
++      !base ||
++      (node.localName !== 'sSup' && !subscript) ||
++      (node.localName !== 'sSub' && !superscript)
++    ) {
++      return null;
++    }
++    return Object.freeze({
++      kind: 'script',
++      base: context.projectContainer(base, depth + 1, containerPath('e')),
++      ...(subscript
++        ? { subscript: context.projectContainer(subscript, depth + 1, containerPath('sub')) }
++        : {}),
++      ...(superscript
++        ? { superscript: context.projectContainer(superscript, depth + 1, containerPath('sup')) }
++        : {}),
++      ...control(`${node.localName}Pr`),
++    });
++  }
++  if (node.localName === 'nary') {
++    const body = namedChild(node, 'e');
++    if (!body) return null;
++    const lower = namedChild(node, 'sub');
++    const upper = namedChild(node, 'sup');
++    const property = namedChild(node, 'naryPr');
++    const limitLocation = property
++      ? mathVal(namedChild(property, 'limLoc') ?? property)
++      : undefined;
++    const lowerHidden = property ? mathOnOff(namedChild(property, 'subHide')) : false;
++    const upperHidden = property ? mathOnOff(namedChild(property, 'supHide')) : false;
++    return Object.freeze({
++      kind: 'nary',
++      operator: context.appendText(naryOperator(node)),
++      body: context.projectContainer(body, depth + 1, containerPath('e')),
++      ...(lower && lower.children.length > 0
++        ? { lowerLimit: context.projectContainer(lower, depth + 1, containerPath('sub')) }
++        : {}),
++      ...(upper && upper.children.length > 0
++        ? { upperLimit: context.projectContainer(upper, depth + 1, containerPath('sup')) }
++        : {}),
++      ...(limitLocation === 'undOvr' || limitLocation === 'subSup' ? { limitLocation } : {}),
++      ...(lowerHidden ? { hideLowerLimit: true as const } : {}),
++      ...(upperHidden ? { hideUpperLimit: true as const } : {}),
++      ...(lowerHidden || upperHidden ? { preserveSource: true as const } : {}),
++      ...control('naryPr'),
++    });
++  }
++  if (node.localName === 'eqArr') {
++    const rows = namedChildren(node, 'e').map((row, index) =>
++      equationArrayCells(context.projectContainer(row, depth + 1, containerPath('e', index)))
++    );
++    const columnCount = Math.max(0, ...rows.map((row) => row.length));
++    const columns: EquationColumnAlignment[] =
++      columnCount <= 1
++        ? Array.from({ length: columnCount }, () => 'center')
++        : Array.from({ length: columnCount }, (_, index) =>
++            index + 1 === columnCount ? 'left' : 'right'
++          );
++    const baseJustification = matrixBaseJustification(node, 'eqArrPr');
++    return Object.freeze({
++      kind: 'matrix',
++      rows: Object.freeze(rows.map((row) => Object.freeze({ cells: Object.freeze(row) }))),
++      columns: Object.freeze(columns),
++      ...(baseJustification === undefined ? {} : { baseJustification }),
++      preserveSource: true,
++      ...control('eqArrPr'),
++    });
++  }
++  if (node.localName === 'func') {
++    const name = namedChild(node, 'fName');
++    const body = namedChild(node, 'e');
++    if (!name || !body) return null;
++    const functionName = context.projectContainer(name, depth + 1, containerPath('fName'));
++    // OMML's function structure owns the application gap. Pandoc commonly emits plain runs,
++    // so the same bounded projection keeps a thin gap for either source spelling.
++    const gap = context.appendText('\u2009');
++    const functionBody = context.projectContainer(body, depth + 1, containerPath('e'));
++    return Object.freeze({
++      kind: 'row',
++      items: Object.freeze([
++        functionName,
++        Object.freeze({ kind: 'text', value: gap }),
++        functionBody,
++      ]),
++      preserveSource: true,
++      ...control('funcPr'),
++    });
++  }
++  if (node.localName === 'm') {
++    const rows = namedChildren(node, 'mr').map((row) => ({
++      cells: namedChildren(row, 'e').map((cell, cellIndex) =>
++        context.projectContainer(
++          cell,
++          depth + 2,
++          context.paths[node.children.indexOf(row)]! + `/m:e[${cellIndex + 1}]`
++        )
++      ),
++    }));
++    const cellCount = Math.max(0, ...rows.map((row) => row.cells.length));
++    const baseJustification = matrixBaseJustification(node, 'mPr');
++    return Object.freeze({
++      kind: 'matrix',
++      rows: Object.freeze(rows.map((row) => Object.freeze(row))),
++      columns: Object.freeze(matrixColumns(node, cellCount)),
++      ...(baseJustification === undefined ? {} : { baseJustification }),
++      ...(matrixHidePlaceholders(node) ? { hidePlaceholders: true as const } : {}),
++      preserveSource: true,
++      ...control('mPr'),
++    });
++  }
++  if (node.localName === 'd') {
++    const items = namedChildren(node, 'e').map((item, index) =>
++      context.projectContainer(item, depth + 1, containerPath('e', index))
++    );
++    return Object.freeze({
++      kind: 'delimiter',
++      begin: delimiterCharacter(node, 'begChr', '('),
++      end: delimiterCharacter(node, 'endChr', ')'),
++      separator: delimiterCharacter(node, 'sepChr', '|'),
++      items: Object.freeze(items),
++      grow: delimiterGrows(node),
++      preserveSource: true,
++      ...control('dPr'),
++    });
++  }
++  return null;
++}
+diff --git a/packages/core/src/store/store/tree-op-math-equation.ts b/packages/core/src/store/store/tree-op-math-equation.ts
+new file mode 100644
+index 0000000..1d9e3c8
+--- /dev/null
++++ b/packages/core/src/store/store/tree-op-math-equation.ts
+@@ -0,0 +1,40 @@
++import { findNode } from '../package/ooxml-edit.ts';
++import { OFFICE_MATH_NAMESPACE_URI, parseLinearMath } from '../package/omml-equation.ts';
++import type { OoxmlPart } from '../package/ooxml-tree.ts';
++import { isMathEquationShape } from './equation-snippet.ts';
++import type { SetMathEquationOp, TreeOpRejection } from './tree-op-types.ts';
++import { nodeTouchesContentRestriction } from './tree-op-validate-controls.ts';
++
++type MathEquationOp =
++  | SetMathEquationOp
++  | {
++      readonly op: 'removeMathEquation';
++      readonly equationId: string;
++    };
++
++/** Validate replacement or removal of one complete `m:oMath` atom. */
++export function validateMathEquationOp(
++  part: OoxmlPart,
++  op: MathEquationOp
++): TreeOpRejection | null {
++  const equation = findNode(part, op.equationId);
++  if (!equation) return 'unknown-paragraph';
++  if (
++    equation.kind === 'textValue' ||
++    equation.kind !== 'generic' ||
++    equation.namespaceUri !== OFFICE_MATH_NAMESPACE_URI ||
++    equation.localName !== 'oMath'
++  ) {
++    return 'not-a-paragraph';
++  }
++  const restriction = nodeTouchesContentRestriction(part, op.equationId);
++  if (restriction) return restriction;
++  if (op.op === 'setMathEquation') {
++    const linear = op.linear !== undefined;
++    const structured = op.equation !== undefined;
++    if (linear === structured) return 'invalid-property-value';
++    if (structured && !isMathEquationShape(op.equation)) return 'invalid-property-value';
++    if (linear && !parseLinearMath(op.linear).ok) return 'invalid-property-value';
++  }
++  return null;
++}

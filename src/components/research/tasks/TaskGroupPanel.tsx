@@ -224,6 +224,7 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate, onOpenRes
     if (resolvedEvents[id] !== undefined) return resolvedEvents[id];
     if (resolvingEvents.includes(id)) return null;
     const requestScope = scope;
+    setError("");
     setResolvingEvents(current => [...current, id]);
     try {
       const event = await loadTaskGroupEvent(task.projectId, task.id, group.id, id);
@@ -411,7 +412,7 @@ export function TaskGroupPanel({ task, agents, onSnapshot, onAnnotate, onOpenRes
             <p><strong>{t($ => $.researchTools.tasks.group.eventChange)}</strong>: {humanizeKind(causeEvent.kind)} · {objectLabel(causeEvent.object)}</p>
             <p className="whitespace-pre-wrap"><strong>{t($ => $.researchTools.tasks.group.eventDetail)}</strong>: {causeEvent.detail}</p>
             {causeEvent.evidence ? <details><summary>{t($ => $.researchTools.tasks.group.sourceAndExecution)}</summary><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{JSON.stringify(causeEvent.evidence, null, 2)}</pre></details> : null}
-          </div> : work.causeKind === "event" ? <p>{t($ => $.researchTools.tasks.group.eventUnavailable, { id: work.causeId })} <Button size="xs" variant="ghost" disabled={resolvingEvents.includes(work.causeId)} onClick={() => void inspectEvent(work.causeId)}>{t($ => $.researchTools.tasks.group.sourceInspect)}</Button></p> : <p>{work.causeKind}: {work.causeId}</p>}
+          </div> : work.causeKind === "event" ? <p>{t($ => $.researchTools.tasks.group.eventUnavailable, { id: work.causeId })} <Button size="xs" variant="ghost" disabled={resolvingEvents.includes(work.causeId)} onClick={() => void inspectEvent(work.causeId).catch(() => undefined)}>{t($ => $.researchTools.tasks.group.sourceInspect)}</Button></p> : <p>{work.causeKind}: {work.causeId}</p>}
           <div>
             <p className="font-medium">{t($ => $.researchTools.tasks.group.wakeReasons)}</p>
             {reasons.length > 0 ? <ul className="list-disc space-y-1 pl-4">{reasons.map(reason => <li key={reasonKey(reason)}>

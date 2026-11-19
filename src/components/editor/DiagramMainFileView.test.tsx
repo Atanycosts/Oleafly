@@ -27,7 +27,7 @@ vi.mock("@oleafly/diagram", async () => {
     model: DiagramModel; onChange: (model: DiagramModel) => void; readOnly: boolean;
   }) => {
     mocks.model = model; mocks.change = onChange; mocks.readOnly = readOnly;
-    return <div data-testid="canvas" />;
+    return <div data-testid="canvas"><div className="react-flow__node" data-id={model.nodes[0]?.id}>{"Diagram object"}</div></div>;
   } };
 });
 import DiagramMainFileView from "./DiagramMainFileView";
@@ -193,4 +193,17 @@ it("draws a Markdown diagram project, keeps the text around the block and refres
     vi.useRealTimers();
   }
   await waitFor(() => expect(mocks.bytes).toHaveBeenCalledWith("diagram", expect.stringMatching(/^figures\/mermaid-[0-9a-f]{16}\.png$/), expect.any(String)));
+});
+
+
+it("annotates the visible diagram node by its stable object id and exact source version", async () => {
+  const { fireEvent } = await import("@testing-library/react");
+  const { useMaterialAnnotationsStore } = await import("@/store/material-annotations");
+  const en = (await import("@/i18n/locales/en/editor.json")).default;
+  await open(legacySource);
+  fireEvent.click(screen.getByText("Diagram object"));
+  const expectedId = mocks.model!.nodes[0].id;
+  fireEvent.click(screen.getByRole("button", { name: en.materials.diagramObject }));
+  await waitFor(() => expect(useMaterialAnnotationsStore.getState().anchor).toEqual({ kind: "object", id: expectedId }));
+  expect(useMaterialAnnotationsStore.getState().document).toMatchObject({ projectId: "diagram", path: "main.tex", kind: "diagram", source: { text: legacySource } });
 });

@@ -34,6 +34,7 @@ export interface FletcherElement<T> {
 }
 
 export interface FletcherExtras {
+  sourceVersion?: string;
   imports: string[];
   before: string;
   after: string;
@@ -574,7 +575,11 @@ export function modelToFletcher(model: DiagramModel, options: FletcherOptions = 
     open = `#box(fill: ${background}, inset: 4pt, diagram(`;
     close = "))";
   }
-  const head = [fletcherImport(fletcherVersionFor(options.typstVersion)), ...(extras?.imports ?? [])];
+  const version =
+    options.typstVersion === undefined
+      ? extras?.sourceVersion ?? fletcherVersionFor(undefined)
+      : fletcherVersionFor(options.typstVersion);
+  const head = [fletcherImport(version), ...(extras?.imports ?? [])];
   const before = extras?.before.trim() ? [extras.before.trim()] : [];
   const after = extras?.after.trim() ? [extras.after.trim()] : [];
   return [...head, ...before, open, ...body, close, ...after].join("\n");

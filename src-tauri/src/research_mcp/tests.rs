@@ -2,6 +2,59 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+#[tokio::test]
+async fn task_application_routes_the_call_and_its_timeout_to_the_same_owner() {
+    use oleafly_research::mcp::{protocol::ToolMeta, ApplicationTools};
+    use oleafly_research::scheduler::TaskRuntimeFuture;
+    use std::{sync::Arc, time::Duration};
+
+    struct Owner {
+        name: &'static str,
+        timeout: Duration,
+    }
+    impl ApplicationTools for Owner {
+        fn definitions(&self) -> Vec<ToolMeta> {
+            vec![ToolMeta::new(
+                self.name,
+                "Owned tool",
+                json!({"type":"object"}),
+            )]
+        }
+
+        fn call(&self, name: String, args: Value) -> TaskRuntimeFuture<Value> {
+            assert_eq!(name, self.name);
+            let owner = self.name;
+            Box::pin(async move { Ok(json!({"owner":owner,"arguments":args})) })
+        }
+
+        fn call_timeout(&self, name: &str) -> Duration {
+            assert_eq!(name, self.name);
+            self.timeout
+        }
+    }
+
+    let application = super::TaskApplicationTools {
+        journal: Arc::new(Owner {
+            name: "journal_read",
+            timeout: Duration::from_secs(30),
+        }),
+        docx: Arc::new(Owner {
+            name: "prepare_docx_fonts",
+            timeout: Duration::from_secs(150),
+        }),
+    };
+    for (name, seconds) in [("journal_read", 30), ("prepare_docx_fonts", 150)] {
+        assert_eq!(application.call_timeout(name), Duration::from_secs(seconds));
+        assert_eq!(
+            application
+                .call(name.into(), json!({"input":true}))
+                .await
+                .unwrap(),
+            json!({"owner":name,"arguments":{"input":true}})
+        );
+    }
+}
+
 fn decode(result: &Value) -> Value {
     serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
 }

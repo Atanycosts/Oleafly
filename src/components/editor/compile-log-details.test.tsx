@@ -16,6 +16,7 @@ vi.mock("@/lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tauri")>()),
   listFontComponents: mocks.listFontComponents,
   installFontComponent: mocks.installFontComponent,
+  withAssetProgress: (_handlers: unknown, run: () => Promise<unknown>) => run(),
 }));
 vi.mock("@/lib/toast", () => ({ toast: { error: mocks.error } }));
 vi.mock("@/store/compile", () => ({

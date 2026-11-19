@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Sparkles, X } from "lucide-react";
+import { BookOpenCheck, FileText, Sparkles, X } from "lucide-react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -17,6 +17,9 @@ import {
 } from "@/components/ui/context-menu";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useFilesStore } from "@/store/files";
+import { useDocxWorkspaceStore } from "@/store/docx-workspace";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
+import { useMaterialViewerStore } from "@/store/material-viewer";
 import { useDiffStore, type DiffSide, type OpenDiff } from "@/store/diff";
 import { basename } from "@/lib/path-utils";
 import { cn } from "@/lib/utils";
@@ -251,29 +254,46 @@ const DiffTab = memo(function DiffTab({
 });
 
 export function EditorTabStrip({ diffFocused }: Readonly<{ diffFocused: boolean }>) {
-  const { t } = useTranslation(["common", "editor"]);
+  const { t } = useTranslation(["common", "editor", "researchTools"]);
+  const surface = useWorkspaceSurfaceStore((s) => s.active);
+  const journalOpen = useWorkspaceSurfaceStore((s) => s.journalOpen);
+  const material = useMaterialViewerStore((s) => s.request);
+  const word = useDocxWorkspaceStore((s) => s.request);
+  const wordClosingBlocked = useDocxWorkspaceStore((s) => s.closingBlocked);
   const openTabs = useFilesStore((s) => s.openTabs);
   const tabOrder = useFilesStore((s) => s.tabOrder);
   const activePath = useFilesStore((s) => s.activePath);
   const assistantTabs = useFilesStore((s) => s.assistantTabs);
   const diffs = useDiffStore((s) => s.diffs);
   const activeKey = useDiffStore((s) => s.activeKey);
-  const tabs = useMemo(() => editorTabs(openTabs, tabOrder, diffs), [openTabs, tabOrder, diffs]);
+  const tabs = useMemo(() => editorTabs(openTabs, tabOrder, diffs).filter((tab) => tab.kind !== "file" || tab.id !== word?.sourcePath), [openTabs, tabOrder, diffs, word?.sourcePath]);
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2 no-scrollbar">
-      {tabs.length === 0 && (
+      {tabs.length === 0 && !word && !journalOpen && !material && (
         <span className="px-2 text-xs text-muted-foreground">
           {t(($) => $.editor.shell.noFileOpenTab)}
         </span>
       )}
+      {word && <div className={cn("flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs", surface === "word" ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-accent")} data-testid="workspace-word-tab">
+        <button type="button" onClick={() => useDocxWorkspaceStore.getState().restore()} className="flex items-center gap-1.5"><FileText className="size-3.5" />{word.project.name}</button>
+        <button type="button" disabled={wordClosingBlocked} aria-label={t(($) => $.editor.shell.closeFile, { name: word.project.name })} onClick={() => useDocxWorkspaceStore.getState().requestClose()} className="rounded p-0.5 hover:bg-accent disabled:opacity-50"><X className="size-3" /></button>
+      </div>}
+      {journalOpen && <div className={cn("flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs", surface === "journal" ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-accent")} data-testid="workspace-journal-tab">
+        <button type="button" onClick={() => useWorkspaceSurfaceStore.getState().openJournal()} className="flex items-center gap-1.5"><BookOpenCheck className="size-3.5" />{t(($) => $.researchTools.journal.title)}</button>
+        <button type="button" aria-label={t(($) => $.common.actions.close)} onClick={() => useWorkspaceSurfaceStore.getState().closeJournal()} className="rounded p-0.5 hover:bg-accent"><X className="size-3" /></button>
+      </div>}
+      {material && <div className={cn("flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs", surface === "material" ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-accent")} data-testid="workspace-material-tab">
+        <button type="button" onClick={() => useMaterialViewerStore.getState().restore()} className="flex max-w-64 items-center gap-1.5 truncate"><FileText className="size-3.5 shrink-0" /><span className="truncate">{material.title}</span></button>
+        <button type="button" aria-label={t(($) => $.editor.shell.closeFile, { name: material.title })} onClick={() => useMaterialViewerStore.getState().close()} className="rounded p-0.5 hover:bg-accent"><X className="size-3" /></button>
+      </div>}
       {tabs.map((tab) =>
         tab.kind === "file" ? (
           <FileTab
             key={`f:${tab.id}`}
             path={tab.id}
             order={tab.order}
-            active={tab.id === activePath && !diffFocused}
+            active={surface === "files" && tab.id === activePath && !diffFocused}
             assistant={assistantTabs.includes(tab.id)}
             closeLabel={t(($) => $.editor.shell.closeFile, { name: basename(tab.id) })}
           />
@@ -282,7 +302,7 @@ export function EditorTabStrip({ diffFocused }: Readonly<{ diffFocused: boolean 
             key={`d:${tab.id}`}
             id={tab.id}
             diff={tab.d}
-            active={activeKey === tab.id}
+            active={surface === "files" && activeKey === tab.id}
             closeLabel={t(($) => $.editor.shell.closeDiffTab, { name: basename(tab.d.path) })}
             sideLabel={t(($) => $.editor.shell[DIFF_TAB_SIDE_LABEL[tab.d.side]])}
           />

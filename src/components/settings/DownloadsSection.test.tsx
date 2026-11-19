@@ -77,6 +77,7 @@ import enCommon from "@/i18n/locales/en/common.json" with { type: "json" };
 import enSettings from "@/i18n/locales/en/settings.json" with { type: "json" };
 import { i18n } from "@/i18n";
 import { useSettingsStore } from "@/store/settings";
+import { useFontPacksStore } from "@/store/font-packs";
 import { resetTemplatePacks } from "@/store/template-packs";
 import { DownloadsSection } from "./DownloadsSection";
 
@@ -174,6 +175,14 @@ beforeEach(() => {
   mocks.installTemplatePack.mockResolvedValue(undefined);
   mocks.removeTemplatePack.mockResolvedValue(undefined);
   mocks.deleteCustomTemplate.mockResolvedValue(undefined);
+  useFontPacksStore.setState({
+    packs: [],
+    status: "idle",
+    installing: null,
+    progress: null,
+    revision: 0,
+    lastError: null,
+  });
   useSettingsStore.setState({ settingsScrollTarget: null });
 });
 

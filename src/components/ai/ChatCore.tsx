@@ -302,7 +302,12 @@ import { textToBase64 } from "@/lib/base64";
 import { Spinner } from "@/components/ui/spinner";
 
 const MAX_AGENT_TOOL_DEFINITIONS = 128;
-const IMAGE_TOOLS = new Set(["preview_figure", "load_image", "verify_pdf_pages"]);
+const IMAGE_TOOLS = new Set([
+  "preview_figure",
+  "load_image",
+  "read_docx_image",
+  "verify_pdf_pages",
+]);
 const CHAT_COST_REFRESH_MS = 1_000;
 const PERSIST_MAX_WAIT_MS = 2_000;
 
@@ -916,6 +921,7 @@ export function ChatCore() {
     activeChatId ? s.threadByChat[activeChatId] ?? null : null,
   );
   const activeRunRequestIdRef = useRef<string | null>(null);
+  const chatOpenSeqRef = useRef(0);
   const [steerableRunId, setSteerableRunId] = useState<string | null>(null);
   const trackRunRequestId = useCallback((id: string | null) => {
     activeRunRequestIdRef.current = id;
@@ -1619,6 +1625,19 @@ export function ChatCore() {
 
   useEffect(
     () => () => {
+      // The run can outlive this mounted tree. Commit its queued view updates
+      // before disposing the scheduler that would otherwise own them.
+      while (
+        streamPatchesRef.current.text.length > 0 ||
+        streamPatchesRef.current.output.length > 0
+      ) {
+        if (streamPatchesRef.current.text.length > 0) {
+          streamTierDrainRef.current("text");
+        }
+        if (streamPatchesRef.current.output.length > 0) {
+          streamTierDrainRef.current("output");
+        }
+      }
       streamQueuesRef.current?.dispose();
       streamQueuesRef.current = null;
       streamPatchesRef.current = { text: [], output: [] };
@@ -1631,16 +1650,19 @@ export function ChatCore() {
   const openChat = useCallback(
     async (chat: StoredChat) => {
       if (streaming || sendPreparingRef.current || runOwnerRef.current) return;
+      const openSeq = ++chatOpenSeqRef.current;
       let body = chat;
       if (chat.stub) {
         const openingProject = useFilesStore.getState().projectId;
         try {
           body = (await useChatsStore.getState().loadChatBody(chat.id)) ?? chat;
         } catch (error) {
+          if (openSeq !== chatOpenSeqRef.current) return;
           void logError("open chat", error);
           toast.error(i18n.t(($) => $.ai.history.openFailed));
           return;
         }
+        if (openSeq !== chatOpenSeqRef.current) return;
         if (body.stub) {
           toast.error(i18n.t(($) => $.ai.history.openFailed));
           return;
@@ -1660,6 +1682,7 @@ export function ChatCore() {
   );
 
   const startNewChat = useCallback(() => {
+    chatOpenSeqRef.current++;
     setActiveChat(null);
     setMessages([]);
     useAgentTodoStore.getState().selectChat(null);
@@ -2508,6 +2531,12 @@ USER_CUSTOM_INSTRUCTIONS`
       createOpts: {
         confirm,
         onImage: collectRunImage,
+        imageSupported: modelSupportsVision(
+          provider,
+          model,
+          runStoredModel?.metadata?.inputModalities,
+        ),
+        signal: ac.signal,
         runId: () => activeRunRequestIdRef.current,
         researchScope: { projectId: runProjectId, runtimeId: "builtin", agentId: provider, modelId: model, delegation },
       },
@@ -3591,6 +3620,7 @@ ${sandboxedCustom}`;
     prevProjectIdRef.current = projectId;
     if (prev === undefined || prev === projectId) return;
     runIsolationRef.current.invalidate();
+    chatOpenSeqRef.current++;
     const run = activeChatRun();
     if (run && run.projectId !== projectId) {
       run.pendingApproval?.resolve(false);
@@ -4204,6 +4234,15 @@ ${sandboxedCustom}`;
                         ? () => {
                             void approvalsSet(projectId, pendingApproval.req.tool, "allow")
                               .then(() => {
+                                const run = activeChatRun();
+                                if (
+                                  useFilesStore.getState().projectId !== projectId ||
+                                  !run ||
+                                  run.projectId !== projectId ||
+                                  run.pendingApproval !== pendingApproval
+                                ) {
+                                  return;
+                                }
                                 projectApprovalsRef.current = {
                                   ...projectApprovalsRef.current,
                                   [pendingApproval.req.tool]: "allow",

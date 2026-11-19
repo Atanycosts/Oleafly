@@ -4,7 +4,7 @@ use oleafly_research::{
     model::ResearchTaskDraft,
     observations::content_hash,
     store::TaskStore,
-    workbench::{CommittedWorkbenchRecord, WorkbenchRecordEvent},
+    workbench::{CommittedWorkbenchRecord, WorkbenchRecordEvent, WorkbenchRecordReceipt},
 };
 
 fn current() -> Value {
@@ -45,6 +45,49 @@ fn scope() -> WorkbenchScope {
         library_root: "/library".into(),
         project_id: "paper".into(),
     }
+}
+
+#[test]
+fn check_objects_page_template_findings_without_changing_retained_content() {
+    let original = json!({
+        "check_id":"check-a", "project_id":"paper", "world_version_id":"w1",
+        "summary":{"cannot_determine":1},
+        "rule_results":[{"rule_id":"rule-a","verdict":"cannot_determine"}],
+        "coverage_gaps":[{"code":"unsupported_frame"}], "limitations":["Not certified"],
+        "template_comparison":{
+            "total":100, "findings_artifact_version_id":"findings-a",
+            "finding_summary":{"cannot_determine":100}, "unsupported":[{"code":"unsupported_frame"}],
+            "findings":[{"source_text":"x".repeat(600_000)}],
+            "has_more":true, "next_offset":100
+        }
+    });
+    let result = check_object(original.clone());
+    assert!(serde_json::to_vec(&result).unwrap().len() < 4096);
+    for name in ["summary", "rule_results", "coverage_gaps", "limitations"] {
+        assert_eq!(result[name], original[name]);
+    }
+    let comparison = &result["template_comparison"];
+    assert!(comparison.get("findings").is_none());
+    assert!(comparison.get("has_more").is_none());
+    assert!(comparison.get("next_offset").is_none());
+    for name in [
+        "total",
+        "finding_summary",
+        "findings_artifact_version_id",
+        "unsupported",
+    ] {
+        assert_eq!(comparison[name], original["template_comparison"][name]);
+    }
+    assert_eq!(
+        result["findingsRead"],
+        json!({"tool":"journal_read","arguments":{
+            "operation":"findings","check_id":"check-a","offset":0,"limit":20
+        }})
+    );
+    assert_eq!(result["detail"], "findings_paged");
+    assert!(original["template_comparison"].get("findings").is_some());
+    let legacy = json!({"check_id":"legacy","rule_results":[{"findings":["original"]}]});
+    assert_eq!(check_object(legacy.clone()), legacy);
 }
 
 #[test]
@@ -181,6 +224,62 @@ fn receipt_cursor_full_read_recovers_exact_historical_bytes_after_current_change
     .unwrap();
     assert_eq!(empty["records"], json!([]));
     assert_eq!(empty["nextSequence"], end);
+}
+
+#[test]
+fn compact_receipt_explains_domain_pointer_without_presenting_omitted_content_as_a_verdict() {
+    let pointer = json!({
+        "projection":"retained_pointer",
+        "kind":"world",
+        "contentStatus":"not_embedded",
+        "snapshotOmitted":true,
+        "domainReadable":true,
+        "contentNote":"The complete world is retained by Workbench.",
+        "snapshotSha256":"full-world-hash",
+        "snapshotBytes":337_822,
+        "journal_id":"journal",
+        "journal_name":"Journal",
+        "version_id":"w2",
+        "ruleCount":12,
+        "manualDecisionCount":2,
+        "coverageGapCount":1,
+        "limitations":[],
+        "template":{"original_sha256":"original-hash","source_sha256":"source-hash"},
+        "templateSources":[{"source_id":"source-original","name":"template.doc"}],
+        "domainRead":{"method":"GET","path":"/api/world","query":{"version_id":"w2"}},
+        "nativeRead":{"tool":"journal_read","arguments":{
+            "operation":"object","kind":"world","object_id":"journal","world_version_id":"w2"
+        }},
+        "verifyDomainRead":{"snapshotSha256":"full-world-hash"}
+    });
+    let receipt = WorkbenchRecordReceipt {
+        sequence: 9,
+        record: record("world", "w2", pointer.clone()),
+        snapshot_sha256: "pointer-record-hash".into(),
+    };
+
+    let compact = compact_receipt(&receipt, &current());
+    assert_eq!(compact["snapshotState"], "retained_pointer");
+    assert_eq!(compact["contentIncluded"], false);
+    assert_eq!(compact["contentAvailableInReceipt"], false);
+    assert_eq!(compact["assessment"], "not_evaluated_from_pointer");
+    assert_eq!(compact["snapshotSha256"], "pointer-record-hash");
+    assert_eq!(compact["contentSnapshotSha256"], "full-world-hash");
+    assert_eq!(compact["domainRead"], pointer["domainRead"]);
+    assert_eq!(compact["summary"]["ruleCount"], 12);
+    assert_eq!(
+        compact["summary"]["templateSources"],
+        pointer["templateSources"]
+    );
+    assert_eq!(
+        compact["verifyDomainRead"],
+        json!({"snapshotSha256":"full-world-hash","snapshotBytes":337_822})
+    );
+    assert!(compact["summary"].get("rules").is_none());
+    assert!(compact["summary"].get("verdict").is_none());
+    assert!(compact["domainReadNote"]
+        .as_str()
+        .is_some_and(|note| note.contains("not summarized as a passing verdict")));
 }
 
 #[test]

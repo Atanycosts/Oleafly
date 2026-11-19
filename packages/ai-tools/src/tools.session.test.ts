@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createOleaflyTools,
+  createDocxTools,
   type AiToolsHost,
   type ConfirmFn,
+  type DocxToolsHost,
   type ExecAuthorization,
   type IndexUseView,
   type ProjectIndexView,
@@ -29,6 +31,15 @@ function makeHost(overrides: Partial<AiToolsHost> = {}): AiToolsHost {
 }
 
 const PDF = new Uint8Array([37, 80, 68, 70]);
+
+function png(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
 
 describe("multi-agent tools outside an agentic run", () => {
   it.each(["spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents", "close_agent"])(
@@ -404,6 +415,36 @@ describe("verify_pdf_pages", () => {
     expect(onImage).not.toHaveBeenCalled();
   });
 
+  it("does not publish a page that finishes rastering after the project switches", async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let finishRaster!: (dataUrl: string) => void;
+    const raster = new Promise<string>((resolve) => {
+      finishRaster = resolve;
+    });
+    const getProjectId = vi.fn(() => "proj");
+    const onImage = vi.fn();
+    const host = pdfHost(1, {
+      getProjectId,
+      pdfToPng: vi.fn(() => {
+        markStarted();
+        return raster;
+      }),
+    });
+
+    const result = createOleaflyTools(host, { onImage }).verify_pdf_pages.execute({ pages: [1] });
+    await started;
+    getProjectId.mockReturnValue("other");
+    finishRaster("data:image/png;base64,OLD");
+
+    expect(await result).toEqual({
+      error: "The open project changed before PDF page verification finished.",
+    });
+    expect(onImage).not.toHaveBeenCalled();
+  });
+
   it("returns an extraction failure as an error", async () => {
     const host = makeHost({
       getPdfBytes: vi.fn(() => PDF),
@@ -412,6 +453,161 @@ describe("verify_pdf_pages", () => {
       }),
     });
     expect(await createOleaflyTools(host).verify_pdf_pages.execute({})).toEqual({ error: "Error: bad xref" });
+  });
+});
+
+describe("DOCX request cancellation", () => {
+  it("asks before refreshing fonts or exporting the Word working copy", async () => {
+    const prepareFonts = vi.fn(async () => ({ missing: ["SimSun"] }));
+    const exportDocument = vi.fn(async () => ({ status: "completed" }));
+    const confirm = vi.fn<ConfirmFn>(async () => false);
+    const tools = createDocxTools(
+      {
+        listDocuments: vi.fn(async () => []),
+        prepareFonts,
+        exportDocument,
+      } as unknown as DocxToolsHost,
+      { confirm },
+    );
+
+    expect(await tools.prepare_docx_fonts.execute({ session_id: "s1" })).toMatchObject({
+      declined: true,
+      tool: "prepare_docx_fonts",
+    });
+    expect(await tools.export_docx_document.execute({ session_id: "s1" })).toMatchObject({
+      declined: true,
+      tool: "export_docx_document",
+    });
+    expect(confirm).toHaveBeenNthCalledWith(1, {
+      tool: "prepare_docx_fonts",
+      summary: "Refresh fonts for DOCX session s1",
+      path: "DOCX#s1",
+    });
+    expect(confirm).toHaveBeenNthCalledWith(2, {
+      tool: "export_docx_document",
+      summary: "Export DOCX session s1",
+      path: "DOCX#s1",
+    });
+    expect(prepareFonts).not.toHaveBeenCalled();
+    expect(exportDocument).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh fonts after approval finishes with the request cancelled", async () => {
+    const controller = new AbortController();
+    const prepareFonts = vi.fn(async () => ({ missing: [] }));
+    const tools = createDocxTools(
+      {
+        listDocuments: vi.fn(async () => []),
+        prepareFonts,
+      } as unknown as DocxToolsHost,
+      {
+        signal: controller.signal,
+        confirm: async () => {
+          controller.abort();
+          return true;
+        },
+      },
+    );
+
+    expect(await tools.prepare_docx_fonts.execute({})).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(prepareFonts).not.toHaveBeenCalled();
+  });
+
+  it("does not export after approval finishes with the request cancelled", async () => {
+    const controller = new AbortController();
+    const exportDocument = vi.fn(async () => ({ status: "completed" }));
+    const tools = createDocxTools(
+      {
+        listDocuments: vi.fn(async () => []),
+        exportDocument,
+      } as unknown as DocxToolsHost,
+      {
+        signal: controller.signal,
+        confirm: async () => {
+          controller.abort();
+          return true;
+        },
+      },
+    );
+
+    expect(await tools.export_docx_document.execute({})).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(exportDocument).not.toHaveBeenCalled();
+  });
+
+  it("does not publish pixels when the request is cancelled while they are read", async () => {
+    const controller = new AbortController();
+    const onImage = vi.fn();
+    const readImage = vi.fn(async () => {
+      controller.abort();
+      return {
+        revision: 2,
+        objectRef: "drawing-1",
+        part: "word/document.xml",
+        relationshipId: "rId5",
+        mediaPart: "word/media/image1.png",
+        mimeType: "image/png",
+        bytes: png(2, 3),
+        imageSha256: "b".repeat(64),
+        document: {
+          sessionId: "s1",
+          baselineId: "b1",
+          sessionRevision: 2,
+          savedRevision: 1,
+          dirty: true,
+          appProjectId: "proj",
+          workbenchProjectId: "paper",
+          title: "Paper",
+          filename: "paper.docx",
+          sourceSha256: "a".repeat(64),
+        },
+        sourceSha256: "a".repeat(64),
+      };
+    });
+    const tools = createDocxTools(
+      { readImage } as unknown as DocxToolsHost,
+      { onImage, signal: controller.signal },
+    );
+
+    expect(await tools.read_docx_image.execute({
+      session_id: "s1",
+      paragraph_ref: "para-1",
+      object_ref: "drawing-1",
+      expected_revision: 2,
+    })).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(onImage).not.toHaveBeenCalled();
+  });
+
+  it("does not replace text when approval finishes after the request is cancelled", async () => {
+    const controller = new AbortController();
+    const replaceTextRange = vi.fn();
+    const tools = createDocxTools(
+      { replaceTextRange } as unknown as DocxToolsHost,
+      {
+        signal: controller.signal,
+        confirm: async () => {
+          controller.abort();
+          return true;
+        },
+      },
+    );
+
+    expect(await tools.replace_docx_text_range.execute({
+      session_id: "s1",
+      paragraph_ref: "para-1",
+      expected_revision: 2,
+      range: { start: 0, end: 7 },
+      expected_text: "Ledgers",
+      replacement: "Records",
+    })).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(replaceTextRange).not.toHaveBeenCalled();
   });
 });
 

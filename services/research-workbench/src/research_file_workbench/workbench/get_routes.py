@@ -39,6 +39,29 @@ def handle_api_get(
                 None if baseline == "current" else baseline,
             )
         )
+    elif path == "/api/manuscript-source":
+        require_query_fields(query, {"project_id", "baseline_id"})
+        handler._json(
+            handler.server.service.manuscript_source(
+                query_text(query, "project_id"),
+                query_text(query, "baseline_id"),
+            )
+        )
+    elif path == "/api/template-source":
+        from research_file_workbench.workbench.template_service import template_source
+
+        require_query_fields(query, {"world_version_id"})
+        handler._json(
+            template_source(handler.server.service, query_text(query, "world_version_id"))
+        )
+    elif path == "/api/derived-renders":
+        require_query_fields(query, {"project_id", "baseline_id"})
+        handler._json(
+            handler.server.service.derived_renders(
+                query_text(query, "project_id"),
+                query_text(query, "baseline_id"),
+            )
+        )
     elif path == "/api/history":
         require_query_fields(query, {"project_id"})
         handler._json(handler.server.service.history(query_text(query, "project_id")))

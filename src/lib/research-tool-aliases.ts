@@ -13,7 +13,7 @@ export type ResearchToolAlias = keyof typeof RESEARCH_TOOL_ALIASES;
 
 const FALLBACK: Record<ResearchToolAlias, string | null> = {
   alphaxiv_search: "literature_search",
-  alphaxiv_paper_content: null,
+  alphaxiv_paper_content: "read_paper",
 };
 
 function isAlphaXiv(server: McpAgentServer): boolean {
@@ -37,6 +37,7 @@ export function resolveResearchToolAliases(
 
 function meaning(alias: ResearchToolAlias, tool: string | null): string {
   if (tool === "literature_search") return '`literature_search` with `sources: ["arxiv"]`';
+  if (tool === "read_paper") return '`read_paper` with `arxiv`';
   if (tool) return `\`${tool}\``;
   return alias === "alphaxiv_paper_content"
     ? "nothing here: work from the abstract that literature_search returns, or read the arXiv page with web_fetch when web access is on"

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ComponentType } from "react";
-import { Brave, Tavily, type IconType } from "@lobehub/icons";
+import Brave from "@lobehub/icons/es/Brave/components/Color";
+import Tavily from "@lobehub/icons/es/Tavily/components/Color";
+import type { IconType } from "@lobehub/icons";
 import { LibraryBig } from "lucide-react";
 import { ArxivIcon } from "@/components/icons/ArxivIcon";
 import {
@@ -37,8 +39,8 @@ type WebSearchConnector = "brave-search" | "tavily";
 const WEB_SEARCH_CONNECTORS: readonly WebSearchConnector[] = ["brave-search", "tavily"];
 
 const WEB_SEARCH_LOGOS: Readonly<Record<WebSearchConnector, IconType>> = {
-  "brave-search": Brave.Color,
-  tavily: Tavily.Color,
+  "brave-search": Brave,
+  tavily: Tavily,
 };
 
 interface WebSearchKeyStrings {

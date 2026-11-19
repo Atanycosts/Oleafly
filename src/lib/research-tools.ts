@@ -9,7 +9,7 @@ import {
 import { hasConfiguredProvider, pickActiveProvider } from "@/lib/ai-providers";
 import { getConfig, type AppConfig } from "@/lib/tauri";
 import { retrieveProjectChunks } from "@/lib/ai-rag";
-import { verifyCitation } from "@/lib/research-literature";
+import { readProjectPaper, verifyCitation } from "@/lib/research-literature";
 import {
   createResearchTask,
   createDelegatedResearchTask,
@@ -89,6 +89,7 @@ function researchHost(scope: ResearchToolScope): ResearchToolsHost & ResearchTas
   searchLiterature: (query, { limit, sources }) =>
     invoke("literature_search_all", { query: { query, limit, sources: sources ?? [] } }),
   verifyCitation,
+  readPaper: (input) => readProjectPaper(openProject(scope.projectId), input),
   retrieveProjectChunks,
   createResearchTask: async (input) => {
     if (!researchTasksEnabled()) throw new Error(TASKS_OFF);

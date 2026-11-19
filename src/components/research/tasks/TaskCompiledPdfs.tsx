@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { PdfViewer } from "@/components/pdf/PdfViewer";
+import { useMaterialViewerStore } from "@/store/material-viewer";
+import { useResearchTasksStore } from "@/store/research-tasks";
+import { useFilesStore } from "@/store/files";
 import { extractPdfText } from "@/lib/pdf-text";
 import { pdfPageToPng } from "@/lib/pdf-image";
 import { listTaskCompiledPdfs, readTaskCompiledPdf, type TaskCompiledArtifact } from "@/lib/research-tasks";
 import { Button } from "@/components/ui/button";
 import { CopyableBlock } from "@/components/ui/copyable-block";
 
-export function TaskCompiledPdfs({ taskId, generation, status, reference }: { taskId: string; generation: number; status: string; reference?: TaskCompiledArtifact }) {
-  const { t } = useTranslation(["researchTools"]);
+export function TaskCompiledPdfs({ taskId, generation, status, reference, onOpenInWorkspace }: { taskId: string; generation: number; status: string; reference?: TaskCompiledArtifact; onOpenInWorkspace?: () => void }) {
+  const { t } = useTranslation(["researchTools", "editor"]);
+  const taskProjectId = useResearchTasksStore((state) => state.tasks.find((task) => task.id === taskId)?.projectId);
+  const currentProjectId = useFilesStore((state) => state.projectId);
+  const projectId = taskProjectId ?? currentProjectId;
   const [artifacts, setArtifacts] = useState<TaskCompiledArtifact[]>([]);
   const [selected, setSelected] = useState<TaskCompiledArtifact | null>(null);
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
@@ -63,7 +68,14 @@ export function TaskCompiledPdfs({ taskId, generation, status, reference }: { ta
       <p className="break-all text-xs">{t(($) => $.researchTools.tasks.detail.compiledPdfIdentity, { generation, input: selected.inputFingerprint.slice(0, 12), size: selected.size })}</p>
       <Button variant="outline" onClick={readText}>{t(($) => $.researchTools.tasks.detail.compiledPdfText)}</Button>
       <Button variant="outline" onClick={renderPage}>{t(($) => $.researchTools.tasks.detail.compiledPdfRender)}</Button>
-      <div className="h-96 overflow-auto"><PdfViewer data={bytes} documentIdentity={selected.path} scale={1} /></div>
+      <Button variant="outline" disabled={!projectId} onClick={() => {
+        if (!projectId) return;
+        const artifact = { ...selected };
+        const captured = bytes.slice();
+        useMaterialViewerStore.getState().open({ projectId, documentId: `task:${taskId}:${artifact.mainDocument}`, title: artifact.mainDocument, path: artifact.path, kind: "pdf", role: "result", revision: artifact.pdfSha256,
+          load: async () => captured });
+        onOpenInWorkspace?.();
+      }}>{t(($) => $.editor.materials.openInCenter)}</Button>
       {text !== null && <CopyableBlock source={text}><pre className="max-h-96 overflow-auto whitespace-pre-wrap text-xs">{text}</pre></CopyableBlock>}
       {image && <img src={image} alt={t(($) => $.researchTools.tasks.detail.compiledPdfFirstPage)} />}
     </>}

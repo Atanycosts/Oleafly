@@ -1,4 +1,5 @@
 import {
+  Annotation,
   StateEffect,
   type StateEffectType,
   StateField,
@@ -14,7 +15,6 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import { subscribeEditorDocument } from "@oleafly/editor";
-import { remoteChange } from "@oleafly/editor/collaboration";
 import { type Session, useInlineEditStore } from "@/store/inlineEdit";
 import { buildDecoSpans } from "./diff-ranges";
 import { changeTouchesRange, mapPendingRange, type PendingRange } from "./pending-range";
@@ -40,6 +40,7 @@ class AddWidget extends WidgetType {
 
 const setDiffDeco = StateEffect.define<DecorationSet>();
 const setPanelDeco = StateEffect.define<DecorationSet>();
+const acceptInlineEditTransaction = Annotation.define<boolean>();
 
 function decoField(effect: StateEffectType<DecorationSet>) {
   return StateField.define<DecorationSet>({
@@ -112,12 +113,8 @@ function followPendingRange(update: ViewUpdate): void {
   const suggesting = session.phase === "streaming" || session.phase === "reviewing";
   for (const tr of update.transactions) {
     if (!tr.docChanged) continue;
-    if (
-      suggesting &&
-      !withdrawn &&
-      tr.annotation(remoteChange) === true &&
-      changeTouchesRange(tr.changes, range)
-    ) {
+    if (tr.annotation(acceptInlineEditTransaction) === true) continue;
+    if (suggesting && !withdrawn && changeTouchesRange(tr.changes, range)) {
       withdrawn = true;
     }
     range = mapPendingRange(tr.changes, range);
@@ -165,7 +162,10 @@ export const inlineDiffPlugin: Extension = [
 export function acceptInlineEdit(view: EditorView): void {
   const s = useInlineEditStore.getState().session;
   if (!s || s.phase === "withdrawn") return;
-  view.dispatch({ changes: { from: s.from, to: s.to, insert: s.proposed } });
+  view.dispatch({
+    changes: { from: s.from, to: s.to, insert: s.proposed },
+    annotations: acceptInlineEditTransaction.of(true),
+  });
   useInlineEditStore.getState().reset();
 }
 

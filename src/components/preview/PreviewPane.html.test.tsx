@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   openCompiledHtml: vi.fn(async (_projectId: string) => {}),
+  readHtmlPreview: vi.fn(async () => ({ url: "http://127.0.0.1:5000/token/index.html", bundle: "frozen bundle", revision: "hash", path: "report.html" })),
+  closeHtmlPreview: vi.fn(async () => {}),
+  restoreHtmlPreview: vi.fn(),
 }));
 
 vi.mock("@/components/pdf/PdfViewer", () => ({ PdfViewer: () => null }));
@@ -15,7 +18,7 @@ vi.mock("@/features/synctex", () => ({
 }));
 vi.mock("@/features/ask-ai-compile-errors", () => ({ askAiAboutCompileErrors: vi.fn() }));
 vi.mock("@/lib/preview-window", () => ({ openPreviewWindow: vi.fn() }));
-vi.mock("@/lib/notebook-commands", () => ({ openCompiledHtml: mocks.openCompiledHtml }));
+vi.mock("@/lib/notebook-commands", () => mocks);
 vi.mock("@/components/ui/toolbar-overflow", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   useAvailableWidth: () => ({
@@ -94,6 +97,7 @@ beforeEach(() => {
 describe("preview of a document built as a web page", () => {
   it("says when it was built and opens it in the browser in one click", async () => {
     show();
+    await screen.findByTestId("material-html-view");
     const panel = await screen.findByTestId("html-output-panel");
     expect(panel).toHaveTextContent(copy.builtTitle);
     expect(panel).toHaveTextContent(copy.builtDetail.replace("{{time}}", formatTime(BUILT_AT)));
@@ -107,6 +111,7 @@ describe("preview of a document built as a web page", () => {
       `${APP_ERROR_PREFIX}${JSON.stringify({ code: "notebook.no_html_output", params: {}, detail: null })}`,
     );
     show();
+    await screen.findByTestId("material-html-view");
     await userEvent.setup().click(await screen.findByRole("button", { name: copy.open }));
     await waitFor(() =>
       expect(useToastStore.getState().toasts).toEqual([

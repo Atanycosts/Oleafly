@@ -602,9 +602,9 @@ export async function replaceEditorSource(page: Page, text: string): Promise<voi
       view.focus();
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: ${scriptValue(text)} },
-        selection: { anchor: ${scriptValue(text)}.length },
         userEvent: "input.e2e-fixture",
       });
+      view.dispatch({ selection: { anchor: view.state.doc.length } });
       return true;
     })`,
   );
@@ -880,6 +880,30 @@ export async function openRailTab(page: Page, ariaLabel: string) {
     }
   }
   throw new Error(`openRailTab: ${ariaLabel} never became the active tab`);
+}
+
+export async function expectJournalPanelReady(page: Page, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const state = await page.evaluate<{ ready: boolean; error: string }>(
+      `(() => {
+        const panel = document.querySelector('[data-testid="journal-checks-panel"]');
+        const importButton = Array.from(panel?.querySelectorAll('button') ?? [])
+          .find(candidate => candidate.textContent?.trim() === 'Import DOCX');
+        const alert = panel?.querySelector('[role="alert"]');
+        return {
+          ready: !!importButton && !importButton.disabled && importButton.getClientRects().length > 0,
+          error: alert?.textContent?.trim() ?? '',
+        };
+      })()`,
+    );
+    if (state.ready) return;
+    if (state.error) throw new Error(`Journal Workbench unavailable: ${state.error}`);
+    if (Date.now() > deadline) {
+      throw new Error(`Journal Workbench did not become ready within ${timeoutMs}ms.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
 }
 
 export async function shellStateSnapshot(page: Page): Promise<string> {
@@ -2105,6 +2129,29 @@ export async function settledCompletionLabels(
   }
 }
 
+async function pressCompletionKey(page: Page, key: "ArrowDown" | "Enter") {
+  // The Tauri bridge emits keypress/keyup even after CodeMirror cancels and
+  // handles keydown. Deliver the accepted key path once, as a real browser
+  // would, while still exercising CodeMirror's completion keymap.
+  const keyCode = key === "Enter" ? 13 : 40;
+  const handled = await page.evaluate<boolean>(
+    `(() => {
+      const content = document.querySelector('.cm-content');
+      if (!(content instanceof HTMLElement)) return false;
+      const event = new KeyboardEvent('keydown', {
+        key: ${scriptValue(key)},
+        code: ${scriptValue(key)},
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, 'keyCode', { get: () => ${keyCode} });
+      Object.defineProperty(event, 'which', { get: () => ${keyCode} });
+      return !content.dispatchEvent(event);
+    })()`,
+  );
+  if (!handled) throw new Error(`CodeMirror did not handle ${key}`);
+}
+
 export async function acceptCompletion(
   page: Page,
   label: string,
@@ -2123,9 +2170,9 @@ export async function acceptCompletion(
         `completion never highlighted ${label}; it offered ${labels.join(", ")}`,
       );
     }
-    await page.press(".cm-content", "ArrowDown");
+    await pressCompletionKey(page, "ArrowDown");
   }
-  await page.press(".cm-content", "Enter");
+  await pressCompletionKey(page, "Enter");
   await waitLong(
     page,
     `!document.querySelector('.cm-tooltip-autocomplete li[role="option"]')`,

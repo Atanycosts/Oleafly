@@ -1249,7 +1249,7 @@ pub fn carry_over_record(from_root: &Path, to_root: &Path, slug: &str) -> Result
     }
     validate_real_root(to_root, "task workspace")?;
     let mut pending = vec![source.clone()];
-    let mut copied = 0usize;
+    let mut files = Vec::new();
     let mut total = 0u64;
     while let Some(directory) = pending.pop() {
         let mut children = fs::read_dir(&directory)
@@ -1279,21 +1279,25 @@ pub fn carry_over_record(from_root: &Path, to_root: &Path, slug: &str) -> Result
                 continue;
             }
             total = total.saturating_add(metadata.len());
-            if copied >= MAX_RECORD_FILES || total > MAX_RECORD_BYTES {
+            if files.len() >= MAX_RECORD_FILES || total > MAX_RECORD_BYTES {
                 return Err(
                     "The research record is too large to carry over. Remove excess files from the existing record, then retry Fresh.".into(),
                 );
             }
             let destination = to_root.join(inside);
-            let parent = destination
-                .parent()
-                .ok_or_else(|| "A record file has no parent directory.".to_string())?;
-            create_real_directories_beneath(to_root, parent)?;
-            copy_file(&path, &destination)?;
-            copied += 1;
+            files.push((path, destination));
         }
     }
-    Ok(copied)
+    // Check the complete record before copying and syncing thousands of files
+    // into a fresh workspace that would be rejected for exceeding its quota.
+    for (source, destination) in &files {
+        let parent = destination
+            .parent()
+            .ok_or_else(|| "A record file has no parent directory.".to_string())?;
+        create_real_directories_beneath(to_root, parent)?;
+        copy_file(source, destination)?;
+    }
+    Ok(files.len())
 }
 
 fn portable_path(path: &Path) -> Result<String, String> {
@@ -1439,6 +1443,24 @@ fn reject_existing(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod copy_tests {
     use super::*;
+
+    #[test]
+    fn over_quota_record_is_rejected_before_any_destination_files_are_created() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let record = source.path().join(crate::record::record_dir("quota-test"));
+        std::fs::create_dir_all(&record).unwrap();
+        for index in 0..=MAX_RECORD_FILES {
+            std::fs::write(record.join(format!("entry-{index:04}.md")), "retained").unwrap();
+        }
+        let error = carry_over_record(source.path(), destination.path(), "quota-test").unwrap_err();
+        assert!(error.contains("too large to carry over"), "{error}");
+        assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_dir(&record).unwrap().count(),
+            MAX_RECORD_FILES + 1
+        );
+    }
 
     #[test]
     fn copies_every_file_type_except_protected_names() {

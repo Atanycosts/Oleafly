@@ -26,6 +26,7 @@ import {
 } from "@/lib/research-tasks";
 import { useFilesStore } from "@/store/files";
 import { decodeAppError, describeError } from "@/lib/app-error";
+import { useAgentWorkspaceStore } from "@/store/agent-workspace";
 
 export type ResearchTaskDetailTab = "activity" | "progress" | "review" | "output" | "annotations" | "group";
 
@@ -470,11 +471,15 @@ export const useResearchTasksStore = create<ResearchTasksState>((set, get) => ({
   },
 
   startTask: async (taskId) => {
+    const followIntent = useAgentWorkspaceStore.getState().intentRevision;
     const isCurrent = beginTaskAction(taskId);
     set({ ...busyActions(), error: null });
     try {
       const task = await startResearchTask(taskId);
       if (!isCurrent()) return task;
+      if (useAgentWorkspaceStore.getState().intentRevision === followIntent) {
+        useAgentWorkspaceStore.getState().beginFollow(task.projectId, { kind: "task", taskId: task.id, generation: task.executionGeneration });
+      }
       get().receiveTask(task);
       set(endTaskAction(taskId));
       return task;
@@ -500,11 +505,15 @@ export const useResearchTasksStore = create<ResearchTasksState>((set, get) => ({
   },
 
   retryTask: async (taskId, mode) => {
+    const followIntent = useAgentWorkspaceStore.getState().intentRevision;
     const isCurrent = beginTaskAction(taskId);
     set({ ...busyActions(), error: null });
     try {
       const task = await retryResearchTask(taskId, mode);
       if (!isCurrent()) return task;
+      if (useAgentWorkspaceStore.getState().intentRevision === followIntent) {
+        useAgentWorkspaceStore.getState().beginFollow(task.projectId, { kind: "task", taskId: task.id, generation: task.executionGeneration });
+      }
       get().receiveTask(task);
       set(endTaskAction(taskId));
       return task;

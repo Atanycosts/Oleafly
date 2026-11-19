@@ -1,6 +1,6 @@
 import { test, expect } from "../fixtures";
 import type { TauriPage } from "@srsholmes/tauri-playwright";
-import { openZoomMenu, pressVisibleMenuItem } from "../preview-menu";
+import { openVisibleMenu, openZoomMenu, pressVisibleMenuItem } from "../preview-menu";
 import {
   compileAndProbe,
   createBlankProject,
@@ -152,6 +152,32 @@ async function activatePreviewControl(
   const menu = tauriPage.getByRole("menu");
   await expect(menu).toBeVisible();
   await menu.getByText(label, { exact: true }).click();
+}
+
+async function expectPreviewControlAvailable(
+  tauriPage: TauriPage,
+  label: string,
+) {
+  const visibleControl = (selector: string) => `Array.from(
+    document.querySelectorAll(${JSON.stringify(selector)})
+  ).some((element) => element.getClientRects().length > 0)`;
+  const directSelector = `[aria-label=${JSON.stringify(label)}]`;
+  const overflowSelector = '[aria-label="More preview controls"]';
+
+  // Leaving fullscreen remounts the toolbar at a different width. Give the
+  // overflow calculation one settled layout before deciding where the control went.
+  await expect.poll(() => tauriPage.evaluate<boolean>(
+    `(${visibleControl(directSelector)}) || (${visibleControl(overflowSelector)})`,
+  )).toBe(true);
+  if (await tauriPage.evaluate<boolean>(visibleControl(directSelector))) return;
+
+  await openVisibleMenu(tauriPage, overflowSelector);
+  expect(await tauriPage.evaluate<boolean>(`Array.from(
+    document.querySelectorAll('[role="menuitem"]')
+  ).some((item) => item.getClientRects().length > 0 &&
+    (item.textContent?.trim() === ${JSON.stringify(label)} ||
+      item.getAttribute('aria-label') === ${JSON.stringify(label)}))`)).toBe(true);
+  await tauriPage.keyboard.press("Escape");
 }
 
 test.beforeEach(async ({ tauriPage }) => {
@@ -467,7 +493,7 @@ test("copy log writes the exact visible payload and log scrolling reaches both b
 test("fullscreen controls hide, restore, and exit the preview toolbar", async ({
   tauriPage,
 }) => {
-  await tauriPage.click('[aria-label="Fullscreen preview"]');
+  await activatePreviewControl(tauriPage, "Fullscreen preview");
   await expect(tauriPage.locator('[aria-label="Exit fullscreen"]')).toBeVisible({
     timeout: 10_000,
   });
@@ -475,8 +501,8 @@ test("fullscreen controls hide, restore, and exit the preview toolbar", async ({
   await expect(tauriPage.locator('[aria-label="Show toolbar"]')).toBeVisible();
   await tauriPage.click('[aria-label="Show toolbar"]');
   await expect(tauriPage.locator('[aria-label="Exit fullscreen"]')).toBeVisible();
-  await tauriPage.click('[aria-label="Exit fullscreen"]');
-  await expect(tauriPage.locator('[aria-label="Fullscreen preview"]')).toBeVisible();
+  await activatePreviewControl(tauriPage, "Exit fullscreen");
+  await expectPreviewControlAvailable(tauriPage, "Fullscreen preview");
 });
 
 test("open-in-window control creates the detached preview window and reattaches it", async ({

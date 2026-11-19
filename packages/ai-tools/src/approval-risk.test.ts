@@ -9,6 +9,15 @@ import {
 } from "./approval-risk";
 
 describe("toolRisk", () => {
+  it("keeps workspace context readable and side effects behind the existing write policy", () => {
+    expect(toolRisk("get_docx_workspace_context")).toBe("read");
+    expect(isReadOnlyTool("get_docx_workspace_context")).toBe(true);
+    for (const tool of ["reveal_docx_working_copy", "prepare_docx_fonts", "export_docx_document"]) {
+      expect(toolRisk(tool)).toBe("write");
+      expect(isReadOnlyTool(tool)).toBe(false);
+    }
+  });
+
   it("classifies read-only project tools as read", () => {
     for (const tool of [
       "read_file",
@@ -26,9 +35,15 @@ describe("toolRisk", () => {
       "interrupt_agent",
       "list_agents",
       "close_agent",
+      "list_docx_documents",
+      "read_docx_document",
+      "read_docx_image",
+      "capture_docx_target",
     ]) {
       expect(toolRisk(tool)).toBe("read");
     }
+    expect(isReadOnlyTool("read_docx_image")).toBe(true);
+    expect(planModeTools({ read_docx_image: "image tool" })).toHaveProperty("read_docx_image");
   });
 
   it("treats desktop_apps as a write so the Rust gate decides per action", () => {
@@ -45,6 +60,9 @@ describe("toolRisk", () => {
       "delete_file",
       "set_main_doc",
       "insert_figure",
+      "suggest_docx_change",
+      "apply_docx_suggestion",
+      "write_docx_equation",
     ]) {
       expect(toolRisk(tool)).toBe("write");
     }
@@ -53,6 +71,7 @@ describe("toolRisk", () => {
   it("classifies remote lookups as network", () => {
     for (const tool of [
       "literature_search",
+      "read_paper",
       "verify_citation",
     ]) {
       expect(toolRisk(tool)).toBe("network");
@@ -193,6 +212,7 @@ describe("plan mode tool classification", () => {
       "show_location",
       "list_agents",
       "literature_search",
+      "read_paper",
       "verify_citation",
     ]) {
       expect(isReadOnlyTool(tool), tool).toBe(true);

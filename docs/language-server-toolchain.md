@@ -194,6 +194,13 @@ fields to confirm that unversioned TexLab diagnostics still pass through the
 client's current-epoch gate. This remains an opt-in real-process check:
 `pnpm test` and normal builds do not require downloaded binaries or network.
 
+The pinned Tinymist 0.15.8 build has emitted an older diagnostic after the final
+epoch in hosted acceptance. The [source patch](../patches/tinymist/README.md)
+addresses publication order and project-instance removal. Its
+[validation record](../patches/tinymist/README.md#validation) covers the Rust
+regressions and the same process smoke on all supported targets. The shipping
+manifest still selects the upstream archive.
+
 `pnpm build` remains a frontend-only typecheck and Vite build. It never invokes
 the language-server fetcher. A Tauri release stages one target-specific
 Tinymist archive under `bundle.resources`; neither Tinymist nor TexLab appears

@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { BookOpenCheck, FileUp, Play, RefreshCw, Sparkles } from "lucide-react";
+import { BookOpenCheck, FileUp, PanelRightOpen, Play, RefreshCw, Sparkles } from "lucide-react";
 import { SidebarPanelHeader } from "@/components/layout/SidebarSection";
 import { Button } from "@/components/ui/button";
-import { CodeBlock } from "@/components/ui/code-block";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ensureAiProviderOrOpenSettings, handoffToAssistant } from "@/features/assistant-handoff";
 import { useFilesStore } from "@/store/files";
+import { useDocxWorkspaceStore } from "@/store/docx-workspace";
+import { useResearchTasksStore } from "@/store/research-tasks";
+import { useSettingsStore, type RailTab } from "@/store/settings";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import { getResearchWorkspace } from "@/lib/research-workspace";
 import { pickOpenPaths } from "@/lib/tauri";
 import type { AnnotationTarget } from "@/lib/task-collaboration";
@@ -17,10 +21,12 @@ import {
   formatJournalValue as formatGeometry,
   connectJournalWorkbench,
   journalAnalysisPrompt,
+  journalCoverageMessage,
   journalMessage,
   journalQuery,
   journalRequest,
-  journalUnitScale,
+  journalInputValue,
+  parseJournalInput,
   linkJournalProject,
   loadJournalTarget,
   type JournalAnnotationObject,
@@ -36,25 +42,89 @@ import {
   type JournalWorld,
   type ManuscriptRead,
 } from "@/lib/journal-workbench";
-import { JournalResearchPanel } from "./JournalResearchPanel";
+import { checkJournalTemplate, importJournalTemplate, startTemplateWorkingCopy } from "@/lib/docx-template-client";
 import { JournalAnnotations } from "./JournalAnnotations";
+import { JournalTemplatePanel } from "./JournalTemplatePanel";
 import { JournalObjectView } from "./JournalObjectView";
 
 const selectClass = "h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-xs";
 const panelClass = "space-y-3 rounded-lg border border-sidebar-border p-3";
+const fileStem = (file: File) => file.name.replace(/\.[^.]+$/, "").trim() || file.name;
+const generatedJournalId = () => `journal-${crypto.randomUUID()}`;
+const noopSaved = async () => {};
 
 export function JournalChecksPanel() {
   const projectId = useFilesStore((state) => state.projectId);
+  const journalBusy = useWorkspaceSurfaceStore((state) => state.journalBusy);
   const { t } = useTranslation("researchTools");
-  return projectId ? (
-    <JournalProjectPanel key={projectId} projectId={projectId} />
-  ) : (
-    <div className="p-4 text-sm text-muted-foreground">{t(($) => $.researchTools.journal.openProject)}</div>
+  const text = t(($) => $.researchTools.journal, { returnObjects: true });
+  const targetRef = useRef<HTMLDivElement>(null);
+  const openJournal = useCallback(() => useWorkspaceSurfaceStore.getState().openJournal(), []);
+  const setJournalSidebarTarget = useCallback(
+    (target: HTMLElement | null) => useWorkspaceSurfaceStore.getState().setJournalSidebarTarget(target),
+    [],
+  );
+
+  useEffect(() => {
+    setJournalSidebarTarget(targetRef.current);
+    openJournal();
+    return () => setJournalSidebarTarget(null);
+  }, [openJournal, setJournalSidebarTarget]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <SidebarPanelHeader icon={BookOpenCheck} title={text.title}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6"
+          aria-label={text.title}
+          onClick={openJournal}
+        >
+          <PanelRightOpen className="size-3.5" />
+        </Button>
+      </SidebarPanelHeader>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3" data-testid="journal-sidebar-content">
+        <div ref={targetRef} data-testid="journal-checks-panel" aria-busy={journalBusy} />
+        {!projectId && <p className="text-sm text-muted-foreground">{text.openProject}</p>}
+      </div>
+    </div>
+  );
+}
+
+export function JournalWorkspaceHost() {
+  const projectId = useFilesStore((state) => state.projectId);
+  const { t } = useTranslation("researchTools");
+  const text = t(($) => $.researchTools.journal, { returnObjects: true });
+  return (
+    <section className="h-full min-h-0 min-w-0 bg-background" data-testid="journal-workspace">
+      {projectId ? (
+        <JournalProjectPanel key={projectId} projectId={projectId} />
+      ) : (
+        <div className="p-6 text-sm text-muted-foreground">
+          {text.openProject}
+        </div>
+      )}
+    </section>
   );
 }
 
 function JournalProjectPanel({ projectId }: { projectId: string }) {
   const { t, i18n } = useTranslation("researchTools");
+  const journalSidebarTarget = useWorkspaceSurfaceStore((state) => state.journalSidebarTarget);
+  const openDocxRequest = useDocxWorkspaceStore((state) => state.request);
+  const openDocxAppProjectId = useDocxWorkspaceStore((state) => state.request?.appProjectId ?? null);
+  const openDocxProjectId = useDocxWorkspaceStore(
+    (state) => state.request?.project.project_id ?? null,
+  );
+  const openDocxWorldVersionId = useDocxWorkspaceStore(
+    (state) => state.request?.world?.version_id ?? null,
+  );
+  const openDocxContextWorldVersionId = useDocxWorkspaceStore(
+    (state) => state.context?.world?.version_id ?? null,
+  );
+  const savedVersion = useDocxWorkspaceStore((state) => state.savedVersion);
+  const setJournalBusy = useWorkspaceSurfaceStore((state) => state.setJournalBusy);
   const text = t(($) => $.researchTools.journal, { returnObjects: true });
   const detailId = useId();
   const [connection, setConnection] = useState<JournalConnection | null>(null);
@@ -69,7 +139,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
   const [history, setHistory] = useState<JournalCheck[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState<"manuscript" | "update" | "world" | null>(null);
+  const [form, setForm] = useState<"manuscript" | "update" | "world" | "template" | null>(null);
   const [rule, setRule] = useState<JournalRule | null>(null);
   const [review, setReview] = useState<JournalReview | null>(null);
   const [manuscriptRead, setManuscriptRead] = useState<ManuscriptRead | null>(null);
@@ -84,45 +154,85 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
   const [revisionReason, setRevisionReason] = useState("");
   const [dispositionAction, setDispositionAction] = useState<"note" | "defer">("note");
   const [dispositionNote, setDispositionNote] = useState("");
-  const [componentOpen, setComponentOpen] = useState(false);
-  const [componentJson, setComponentJson] = useState("");
   const [comparison, setComparison] = useState<{ from: string; diff: JournalDiff } | null>(null);
   const [notice, setNotice] = useState<"researchChecked" | "researchAdopted" | "versionCreated" | null>(null);
   const [referencedObject, setReferencedObject] = useState<JournalAnnotationObject | null>(null);
+  const templateStart = useRef<{ worldId: string; requestId: string } | null>(null);
+  const handledSavedVersion = useRef(savedVersion);
+  const handledContextWorld = useRef<string | null>(openDocxContextWorldVersionId);
+  const linkedIdRef = useRef<string | null>(linkedId);
+  const worldVersionRef = useRef<string | null>(world?.version_id ?? null);
+  const fileTreeSync = useRef<string | null>(null);
+  const pendingWorldSelection = useRef<string | null>(null);
+  const loadSequence = useRef(0);
+  const templateRuleLabel = (item: JournalRule) => {
+    if (item.property !== "object_format" || !item.expected || typeof item.expected !== "object") {
+      return text.properties[item.property as keyof typeof text.properties] ?? text.template.snapshot;
+    }
+    if (item.expected.kind === "section") return text.template.snapshot;
+    return text.template.roles[item.expected.role as keyof typeof text.template.roles] ?? text.template.snapshot;
+  };
   const project = snapshot.projects.find((item) => item.project_id === linkedId) ?? null;
   const visibleCheck = check?.world_version_id === world?.version_id ? check : null;
   const bindingCurrent = project?.binding?.baseline_id === project?.baseline_id;
   const annotationReference = (kind: "rule" | "source" | "check" | "world", objectId: string) => ({
-    libraryRoot: connection?.libraryRoot ?? "", workbenchProjectId: linkedId ?? "", kind, objectId,
-    worldVersionId: world?.version_id ?? "", checkId: visibleCheck?.check_id ?? null,
+    libraryRoot: connection?.libraryRoot ?? "",
+    workbenchProjectId: linkedId ?? "",
+    kind,
+    objectId,
+    worldVersionId: world?.version_id ?? "",
+    checkId: visibleCheck?.check_id ?? null,
   });
   const openAnnotationTarget = (target: AnnotationTarget) => {
-    void perform(async () => { setReferencedObject(await loadJournalTarget(target)); });
+    void perform(async (sequence) => {
+      const object = await loadJournalTarget(target);
+      if (sequence === loadSequence.current) setReferencedObject(object);
+    });
   };
 
-  async function perform(operation: () => Promise<void>) {
+  const beginRequest = useCallback(() => {
+    const sequence = ++loadSequence.current;
     setBusy(true);
     setError(null);
     setNotice(null);
+    return sequence;
+  }, []);
+
+  const finishRequest = useCallback((sequence: number) => {
+    if (sequence === loadSequence.current) setBusy(false);
+  }, []);
+
+  async function perform(operation: (sequence: number) => Promise<void>) {
+    const sequence = beginRequest();
     try {
-      await operation();
+      await operation(sequence);
     } catch (cause) {
-      setError(String(cause instanceof Error ? cause.message : cause));
+      if (sequence === loadSequence.current) {
+        setError(String(cause instanceof Error ? cause.message : cause));
+      }
     } finally {
-      setBusy(false);
+      finishRequest(sequence);
     }
   }
 
-  const load = useCallback(async (selectedId: string | null, versionId?: string) => {
+  const load = useCallback(async (
+    selectedId: string | null,
+    versionId: string | undefined,
+    sequence: number,
+  ) => {
     const next = await journalRequest<JournalState>("/api/state");
+    if (sequence !== loadSequence.current) return;
     const selected = next.projects.find((item) => item.project_id === selectedId);
-    const worldId = versionId ?? selected?.binding?.world_version_id ?? next.worlds[0]?.version_id;
+    const worldId = versionId
+      ?? selected?.binding?.world_version_id
+      ?? (selected ? worldVersionRef.current : null);
     const [nextWorld, records] = await Promise.all([
       worldId ? journalRequest<JournalWorld>(journalQuery("/api/world", { version_id: worldId })) : null,
       selected
         ? journalRequest<{ checks: JournalCheck[] }>(journalQuery("/api/history", { project_id: selected.project_id }))
         : null,
     ]);
+    if (sequence !== loadSequence.current) return;
     setSnapshot(next);
     setLinkedId(selectedId);
     setWorld(nextWorld);
@@ -137,63 +247,213 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     let active = true;
-    setBusy(true);
+    const sequence = beginRequest();
     void Promise.all([connectJournalWorkbench(), getResearchWorkspace(projectId)])
       .then(async ([connected, workspace]) => {
         if (!active) return;
         setConnection(connected);
         setPython(connected.python);
-        await load(workspace.journalProjectId ?? null);
+        const opened = useDocxWorkspaceStore.getState().request;
+        const openedHere = opened?.appProjectId === projectId ? opened : null;
+        const initialProjectId = openedHere?.project.project_id ?? workspace.journalProjectId ?? null;
+        const initialWorldId = openedHere?.world?.version_id;
+        if (openedHere) {
+          fileTreeSync.current = `${projectId}:${initialProjectId}:${initialWorldId ?? ""}`;
+        }
+        await load(initialProjectId, initialWorldId, sequence);
       })
       .catch((cause) => {
-        if (active) setError(String(cause));
+        if (active && sequence === loadSequence.current) setError(String(cause));
       })
       .finally(() => {
-        if (active) setBusy(false);
+        if (active) finishRequest(sequence);
       });
     return () => {
       active = false;
     };
-  }, [projectId, load]);
+  }, [beginRequest, finishRequest, projectId, load]);
 
-  async function chooseWorld(versionId: string) {
-    const next = await journalRequest<JournalWorld>(journalQuery("/api/world", { version_id: versionId }));
-    setWorld(next);
-    setReview(null);
-    setRule(null);
-    setManuscriptRead(null);
-    setComparison(null);
+  useEffect(() => {
+    linkedIdRef.current = linkedId;
+  }, [linkedId]);
+
+  useEffect(() => {
+    setJournalBusy(busy);
+  }, [busy, setJournalBusy]);
+
+  useEffect(() => () => setJournalBusy(false), [setJournalBusy]);
+
+  useEffect(() => {
+    worldVersionRef.current = world?.version_id ?? null;
+  }, [world?.version_id]);
+
+  useEffect(() => {
+    if (!openDocxProjectId) {
+      fileTreeSync.current = null;
+      handledContextWorld.current = null;
+      return;
+    }
+    if (!connection || openDocxAppProjectId !== projectId) {
+      return;
+    }
+    pendingWorldSelection.current = null;
+    const signature = `${projectId}:${openDocxProjectId}:${openDocxWorldVersionId ?? ""}`;
+    if (fileTreeSync.current === signature) return;
+    fileTreeSync.current = signature;
+    if (openDocxWorldVersionId) handledContextWorld.current = openDocxWorldVersionId;
+    if (
+      linkedIdRef.current === openDocxProjectId &&
+      (!openDocxWorldVersionId || worldVersionRef.current === openDocxWorldVersionId)
+    ) {
+      return;
+    }
+    let active = true;
+    const sequence = beginRequest();
+    void load(openDocxProjectId, openDocxWorldVersionId ?? undefined, sequence)
+      .catch((cause) => {
+        if (active && sequence === loadSequence.current) setError(String(cause));
+      })
+      .finally(() => {
+        if (active) finishRequest(sequence);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    beginRequest,
+    connection,
+    finishRequest,
+    load,
+    openDocxAppProjectId,
+    openDocxProjectId,
+    openDocxWorldVersionId,
+    projectId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !connection ||
+      openDocxAppProjectId !== projectId ||
+      !openDocxProjectId ||
+      !openDocxContextWorldVersionId ||
+      handledContextWorld.current === openDocxContextWorldVersionId
+    ) {
+      return;
+    }
+    handledContextWorld.current = openDocxContextWorldVersionId;
+    if (linkedIdRef.current === openDocxProjectId &&
+        worldVersionRef.current === openDocxContextWorldVersionId) {
+      return;
+    }
+    let active = true;
+    const sequence = beginRequest();
+    void load(openDocxProjectId, openDocxContextWorldVersionId, sequence)
+      .catch((cause) => {
+        if (active && sequence === loadSequence.current) setError(String(cause));
+      })
+      .finally(() => {
+        if (active) finishRequest(sequence);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    beginRequest,
+    connection,
+    finishRequest,
+    load,
+    openDocxAppProjectId,
+    openDocxContextWorldVersionId,
+    openDocxProjectId,
+    projectId,
+  ]);
+
+  useEffect(() => {
+    if (savedVersion === handledSavedVersion.current) return;
+    handledSavedVersion.current = savedVersion;
+    if (!connection || !linkedId) return;
+    const versionId = pendingWorldSelection.current ?? world?.version_id;
+    let active = true;
+    const sequence = beginRequest();
+    void load(linkedId, versionId, sequence)
+      .catch((cause) => {
+        if (active && sequence === loadSequence.current) setError(String(cause));
+      })
+      .finally(() => {
+        if (active) {
+          if (
+            sequence === loadSequence.current &&
+            pendingWorldSelection.current === versionId
+          ) {
+            pendingWorldSelection.current = null;
+          }
+          finishRequest(sequence);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    beginRequest,
+    connection,
+    finishRequest,
+    linkedId,
+    load,
+    savedVersion,
+    world?.version_id,
+  ]);
+
+  async function chooseWorld(versionId: string, sequence: number) {
+    pendingWorldSelection.current = versionId;
+    try {
+      const next = await journalRequest<JournalWorld>(journalQuery("/api/world", { version_id: versionId }));
+      if (sequence !== loadSequence.current) return;
+      setWorld(next);
+      handledContextWorld.current = next.version_id;
+      if (project && openDocxAppProjectId === projectId && openDocxProjectId === project.project_id) {
+        const currentContext = useDocxWorkspaceStore.getState().context;
+        useDocxWorkspaceStore.getState().updateContext({
+          world: next,
+          onSaved: currentContext?.onSaved ?? noopSaved,
+        });
+      }
+      setReview(null);
+      setRule(null);
+      setManuscriptRead(null);
+      setComparison(null);
+    } finally {
+      if (
+        sequence === loadSequence.current &&
+        pendingWorldSelection.current === versionId
+      ) {
+        pendingWorldSelection.current = null;
+      }
+    }
   }
 
-  async function openEvidence(selectedRule: JournalRule | null) {
+  async function openEvidence(selectedRule: JournalRule | null, sequence: number) {
     if (!world) return;
     const next = await journalRequest<JournalReview>(journalQuery("/api/review", { version_id: world.version_id }));
+    if (sequence !== loadSequence.current) return;
     setReview(next);
     setRule(selectedRule);
     setSourceLibraryOpen(selectedRule === null);
     setSourcePage(null);
     setSelectedFragment(null);
     setManuscriptRead(null);
-    setRevisionValue(
-      selectedRule?.expected == null
-        ? ""
-        : String(
-            Number(
-              (selectedRule.expected / journalUnitScale(selectedRule.unit)).toFixed(4),
-            ),
-          ),
-    );
+    setRevisionValue(selectedRule ? journalInputValue(selectedRule.expected, selectedRule.unit) : "");
     setRevisionReason("");
     setDispositionAction("note");
     setDispositionNote("");
   }
 
-  async function compareVersions(from: string, to: string) {
+  async function compareVersions(from: string, to: string, sequence: number) {
     const diff = await journalRequest<JournalDiff>(journalQuery("/api/diff", { from_version: from, to_version: to }));
+    if (sequence !== loadSequence.current) return;
     setComparison({ from, diff });
   }
 
-  async function readFinding(finding: JournalFinding) {
+  async function readFinding(finding: JournalFinding, sequence: number) {
     if (!project) return;
     const baselineId = visibleCheck?.baseline_id ?? project.baseline_id;
     const manuscript = await journalRequest<{
@@ -210,40 +470,39 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
         baseline_id: baselineId,
       }),
     );
+    if (sequence !== loadSequence.current) return;
     const item = manuscript.catalog.items.find(
       (item) => item.object_type === "section" && item.node_locator === finding.locator,
     );
     if (!item) throw new Error(text.sectionUnavailable);
-    setManuscriptRead(
-      await journalRequest<ManuscriptRead>("/api/read", {
-        project_id: project.project_id,
-        baseline_id: baselineId,
-        render_bundle_id: null,
-        query: {
-          region: null,
-          object_type: "section",
-          object_id: item.object_id,
-          page_number: null,
-          page_size: 1,
-          cursor: null,
-        },
-      }),
-    );
+    const contents = await journalRequest<ManuscriptRead>("/api/read", {
+      project_id: project.project_id,
+      baseline_id: baselineId,
+      render_bundle_id: null,
+      query: {
+        region: null,
+        object_type: "section",
+        object_id: item.object_id,
+        page_number: null,
+        page_size: 1,
+        cursor: null,
+      },
+    });
+    if (sequence === loadSequence.current) setManuscriptRead(contents);
   }
 
-  async function showFragment(fragment: JournalFragment) {
+  async function showFragment(fragment: JournalFragment, sequence: number) {
     setSelectedFragment(fragment);
     setSourcePage(null);
     if (fragment.content.page && world && ["pdf_block", "pdf_heading"].includes(fragment.kind)) {
-      setSourcePage(
-        await journalRequest(
-          journalQuery("/api/source-page", {
-            version_id: world.version_id,
-            source_id: fragment.source_id,
-            page: String(fragment.content.page),
-          }),
-        ),
+      const page = await journalRequest<NonNullable<typeof sourcePage>>(
+        journalQuery("/api/source-page", {
+          version_id: world.version_id,
+          source_id: fragment.source_id,
+          page: String(fragment.content.page),
+        }),
       );
+      if (sequence === loadSequence.current) setSourcePage(page);
     }
   }
 
@@ -263,272 +522,312 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     .filter((item) => item.journal_id === world?.journal_id && item.version_id !== world?.version_id)
     .sort((a, b) => b.version_ordinal - a.version_ordinal);
 
-  return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="journal-checks-panel" aria-busy={busy}>
-      <SidebarPanelHeader icon={BookOpenCheck} title={text.title}>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-6"
-          disabled={busy || !connection}
-          aria-label={text.refresh}
-          onClick={() => void perform(() => load(linkedId, world?.version_id))}
-        >
-          <RefreshCw className={busy ? "size-3.5 animate-spin" : "size-3.5"} />
-        </Button>
-      </SidebarPanelHeader>
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-        {error && (
-          <p role="alert" className="break-words rounded-md border border-destructive/30 p-2 text-xs text-destructive">
-            {error}
-          </p>
-        )}
-        {notice && (
-          <p role="status" className="rounded-md bg-muted p-2 text-xs">
-            {text[notice]}
-          </p>
-        )}
-        {!connection ? (
+  const navigation = journalSidebarTarget ? createPortal(
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">{text.scope}</p>
+      {notice && (
+        <p role="status" className="rounded-md bg-muted p-2 text-xs">
+          {text[notice]}
+        </p>
+      )}
+      {!connection ? (
+        <section className={panelClass}>
+          <p className="text-sm font-medium">{text.workspace.connectTitle}</p>
+          <p className="text-xs text-muted-foreground">{text.workspace.connectHelp}</p>
+          <Button size="sm" onClick={() => useWorkspaceSurfaceStore.getState().openJournal()}>
+            {text.workspace.openWorkspace}
+          </Button>
+        </section>
+      ) : (
+        <>
           <section className={panelClass}>
-            <p className="text-sm font-medium">{text.connect}</p>
-            <p className="text-xs text-muted-foreground">{text.runtimeHelp}</p>
-            <Input
-              value={python}
-              onChange={(event) => setPython(event.target.value)}
-              aria-label={text.python}
-              placeholder={text.python}
-              className="text-xs"
-            />
-            <div className="flex flex-wrap gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold">{text.steps.manuscript}</p>
               <Button
-                size="sm"
-                variant="outline"
+                variant="ghost"
+                size="icon"
+                className="size-6"
                 disabled={busy}
-                onClick={() =>
-                  void perform(async () => {
-                    const paths = await pickOpenPaths({ title: text.python });
-                    if (paths?.[0]) setPython(paths[0]);
-                  })
-                }
+                aria-label={text.refresh}
+                onClick={() => void perform((sequence) => load(linkedId, world?.version_id, sequence))}
               >
-                {text.browse}
-              </Button>
-              <Button
-                size="sm"
-                disabled={busy || !python.trim()}
-                onClick={() =>
-                  void perform(async () => {
-                    const connected = await connectJournalWorkbench(python.trim());
-                    setConnection(connected);
-                    const workspace = await getResearchWorkspace(projectId);
-                    await load(workspace.journalProjectId ?? null);
-                  })
-                }
-              >
-                {text.connect}
+                <RefreshCw className={busy ? "size-3.5 animate-spin" : "size-3.5"} />
               </Button>
             </div>
-          </section>
-        ) : (
-          <>
-            <p className="text-xs text-muted-foreground">{text.scope}</p>
-            <section className={panelClass}>
-              <label className="block space-y-1 text-xs font-medium">
-                <span>{text.manuscript}</span>
-                <select
-                  className={selectClass}
-                  value={linkedId ?? ""}
-                  disabled={busy}
-                  onChange={(event) => {
-                    const id = event.target.value;
-                    if (id)
-                      void perform(async () => {
-                        await linkJournalProject(projectId, id);
-                        await load(id);
-                      });
-                  }}
-                >
-                  <option value="">{text.chooseManuscript}</option>
-                  {snapshot.projects.map((item) => (
-                    <option key={item.project_id} value={item.project_id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    setError(null);
-                    setForm("manuscript");
-                  }}
-                >
-                  <FileUp className="mr-1 size-3.5" />
-                  {text.importManuscript}
-                </Button>
-                {project && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => {
-                      setError(null);
-                      setForm("update");
-                    }}
-                  >
-                    {text.updateManuscript}
-                  </Button>
-                )}
-              </div>
-              {project && (
-                <details className="text-xs text-muted-foreground">
-                  <summary>{text.retainedVersion}</summary>
-                  <p className="mt-1 break-all font-mono">{project.baseline_id}</p>
-                </details>
-              )}
-            </section>
-            <section className={panelClass}>
-              <label className="block space-y-1 text-xs font-medium">
-                <span>{text.journalVersion}</span>
-                <select
-                  className={selectClass}
-                  value={world?.version_id ?? ""}
-                  disabled={busy}
-                  onChange={(event) => void perform(() => chooseWorld(event.target.value))}
-                >
-                  {!snapshot.worlds.length && <option value="">{text.chooseJournal}</option>}
-                  {snapshot.worlds.map((item) => (
-                    <option key={item.version_id} value={item.version_id}>
-                      {`${item.journal_name} · v${item.version_ordinal}`} ·{" "}
-                      {text.articleTypes[item.scope.article_type as keyof typeof text.articleTypes]} /{" "}
-                      {text.stages[item.scope.stage as keyof typeof text.stages]} / {text.languages[item.scope.language as keyof typeof text.languages] ?? item.scope.language}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <label className="block space-y-1 text-xs font-medium">
+              <span>{text.manuscript}</span>
+              <select
+                className={selectClass}
+                value={linkedId ?? ""}
+                disabled={busy}
+                onChange={(event) => {
+                  const id = event.target.value;
+                  if (id) {
+                    void perform(async (sequence) => {
+                      await linkJournalProject(projectId, id);
+                      await load(id, undefined, sequence);
+                    });
+                  }
+                }}
+              >
+                <option value="">{text.chooseManuscript}</option>
+                {snapshot.projects.map((item) => (
+                  <option key={item.project_id} value={item.project_id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
                 variant="outline"
                 disabled={busy}
                 onClick={() => {
                   setError(null);
-                  setForm("world");
+                  setForm("manuscript");
                 }}
               >
-                {text.importJournal}
+                <FileUp className="mr-1 size-3.5" />
+                {text.importManuscript}
               </Button>
-              {world && (
-                <>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => {
-                        setError(null);
-                        setComponentOpen(true);
-                      }}
-                    >
-                      {text.importCandidates}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => void perform(() => openEvidence(null))}
-                    >
-                      {text.sourceLibrary}
-                    </Button>
-                    {otherVersions.length > 0 && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busy}
-                        onClick={() =>
-                          void perform(() => compareVersions(otherVersions[0].version_id, world.version_id))
-                        }
-                      >
-                        {text.compareVersions}
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={
-                        busy || !project || (bindingCurrent && project.binding?.world_version_id === world.version_id)
+              {project && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => {
+                    if (openDocxRequest) {
+                      if (openDocxProjectId === project.project_id) {
+                        useDocxWorkspaceStore.getState().restore();
                       }
-                      onClick={() =>
-                        void perform(async () => {
-                          await journalRequest("/api/bind", {
-                            project_id: project?.project_id,
-                            world_version_id: world.version_id,
-                            expected_binding_id: project?.binding?.binding_id ?? null,
-                          });
-                          await load(linkedId, world.version_id);
-                        })
-                      }
-                    >
-                      {bindingCurrent && project?.binding?.world_version_id === world.version_id
-                        ? text.bound
-                        : text.bind}
-                    </Button>
-                  </div>
-                  {latestWorld && latestWorld.version_ordinal > world.version_ordinal && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400">{text.newVersion}</p>
-                  )}
-                  {project?.binding && (!bindingCurrent || project.binding.world_version_id !== world.version_id) && (
-                    <p className="text-xs text-muted-foreground">
-                      {!bindingCurrent ? text.rebindAfterUpdate : text.viewingUnboundVersion}
-                    </p>
-                  )}
-                </>
-              )}
-            </section>
-            {world && (
-              <JournalResearchPanel
-                projectId={projectId}
-                world={world}
-                check={visibleCheck}
-                manuscriptId={linkedId}
-                onAdopted={async (next, checked) => {
-                  await load(linkedId, next.version_id);
-                  setNotice(checked ? "researchChecked" : "researchAdopted");
-                }}
-              />
-            )}
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                disabled={
-                  busy || !project?.binding || !bindingCurrent || project.binding.world_version_id !== world?.version_id
-                }
-                onClick={() =>
-                  void perform(async () => {
-                    await journalRequest<JournalCheck>("/api/check", {
-                      project_id: project?.project_id,
+                      return;
+                    }
+                    void perform(async () => {
+                      const [current, workspace] = await Promise.all([
+                        journalRequest<JournalState>("/api/state"),
+                        getResearchWorkspace(projectId),
+                      ]);
+                      const manuscript = current.projects.find((item) => item.project_id === project.project_id);
+                      if (!manuscript) throw new Error(t(($) => $.researchTools.docx.recovery.projectMissing));
+                      setSnapshot(current);
+                      useDocxWorkspaceStore.getState().open({
+                        appProjectId: projectId,
+                        project: manuscript,
+                        world,
+                        sourcePath: workspace.wordDocuments?.find(
+                          (item) => item.workbenchProjectId === manuscript.project_id,
+                        )?.path,
+                        onSaved: noopSaved,
+                      });
                     });
-                    await load(linkedId, world?.version_id);
-                  })
-                }
+                  }}
+                >
+                  {openDocxRequest
+                    ? openDocxProjectId === project.project_id
+                      ? text.returnToWorkingCopy
+                      : text.returnToOtherWorkingCopy.replace("{{name}}", openDocxRequest.project.name)
+                    : t(($) => $.researchTools.docx.open)}
+                </Button>
+              )}
+              {project && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => {
+                    setError(null);
+                    setForm("update");
+                  }}
+                >
+                  {text.updateManuscript}
+                </Button>
+              )}
+            </div>
+            {openDocxRequest && openDocxProjectId !== project?.project_id && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {text.otherWorkingCopy.replace("{{name}}", openDocxRequest.project.name)}
+              </p>
+            )}
+          </section>
+          <section className={panelClass}>
+            <p className="text-sm font-semibold">{text.steps.template}</p>
+            <label className="block space-y-1 text-xs font-medium">
+              <span>{text.journalVersion}</span>
+              <select
+                className={selectClass}
+                data-testid="journal-world-select"
+                value={world?.version_id ?? ""}
+                disabled={busy}
+                onChange={(event) => {
+                  if (event.target.value) {
+                    void perform((sequence) => chooseWorld(event.target.value, sequence));
+                  }
+                }}
               >
-                <Play className="mr-1 size-3.5" />
-                {text.runCheck}
-              </Button>
+                <option value="">
+                  {snapshot.worlds.length ? text.chooseJournalVersion : text.chooseJournal}
+                </option>
+                {snapshot.worlds.map((item) => (
+                  <option key={item.version_id} value={item.version_id}>
+                    {`${item.journal_name} · v${item.version_ordinal}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => {
+              setError(null);
+              setForm("template");
+            }}>
+              <FileUp className="mr-1 size-3.5" />{text.importTemplate}
+            </Button>
+            {world?.template && (
               <Button
                 size="sm"
                 variant="outline"
+                disabled={busy || !!openDocxRequest}
+                data-testid="journal-start-template"
+                onClick={() => void perform(async (sequence) => {
+                  if (templateStart.current?.worldId !== world.version_id) {
+                    templateStart.current = { worldId: world.version_id, requestId: `template-copy-${crypto.randomUUID()}` };
+                  }
+                  const created = await startTemplateWorkingCopy(
+                    world.version_id,
+                    `${world.journal_name} · ${text.templateDraft}`,
+                    templateStart.current.requestId,
+                  );
+                  await linkJournalProject(projectId, created.project.project_id);
+                  await load(created.project.project_id, world.version_id, sequence);
+                  useDocxWorkspaceStore.getState().open({
+                    appProjectId: projectId,
+                    project: created.project,
+                    world,
+                    onSaved: noopSaved,
+                  });
+                  templateStart.current = null;
+                })}
+              >
+                {text.startTemplate}
+              </Button>
+            )}
+            <p className="truncate text-xs text-muted-foreground">
+              {world
+                ? `${world.journal_name} · v${world.version_ordinal}`
+                : text.workspace.noJournal}
+            </p>
+          </section>
+          <section className={panelClass}>
+            <p className="text-sm font-semibold">{text.steps.check}</p>
+            <Button
+              size="sm"
+              disabled={
+                busy || !project || !world ||
+                (!world.template && (!project.binding || !bindingCurrent || project.binding.world_version_id !== world.version_id))
+              }
+              onClick={() =>
+                void perform(async (sequence) => {
+                  if (project && world?.template) await checkJournalTemplate(project, world.version_id);
+                  else await journalRequest<JournalCheck>("/api/check", { project_id: project?.project_id });
+                  await load(linkedId, world?.version_id, sequence);
+                  useWorkspaceSurfaceStore.getState().openJournal();
+                })
+              }
+            >
+              <Play className="mr-1 size-3.5" />
+              {text.runCheck}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              {visibleCheck
+                ? `${visibleCheck.validity === "CURRENT" ? text.current : text.stale} · ${
+                    Object.values(visibleCheck.summary).reduce((total, count) => total + count, 0)
+                  }`
+                : text.workspace.notChecked}
+            </p>
+          </section>
+        </>
+      )}
+    </div>,
+    journalSidebarTarget,
+  ) : null;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col" aria-busy={busy}>
+      {navigation}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {!connection ? (
+          <div className="mx-auto max-w-3xl space-y-5 p-6">
+            <div>
+              <h2 className="text-xl font-semibold">{text.title}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{text.scope}</p>
+            </div>
+            {error && (
+              <p role="alert" className="rounded-md border border-destructive/30 p-3 text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <section className="space-y-3 rounded-xl border p-5">
+              <p className="font-medium">{text.connect}</p>
+              <p className="text-sm text-muted-foreground">{text.runtimeHelp}</p>
+              <Input
+                value={python}
+                onChange={(event) => setPython(event.target.value)}
+                aria-label={text.python}
+                placeholder={text.python}
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform(async () => {
+                      const paths = await pickOpenPaths({ title: text.python });
+                      if (paths?.[0]) setPython(paths[0]);
+                    })
+                  }
+                >
+                  {text.browse}
+                </Button>
+                <Button
+                  disabled={busy || !python.trim()}
+                  onClick={() =>
+                    void perform(async (sequence) => {
+                      const connected = await connectJournalWorkbench(python.trim());
+                      setConnection(connected);
+                      const workspace = await getResearchWorkspace(projectId);
+                      await load(workspace.journalProjectId ?? null, undefined, sequence);
+                    })
+                  }
+                >
+                  {text.connect}
+                </Button>
+              </div>
+            </section>
+          </div>
+        ) : (
+          <div className="mx-auto max-w-5xl space-y-6 p-6">
+            <header className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {text.workspace.eyebrow}
+                </p>
+                <h2 className="mt-1 text-2xl font-semibold">
+                  {world ? world.journal_name : text.title}
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {project ? project.name : text.scope}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
                 disabled={busy || !visibleCheck}
                 onClick={() =>
-                  void perform(async () => {
-                    if (!visibleCheck || !(await ensureAiProviderOrOpenSettings())) return;
+                  void perform(async (sequence) => {
+                    if (!visibleCheck || !(await ensureAiProviderOrOpenSettings()) || sequence !== loadSequence.current) return;
                     const source = await journalRequest<JournalReview>(
-                      journalQuery("/api/review", {
-                        version_id: visibleCheck.world_version_id,
-                      }),
+                      journalQuery("/api/review", { version_id: visibleCheck.world_version_id }),
                     );
+                    if (sequence !== loadSequence.current) return;
                     handoffToAssistant(
                       journalAnalysisPrompt(visibleCheck, source, i18n.resolvedLanguage ?? i18n.language),
                       { autoSend: false },
@@ -536,121 +835,239 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   })
                 }
               >
-                <Sparkles className="mr-1 size-3.5" />
+                <Sparkles className="size-4" />
                 {text.askAgent}
               </Button>
-            </div>
-            {visibleCheck && (
-              <section className={panelClass} aria-label={text.results}>
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <strong
-                    className={
-                      visibleCheck.validity === "STALE"
-                        ? "text-amber-600 dark:text-amber-400"
-                        : "text-emerald-600 dark:text-emerald-400"
-                    }
-                  >
-                    {visibleCheck.validity === "STALE" ? text.stale : text.current}
-                  </strong>
-                  <time>{new Date(visibleCheck.created_at).toLocaleString()}</time>
-                </div>
-                {visibleCheck.validity === "STALE" && <p className="text-xs text-muted-foreground">{text.staleHelp}</p>}
-                <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
-                  {Object.entries(visibleCheck.summary)
-                    .filter(([, count]) => count > 0)
-                    .map(([verdict, count]) => (
-                      <span key={verdict}>
-                        {text.verdicts[verdict as keyof typeof text.verdicts]} {count}
-                      </span>
-                    ))}
-                </div>
-                <details className="text-xs text-muted-foreground">
-                  <summary>{text.checkRecord}</summary>
-                  <p className="mt-1 break-all font-mono">{visibleCheck.check_id}</p>
-                  <p className="break-all font-mono">{visibleCheck.baseline_id}</p>
-                </details>
-                {connection && linkedId && <details className="text-xs">
-                  <summary>{text.annotations.title}</summary>
-                  <div className="mt-3"><JournalAnnotations projectId={projectId} reference={annotationReference("check", visibleCheck.check_id)} onOpenTarget={openAnnotationTarget} /></div>
-                </details>}
+            </header>
+            {error && (
+              <p role="alert" className="rounded-md border border-destructive/30 p-3 text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            {notice && (
+              <p role="status" className="rounded-md bg-muted p-3 text-sm">
+                {text[notice]}
+              </p>
+            )}
+            {!journalSidebarTarget && (
+              <section className="rounded-xl border bg-muted/30 p-4">
+                <p className="font-medium">{text.workspace.sidebarMissing}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{text.workspace.sidebarMissingHelp}</p>
+                <Button
+                  className="mt-3"
+                  size="sm"
+                  onClick={() => {
+                    useSettingsStore.getState().setRailTab("journal" as RailTab);
+                    useSettingsStore.getState().setShowTree(true);
+                    useWorkspaceSurfaceStore.getState().openJournal();
+                  }}
+                >
+                  {text.workspace.openWorkspace}
+                </Button>
               </section>
             )}
-            {world && (
-              <section className="space-y-2" aria-label={text.rules}>
-                <h3 className="text-xs font-semibold">
-                  {text.rules} · {world.rules.length}
-                </h3>
-                {world.rules.length === 0 && <p className="text-xs text-muted-foreground">{text.noRules}</p>}
-                {world.rules.map((item) => {
-                  const checked = visibleCheck?.rule_results.find((record) => record.rule_id === item.rule_id);
-                  return (
-                    <button
-                      key={item.rule_id}
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void perform(() => openEvidence(item))}
-                      className="w-full rounded-md border border-sidebar-border px-3 py-2 text-left text-xs transition-colors hover:bg-accent disabled:opacity-50"
-                    >
-                      <span className="flex items-center justify-between gap-2">
-                        <strong>{text.properties[item.property as keyof typeof text.properties]}</strong>
-                        <span>{formatGeometry(item.expected, item.unit)}</span>
+            {!project || !world ? (
+              <>
+                <section className="rounded-xl border border-dashed p-8 text-center">
+                  <h3 className="font-semibold">{text.workspace.startTitle}</h3>
+                  <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
+                    {text.guide.title} {text.guide.manuscriptHelp} {text.guide.templateHelp}
+                  </p>
+                  <div className="mt-4 flex flex-wrap justify-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => {
+                      setError(null);
+                      setForm("manuscript");
+                    }}>
+                      {text.importManuscript}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => {
+                      setError(null);
+                      setForm("template");
+                    }}>
+                      {text.importTemplate}
+                    </Button>
+                  </div>
+                </section>
+                {world && <JournalTemplateSummary world={world} project={project} check={visibleCheck} />}
+              </>
+            ) : (
+              <>
+                {visibleCheck ? (
+                  <section className="space-y-4 rounded-xl border p-5" aria-label={text.results}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="font-semibold">{text.results}</h3>
+                      <span className={
+                        visibleCheck.validity === "STALE"
+                          ? "text-sm font-medium text-amber-600 dark:text-amber-400"
+                          : "text-sm font-medium text-emerald-600 dark:text-emerald-400"
+                      }>
+                        {visibleCheck.validity === "STALE" ? text.stale : text.current}
                       </span>
-                      <span className="mt-1 flex flex-wrap justify-between gap-1 text-muted-foreground">
-                        <span>{text.bases[item.basis_status]}</span>
-                        <span
-                          className={
-                            checked?.verdict === "violation" && visibleCheck?.validity === "CURRENT"
-                              ? "text-destructive"
-                              : ""
+                    </div>
+                    <time className="text-sm text-muted-foreground">
+                      {new Date(visibleCheck.created_at).toLocaleString()}
+                    </time>
+                    {visibleCheck.validity === "STALE" && (
+                      <p className="text-sm text-muted-foreground">{text.staleHelp}</p>
+                    )}
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      {Object.entries(visibleCheck.summary)
+                        .filter(([, count]) => count > 0)
+                        .map(([verdict, count]) => (
+                          <div key={verdict} className="rounded-lg bg-muted/60 p-3">
+                            <p className="text-xs text-muted-foreground">
+                              {text.verdicts[verdict as keyof typeof text.verdicts]}
+                            </p>
+                            <p className="mt-1 text-xl font-semibold">{count}</p>
+                          </div>
+                        ))}
+                    </div>
+                    <JournalAnnotations
+                      projectId={projectId}
+                      reference={annotationReference("check", visibleCheck.check_id)}
+                      onOpenTarget={openAnnotationTarget}
+                    />
+                  </section>
+                ) : (
+                  <section className="rounded-xl border border-dashed p-8 text-center">
+                    <h3 className="font-semibold">{text.steps.check}</h3>
+                    <p className="mt-2 text-sm text-muted-foreground">{text.workspace.readyToCheck}</p>
+                  </section>
+                )}
+                <JournalTemplateSummary world={world} project={project} check={visibleCheck} />
+                <section className="space-y-3" aria-label={text.rules}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="font-semibold">
+                      {text.rules} · {world.rules.length}
+                    </h3>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" disabled={busy} onClick={() => {
+                        setError(null);
+                        setForm("world");
+                      }}>
+                        {text.importJournal}
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => void perform((sequence) => openEvidence(null, sequence))}>
+                        {text.sourceLibrary}
+                      </Button>
+                      {otherVersions.length > 0 && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => void perform((sequence) => compareVersions(otherVersions[0].version_id, world.version_id, sequence))}
+                        >
+                          {text.compareVersions}
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy || bindingCurrent && project.binding?.world_version_id === world.version_id}
+                        onClick={() =>
+                          void perform(async (sequence) => {
+                            await journalRequest("/api/bind", {
+                              project_id: project.project_id,
+                              world_version_id: world.version_id,
+                              expected_binding_id: project.binding?.binding_id ?? null,
+                            });
+                            await load(linkedId, world.version_id, sequence);
+                          })
+                        }
+                      >
+                        {bindingCurrent && project.binding?.world_version_id === world.version_id
+                          ? text.bound
+                          : text.bind}
+                      </Button>
+                    </div>
+                  </div>
+                  {latestWorld && latestWorld.version_ordinal > world.version_ordinal && (
+                    <p className="text-sm text-amber-600 dark:text-amber-400">{text.newVersion}</p>
+                  )}
+                  {project.binding && (!bindingCurrent || project.binding.world_version_id !== world.version_id) && (
+                    <p className="text-sm text-muted-foreground">
+                      {!bindingCurrent ? text.rebindAfterUpdate : text.viewingUnboundVersion}
+                    </p>
+                  )}
+                  {world.rules.length === 0 && <p className="text-sm text-muted-foreground">{text.noRules}</p>}
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {world.rules.map((item) => {
+                      const checkedResult = visibleCheck?.rule_results.find(
+                        (record) => record.rule_id === item.rule_id,
+                      );
+                      return (
+                        <button
+                          key={item.rule_id}
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void perform((sequence) => openEvidence(item, sequence))}
+                          className="rounded-lg border p-3 text-left transition-colors hover:bg-accent disabled:opacity-50"
+                        >
+                          <span className="flex items-start justify-between gap-3">
+                            <strong className="text-sm">
+                              {templateRuleLabel(item)}
+                            </strong>
+                            {item.property === "object_format"
+                              ? item.expected && typeof item.expected === "object" && item.expected.kind !== "section" && (
+                                  <span className="text-sm">{text.template.snapshot}</span>
+                                )
+                              : <span className="text-sm">{item.label ?? formatGeometry(item.expected, item.unit)}</span>}
+                          </span>
+                          <span className="mt-2 flex flex-wrap justify-between gap-2 text-xs text-muted-foreground">
+                            <span>{text.bases[item.basis_status]}</span>
+                            <span className={checkedResult?.verdict === "violation" && visibleCheck?.validity === "CURRENT" ? "text-destructive" : ""}>
+                              {checkedResult ? text.verdicts[checkedResult.verdict] : text.verdicts.not_checked}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+                {(visibleCheck?.coverage_gaps ?? world.coverage_gaps).length > 0 && (
+                  <section className="space-y-2 rounded-xl border p-5">
+                    <h3 className="font-semibold">{text.coverage}</h3>
+                    <ul className="space-y-2 text-sm text-muted-foreground">
+                      {(visibleCheck?.coverage_gaps ?? world.coverage_gaps).map((gap) => (
+                        <li key={`${gap.code}-${gap.message}`} className="flex gap-2">
+                          <span aria-hidden>•</span>
+                          <span>{journalCoverageMessage(gap)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {history.length > 0 && (
+                  <section className="space-y-3">
+                    <h3 className="font-semibold">{text.history}</h3>
+                    <div className="space-y-2">
+                      {[...history].reverse().map((record) => (
+                        <button
+                          type="button"
+                          key={record.check_id}
+                          disabled={busy}
+                          className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border p-3 text-left text-sm hover:bg-accent"
+                          onClick={() =>
+                            void perform(async (sequence) => {
+                              await chooseWorld(record.world_version_id, sequence);
+                              if (sequence !== loadSequence.current) return;
+                              setCheck(record);
+                            })
                           }
                         >
-                          {checked ? text.verdicts[checked.verdict] : text.verdicts.not_checked}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </section>
+                          <span>{`${record.world.journal_name} · v${record.world.version_ordinal}`}</span>
+                          <span className="text-muted-foreground">
+                            {new Date(record.created_at).toLocaleString()} ·{" "}
+                            {record.validity === "CURRENT" ? text.current : text.stale}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </>
             )}
-            {(visibleCheck?.coverage_gaps ?? world?.coverage_gaps ?? []).length > 0 && (
-              <details className="text-xs text-muted-foreground">
-                <summary>{text.coverage}</summary>
-                <ul className="mt-2 space-y-2">
-                  {(visibleCheck?.coverage_gaps ?? world?.coverage_gaps ?? []).map((gap) => (
-                    <li key={`${gap.code}-${gap.locator}-${gap.message}`}>
-                      <span>{journalMessage(gap.message)}</span>
-                      {gap.locator && <code className="block break-all text-[0.625rem]">{gap.locator}</code>}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
-            {history.length > 0 && (
-              <section className="space-y-2">
-                <h3 className="text-xs font-semibold">{text.history}</h3>
-                {[...history].reverse().map((record) => (
-                  <button
-                    type="button"
-                    key={record.check_id}
-                    disabled={busy}
-                    className="block w-full rounded-md border border-sidebar-border p-2 text-left text-xs hover:bg-accent"
-                    onClick={() =>
-                      void perform(async () => {
-                        await chooseWorld(record.world_version_id);
-                        setCheck(record);
-                      })
-                    }
-                  >
-                    <span className="block">
-                      {new Date(record.created_at).toLocaleString()} ·{" "}
-                      {record.validity === "CURRENT" ? text.current : text.stale}
-                    </span>
-                    <span className="text-muted-foreground">{`${record.world.journal_name} · v${record.world.version_ordinal}`}</span>
-                  </button>
-                ))}
-              </section>
-            )}
-          </>
+          </div>
         )}
       </div>
       <JournalImportDialog
@@ -661,14 +1078,17 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
         error={error}
         onClose={() => setForm(null)}
         onSubmit={(operation) =>
-          void perform(async () => {
+          void perform(async (sequence) => {
             const imported = await operation();
             if (form === "manuscript") {
               const manuscript = imported as JournalProject;
               await linkJournalProject(projectId, manuscript.project_id);
-              await load(manuscript.project_id, world?.version_id);
-            } else if (form === "world") await load(linkedId, (imported as JournalWorld).version_id);
-            else await load(linkedId, world?.version_id);
+              await load(manuscript.project_id, world?.version_id, sequence);
+            } else if (form === "world" || form === "template") {
+              await load(linkedId, (imported as JournalWorld).version_id, sequence);
+            } else {
+              await load(linkedId, world?.version_id, sequence);
+            }
             setForm(null);
           })
         }
@@ -685,7 +1105,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
-              {rule ? text.properties[rule.property as keyof typeof text.properties] : text.sourceLibrary}
+              {rule ? templateRuleLabel(rule) : text.sourceLibrary}
             </DialogTitle>
             <DialogDescription>{`${world?.journal_name} · v${world?.version_ordinal}`}</DialogDescription>
           </DialogHeader>
@@ -697,7 +1117,9 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
           {rule && world && (
             <>
               <p className="text-sm">
-                {text.bases[rule.basis_status]} · {formatGeometry(rule.expected, rule.unit)} ·{" "}
+                {text.bases[rule.basis_status]}
+                {rule.property !== "object_format" && ` · ${formatGeometry(rule.expected, rule.unit)}`}
+                {" · "}
                 {result ? text.verdicts[result.verdict] : text.verdicts.not_checked}
               </p>
               {rule.limitations.length > 0 && (
@@ -724,7 +1146,6 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                     {world?.sources.find((source) => source.source_id === evidence.source_id)?.name}
                   </p>
                   <blockquote className="mt-1 whitespace-pre-wrap border-l-2 pl-3">{evidence.quote}</blockquote>
-                  <code className="mt-2 block break-all text-xs text-muted-foreground">{evidence.locator}</code>
                 </div>
               ))}
               {contextFragments.length > 0 && (
@@ -743,7 +1164,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   size="sm"
                   disabled={busy}
                   key={fragment.fragment_id}
-                  onClick={() => void perform(() => showFragment(fragment))}
+                  onClick={() => void perform((sequence) => showFragment(fragment, sequence))}
                 >
                   {text.openFragment} · {text.fragmentKinds[fragment.kind as keyof typeof text.fragmentKinds] ?? fragment.kind}
                 </Button>
@@ -758,38 +1179,36 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   </p>
                 </section>
               )}
-              <details className="rounded-md border p-3 text-sm">
+              {rule.unit !== "effective_format" && <details className="rounded-md border p-3 text-sm">
                 <summary>{text.reviseRequirement}</summary>
                 <p className="my-2 text-xs text-muted-foreground">{text.reviseHelp}</p>
                 <form
                   className="space-y-2"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    void perform(async () => {
-                      const expected = Math.round(
-                        Number(revisionValue) * journalUnitScale(rule.unit),
-                      );
+                    void perform(async (sequence) => {
+                      const expected = parseJournalInput(revisionValue, rule.unit);
                       const revised = await journalRequest<JournalWorld>("/api/revise", {
                         version_id: world.version_id,
                         rule_id: rule.rule_id,
                         expected,
                         reason: revisionReason,
                       });
-                      await load(linkedId, revised.version_id);
+                      await load(linkedId, revised.version_id, sequence);
                       setNotice("versionCreated");
                     });
                   }}
                 >
                   <label htmlFor={`${detailId}-expected`} className="block space-y-1">
                     <span>
-                      {text.expected} ({rule.unit === "count" ? text.unitCount : rule.unit === "twips" ? "mm" : "pt"})
+                      {text.expected}{rule.unit === "font_family" ? "" : ` (${rule.unit === "count" ? text.unitCount : rule.unit === "twips" ? "mm" : "pt"})`}
                     </span>
                     <Input
                       id={`${detailId}-expected`}
-                      type="number"
+                      type={rule.unit === "font_family" ? "text" : "number"}
                       required
-                      min={rule.property.includes("margin") ? 0 : rule.unit === "count" ? 1 : 0.01}
-                      step={rule.unit === "count" ? 1 : "any"}
+                      min={rule.unit === "font_family" ? undefined : rule.property.includes("margin") ? 0 : rule.unit === "count" ? 1 : 0.01}
+                      step={rule.unit === "font_family" ? undefined : rule.unit === "count" ? 1 : "any"}
                       value={revisionValue}
                       disabled={busy}
                       onChange={(event) => setRevisionValue(event.target.value)}
@@ -809,7 +1228,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                     {text.saveRevision}
                   </Button>
                 </form>
-              </details>
+              </details>}
               {result && visibleCheck && (
                 <>
                   <h3 className="text-sm font-semibold">{text.manuscriptEvidence}</h3>
@@ -827,11 +1246,10 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                         variant="outline"
                         size="sm"
                         disabled={busy}
-                        onClick={() => void perform(() => readFinding(finding))}
+                        onClick={() => void perform((sequence) => readFinding(finding, sequence))}
                       >
                         {text.readSection}
                       </Button>
-                      <code className="block break-all text-xs text-muted-foreground">{finding.locator}</code>
                     </div>
                   ))}
                   <section className="space-y-2 rounded-md border p-3 text-sm">
@@ -852,7 +1270,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                       className="space-y-2"
                       onSubmit={(event) => {
                         event.preventDefault();
-                        void perform(async () => {
+                        void perform(async (sequence) => {
                           const checkId = visibleCheck.check_id;
                           await journalRequest("/api/disposition", {
                             check_id: checkId,
@@ -863,6 +1281,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                           const saved = await journalRequest<JournalCheck>(
                             journalQuery("/api/check", { check_id: checkId }),
                           );
+                          if (sequence !== loadSequence.current) return;
                           setCheck(saved);
                           setHistory((records) =>
                             records.map((record) => (record.check_id === checkId ? saved : record)),
@@ -906,7 +1325,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                   disabled={busy}
                   key={fragment.fragment_id}
                   className="rounded-md border p-3 text-left text-sm hover:bg-accent"
-                  onClick={() => void perform(() => showFragment(fragment))}
+                  onClick={() => void perform((sequence) => showFragment(fragment, sequence))}
                 >
                   <strong className="block text-xs">
                     {world?.sources.find((source) => source.source_id === fragment.source_id)?.name}
@@ -920,10 +1339,9 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
               <p className="whitespace-pre-wrap">{selectedFragment.text}</p>
               {selectedFragment.content.title && (
                 <p className="text-xs text-muted-foreground">
-                  {text.declaredReference}: {selectedFragment.content.title} · {selectedFragment.content.locator}
+                  {text.declaredReference}: {selectedFragment.content.title}
                 </p>
               )}
-              <code className="block break-all text-xs">{selectedFragment.locator}</code>
               {connection && linkedId && <details>
                 <summary>{text.annotations.title}</summary>
                 <div className="mt-3"><JournalAnnotations projectId={projectId} reference={annotationReference("source", selectedFragment.fragment_id)} onOpenTarget={openAnnotationTarget} /></div>
@@ -978,15 +1396,8 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                         </div>
                       ))}
                   </dl>
-                  <details className="mt-2 text-xs">
-                    <summary>{text.sourceData}</summary>
-                    <CodeBlock code={JSON.stringify(item.content, null, 2)} preClassName="whitespace-pre-wrap break-all" />
-                  </details>
                 </div>
               ))}
-              <p className="break-all text-xs text-muted-foreground">
-                {text.readRecord}: {manuscriptRead.read_receipt.read_record_id}
-              </p>
             </section>
           )}
         </DialogContent>
@@ -994,59 +1405,20 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
       <Dialog open={referencedObject !== null} onOpenChange={(open) => { if (!open) setReferencedObject(null); }}>
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           <DialogHeader><DialogTitle>{text.annotations.original}</DialogTitle><DialogDescription>{text.annotations.originalHelp}</DialogDescription></DialogHeader>
-          {referencedObject && <JournalObjectView object={referencedObject} />}
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={componentOpen}
-        onOpenChange={(open) => {
-          if (!busy) setComponentOpen(open);
-        }}
-      >
-        <DialogContent closeDisabled={busy} className="max-h-[85vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{text.importCandidates}</DialogTitle>
-            <DialogDescription>{text.candidatesHelp}</DialogDescription>
-          </DialogHeader>
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
-          {world && (
-            <form
-              className="space-y-3"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void perform(async () => {
-                  const captured = await capturedJournalFile(
-                    new File([componentJson], "agent-requirements.json", { type: "application/json" }),
-                  );
-                  const imported = await journalRequest<JournalWorld>("/api/world-component", {
-                    version_id: world.version_id,
-                    ...captured,
-                  });
-                  await load(linkedId, imported.version_id);
-                  setComponentJson("");
-                  setComponentOpen(false);
-                  setNotice("versionCreated");
-                });
-              }}
-            >
-              <Textarea
-                aria-label={text.candidateJson}
-                placeholder={text.candidateJson}
-                required
-                rows={16}
-                className="font-mono text-xs"
-                value={componentJson}
-                disabled={busy}
-                onChange={(event) => setComponentJson(event.target.value)}
-              />
-              <Button type="submit" disabled={busy || !componentJson.trim()}>
-                {text.importCandidates}
+          {referencedObject && (
+            <section className="space-y-3 text-sm">
+              <JournalObjectView object={referencedObject} />
+              <Button
+                variant="outline"
+                onClick={() => {
+                  useResearchTasksStore.getState().openTaskDetail(referencedObject.relatedTasks[0]?.id ?? "", "annotations");
+                  useWorkspaceSurfaceStore.getState().showFiles();
+                }}
+                disabled={!referencedObject.relatedTasks[0]}
+              >
+                {text.annotations.openTask}
               </Button>
-            </form>
+            </section>
           )}
         </DialogContent>
       </Dialog>
@@ -1075,7 +1447,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 className={selectClass}
                 disabled={busy}
                 value={comparison?.from ?? ""}
-                onChange={(event) => void perform(() => compareVersions(event.target.value, world.version_id))}
+                onChange={(event) => void perform((sequence) => compareVersions(event.target.value, world.version_id, sequence))}
               >
                 {otherVersions.map((item) => (
                   <option key={item.version_id} value={item.version_id}>
@@ -1119,7 +1491,6 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                               key={`${evidence.source_id}-${evidence.locator}`}
                             >
                               {evidence.quote}
-                              <code className="block break-all text-muted-foreground">{evidence.locator}</code>
                             </blockquote>
                           ))}
                           {value.resolution && (
@@ -1151,7 +1522,7 @@ function JournalImportDialog({
   onClose,
   onSubmit,
 }: {
-  mode: "manuscript" | "update" | "world" | null;
+  mode: "manuscript" | "update" | "world" | "template" | null;
   project: JournalProject | null;
   world: JournalWorld | null;
   busy: boolean;
@@ -1163,15 +1534,21 @@ function JournalImportDialog({
   const text = t(($) => $.researchTools.journal, { returnObjects: true });
   const formId = useId();
   const [name, setName] = useState("");
-  const [journalId, setJournalId] = useState("");
+  const fallbackJournalId = useRef(generatedJournalId());
+  const fallbackJournalContext = useRef("");
   const [files, setFiles] = useState<{ file: File; kind: string }[]>([]);
   const [articleType, setArticleType] = useState("research_article");
   const [stage, setStage] = useState("initial_submission");
   const [language, setLanguage] = useState("en");
   const [reason, setReason] = useState("");
+  const isJournal = mode === "world" || mode === "template";
   useEffect(() => {
-    setName(mode === "world" ? (world?.journal_name ?? "") : mode === "update" ? (project?.name ?? "") : "");
-    setJournalId(world?.journal_id ?? "");
+    const context = `${mode ?? "closed"}:${world?.version_id ?? ""}`;
+    if (fallbackJournalContext.current !== context) {
+      fallbackJournalId.current = generatedJournalId();
+      fallbackJournalContext.current = context;
+    }
+    setName(mode === "world" || mode === "template" ? (world?.journal_name ?? "") : mode === "update" ? (project?.name ?? "") : "");
     setFiles([]);
     setReason("");
     setArticleType(world?.scope.article_type ?? "research_article");
@@ -1179,7 +1556,7 @@ function JournalImportDialog({
     setLanguage(world?.scope.language ?? "en");
   }, [mode, project?.name, world]);
   const title =
-    mode === "world" ? text.importJournal : mode === "update" ? text.updateManuscript : text.importManuscript;
+    mode === "template" ? text.importTemplate : mode === "world" ? text.importJournal : mode === "update" ? text.updateManuscript : text.importManuscript;
   return (
     <Dialog
       open={mode !== null}
@@ -1190,16 +1567,40 @@ function JournalImportDialog({
       <DialogContent closeDisabled={busy} className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{mode === "world" ? text.importJournalHelp : text.captureHelp}</DialogDescription>
+          <DialogDescription>{mode === "template" ? text.templateHelp : mode === "world" ? text.importJournalHelp : text.captureHelp}</DialogDescription>
         </DialogHeader>
         <form
           className="space-y-3"
           onSubmit={(event) => {
             event.preventDefault();
             onSubmit(async () => {
-              if (mode === "world")
+              const selectedFile = files[0]?.file;
+              const journalName = name.trim() || (selectedFile ? fileStem(selectedFile) : "");
+              const resolvedJournalId = fallbackJournalId.current;
+              if (mode === "template") {
+                if (!selectedFile) throw new Error(text.chooseTemplateFile);
+                return importJournalTemplate(selectedFile, {
+                  journal_id: resolvedJournalId,
+                  journal_name: journalName,
+                  article_type: articleType,
+                  stage,
+                  language,
+                });
+              }
+              if (mode === "world") {
+                const templates = files.filter(({ kind }) => kind === "template_docx");
+                if (templates.length > 1) throw new Error(text.template.oneTemplate);
+                if (templates[0]) return importJournalTemplate(templates[0].file, {
+                  journal_id: resolvedJournalId,
+                  journal_name: name,
+                  article_type: articleType,
+                  stage,
+                  language,
+                }, await Promise.all(files.filter((item) => item !== templates[0]).map(async ({ file, kind }) => ({
+                  ...(await capturedJournalFile(file)), kind,
+                }))));
                 return journalRequest<JournalWorld>("/api/worlds", {
-                  journal_id: journalId,
+                  journal_id: resolvedJournalId,
                   journal_name: name,
                   article_type: articleType,
                   stage,
@@ -1216,6 +1617,7 @@ function JournalImportDialog({
                     })),
                   ),
                 });
+              }
               const file = files[0].file;
               const captured = await capturedJournalFile(file);
               if (mode === "update")
@@ -1242,7 +1644,7 @@ function JournalImportDialog({
           )}
           {mode !== "update" && (
             <label htmlFor={`${formId}-name`} className="block space-y-1 text-sm">
-              <span>{text.displayName}</span>
+              <span>{mode === "template" ? text.templateName : text.displayName}</span>
               <Input
                 id={`${formId}-name`}
                 required
@@ -1252,67 +1654,57 @@ function JournalImportDialog({
               />
             </label>
           )}
-          {mode === "world" && (
-            <>
-              <label htmlFor={`${formId}-journal`} className="block space-y-1 text-sm">
-                <span>{text.journalId}</span>
-                <Input
-                  id={`${formId}-journal`}
-                  required
-                  value={journalId}
-                  disabled={busy}
-                  onChange={(event) => setJournalId(event.target.value)}
-                />
-              </label>
-              <p className="text-xs text-muted-foreground">{text.journalIdHelp}</p>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="space-y-1 text-xs">
-                  <span>{text.articleType}</span>
-                  <select
-                    className={selectClass}
-                    value={articleType}
-                    disabled={busy}
-                    onChange={(event) => setArticleType(event.target.value)}
-                  >
-                    {Object.entries(text.articleTypes).map(([id, label]) => (
-                      <option value={id} key={id}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="space-y-1 text-xs">
-                  <span>{text.stage}</span>
-                  <select
-                    className={selectClass}
-                    value={stage}
-                    disabled={busy}
-                    onChange={(event) => setStage(event.target.value)}
-                  >
-                    {Object.entries(text.stages).map(([id, label]) => (
-                      <option value={id} key={id}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="space-y-1 text-xs">
-                  <span>{text.language}</span>
-                  <select
-                    className={selectClass}
-                    value={language}
-                    disabled={busy}
-                    onChange={(event) => setLanguage(event.target.value)}
-                  >
-                    {Object.entries(text.languages).map(([id, label]) => (
-                      <option key={id} value={id}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </>
+          {isJournal && (
+            <details className="rounded-md border p-3 text-xs" data-testid="journal-submission-context">
+                <summary>{text.submissionContext}</summary>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <label className="space-y-1 text-xs">
+                    <span>{text.articleType}</span>
+                    <select
+                      className={selectClass}
+                      value={articleType}
+                      disabled={busy}
+                      onChange={(event) => setArticleType(event.target.value)}
+                    >
+                      {Object.entries(text.articleTypes).map(([id, label]) => (
+                        <option value={id} key={id}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-xs">
+                    <span>{text.stage}</span>
+                    <select
+                      className={selectClass}
+                      value={stage}
+                      disabled={busy}
+                      onChange={(event) => setStage(event.target.value)}
+                    >
+                      {Object.entries(text.stages).map(([id, label]) => (
+                        <option value={id} key={id}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-xs">
+                    <span>{text.language}</span>
+                    <select
+                      className={selectClass}
+                      value={language}
+                      disabled={busy}
+                      onChange={(event) => setLanguage(event.target.value)}
+                    >
+                      {Object.entries(text.languages).map(([id, label]) => (
+                        <option key={id} value={id}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+            </details>
           )}
           <label className="block space-y-1 text-sm">
             <span>{text.files}</span>
@@ -1320,48 +1712,64 @@ function JournalImportDialog({
               aria-label={text.files}
               type="file"
               disabled={busy}
-              accept={mode === "world" ? ".txt,.docx,.pdf,.json" : ".docx"}
+              accept={mode === "template" ? ".doc,.docx" : mode === "world" ? ".txt,.doc,.docx,.pdf" : ".docx"}
               multiple={mode === "world"}
               className="w-full text-xs file:mr-2 file:rounded-md file:border file:bg-background file:px-2 file:py-1.5 file:text-foreground"
               onChange={(event) => {
-                const chosen = Array.from(event.target.files ?? []).map((file) => ({
-                  file,
-                  kind: file.name.endsWith(".pdf")
-                    ? "guide_pdf"
-                    : file.name.endsWith(".docx")
-                      ? "guide_docx"
-                      : file.name.endsWith(".json")
-                        ? "rule_component_json"
-                        : "guide_text",
-                }));
+                const chosen = Array.from(event.target.files ?? []).map((file) => {
+                  const filename = file.name.toLowerCase();
+                  return {
+                    file,
+                    kind: filename.endsWith(".pdf")
+                      ? "guide_pdf"
+                      : filename.endsWith(".doc")
+                        ? "template_docx"
+                        : filename.endsWith(".docx")
+                          ? "guide_docx"
+                          : "guide_text",
+                  };
+                });
                 setFiles(chosen);
-                if (!name && chosen.length) setName(chosen[0].file.name.replace(/\.[^.]+$/, ""));
+                if (chosen.length && (mode === "template" || !name)) setName(fileStem(chosen[0].file));
               }}
             />
           </label>
-          {mode === "world" &&
-            files.map(({ file, kind }, index) => (
-              <label className="block space-y-1 text-xs" key={file.name}>
-                <span>{file.name}</span>
-                <select
-                  aria-label={`${text.sourceKind}: ${file.name}`}
-                  className={selectClass}
-                  value={kind}
-                  disabled={busy}
-                  onChange={(event) =>
-                    setFiles(
-                      files.map((item, current) => (current === index ? { ...item, kind: event.target.value } : item)),
-                    )
-                  }
-                >
-                  {Object.entries(text.sourceKinds).map(([id, label]) => (
-                    <option key={id} value={id}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ))}
+          {mode === "world" && files.length > 0 && (
+            <details className="rounded-md border p-3 text-xs" data-testid="journal-source-roles">
+              <summary>{text.sourceRoles}</summary>
+              <div className="mt-3 space-y-2">
+                {files.map(({ file, kind }, index) => (
+                  <label
+                    className="block space-y-1 text-xs"
+                    key={`${file.name}-${file.lastModified}-${file.size}`}
+                  >
+                    <span>{file.name}</span>
+                    <select
+                      aria-label={`${text.sourceKind}: ${file.name}`}
+                      className={selectClass}
+                      value={kind}
+                      disabled={busy}
+                      onChange={(event) =>
+                        setFiles(
+                          files.map((item, current) =>
+                            current === index ? { ...item, kind: event.target.value } : item,
+                          ),
+                        )
+                      }
+                    >
+                      {Object.entries(text.sourceKinds)
+                        .filter(([id]) => id !== "rule_component_json")
+                        .map(([id, label]) => (
+                        <option key={id} value={id}>
+                          {label}
+                        </option>
+                        ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+            </details>
+          )}
           {mode === "update" && (
             <label htmlFor={`${formId}-reason`} className="block space-y-1 text-sm">
               <span>{text.updateReason}</span>
@@ -1381,4 +1789,14 @@ function JournalImportDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function JournalTemplateSummary({ world, project, check }: {
+  world: JournalWorld;
+  project: JournalProject | null;
+  check: JournalCheck | null;
+}) {
+  return world.template
+    ? <div data-testid="journal-template-summary"><JournalTemplatePanel world={world} project={project} check={check} /></div>
+    : null;
 }

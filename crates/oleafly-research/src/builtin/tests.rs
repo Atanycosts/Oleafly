@@ -254,18 +254,28 @@ impl LoopbackBridge {
             post(move |Json(request): Json<Value>| {
                 lock(&observed).push(request.clone());
                 async move {
-                    let (text, failed) = match (
+                    let (text, failed, image) = match (
                         request["name"].as_str(),
                         request["arguments"]["id"].as_str(),
                     ) {
                         (Some("load_skill"), Some("enabled-skill")) => (
                             json!({"instructions":"Use the recorded source ranges."}).to_string(),
                             false,
+                            None,
                         ),
-                        (Some("load_skill"), _) => ("This skill is disabled.".into(), true),
-                        _ => ("scoped research evidence".into(), false),
+                        (Some("load_skill"), _) => ("This skill is disabled.".into(), true, None),
+                        (Some("read_docx_image"), _) => (
+                            json!({"source":"live-docx","objectRef":"drawing-1","mimeType":"image/png"}).to_string(),
+                            false,
+                            Some("iVBORw0KGgo="),
+                        ),
+                        _ => ("scoped research evidence".into(), false, None),
                     };
-                    Json(json!({"content":[{"type":"text","text":text}],"isError":failed}))
+                    let mut content = vec![json!({"type":"text","text":text})];
+                    if let Some(image) = image {
+                        content.push(json!({"type":"image","mimeType":"image/png","data":image}));
+                    }
+                    Json(json!({"content":content,"isError":failed}))
                 }
             }),
         );
@@ -320,6 +330,25 @@ impl TaskBridge for LoopbackBridge {
                 .await
                 .map_err(|error| error.to_string())
         })
+    }
+
+    fn tool_definitions(&self) -> Vec<crate::mcp::protocol::ToolMeta> {
+        let mut tools = crate::mcp::tool_definitions();
+        tools.push(crate::mcp::protocol::ToolMeta::new(
+            "read_docx_image",
+            "Read one image from the bound DOCX.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "paragraph_ref":{"type":"string"},
+                    "object_ref":{"type":"string"},
+                    "expected_revision":{"type":"integer","minimum":0}
+                },
+                "required":["paragraph_ref","object_ref","expected_revision"],
+                "additionalProperties":false
+            }),
+        ));
+        tools
     }
 
     fn shutdown(
@@ -1274,7 +1303,11 @@ async fn the_agent_is_woken_when_a_run_finishes_after_its_turn() {
         "{woken}"
     );
     assert!(
-        woken.ends_with("Record the result in ledger.tsv with ledger_append and update handoff.md before the next step."),
+        woken.contains("If the task permits and needs file records, record the result in ledger.tsv with ledger_append and update handoff.md before the next step"),
+        "{woken}"
+    );
+    assert!(
+        woken.ends_with("The task's explicit output and file restrictions still apply."),
         "{woken}"
     );
     let runs = services.runs.list(&task.id).unwrap();
@@ -2266,4 +2299,113 @@ async fn retained_pdf_mcp_images_reach_the_next_model_request() {
         image.unwrap()["image_url"]["url"],
         "data:image/png;base64,iVBORw0KGgo="
     );
+}
+
+#[tokio::test]
+async fn docx_application_images_reach_the_next_model_request_after_tool_loading() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Scripted::start(script(|_, step| match step {
+        0 => tool_delta(vec![("discover_tools", json!({"query":"read_docx_image"}))]),
+        1 => tool_delta(vec![(
+            "read_docx_image",
+            json!({
+                "paragraph_ref":"para-7",
+                "object_ref":"drawing-1",
+                "expected_revision":12
+            }),
+        )]),
+        _ => text_reply("The embedded image is available for inspection."),
+    }))
+    .await;
+    let host = fixture_host(root.path(), provider.url.clone()).await;
+    let adapter = BuiltinTaskAdapter::new(host.clone(), services(&root.path().join("tasks")));
+    within(adapter.run(
+        context(root.path()),
+        CancellationToken::new(),
+        event_log().1,
+    ))
+    .await
+    .unwrap();
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(tool_names(&requests[1])
+        .iter()
+        .any(|name| name == "read_docx_image"));
+    let outputs = tool_outputs(&requests[2]);
+    assert!(outputs.iter().any(|output| {
+        output.contains("\"source\":\"live-docx\"")
+            && output.contains("\"objectRef\":\"drawing-1\"")
+            && output.contains("\"mimeType\":\"image/png\"")
+    }));
+    let image = requests[2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .find(|part| part["type"] == "image_url");
+    assert_eq!(
+        image.unwrap()["image_url"]["url"],
+        "data:image/png;base64,iVBORw0KGgo="
+    );
+    let text_channels = requests[2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| {
+            message["content"].as_str().into_iter().chain(
+                message["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|part| part["type"] == "text")
+                    .filter_map(|part| part["text"].as_str()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!text_channels.contains("base64"));
+    assert_eq!(lock(&host.bridge.calls)[0]["name"], "read_docx_image");
+}
+
+#[tokio::test]
+async fn text_only_task_models_are_told_that_docx_pixels_are_unreadable() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Scripted::start(script(|_, step| match step {
+        0 => tool_delta(vec![("discover_tools", json!({"query":"read_docx_image"}))]),
+        1 => tool_delta(vec![(
+            "read_docx_image",
+            json!({
+                "paragraph_ref":"para-7",
+                "object_ref":"drawing-1",
+                "expected_revision":12
+            }),
+        )]),
+        _ => text_reply("The model received the text-only explanation."),
+    }))
+    .await;
+    let mut host = fixture_host(root.path(), provider.url.clone()).await;
+    Arc::get_mut(&mut host).unwrap().caps =
+        oleafly_agent::ModelCaps::from_metadata_json(&json!({"inputModalities":["text"]}));
+    let adapter = BuiltinTaskAdapter::new(host.clone(), services(&root.path().join("tasks")));
+    within(adapter.run(
+        context(root.path()),
+        CancellationToken::new(),
+        event_log().1,
+    ))
+    .await
+    .unwrap();
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(tool_outputs(&requests[2]).iter().any(|output| {
+        output.contains("selected model reads only text") && output.contains("read_docx_document")
+    }));
+    assert!(requests[2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .all(|part| part["type"] != "image_url"));
+    assert!(lock(&host.bridge.calls).is_empty());
 }

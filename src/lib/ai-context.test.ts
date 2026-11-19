@@ -7,7 +7,9 @@ const state = vi.hoisted(() => ({
   index: {} as Record<string, unknown>,
   memory: "",
   line: null as number | null,
+  word: { viewed: null, writable: [], selectionWriteTarget: null, targeting: "" } as Record<string, unknown>,
 }));
+vi.mock("@/lib/docx-agent-host", () => ({ getDocxWorkspaceContext: () => state.word }));
 
 vi.mock("@/store/files", () => ({
   useFilesStore: { getState: () => state.files },
@@ -41,6 +43,7 @@ function fakeIndex(defs: Def[], uses: Use[], resolved: string[] = []) {
 beforeEach(() => {
   registry.contextProviders.length = 0;
   state.line = null;
+  state.word = { viewed: null, writable: [], selectionWriteTarget: null, targeting: "" };
   state.memory = "";
   state.files = {
     projectId: "p1",
@@ -63,6 +66,16 @@ afterEach(() => {
 });
 
 describe("buildWorkspaceContext", () => {
+  it("injects viewed original separately from dirty writable Word context", async () => {
+    state.word = { viewed: { role: "original", revision: "source-hash", selection: { quote: "reference" } },
+      writable: [{ sessionId: "working-session", sessionRevision: 4, dirty: true }], selectionWriteTarget: null,
+      targeting: "Historical selections are reference data" };
+    const text = await buildWorkspaceContext();
+    expect(text).toContain('"role":"original"');
+    expect(text).toContain('"sessionId":"working-session"');
+    expect(text).toContain('"selectionWriteTarget":null');
+    expect(text).toContain("view and write targets are distinct");
+  });
   it("describes an empty workspace with defaults", async () => {
     const text = await buildWorkspaceContext();
     expect(text).toContain("You are currently in the editor view.");

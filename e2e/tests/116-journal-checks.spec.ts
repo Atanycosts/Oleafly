@@ -1,7 +1,14 @@
+import type { TauriPage } from "@srsholmes/tauri-playwright";
 import { strToU8, zipSync } from "fflate";
-import { readFileSync } from "node:fs";
 import { test, expect, reloadNativePage } from "../fixtures";
-import { openRailTab } from "../helpers";
+import { evaluateLong, expectJournalPanelReady, openRailTab } from "../helpers";
+import { startMockAiServer } from "../mock-ai-server";
+import { scriptValue } from "../script-value";
+import type { JournalComponent, JournalWorld } from "../../src/lib/journal-workbench";
+
+const A4_WIDTH_TWIPS = 11906;
+const A4_HEIGHT_TWIPS = 16838;
+const LETTER_WIDTH_TWIPS = 12240;
 
 function manuscript(width: number, height: number, columns: number) {
   return Buffer.from(zipSync({
@@ -11,18 +18,117 @@ function manuscript(width: number, height: number, columns: number) {
   }));
 }
 
+function component(
+  journalId: string,
+  rules: JournalComponent["rules"],
+  sources: JournalComponent["sources"],
+  componentId: string,
+): JournalComponent {
+  return {
+    schema_version: "journal-rule-component-1.0.0",
+    component_id: componentId,
+    component_version: "1.0.0",
+    applicability: {
+      journal_ids: [journalId],
+      article_types: ["research_article"],
+      stages: ["initial_submission"],
+      languages: ["en"],
+      basis: "Explicit component for the captured guide evidence in this acceptance fixture.",
+    },
+    sources,
+    rules,
+  };
+}
+
+async function createConfirmedWorld(
+  page: TauriPage,
+  journalId: string,
+  journalName: string,
+  guide: string,
+  rules: JournalComponent["rules"],
+  sources: JournalComponent["sources"],
+): Promise<JournalWorld> {
+  const requirementComponent = component(journalId, rules, sources, "page-geometry");
+  const decisions = rules.map((rule) => ({
+    property: rule.property,
+    expected: rule.expected,
+    reason: "Operator confirmed the explicit component against the captured guide evidence.",
+  }));
+  return evaluateLong<JournalWorld>(page, `import("/src/lib/journal-workbench.ts").then(async (j) => {
+    await j.connectJournalWorkbench();
+    const base = await j.journalRequest("/api/worlds", {
+      journal_id: ${scriptValue(journalId)},
+      journal_name: ${scriptValue(journalName)},
+      article_type: "research_article",
+      stage: "initial_submission",
+      language: "en",
+      sources: [{
+        name: "guide.txt",
+        kind: "guide_text",
+        content_base64: ${scriptValue(Buffer.from(guide).toString("base64"))},
+      }],
+    });
+    return j.journalRequest("/api/world-component", {
+      version_id: base.version_id,
+      name: "requirements.json",
+      content_base64: ${scriptValue(Buffer.from(JSON.stringify(requirementComponent)).toString("base64"))},
+      decisions: ${scriptValue(decisions)},
+    });
+  })`, 120_000);
+}
+
+async function addCandidateComponent(
+  page: TauriPage,
+  worldVersionId: string,
+  document: JournalComponent,
+): Promise<JournalWorld> {
+  return evaluateLong<JournalWorld>(page, `import("/src/lib/journal-workbench.ts").then((j) =>
+    j.journalRequest("/api/world-component", {
+      version_id: ${scriptValue(worldVersionId)},
+      name: "typography.json",
+      content_base64: ${scriptValue(Buffer.from(JSON.stringify(document)).toString("base64"))},
+    })
+  )`, 90_000);
+}
+
+async function refreshAndSelectWorld(
+  page: TauriPage,
+  versionId: string,
+) {
+  const panel = page.getByTestId("journal-checks-panel");
+  await panel.locator('button[aria-label="Refresh journal checks"]').click();
+  await expect.poll(() => page.evaluate<string[]>(`Array.from(
+    document.querySelector('[data-testid="journal-world-select"]')?.options ?? []
+  ).map((option) => option.value)`)).toContain(versionId);
+  await page.selectOption('[data-testid="journal-world-select"]', versionId);
+  await expect(page.getByTestId("journal-world-select")).toHaveValue(versionId);
+  await expect.poll(() => panel.getAttribute("aria-busy")).toBe("false");
+}
+
+async function expectVerdictCount(
+  page: TauriPage,
+  verdict: string,
+  count: number,
+) {
+  await expect.poll(() => page.evaluate<string | null>(`(() => {
+    const cards = Array.from(document.querySelectorAll('[aria-label="Check results"] div.grid > div'));
+    const card = cards.find((item) => item.children[0]?.textContent === ${scriptValue(verdict)});
+    return card?.children[1]?.textContent ?? null;
+  })()`)).toBe(String(count));
+}
+
 test("journal sources, manuscript evidence, revision and history use the real Workbench", async ({ tauriPage }) => {
   test.skip(!process.env.OLEAFLY_WORKBENCH_PYTHON, "Requires an installed Workbench Python environment.");
-  test.setTimeout(180_000);
+  test.setTimeout(240_000);
   await tauriPage.evaluate(`import("/src/store/settings.ts").then(({ useSettingsStore }) => useSettingsStore.getState().setUiLocalePreference("en"))`);
   await tauriPage.waitForFunction(`document.documentElement.lang === "en"`, 10_000);
   const fillText = async (selector: string, value: string) => {
     await expect(tauriPage.locator(selector)).toBeVisible();
     return tauriPage.evaluate(`(() => {
-    const field = document.querySelector(${JSON.stringify(selector)});
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, ${JSON.stringify(value)});
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    return true;
+      const field = document.querySelector(${scriptValue(selector)});
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, ${scriptValue(value)});
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
     })()`);
   };
   const projectId = await tauriPage.evaluate<string>(`(async () => {
@@ -32,65 +138,120 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
     await useFilesStore.getState().openProject(id);
     return id;
   })()`);
-  const journalId = `journal-${projectId}`;
   await openRailTab(tauriPage, "Journal checks");
   const panel = tauriPage.getByTestId("journal-checks-panel");
-  await expect(panel.getByText("Import DOCX", { exact: true })).toBeVisible({ timeout: 30_000 });
-  await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled();
+  const workspace = tauriPage.getByTestId("journal-workspace");
+  await expectJournalPanelReady(tauriPage);
   await panel.getByText("Import DOCX", { exact: true }).click();
   await tauriPage.fill('[role="dialog"] input:not([type="file"])', "Retained manuscript");
   await tauriPage.setInputFiles('[role="dialog"] input[type="file"]', [{
-    name: "manuscript.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: manuscript(12240, 15840, 1),
+    name: "manuscript.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: manuscript(LETTER_WIDTH_TWIPS, 15840, 1),
   }]);
   await expect(tauriPage.locator('[role="dialog"] button[type="submit"]')).toBeEnabled();
   await tauriPage.click('[role="dialog"] button[type="submit"]');
   await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
+  await expect.poll(() => panel.getAttribute("aria-busy")).toBe("false");
 
-  await expect(panel.getByText("Import journal sources", { exact: true })).toBeEnabled();
-  await panel.getByText("Import journal sources", { exact: true }).click();
-  await tauriPage.fill('[role="dialog"] input[id$="-name"]', "Test journal");
-  await tauriPage.fill('[role="dialog"] input[id$="-journal"]', journalId);
-  await tauriPage.setInputFiles('[role="dialog"] input[type="file"]', [{
-    name: "guide.txt", mimeType: "text/plain", buffer: Buffer.from("All manuscript pages must use A4 paper.\nAll manuscript pages must have 25.4 mm margins on all sides.\nAll manuscript pages must use 2 columns."),
-  }]);
-  await expect(tauriPage.locator('[role="dialog"] button[type="submit"]')).toBeEnabled();
-  await tauriPage.click('[role="dialog"] button[type="submit"]');
-  await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
-  await expect(panel.getByText("Use this version", { exact: true })).toBeEnabled();
-  await panel.getByText("Use this version", { exact: true }).click();
-  await expect(panel.getByText("Version bound", { exact: true })).toBeVisible();
+  const journalId = `journal-fixture-${Date.now()}`;
+  const guide = [
+    "All manuscript pages must use A4 paper.",
+    "All manuscript pages must have 25.4 mm margins on all sides.",
+    "All manuscript pages must use 2 columns.",
+  ].join("\n");
+  const geometrySources: JournalComponent["sources"] = [
+    {
+      source_id: "page-size",
+      title: "Page-size guidance",
+      locator: "line:1",
+      quote: "All manuscript pages must use A4 paper.",
+    },
+    {
+      source_id: "margins",
+      title: "Margin guidance",
+      locator: "line:2",
+      quote: "All manuscript pages must have 25.4 mm margins on all sides.",
+    },
+    {
+      source_id: "columns",
+      title: "Column guidance",
+      locator: "line:3",
+      quote: "All manuscript pages must use 2 columns.",
+    },
+  ];
+  const geometryRules: JournalComponent["rules"] = [
+    { property: "page_width_twips", expected: A4_WIDTH_TWIPS, unit: "twips", source_refs: ["page-size"] },
+    { property: "page_height_twips", expected: A4_HEIGHT_TWIPS, unit: "twips", source_refs: ["page-size"] },
+    { property: "top_margin_twips", expected: 1440, unit: "twips", source_refs: ["margins"] },
+    { property: "right_margin_twips", expected: 1440, unit: "twips", source_refs: ["margins"] },
+    { property: "bottom_margin_twips", expected: 1440, unit: "twips", source_refs: ["margins"] },
+    { property: "left_margin_twips", expected: 1440, unit: "twips", source_refs: ["margins"] },
+    { property: "columns", expected: 2, unit: "count", source_refs: ["columns"] },
+  ];
+  const initialWorld = await createConfirmedWorld(
+    tauriPage,
+    journalId,
+    "Test journal",
+    guide,
+    geometryRules,
+    geometrySources,
+  );
+  await refreshAndSelectWorld(tauriPage, initialWorld.version_id);
+  await expect(workspace.getByText("Use this version", { exact: true })).toBeEnabled();
+  await workspace.getByText("Use this version", { exact: true }).click();
+  await expect(workspace.getByText("Version bound", { exact: true })).toBeVisible();
   await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
   await panel.getByText("Run check", { exact: true }).click();
-  await expect(panel.getByText("Violation 3", { exact: true })).toBeVisible();
-  await panel.getByText("Page width", { exact: true }).click();
-  await expect(tauriPage.getByText("All manuscript pages must use A4 paper.", { exact: true })).toBeVisible();
-  await tauriPage.getByText("Read retained section", { exact: true }).click();
-  await expect(tauriPage.getByText("Retained section data", { exact: true })).toBeVisible();
-  await tauriPage.click('[role="dialog"] button:has(.lucide-x)');
+  const results = workspace.locator('[aria-label="Check results"]');
+  await expect(results).toBeVisible();
+  await expectVerdictCount(tauriPage, "Violation", 3);
+  await workspace.getByText("Page width", { exact: true }).click();
+  const ruleDialog = tauriPage.locator('[role="dialog"]');
+  await expect(ruleDialog.getByText("All manuscript pages must use A4 paper.", { exact: true })).toBeVisible();
+  await ruleDialog.getByText("Read retained section", { exact: true }).click();
+  await expect(ruleDialog.getByText("Retained section data", { exact: true })).toBeVisible();
+  await tauriPage.press('[role="dialog"]', "Escape");
 
   await panel.getByText("Update DOCX", { exact: true }).click();
   await tauriPage.fill('[role="dialog"] input:not([type="file"])', "Match A4 and two columns");
   await tauriPage.setInputFiles('[role="dialog"] input[type="file"]', [{
-    name: "revised.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: manuscript(11906, 16838, 2),
+    name: "revised.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: manuscript(A4_WIDTH_TWIPS, A4_HEIGHT_TWIPS, 2),
   }]);
   await expect(tauriPage.locator('[role="dialog"] button[type="submit"]')).toBeEnabled();
   await tauriPage.click('[role="dialog"] button[type="submit"]');
   await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
-  await expect(panel.getByText("The manuscript has changed.", { exact: false })).toBeVisible();
-  await expect(panel.locator('[aria-label="Check results"] strong')).toHaveText("Historical · rerun needed");
+  await expect.poll(() => panel.getAttribute("aria-busy")).toBe("false");
+  await expect(workspace.getByText("The manuscript has changed.", { exact: false })).toBeVisible();
+  await expect(results.getByText("Historical · rerun needed", { exact: true })).toBeVisible();
   await expect(panel.getByText("Run check", { exact: true })).toBeDisabled();
-  await expect(panel.getByText("Use this version", { exact: true })).toBeEnabled();
-  await panel.getByText("Use this version", { exact: true }).click();
+  await expect(workspace.getByText("Use this version", { exact: true })).toBeEnabled();
+  await workspace.getByText("Use this version", { exact: true }).click();
   await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
   await panel.getByText("Run check", { exact: true }).click();
-  await expect(panel.getByText("Compliant 7", { exact: true })).toBeVisible();
-  const saved = await tauriPage.evaluate(`(async () => {
+  await expectVerdictCount(tauriPage, "Compliant", 7);
+  const saved = await evaluateLong<{
+    workspace: { journalProjectId: string | null };
+    checks: { id: string; baseline: string; validity: string; summary: Record<string, number> }[];
+    reads: number;
+  }>(tauriPage, `(async () => {
     const { getResearchWorkspace } = await import("/src/lib/research-workspace.ts");
     const { journalRequest } = await import("/src/lib/journal-workbench.ts");
-    const workspace = await getResearchWorkspace(${JSON.stringify(projectId)});
+    const workspace = await getResearchWorkspace(${scriptValue(projectId)});
     const history = await journalRequest("/api/history?project_id=" + workspace.journalProjectId);
-    return { workspace, checks: history.checks.map(c => ({ id: c.check_id, baseline: c.baseline_id, validity: c.validity, summary: c.summary })), reads: history.reads.length };
-  })()`);
+    return {
+      workspace,
+      checks: history.checks.map(c => ({
+        id: c.check_id,
+        baseline: c.baseline_id,
+        validity: c.validity,
+        summary: c.summary,
+      })),
+      reads: history.reads.length,
+    };
+  })()`, 90_000);
   expect(saved.checks).toHaveLength(2);
   expect(saved.checks[0].summary.violation).toBe(3);
   expect(saved.checks[0].validity).toBe("STALE");
@@ -99,11 +260,11 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   expect(saved.reads).toBe(1);
   expect(saved.workspace.journalProjectId).toMatch(/^project-/);
   await reloadNativePage(tauriPage);
-  await tauriPage.evaluate(`import("/src/store/files.ts").then(({ useFilesStore }) => useFilesStore.getState().openProject(${JSON.stringify(projectId)}))`);
+  await tauriPage.evaluate(`import("/src/store/files.ts").then(({ useFilesStore }) => useFilesStore.getState().openProject(${scriptValue(projectId)}))`);
   await openRailTab(tauriPage, "Journal checks");
-  await expect(tauriPage.getByTestId("journal-checks-panel").getByText("Compliant 7", { exact: true })).toBeVisible();
+  await expect(tauriPage.getByTestId("journal-workspace").locator('[aria-label="Check results"]')).toContainText("Compliant");
 
-  await panel.getByText("Page width", { exact: true }).click();
+  await workspace.getByText("Page width", { exact: true }).click();
   await fillText('[aria-label="Handling note"]', "Keep the original finding; review the next guide version.");
   await expect(tauriPage.getByText("Save handling note", { exact: true })).toBeEnabled();
   await tauriPage.getByText("Save handling note", { exact: true }).click();
@@ -115,26 +276,34 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   await tauriPage.getByText("Save requirement version", { exact: true }).click();
   await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
   await tauriPage.evaluate(`import("/src/store/settings.ts").then(({ useSettingsStore }) => useSettingsStore.getState().setUiLocalePreference("zh-Hans"))`);
-  await expect(panel.getByText("已保存新期刊版本。审阅后可选择“使用此版本”，再重新检查。", { exact: true })).toBeVisible();
+  await expect(workspace.getByText("已保存新期刊版本。审阅后可选择“使用此版本”，再重新检查。", { exact: true })).toBeVisible();
   await tauriPage.evaluate(`import("/src/store/settings.ts").then(({ useSettingsStore }) => useSettingsStore.getState().setUiLocalePreference("en"))`);
-  await expect(panel.getByText("Use this version", { exact: true })).toBeVisible();
-  await expect(panel.getByText("Use this version", { exact: true })).toBeEnabled();
+  await expect(workspace.getByText("Use this version", { exact: true })).toBeEnabled();
   await expect(panel.getByText("Run check", { exact: true })).toBeDisabled();
-  await panel.getByText("Compare versions", { exact: true }).click();
+  await workspace.getByText("Compare versions", { exact: true }).click();
   await expect(tauriPage.getByText("210.01 mm · Confirmed requirement → 215.9 mm · Confirmed requirement", { exact: true })).toBeVisible();
-  await tauriPage.click('[role="dialog"] button:has(.lucide-x)');
+  await tauriPage.press('[role="dialog"]', "Escape");
 
-  await panel.getByText("Import candidate JSON", { exact: true }).click();
-  await fillText('[aria-label="Candidate rule component JSON"]', JSON.stringify({
-    schema_version: "journal-rule-component-1.0.0", component_id: "source-review", component_version: "1.0.0",
-    applicability: { journal_ids: [journalId], article_types: ["research_article"], stages: ["initial_submission"], languages: ["en"], basis: "Operator-supplied guidance for the example" },
-    sources: [{ source_id: "type-guide", title: "Typography guide", locator: "line:1", quote: "Use 9.5-point body type throughout." }],
-    rules: [{ property: "body_font_size_halfpoints", expected: 19, unit: "half_points", source_refs: ["type-guide"] }],
-  }));
-  await expect(tauriPage.locator('[role="dialog"] button[type="submit"]')).toBeEnabled();
-  await tauriPage.click('[role="dialog"] button[type="submit"]');
-  await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
-  await panel.getByText("Body font size", { exact: true }).click();
+  const revisedVersionId = await evaluateLong<string>(tauriPage, `import("/src/lib/journal-workbench.ts").then(async (j) => {
+    const state = await j.journalRequest("/api/state");
+    return state.worlds
+      .filter((world) => world.journal_id === ${scriptValue(journalId)})
+      .sort((a, b) => b.version_ordinal - a.version_ordinal)[0].version_id;
+  })`, 60_000);
+  const typography = component(
+    journalId,
+    [{ property: "body_font_size_halfpoints", expected: 19, unit: "half_points", source_refs: ["type-guide"] }],
+    [{
+      source_id: "type-guide",
+      title: "Typography guide",
+      locator: "line:1",
+      quote: "Use 9.5-point body type throughout.",
+    }],
+    "typography",
+  );
+  const candidateWorld = await addCandidateComponent(tauriPage, revisedVersionId, typography);
+  await refreshAndSelectWorld(tauriPage, candidateWorld.version_id);
+  await workspace.getByText("Body font size", { exact: true }).click();
   await expect(tauriPage.getByText("Candidate observation · 9.5 pt · Not checked", { exact: true })).toBeVisible();
   await tauriPage.getByText("Confirm or revise this requirement", { exact: true }).click();
   await expect(tauriPage.getByLabel("Expected (pt)", { exact: true })).toHaveValue("9.5");
@@ -142,137 +311,110 @@ test("journal sources, manuscript evidence, revision and history use the real Wo
   await expect(tauriPage.getByText("Save requirement version", { exact: true })).toBeEnabled();
   await tauriPage.getByText("Save requirement version", { exact: true }).click();
   await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
-  const reviewed = await tauriPage.evaluate(`(async () => {
+  const reviewed = await evaluateLong<{
+    binding: string;
+    current: {
+      world_version_id: string;
+      validity: string;
+      summary: Record<string, number>;
+      dispositions: { note: string }[];
+    };
+    sources: number;
+    rules: { property: string; expected: unknown; basis: string }[];
+  }>(tauriPage, `(async () => {
     const { journalRequest } = await import("/src/lib/journal-workbench.ts");
     const state = await journalRequest("/api/state");
-    const project = state.projects.find(p => p.project_id === ${JSON.stringify(saved.workspace.journalProjectId)});
-    const versions = state.worlds.filter(w => w.journal_id === ${JSON.stringify(journalId)});
-    const latest = await journalRequest("/api/world?version_id=" + versions.sort((a,b) => b.version_ordinal-a.version_ordinal)[0].version_id);
-    return { binding: project.binding.world_version_id, current: project.latest_check,
-      sources: latest.sources.length, rules: latest.rules.map(r => ({ property: r.property, expected: r.expected, basis: r.basis_status })) };
-  })()`);
+    const project = state.projects.find(p => p.project_id === ${scriptValue(saved.workspace.journalProjectId)});
+    const versions = state.worlds.filter(w => w.journal_id === ${scriptValue(journalId)});
+    const latest = await journalRequest("/api/world?version_id=" + versions.sort((a, b) => b.version_ordinal - a.version_ordinal)[0].version_id);
+    return {
+      binding: project.binding.world_version_id,
+      current: project.latest_check,
+      sources: latest.sources.length,
+      rules: latest.rules.map(r => ({
+        property: r.property,
+        expected: r.expected,
+        basis: r.basis_status,
+      })),
+    };
+  })()`, 90_000);
   expect(reviewed.binding).toBe(reviewed.current.world_version_id);
   expect(reviewed.current.validity).toBe("CURRENT");
   expect(reviewed.current.summary.compliant).toBe(7);
   expect(reviewed.current.dispositions[0].note).toBe("Keep the original finding; review the next guide version.");
-  expect(reviewed.sources).toBe(2);
-  expect(reviewed.rules.find(r => r.property === "page_width_twips").expected).toBe(12240);
-  expect(reviewed.rules.find(r => r.property === "body_font_size_halfpoints")).toMatchObject({ expected: 19, basis: "confirmed" });
-  await expect(panel.getByText("Use this version", { exact: true })).toBeEnabled();
-  await panel.getByText("Use this version", { exact: true }).click();
+  expect(reviewed.sources).toBe(3);
+  expect(reviewed.rules.find((rule: { property: string }) => rule.property === "page_width_twips")).toMatchObject({
+    expected: LETTER_WIDTH_TWIPS,
+  });
+  expect(reviewed.rules.find((rule: { property: string }) => rule.property === "body_font_size_halfpoints")).toMatchObject({
+    expected: 19,
+    basis: "confirmed",
+  });
+  await expect(workspace.getByText("Use this version", { exact: true })).toBeEnabled();
+  await workspace.getByText("Use this version", { exact: true }).click();
   await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
   await panel.getByText("Run check", { exact: true }).click();
-  await expect(panel.getByText("Violation 1", { exact: true })).toBeVisible();
-  await expect(panel.getByText("Cannot determine 1", { exact: true })).toBeVisible();
-  for (const [locale, title] of [["zh-Hans", "研究期刊要求"], ["en", "Research journal requirements"]]) {
-    await tauriPage.evaluate(`import("/src/store/settings.ts").then(({ useSettingsStore }) => useSettingsStore.getState().setUiLocalePreference(${JSON.stringify(locale)}))`);
-    await expect(panel.getByText(title, { exact: true })).toBeVisible();
-    const layout = await tauriPage.evaluate(`(() => {
-      const card = document.querySelector('[data-testid="journal-research-panel"]');
-      const button = card.querySelector('button');
-      const outer = card.getBoundingClientRect();
-      const inner = button.getBoundingClientRect();
-      return { contained: inner.left >= outer.left && inner.right <= outer.right, scroll: button.scrollWidth, width: button.clientWidth, wrapping: getComputedStyle(button).whiteSpace };
-    })()`);
-    expect(layout.contained).toBe(true);
-    expect(layout.scroll).toBeLessThanOrEqual(layout.width + 1);
-    expect(layout.wrapping).toBe("normal");
-  }
+  await expectVerdictCount(tauriPage, "Violation", 1);
+  await expectVerdictCount(tauriPage, "Cannot determine", 1);
 });
 
-test("live journal research returns cited candidates and adopts them into a manuscript check", async ({ tauriPage }) => {
-  test.skip(process.env.OLEAFLY_JOURNAL_RESEARCH_LIVE !== "1", "Opt in to a real provider call.");
-  test.setTimeout(2_400_000);
-  await tauriPage.evaluate(`import("/src/store/settings.ts").then(({ useSettingsStore }) => useSettingsStore.getState().setUiLocalePreference("en"))`);
-  await tauriPage.waitForFunction(`document.documentElement.lang === "en"`, 10_000);
-  const manuscriptPath = process.env.OLEAFLY_JOURNAL_MANUSCRIPT;
-  const guidePath = process.env.OLEAFLY_JOURNAL_GUIDE;
-  if (!manuscriptPath || !guidePath) throw new Error("Select the retained manuscript and journal guide for the live run.");
-  const fillText = async (selector: string, value: string) => {
-    await expect(tauriPage.locator(selector)).toBeVisible();
-    await tauriPage.evaluate(`(() => {
-      const field = document.querySelector(${JSON.stringify(selector)});
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, ${JSON.stringify(value)});
-      field.dispatchEvent(new Event("input", { bubbles: true }));
-      return true;
+test("analyze with agent prepares a bounded review from the current journal check", async ({ tauriPage }) => {
+  test.skip(!process.env.OLEAFLY_WORKBENCH_PYTHON, "Requires an installed Workbench Python environment.");
+  test.setTimeout(120_000);
+  const server = await startMockAiServer();
+  try {
+    await tauriPage.evaluate(`import("/src/store/settings.ts").then(({ useSettingsStore }) => useSettingsStore.getState().setUiLocalePreference("en"))`);
+    await tauriPage.waitForFunction(`document.documentElement.lang === "en"`, 10_000);
+    const projectId = await tauriPage.evaluate<string>(`(async () => {
+      const { createMarkdownProject } = await import("/src/lib/tauri.ts");
+      const { useFilesStore } = await import("/src/store/files.ts");
+      const id = await createMarkdownProject("Journal agent " + Date.now());
+      await useFilesStore.getState().openProject(id);
+      return id;
     })()`);
-  };
-  const projectId = await tauriPage.evaluate<string>(`(async () => {
-    const { createMarkdownProject } = await import("/src/lib/tauri.ts");
-    const { useFilesStore } = await import("/src/store/files.ts");
-    const id = await createMarkdownProject("期刊研究 · TDSC 与真实稿件");
-    await useFilesStore.getState().openProject(id);
-    return id;
-  })()`);
-  await openRailTab(tauriPage, "Journal checks");
-  const panel = tauriPage.getByTestId("journal-checks-panel");
-  await expect(panel.getByText("Import DOCX", { exact: true })).toBeEnabled();
-  await panel.getByText("Import DOCX", { exact: true }).click();
-  await tauriPage.fill('[role="dialog"] input:not([type="file"])', "Retained IJAM manuscript · TDSC comparison");
-  await tauriPage.setInputFiles('[role="dialog"] input[type="file"]', [{
-    name: "manuscript.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: readFileSync(manuscriptPath),
-  }]);
-  await expect(tauriPage.locator('[role="dialog"] button[type="submit"]')).toBeEnabled();
-  await tauriPage.click('[role="dialog"] button[type="submit"]');
-  await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
-  await panel.getByText("Import journal sources", { exact: true }).click();
-  await tauriPage.fill('[role="dialog"] input[id$="-name"]', "IEEE Transactions on Dependable and Secure Computing");
-  await tauriPage.fill('[role="dialog"] input[id$="-journal"]', "tdsc-live-research");
-  await tauriPage.setInputFiles('[role="dialog"] input[type="file"]', [{
-    name: "tdsc-page-format-2026-10-14.txt", mimeType: "text/plain", buffer: readFileSync(guidePath),
-  }]);
-  await expect(tauriPage.locator('[role="dialog"] button[type="submit"]')).toBeEnabled();
-  await tauriPage.click('[role="dialog"] button[type="submit"]');
-  await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
-  await panel.getByText("Use this version", { exact: true }).click();
-  await expect(panel.getByText("Run check", { exact: true })).toBeEnabled();
-  await panel.getByText("Run check", { exact: true }).click();
-  await expect(panel.locator('[aria-label="Check results"]')).toBeVisible();
-  await panel.getByText("Research journal requirements", { exact: true }).click();
-  await fillText('[role="dialog"] textarea[id$="-request"]',
-    "Write the result in Chinese. Focus this task on the five numeric comparison values in the retained double-column page definition: width, height, columns, body type size and vertical spacing. Fetch the official Computer Society author-resources page and its linked IEEE article-template page to investigate the definition's applicability to initial submission. This is a format comparison, not full venue acceptance. Once those sources resolve the comparison's basis, deliver the cited candidates and manuscript actions. Do not expand into an audit of publication ethics or unrelated requirements. If the TDSC-specific JavaScript page is unreadable, use the readable publisher guidance for this comparison and state that exact remaining submission condition. Include only paths actually saved by web_fetch in source_paths.");
-  await fillText('[role="dialog"] textarea[id$="-urls"]', "https://www.computer.org/publications/author-resources\nhttps://journals.ieeeauthorcenter.ieee.org/create-your-ieee-journal-article/authoring-tools-and-templates/tools-for-ieee-authors/ieee-article-templates/");
-  await expect(tauriPage.locator('[role="dialog"] select[aria-label="Research model"]')).toHaveValue('["xiaobai","gpt-6.1-sol"]');
-  await tauriPage.press('[data-testid="ai-effort-selector"]', "Enter");
-  await tauriPage.locator('[role="menuitemradio"]').filter({ hasText: process.env.OLEAFLY_JOURNAL_EFFORT ?? "Max" }).click();
-  await expect(tauriPage.getByText("Start research", { exact: true })).toBeEnabled();
-  await tauriPage.getByText("Start research", { exact: true }).click();
-  await expect(tauriPage.locator('[role="dialog"]')).toHaveCount(0);
-  const task = await tauriPage.evaluate(`(async () => {
-    const { getResearchWorkspace } = await import("/src/lib/research-workspace.ts");
-    return (await getResearchWorkspace(${JSON.stringify(projectId)})).journalResearch;
-  })()`);
-  expect(task.taskId).toBeTruthy();
-  console.log("Live journal project:", projectId, "task:", task.taskId);
-  await expect(panel.getByText("Review research result", { exact: true })).toBeVisible({ timeout: 2_000_000 });
-  await panel.getByText("Review research result", { exact: true }).click();
-  await expect(tauriPage.locator('[role="dialog"]')).toBeVisible();
-  const result = await tauriPage.evaluate(`import("/src/lib/journal-workbench.ts").then(m => m.loadJournalResearchResult(${JSON.stringify(task.taskId)}))`);
-  expect(result.summary.length).toBeGreaterThan(100);
-  expect(result.sources.length).toBeGreaterThan(0);
-  expect(result.component.rules.length).toBeGreaterThan(0);
-  expect(result.component.sources.every((source: { quote: string; locator: string }) => source.quote && source.locator)).toBe(true);
-  const confirmations = tauriPage.locator('[role="dialog"] button[role="checkbox"][id$="-confirm"]');
-  const count = await confirmations.count();
-  expect(count).toBe(result.component.rules.length);
-  for (let index = 0; index < count; index += 1) await confirmations.nth(index).click();
-  await fillText('[role="dialog"] textarea[aria-label="Reason and source context"]',
-    "Operator confirms these as numeric comparison expectations for this TDSC format exercise after reviewing the cited definition and submission conditions. This does not establish universal initial-submission requirements or IJAM acceptance.");
-  await expect(tauriPage.getByText("Adopt selected requirements", { exact: true })).toBeEnabled();
-  await tauriPage.getByText("Adopt selected requirements", { exact: true }).click();
-  await expect(panel.getByText("Research requirements adopted and manuscript checked.", { exact: true })).toBeVisible({ timeout: 30_000 });
-  const saved = await tauriPage.evaluate(`(async () => {
-    const { getResearchWorkspace } = await import("/src/lib/research-workspace.ts");
-    const { journalRequest } = await import("/src/lib/journal-workbench.ts");
-    const workspace = await getResearchWorkspace(${JSON.stringify(projectId)});
-    const state = await journalRequest("/api/state");
-    const project = state.projects.find(p => p.project_id === workspace.journalProjectId);
-    const world = await journalRequest("/api/world?version_id=" + project.binding.world_version_id);
-    const history = await journalRequest("/api/history?project_id=" + project.project_id);
-    return { project: project.project_id, check: project.latest_check, worldSources: world.sources.length, rules: world.rules, checks: history.checks.length };
-  })()`);
-  expect(saved.check.validity).toBe("CURRENT");
-  expect(saved.checks).toBe(2);
-  expect(saved.worldSources).toBeGreaterThan(2);
-  console.log("Adopted journal result:", JSON.stringify({ project: saved.project, check: saved.check.check_id, summary: saved.check.summary, sources: saved.worldSources }));
+    expect(await tauriPage.evaluate(`window.__aiConnect?.("ollama", ${scriptValue(server.url)}, "llama3.2") ?? false`)).toBe(true);
+    const journalId = `journal-agent-${Date.now()}`;
+    const journalName = "Journal checks agent";
+    const quote = "All manuscript pages must use A4 paper.";
+    const world = await createConfirmedWorld(
+      tauriPage,
+      journalId,
+      journalName,
+      quote,
+      [
+        { property: "page_width_twips", expected: A4_WIDTH_TWIPS, unit: "twips", source_refs: ["a4"] },
+        { property: "page_height_twips", expected: A4_HEIGHT_TWIPS, unit: "twips", source_refs: ["a4"] },
+      ],
+      [{ source_id: "a4", title: "Page-size guidance", locator: "line:1", quote }],
+    );
+    await evaluateLong<void>(tauriPage, `import("/src/lib/journal-workbench.ts").then(async (j) => {
+      const manuscript = await j.journalRequest("/api/projects", {
+        name: "Agent review manuscript",
+        filename: "manuscript.docx",
+        content_base64: ${scriptValue(manuscript(LETTER_WIDTH_TWIPS, 15840, 1).toString("base64"))},
+      });
+      await j.linkJournalProject(${scriptValue(projectId)}, manuscript.project_id);
+      await j.journalRequest("/api/bind", {
+        project_id: manuscript.project_id,
+        world_version_id: ${scriptValue(world.version_id)},
+        expected_binding_id: null,
+      });
+      await j.journalRequest("/api/check", { project_id: manuscript.project_id });
+    })`, 120_000);
+    await openRailTab(tauriPage, "Journal checks");
+    const workspace = tauriPage.getByTestId("journal-workspace");
+    await expect(workspace.locator('[aria-label="Check results"]')).toBeVisible();
+    await expect(workspace.getByText("Analyze with agent", { exact: true })).toBeEnabled();
+    await workspace.getByText("Analyze with agent", { exact: true }).click();
+    await expect.poll(() => tauriPage.evaluate<string>(
+      `document.querySelector('textarea[placeholder*="Ask AI"]')?.value ?? ""`,
+    )).toContain(journalName);
+    const handoff = await tauriPage.evaluate<string>(
+      `document.querySelector('textarea[placeholder*="Ask AI"]')?.value ?? ""`,
+    );
+    expect(handoff).toContain("Read the saved check and its sources through the journal tools.");
+    expect(server.requestCount()).toBe(0);
+  } finally {
+    await server.close();
+  }
 });

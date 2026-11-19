@@ -4,8 +4,8 @@ use super::{
     drop_pending_tools, endpoint_override_allowed, finish_request, lock_or_recover,
     native_agent_tool, native_dispatch_allowed, pause_for_update, provider_config,
     restricted_tool_runner, resume_after_failed_update, run_registered, sanitized_run_config,
-    tool_error, tool_key, tool_pipeline, tool_reply_id, tool_risk, unwrap_mcp_text, Abortable,
-    AgentState, AppConfig, CompletionRequest, Duration, PendingTool, ProviderConfig,
+    tool_call_risk, tool_error, tool_key, tool_pipeline, tool_reply_id, tool_risk, unwrap_mcp_text,
+    Abortable, AgentState, AppConfig, CompletionRequest, Duration, PendingTool, ProviderConfig,
     RestrictedConfirm, RunConfig, ToolOutput, MAX_CONCURRENT_AGENT_REQUESTS,
     MAX_EARLY_CANCELLATIONS, MAX_RETRY_BASE_MS, MAX_RUN_RETRIES, MAX_RUN_STEPS, MIN_RETRY_BASE_MS,
 };
@@ -561,12 +561,44 @@ fn tool_risk_mirrors_the_shell_approval_table() {
     ] {
         assert_eq!(tool_risk(tool), oleafly_agent::ToolRisk::Read, "{tool}");
     }
-    for tool in ["literature_search", "verify_citation"] {
+    for tool in ["literature_search", "read_paper", "verify_citation"] {
         assert_eq!(tool_risk(tool), oleafly_agent::ToolRisk::Network, "{tool}");
     }
     assert_eq!(tool_risk("run_command"), oleafly_agent::ToolRisk::Shell);
     for tool in ["write_file", "delete_file", "a_brand_new_tool"] {
         assert_eq!(tool_risk(tool), oleafly_agent::ToolRisk::Write, "{tool}");
+    }
+}
+
+#[test]
+fn paper_reads_classify_the_selected_input() {
+    let risk = |arguments: serde_json::Value| {
+        tool_call_risk(&oleafly_agent::ToolCall {
+            name: "read_paper".into(),
+            arguments: arguments.to_string(),
+            ..Default::default()
+        })
+    };
+    assert_eq!(
+        risk(serde_json::json!({"path": "papers/source.pdf"})),
+        oleafly_agent::ToolRisk::Read
+    );
+    assert_eq!(
+        risk(serde_json::json!({"path": "source.pdf", "root_id": "references", "doi": " "})),
+        oleafly_agent::ToolRisk::Read
+    );
+    assert_eq!(
+        risk(
+            serde_json::json!({"reference": {"projectId": "paper", "path": "sources/old.pdf", "pdfSha256": "hash"}, "doi": "10.1000/source"})
+        ),
+        oleafly_agent::ToolRisk::Read
+    );
+    for arguments in [
+        serde_json::json!({"doi": "10.1000/source"}),
+        serde_json::json!({"arxiv": "1706.03762", "path": "source.pdf"}),
+        serde_json::json!({"url": "https://example.org/source.pdf"}),
+    ] {
+        assert_eq!(risk(arguments), oleafly_agent::ToolRisk::Network);
     }
 }
 

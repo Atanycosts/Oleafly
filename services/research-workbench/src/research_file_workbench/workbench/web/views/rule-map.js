@@ -5,11 +5,13 @@ const COMPONENTS = [
   { id: "paper", label: "纸张", description: "页面尺寸", properties: ["page_width_twips", "page_height_twips"], x: 27, y: 45 },
   { id: "margins", label: "页边距", description: "四侧留白", properties: ["top_margin_twips", "right_margin_twips", "bottom_margin_twips", "left_margin_twips"], x: 73, y: 50 },
   { id: "columns", label: "分栏", description: "正文栏数", properties: ["columns"], x: 26, y: 75 },
+  { id: "body-font", label: "正文格式", description: "字体、字号与行距", properties: ["body_font_family", "body_font_size_halfpoints", "body_line_spacing_twips"], x: 73, y: 78 },
 ];
 const RULE_POSITIONS = {
   page_width_twips: [13, 27], page_height_twips: [13, 63],
   top_margin_twips: [72, 24], right_margin_twips: [89, 37],
   bottom_margin_twips: [72, 76], left_margin_twips: [89, 63], columns: [45, 84],
+  body_font_family: [73, 90], body_font_size_halfpoints: [87, 76], body_line_spacing_twips: [87, 90],
 };
 const DETAIL_POSITIONS = [[27, 26], [73, 26], [27, 74], [73, 74]];
 const WORLD_POSITION = [50, 50];

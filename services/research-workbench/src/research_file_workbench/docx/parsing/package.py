@@ -21,11 +21,15 @@ from research_file_workbench.docx.xml_support import (
     OFFICE_RELATIONSHIP_NAMESPACE,
     WORD_NAMESPACE,
     WORDPROCESSING_DRAWING_NAMESPACE,
+    iter_selected,
+    region_for_part,
+    string_attribute,
     tag_local_name,
 )
 
 _CONTENT_TYPES_PATH = "[Content_Types].xml"
 _RELATIONSHIP_SUFFIX = ".rels"
+_VML_NAMESPACE = "urn:schemas-microsoft-com:vml"
 
 
 def package_part_names(archive: ZipFile) -> tuple[str, ...]:
@@ -229,6 +233,43 @@ def read_unsupported_records(
     relation_map = {
         (relation.source_part, relation.relationship_id): relation for relation in relationships
     }
+    for part_path, root in xml_roots.items():
+        if region_for_part(part_path) is None:
+            continue
+        pict_index = 0
+        for element in iter_selected(root):
+            if tag_local_name(element.tag) != "pict":
+                continue
+            pict_index += 1
+            imagedata = next(
+                (
+                    child
+                    for child in element.iter()
+                    if child.tag == f"{{{_VML_NAMESPACE}}}imagedata"
+                ),
+                None,
+            )
+            if imagedata is None:
+                continue
+            relationship_id = string_attribute(imagedata, OFFICE_RELATIONSHIP_NAMESPACE, "id")
+            relation = relation_map.get((part_path, relationship_id or ""))
+            records.append(
+                DocxUnsupportedRecord(
+                    source_location=f"{part_path}#pict[{pict_index}]/imagedata",
+                    kind="vml_picture",
+                    relationship_id=relationship_id,
+                    failure_reason=(
+                        "The selected VML picture is recognized but is not parsed as a "
+                        "DrawingML image."
+                    ),
+                    related_part=relation.resolved_target if relation is not None else None,
+                    parse_status="unsupported",
+                    available_page_evidence=(),
+                    limitations=(
+                        "VML picture semantics and rendered placement are not interpreted.",
+                    ),
+                )
+            )
     for issue in issues:
         if issue.startswith("unresolved-relationship:"):
             _, source_part, relationship_id, target = issue.split(":", 3)

@@ -69,6 +69,10 @@ vi.mock("@/components/pdf/PdfViewer", () => ({ PdfViewer: () => <div data-testid
 vi.mock("./DiagramMainFileView", () => ({
   default: () => <div data-testid="diagram-main" />,
 }));
+vi.mock("@/components/preview/HtmlOutputPanel", () => ({ HtmlOutputPanel: ({ projectId, path }: { projectId: string; path: string }) => <div data-testid="html-file-preview">{projectId}:{path}</div> }));
+vi.mock("./DocxFileView", () => ({
+  default: ({ projectId, path }: { projectId: string; path: string }) => <div data-testid="word-view">{projectId}:{path}</div>,
+}));
 vi.mock("@/components/layout/WorkspaceControls", () => ({
   SidebarCollapseToggle: () => <div data-testid="sidebar-toggle" />,
 }));
@@ -130,6 +134,15 @@ describe("Editor shell", () => {
     expect(screen.getByText(shell.noFileOpenTab)).toBeInTheDocument();
     expect(screen.getByText(shell.noFileOpen)).toBeInTheDocument();
     expect(screen.getByText(shell.noFileOpenHint)).toBeInTheDocument();
+  });
+
+  it.each(["英文稿/paper.docx", "template.DOC"])("opens %s with the Word surface", async (path) => {
+    openFile(path);
+    render(<Editor />);
+    expect(await screen.findByTestId("word-view")).toHaveTextContent(`project:${path}`);
+    expect(screen.queryByTestId("codemirror")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("binary-file-notice")).not.toBeInTheDocument();
+    expect(tauri.readFileBase64).not.toHaveBeenCalled();
   });
 
   it("keeps the notice about files others deleted in the editor area, with or without an open file", () => {
@@ -721,4 +734,12 @@ describe("Editor in Zen mode", () => {
     });
     expect(event.defaultPrevented).toBe(false);
   });
+});
+
+
+it("opens HTML source files in the center through the isolated HTML output surface", async () => {
+  openFile("reports/dashboard.HTML");
+  render(<Editor />);
+  expect(await screen.findByTestId("html-file-preview")).toHaveTextContent("project:reports/dashboard.HTML");
+  expect(screen.queryByTestId("codemirror")).toBeNull();
 });

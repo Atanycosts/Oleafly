@@ -209,6 +209,32 @@ describe("round trip through the app's own serializer", () => {
     const stripped = `\\begin{tikzpicture}\n\\end{tikzpicture}\n${serializeDiagram(original).split("\n").pop()}`;
     expect(diagramFromSource(stripped)?.nodes).toHaveLength(3);
   });
+
+  it("adopts edited shape, fill, label and routing from the visible TikZ", () => {
+    const edited = serializeDiagram(original)
+      .replace("circle, draw=", "ellipse, draw=")
+      .replace("{Alpha}", "{Edited}")
+      .replace("fill=cCFE8F8", "fill=red!25")
+      .replace("\\draw[->,", "\\draw[<->,")
+      .replace(" -- ", " to[out=0,in=180] ");
+
+    const adopted = diagramFromSource(edited);
+    if (!adopted) throw new Error("edited diagram was not adopted");
+
+    expect(node(adopted, "a")).toMatchObject({
+      shape: "rectangle",
+      label: "Edited",
+      fill: "#ffbfbf",
+      stroke: "#1e293b",
+    });
+    expect(node(adopted, "c").shape).toBe("ellipse");
+    expect(edge(adopted, "a", "b")).toMatchObject({
+      routing: "curved",
+      arrow: "both",
+      sourceHandle: "r",
+      targetHandle: "l",
+    });
+  });
 });
 
 describe("node syntax", () => {
@@ -372,6 +398,31 @@ describe("styles, colours and strokes", () => {
     const model = parseTikz(String.raw`\definecolor{cAABBCC}{HTML}{AABBCC}
       \begin{tikzpicture}\node[draw, fill=cAABBCC] (a) at (0,0) {A};\end{tikzpicture}`);
     expect(model?.nodes[0].fill).toBe("#aabbcc");
+  });
+
+  it("lets a picture override document styles while retaining local style references", () => {
+    const model = parseTikz(String.raw`\tikzset{
+      common/.style={draw=teal, minimum width=2cm, minimum height=1cm},
+      every node/.style={font=\sffamily\small}
+    }
+    \begin{tikzpicture}[
+      common/.style={draw=red, minimum width=2cm, minimum height=1cm},
+      box/.style={common, fill=blue!25},
+      every node/.style={font=\ttfamily\large}
+    ]
+      \node[box] (a) at (0,0) {A};
+    \end{tikzpicture}`);
+    if (!model) throw new Error("no model");
+
+    expect(node(model, "a")).toMatchObject({
+      shape: "rectangle",
+      stroke: "#ff0000",
+      fill: "#bfbfff",
+      fontFamily: "mono",
+      fontSize: 12,
+      w: 80,
+      h: 40,
+    });
   });
 
   it("reads dashed and dotted strokes", () => {
@@ -736,6 +787,87 @@ describe("document context", () => {
     expect(
       parseTikz(String.raw`\begin{tikzpicture}\node[draw] (a) at (0,0) {A};\end{tikzpicture}`)?.background,
     ).toBeUndefined();
+  });
+
+  it("turns styled document shapes, coordinates and mixed routes into one model", () => {
+    const { model, unsupported } = importTikz(String.raw`\documentclass{standalone}
+\usepackage{tikz}
+\usetikzlibrary{positioning, shapes.geometric, arrows.meta}
+\tikzset{
+  base/.style={draw=teal, fill=teal!15, text=black,
+    font=\ttfamily\large, minimum width=2.8cm, minimum height=1cm},
+  decision/.style={base, shape=diamond, minimum width=4cm},
+  terminal/.style={ellipse, draw=black, fill=yellow!20, minimum size=1.2cm},
+  manual/.style={trapezium, base, minimum width=3cm},
+  junction/.style={regular polygon, base, minimum size=1cm}
+}
+\begin{document}
+\begin{tikzpicture}[node distance=1.4cm,
+  every node/.append style={font=\sffamily\small}]
+  \coordinate (origin) at (0,0);
+  \node[decision] (ask) at (origin) {Check?};
+  \node[base, below=1cm of ask] (load) {Load};
+  \node[terminal, right=1cm of ask.east] (warn) {Warn};
+  \node[manual] (entry) at (-4,-3) {Input};
+  \node[junction] (join) at (4,-3) {J};
+  \node[draw, rounded corners=8pt, dashed, line width=0.1cm,
+    fill=orange!25, text=olive] (note) at (0,-5) {Note};
+  \draw[-Stealth, dashed]
+    (ask) -| node[pos=0.25, above] {retry} ++(0,-1.2) -| (load);
+  \draw[<->, thick]
+    (ask.east) to[out=0,in=180] node[midway, above] {manual path}
+    (warn.west);
+  \draw[->] (entry) -- (join);
+\end{tikzpicture}
+\end{document}`);
+
+    expect(unsupported).toEqual([]);
+    expect(node(model, "ask")).toMatchObject({
+      shape: "diamond",
+      fill: "#d9ecec",
+      stroke: "#008080",
+      textColor: "#000000",
+      fontFamily: "mono",
+      fontSize: 12,
+      w: 160,
+      h: 40,
+    });
+    expect(node(model, "warn")).toMatchObject({
+      shape: "ellipse",
+      fill: "#ffffcc",
+      stroke: "#000000",
+      fontFamily: "sans",
+      fontSize: 9,
+      w: 48,
+      h: 48,
+    });
+    expect(node(model, "entry").shape).toBe("parallelogram");
+    expect(node(model, "join")).toMatchObject({ shape: "circle", w: 112, h: 40 });
+    expect(node(model, "note")).toMatchObject({
+      shape: "roundrect",
+      fill: "#ffdfbf",
+      stroke: "#000000",
+      strokeStyle: "dashed",
+      strokeWidth: 4,
+      textColor: "#808000",
+      radius: 11,
+    });
+    expect(node(model, "load").y - node(model, "ask").y).toBe(80);
+    expect(node(model, "warn").x - (node(model, "ask").x + node(model, "ask").w)).toBe(40);
+    expect(edge(model, "ask", "load")).toMatchObject({
+      routing: "orthogonal",
+      arrow: "forward",
+      style: "dashed",
+      label: "retry",
+    });
+    expect(edge(model, "ask", "warn")).toMatchObject({
+      routing: "curved",
+      arrow: "both",
+      style: "solid",
+      label: "manual path",
+      sourceHandle: "r",
+      targetHandle: "l",
+    });
   });
 });
 
@@ -1115,6 +1247,23 @@ describe("paths and pictures in less common forms", () => {
     const withoutSemicolon = importTikz(`\\node[draw] (a) at (0,0) {A} ${"x".repeat(2_000_001)}`);
     expect(withoutSemicolon.unsupported).toContain("truncated");
   }, 15_000);
+
+  it("adopts a standalone text node beside an orthogonal route as its label", () => {
+    const model = parseTikz(String.raw`
+      \node[draw, minimum width=2cm, minimum height=1cm] (a) at (0,0) {Start};
+      \node[draw, minimum width=2cm, minimum height=1cm] (b) at (4,-4) {End};
+      \node at (2,-2) {review};
+      \draw[->] (a) -- (2,0) -- (2,-2) -- (4,-2) -- (b);
+    `);
+    if (!model) throw new Error("no model");
+
+    expect(model.nodes.map((entry) => entry.id)).toEqual(["a", "b"]);
+    expect(edge(model, "a", "b")).toMatchObject({
+      routing: "orthogonal",
+      arrow: "forward",
+      label: "review",
+    });
+  });
 });
 
 describe("extractPictureBody", () => {

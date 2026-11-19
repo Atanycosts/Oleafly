@@ -74,7 +74,10 @@ describe("preview_figure in a LaTeX project", () => {
       "proj",
       buildStandaloneDoc({ code: TIKZ, packages: ["pgfplots"], libraries: ["arrows.meta"] }),
     );
-    expect(host.setLastFigurePreview).toHaveBeenCalledWith({ pdfBytes: new Uint8Array(PDF_BYTES) });
+    expect(host.setLastFigurePreview).toHaveBeenCalledWith({
+      pdfBytes: new Uint8Array(PDF_BYTES),
+      projectId: "proj",
+    });
     expect(host.pdfToPng).toHaveBeenCalledWith(new Uint8Array(PDF_BYTES), 1, 2);
     expect(onImage).toHaveBeenCalledWith("data:image/png;base64,RENDER");
     expect(result).toEqual({ success: true, errors: [], has_pdf: true, log_tail: "ok" });
@@ -138,6 +141,38 @@ describe("preview_figure in a LaTeX project", () => {
     });
     expect(closed.compileIsolated).not.toHaveBeenCalled();
   });
+
+  it("does not publish a preview that finishes after the project switches", async () => {
+    let finishCompile!: (value: {
+      ok: boolean;
+      errors: unknown[];
+      has_pdf: boolean;
+      log: string;
+    }) => void;
+    const compile = new Promise<{
+      ok: boolean;
+      errors: unknown[];
+      has_pdf: boolean;
+      log: string;
+    }>((resolve) => {
+      finishCompile = resolve;
+    });
+    const getProjectId = vi.fn(() => "proj");
+    const host = makeHost({
+      getProjectId,
+      compileIsolated: vi.fn(() => compile),
+    });
+
+    const result = createFigureTools(host).preview_figure.execute({ code: TIKZ });
+    getProjectId.mockReturnValue("other");
+    finishCompile({ ok: true, errors: [], has_pdf: true, log: "ok" });
+
+    expect(await result).toEqual({
+      error: "The open project changed or the figure request was cancelled before completion.",
+    });
+    expect(host.readIsolatedPdf).not.toHaveBeenCalled();
+    expect(host.setLastFigurePreview).not.toHaveBeenCalled();
+  });
 });
 
 describe("preview_figure in a Typst project", () => {
@@ -158,6 +193,38 @@ describe("preview_figure in a Typst project", () => {
     expect(await createFigureTools(host).preview_figure.execute({ code: "#box[]" })).toEqual({
       error: "Error: typst crashed",
     });
+  });
+
+  it("does not publish a render that finishes after the project switches", async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let finishRender!: (value: { ok: false; diagnostics: [] }) => void;
+    const render = new Promise<{ ok: false; diagnostics: [] }>((resolve) => {
+      finishRender = resolve;
+    });
+    const getProjectId = vi.fn(() => "proj");
+    const onImage = vi.fn();
+    const host = makeHost({
+      getProjectId,
+      getFigureEngine: vi.fn(() => "typst" as const),
+      renderTypstFigure: vi.fn(() => {
+        markStarted();
+        return render;
+      }),
+    });
+
+    const result = createFigureTools(host, { onImage }).preview_figure.execute({ code: "#box[]" });
+    await started;
+    getProjectId.mockReturnValue("other");
+    finishRender({ ok: false, diagnostics: [] });
+
+    expect(await result).toEqual({
+      error: "The open project changed or the figure request was cancelled before completion.",
+    });
+    expect(host.setLastFigurePreview).not.toHaveBeenCalled();
+    expect(onImage).not.toHaveBeenCalled();
   });
 });
 
@@ -210,6 +277,34 @@ describe("insert_figure in a LaTeX project", () => {
     expect(result).toEqual({ success: true, figure: "figures/figure.png" });
   });
 
+  it("does not save a preview that belongs to another project", async () => {
+    let sharedPreview: FigurePreview | null = null;
+    const getProjectId = vi.fn(() => "proj");
+    await createFigureTools(
+      makeHost({
+        getProjectId,
+        setLastFigurePreview: vi.fn((value: FigurePreview | null) => {
+          sharedPreview = value;
+        }),
+      }),
+    ).preview_figure.execute({ code: TIKZ });
+
+    getProjectId.mockReturnValue("other");
+    const confirm = vi.fn<ConfirmFn>(async () => true);
+    const host = makeHost({
+      getProjectId,
+      getLastFigurePreview: vi.fn(() => sharedPreview),
+    });
+    const result = await createFigureTools(host, { confirm }).insert_figure.execute({ code: TIKZ });
+
+    expect(confirm).toHaveBeenCalledWith({
+      tool: "insert_figure",
+      summary: "Insert this figure into the document",
+    });
+    expect(host.writeProjectBytes).not.toHaveBeenCalled();
+    expect(result).toEqual({ success: true });
+  });
+
   it("asks without an image and saves no PNG when the preview cannot be rendered", async () => {
     const confirm = vi.fn<ConfirmFn>(async () => true);
     const host = makeHost({
@@ -238,7 +333,7 @@ describe("insert_figure in a LaTeX project", () => {
       code: TIKZ,
     });
     expect(result).toEqual({
-      error: "Error: Project changed or the external request was cancelled before mutation.",
+      error: "The open project changed or the figure request was cancelled before completion.",
     });
     expect(host.insertAtCursor).not.toHaveBeenCalled();
   });
@@ -352,5 +447,27 @@ describe("load_image", () => {
     expect(await createFigureTools(closed).load_image.execute({ path: "x.png" })).toEqual({
       error: "No project open",
     });
+  });
+
+  it("does not publish an image that finishes loading after the project switches", async () => {
+    let finishRead!: (value: Uint8Array) => void;
+    const read = new Promise<Uint8Array>((resolve) => {
+      finishRead = resolve;
+    });
+    const getProjectId = vi.fn(() => "proj");
+    const onImage = vi.fn();
+    const host = makeHost({
+      getProjectId,
+      readProjectBytes: vi.fn(() => read),
+    });
+
+    const result = createFigureTools(host, { onImage }).load_image.execute({ path: "sketch.png" });
+    getProjectId.mockReturnValue("other");
+    finishRead(png(2, 2));
+
+    expect(await result).toEqual({
+      error: "The open project changed or the figure request was cancelled before completion.",
+    });
+    expect(onImage).not.toHaveBeenCalled();
   });
 });

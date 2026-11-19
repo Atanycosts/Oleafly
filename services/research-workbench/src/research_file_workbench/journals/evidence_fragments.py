@@ -3,6 +3,7 @@
 from typing import cast
 
 from research_file_workbench.common.json_io import JsonObject, decode_json_object
+from research_file_workbench.docx.format_snapshot import format_snapshot_method
 from research_file_workbench.docx.query import object_observations
 from research_file_workbench.docx.reader import read_docx_bytes
 from research_file_workbench.docx.report import READER_VERSION
@@ -16,13 +17,44 @@ from research_file_workbench.journals.pdf_analysis import (
     analyze_pdf_bytes,
 )
 
-EVIDENCE_METHOD_VERSION = "journal-source-evidence-1.1.0"
+EVIDENCE_METHOD_VERSION = "journal-source-evidence-1.3.0"
 
 
 def source_fragments(
     source_id: str, source_kind: str, payload: bytes
 ) -> tuple[list[JsonObject], list[str]]:
     """Extract fragments and reader issues for one retained source payload."""
+    if source_kind == "template_original":
+        return [], ["Original template bytes are retained; inspect normalized DOCX facts."]
+    if source_kind == "docx_format_snapshot":
+        snapshot = decode_json_object(payload)
+        engine_version = str(cast(JsonObject, snapshot["engine"])["version"])
+        version = format_snapshot_method(snapshot) + ":" + engine_version
+        fragments = [
+            _fragment(
+                source_id,
+                "template_object",
+                str(item["object_id"]),
+                str(item.get("text") or item["role"]),
+                content=item,
+                part_path=str(item["part"]),
+                reader_version=version,
+            )
+            for item in require_objects(snapshot["objects"], "core snapshot objects")
+        ]
+        fragments.extend(
+            _fragment(
+                source_id,
+                "template_style",
+                str(style["object_id"]),
+                str(style.get("name") or style["style_id"]),
+                content=style,
+                part_path=str(style["part"]),
+                reader_version=version,
+            )
+            for style in require_objects(snapshot.get("style_definitions", []), "style definitions")
+        )
+        return fragments, []
     if source_kind == "guide_pdf":
         return _pdf_fragments(source_id, payload)
     if source_kind == "guide_text":

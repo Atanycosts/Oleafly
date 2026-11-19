@@ -183,6 +183,7 @@ vi.mock("@/components/open-folder/OpenFolderKeeper", () => ({ OpenFolderKeeper: 
 vi.mock("@/components/layout/ProjectAvailabilityKeeper", () => ({ ProjectAvailabilityKeeper: () => null }));
 vi.mock("@/components/layout/FolderWatchKeeper", () => ({ FolderWatchKeeper: () => null }));
 vi.mock("@/components/editor/Editor", () => ({
+  EditorTabBar: () => null,
   Editor: () => {
     mocks.editorRenders++;
     return <div data-testid="editor-surface" />;

@@ -1,6 +1,7 @@
 """Local journal worlds, explicit manuscript bindings and evidence-backed checks."""
 
 import shutil
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
@@ -24,10 +25,9 @@ from research_file_workbench.projects.models import BaselineConflictError
 from research_file_workbench.projects.service import (
     create_project,
     import_captured_document,
-    import_document,
     open_project,
 )
-from research_file_workbench.workbench.manuscripts import read_manuscript
+from research_file_workbench.workbench.manuscripts import manuscript_source, read_manuscript
 from research_file_workbench.workbench.project_facade import (
     diff_worlds,
     discover_state,
@@ -40,20 +40,28 @@ from research_file_workbench.workbench.project_facade import (
 class ManuscriptUpdateRefused(ValueError):
     """Raised when a retained refusal record answers a manuscript update attempt."""
 
+    def __init__(self, message: str, *, result: JsonObject) -> None:
+        super().__init__(message)
+        self.result = result
+
 
 class WorkbenchService:
     """Coordinate owned library data while keeping original client files read-only."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, font_dirs: tuple[Path, ...] = ()) -> None:
         self.store = WorldStore(root)
         self.store.validate_library()
         self.root = root.resolve()
+        self.font_dirs = font_dirs
+        self._render_lock = threading.Lock()
 
     @classmethod
-    def create(cls, root: Path, *, protected_roots: tuple[Path, ...] = ()) -> "WorkbenchService":
+    def create(
+        cls, root: Path, *, protected_roots: tuple[Path, ...] = (), font_dirs: tuple[Path, ...] = ()
+    ) -> "WorkbenchService":
         """Initialize explicitly selected storage outside protected author workspaces."""
         WorldStore.create(root, protected_roots=protected_roots)
-        return cls(root)
+        return cls(root, font_dirs=font_dirs)
 
     def import_world(
         self,
@@ -77,7 +85,7 @@ class WorkbenchService:
         captured = {f"source-{sha256_bytes(source.content)}": source.content for source in sources}
         return self.store.save_world(world, captured)
 
-    def revise(self, version_id: str, rule_id: str, expected: int, reason: str) -> JsonObject:
+    def revise(self, version_id: str, rule_id: str, expected: int | str, reason: str) -> JsonObject:
         """Create a reasoned local rule correction without changing existing bindings."""
         original = self.store.get_world(version_id)
         revised = revise_rule(original, rule_id, expected, reason, "local-operator")
@@ -122,7 +130,7 @@ class WorkbenchService:
             world = revise_rule(
                 world,
                 _text(decision, "rule_id"),
-                cast(int, decision["expected"]),
+                cast(int | str, decision["expected"]),
                 _text(decision, "reason"),
                 _text(decision, "actor_id"),
             )
@@ -149,7 +157,14 @@ class WorkbenchService:
         )
 
     def import_manuscript(
-        self, name: str, filename: str, content: bytes, *, surface: str = "browser"
+        self,
+        name: str,
+        filename: str,
+        content: bytes,
+        *,
+        surface: str = "browser",
+        project_id: str | None = None,
+        reason: str | None = None,
     ) -> JsonObject:
         """Retain an uploaded DOCX in a managed project; no client source path is written."""
         _surface(surface)
@@ -157,10 +172,11 @@ class WorkbenchService:
         filename = _name(filename)
         if Path(filename).suffix.lower() != ".docx":
             raise ValueError("论文需要选择 DOCX 文件。")
-        result = read_docx_bytes(content, source_label=filename)
-        if any(part.status == "failed" for part in result.parts):
-            raise ValueError("论文包含无法解析的 XML 部件，请先检查源文件。")
-        identity = f"project-{uuid4().hex}"
+        identity = (
+            models.require_identifier(project_id, "project ID")
+            if project_id
+            else f"project-{uuid4().hex}"
+        )
         source_root = self.root / "inputs" / identity
         project_root = self.root / "projects" / identity
         self.store.validate_library()
@@ -182,16 +198,14 @@ class WorkbenchService:
                 create_project(
                     staged_project, author_workspace_root=source_root, project_id=identity
                 )
-                outcome = import_document(
+                outcome = import_captured_document(
                     staged_project,
-                    source_root / "manuscript.docx",
-                    source_sha256=result.source_sha256,
+                    content,
+                    filename="manuscript.docx",
                     request_id="initial-world-workbench-import",
                     expected_baseline_id=None,
-                    actor_id="local-operator",
-                    confirmation_reason=(
-                        f"Captured from the {surface} surface for read-only journal checking."
-                    ),
+                    confirmation_reason=reason
+                    or (f"Captured from the {surface} surface for read-only journal checking."),
                 )
                 if outcome.get("status") != "APPLIED":
                     raise ValueError("论文版本未能保存，请检查导入结果。")
@@ -258,6 +272,61 @@ class WorkbenchService:
             project_root=self.project_root,
         )
 
+    def manuscript_source(self, project_id: str, baseline_id: str) -> JsonObject:
+        """Return immutable DOCX bytes for the explicitly selected managed baseline."""
+        path = self.project_root(project_id)
+        if not path.is_dir():
+            raise ValueError("论文不在当前工作台库中。")
+        return manuscript_source(path, baseline_id)
+
+    def render_baseline(
+        self,
+        project_id: str,
+        baseline_id: str,
+        *,
+        libreoffice_executable: str,
+        reason: str,
+        surface: str = "browser",
+    ) -> JsonObject:
+        """Register a headless LibreOffice PDF for one explicit retained baseline."""
+        from research_file_workbench.projects.render_service import (
+            render_libreoffice_baseline,
+        )
+
+        _surface(surface)
+        if not reason.strip():
+            raise ValueError("请填写稿件渲染原因。")
+        path = self.project_root(project_id)
+        if not path.is_dir():
+            raise ValueError("论文不在当前工作台库中。")
+        with self._render_lock:
+            return render_libreoffice_baseline(
+                path,
+                baseline_id=baseline_id,
+                executable=Path(libreoffice_executable),
+                profile=self.root / "var" / "libreoffice-profile",
+                actor_id="local-operator",
+                confirmation_reason=f"Rendered from the {surface} surface: {reason}",
+                surface=surface,
+                font_dirs=self.font_dirs,
+            )
+
+    def derived_renders(self, project_id: str, baseline_id: str) -> JsonObject:
+        """List derived PDF registrations for one explicit retained baseline."""
+        from research_file_workbench.projects.render_service import font_cache_identity
+
+        path = self.project_root(project_id)
+        if not path.is_dir():
+            raise ValueError("论文不在当前工作台库中。")
+        project = open_project(path)
+        project.get_baseline(baseline_id)
+        return {
+            "project_id": project_id,
+            "baseline_id": baseline_id,
+            "font_cache_sha256": font_cache_identity(self.font_dirs),
+            "derived_renders": project.list_derived_renders(baseline_id),
+        }
+
     def history(self, project_id: str) -> JsonObject:
         """Present check and binding history in storage commit order."""
         return history_details(
@@ -309,8 +378,8 @@ class WorkbenchService:
     ) -> JsonObject:
         """Retain an explicitly confirmed source update and leave old checks historical.
 
-        Retained refusal records answer as typed refusals, so every surface reports the
-        compare-and-swap, idempotency or unreadable-input reason instead of a status payload.
+        Retained refusal records answer as typed refusals with their exact saved result,
+        so callers can distinguish a confirmed refusal from an unknown transport outcome.
         """
         _surface(surface)
         if not reason.strip():
@@ -329,18 +398,22 @@ class WorkbenchService:
         if status == "BASELINE_CONFLICT":
             raise BaselineConflictError(
                 "BASELINE_CONFLICT：论文版本已变化，当前基线是 "
-                f"{result.get('previous_baseline_id')}，请刷新后重试。"
+                f"{result.get('previous_baseline_id')}，请刷新后重试。",
+                result=result,
             )
         if status == "IDEMPOTENCY_CONFLICT":
             raise ManuscriptUpdateRefused(
-                "IDEMPOTENCY_CONFLICT：同一 request_id 已用于不同内容，请改用新的请求标识。"
+                "IDEMPOTENCY_CONFLICT：同一 request_id 已用于不同内容，请改用新的请求标识。",
+                result=result,
             )
         if status == "REJECTED":
             detail = result.get("rejection_reason")
             if not isinstance(detail, str) or not detail:
                 detail = "该文档未能读取，请检查源文件。"
-            raise ManuscriptUpdateRefused(f"REJECTED：{detail}")
-        raise ManuscriptUpdateRefused(f"{status}：稿件更新未应用，请检查保留的请求记录。")
+            raise ManuscriptUpdateRefused(f"REJECTED：{detail}", result=result)
+        raise ManuscriptUpdateRefused(
+            f"{status}：稿件更新未应用，请检查保留的请求记录。", result=result
+        )
 
     def render_artifact(
         self,
@@ -447,14 +520,25 @@ class WorkbenchService:
             reasons.append("source_baseline_changed")
         if binding is None or binding["binding_id"] != record["binding_id"]:
             reasons.append("world_binding_changed")
-        if record.get("checker_version") != CHECKER_VERSION:
+        template_check = "template_comparison" in record
+        if template_check:
+            from research_file_workbench.journals.template_models import (
+                SNAPSHOT_METHOD,
+                TEMPLATE_ANALYZER_VERSION,
+                TEMPLATE_CHECKER_VERSION,
+            )
+        if record.get("checker_version") != (
+            TEMPLATE_CHECKER_VERSION if template_check else CHECKER_VERSION
+        ):
             reasons.append("checker_version_changed")
-        if record.get("reader_version") != READER_VERSION:
+        if record.get("reader_version") != (SNAPSHOT_METHOD if template_check else READER_VERSION):
             reasons.append("reader_version_changed")
         artifact = f"artifact-version-{_text(record, 'source_sha256')}"
         open_project(self.project_root(project_id)).read_artifact(artifact)
         world = self.store.get_world(_text(record, "world_version_id"))
-        if world["analyzer_version"] != models.ANALYZER_VERSION:
+        if world["analyzer_version"] != (
+            TEMPLATE_ANALYZER_VERSION if template_check else models.ANALYZER_VERSION
+        ):
             reasons.append("analyzer_version_changed")
         update = any(
             other["journal_id"] == world["journal_id"]

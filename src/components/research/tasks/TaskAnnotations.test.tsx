@@ -50,6 +50,62 @@ beforeEach(() => {
 });
 
 describe("TaskAnnotations", () => {
+  it("shows real member avatars for the author and the person who handled feedback", async () => {
+    const original = annotation({ author: { kind: "user", id: "user" } });
+    api.load.mockResolvedValue({ ...context([original]), handlings: [{ id: "handling", annotationId: original.id, author: { kind: "member", id: "member-reviewer" }, summary: "Checked this figure", resultRefs: [], createdAt: 2 }] });
+    render(<TaskAnnotations task={task()} target={null} members={[member()]} />);
+    const card = await screen.findByTestId("task-annotation");
+    expect(card.querySelector('[data-slot="avatar"] svg')).not.toBeNull();
+    const handling = within(card).getByTestId("annotation-handling");
+    expect(handling.querySelector('[data-slot="avatar"]')).toHaveTextContent("R");
+    expect(within(handling).getByText(/Member · Reviewer · member-reviewer/)).toBeInTheDocument();
+  });
+
+  it("uses readable journal references while preserving the exact target and source for saved feedback", async () => {
+    const journalTarget = target({ taskId: null, objectKind: "journal_check", objectId: '{"libraryRoot":"/private/library","id":"check-secret"}', objectRevision: "check-secret", path: null });
+    const source = { kind: "journal_object", content: '{"reference":{"libraryRoot":"/private/library"},"object":{"check_id":"check-secret"}}' };
+    const saved = annotation({ target: journalTarget, source: { ...source, sha256: "source-secret" }, author: { kind: "member", id: "member-secret" } });
+    api.loadObject.mockResolvedValue(context([saved]));
+    const open = vi.fn();
+    const view = render(<TaskAnnotations contextScope="object" objectTarget={journalTarget} source={source} describeTarget={() => "This journal check"} onOpenTarget={open} />);
+    const card = await screen.findByTestId("task-annotation");
+    expect(within(card).getByRole("button", { name: "This journal check" })).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: text.recordedObject }));
+    expect(open).toHaveBeenCalledWith(journalTarget);
+    expect(view.container.textContent).not.toMatch(/libraryRoot|check-secret|source-secret|member-secret|annotation-1/);
+    expect(view.container.querySelector("pre")).toBeNull();
+    typeBody("Please review the title formatting.");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledWith(expect.objectContaining({ target: journalTarget, source, body: "Please review the title formatting." })));
+  });
+
+  it("opens the exact annotation source when multiple anchors share a material version", async () => {
+    const shared = target({ taskId: null, objectKind: "material", objectId: "figure", objectRevision: "same-version", path: null });
+    const first = annotation({ id: "first", target: shared, body: "First area", source: { kind: "material_snapshot", content: "first", sha256: "a" } });
+    const second = annotation({ id: "second", target: shared, body: "Second area", source: { kind: "material_snapshot", content: "second", sha256: "b" } });
+    api.loadObject.mockResolvedValue(context([first, second]));
+    const open = vi.fn();
+    render(<TaskAnnotations contextScope="object" objectTarget={shared} describeTarget={() => "Figure"} describeAnnotation={(item) => item.body} onOpenAnnotationSource={open} />);
+    const cards = await screen.findAllByTestId("task-annotation");
+    fireEvent.click(within(cards[1]).getByRole("button", { name: text.recordedObject }));
+    expect(open).toHaveBeenLastCalledWith(second);
+    fireEvent.click(within(cards[0]).getByRole("button", { name: "First area" }));
+    expect(open).toHaveBeenLastCalledWith(first);
+  });
+
+  it("hides material snapshot JSON in a task while preserving other source displays", async () => {
+    const material = annotation({ source: { kind: "material_snapshot", content: '{"document":{"revision":"private-hash"}}', sha256: "hash" } });
+    api.load.mockResolvedValue(context([material]));
+    const open = vi.fn();
+    const view = render(<TaskAnnotations task={task()} target={null} describeAnnotation={() => "Retained report version"} onOpenAnnotationSource={open} />);
+    const card = await screen.findByTestId("task-annotation");
+    fireEvent.click(within(card).getByRole("button", { name: text.recordedObject }));
+    expect(open).toHaveBeenCalledWith(material);
+    expect(view.container.querySelector("pre")).toBeNull();
+    expect(within(card).getByRole("button", { name: "Retained report version" })).toBeInTheDocument();
+    expect(view.container.textContent).not.toContain("private-hash");
+  });
+
   it("saves an ordinary chat annotation with its real object target and exact original words without a task context", async () => {
     const objectTarget = target({ taskId: null, objectKind: "thread", objectId: "thread-real", objectRevision: "message:message-stable-1", path: null });
     const body = "  This message needs a second look.\nKeep the original distinction.  ";
@@ -158,6 +214,49 @@ describe("TaskAnnotations", () => {
     expect(loadSource).toHaveBeenCalledWith(originalTarget);
   });
 
+  it("saves feedback against the original version without attaching a snapshot over the byte limit", async () => {
+    const objectTarget = target({ taskId: null, objectKind: "material", objectId: "paper", objectRevision: "draft-4" });
+    const source = { kind: "material_snapshot", content: "稿".repeat(90_000) };
+    render(<TaskAnnotations contextScope="object" objectTarget={objectTarget} source={source} />);
+    await screen.findByText(text.empty);
+
+    typeBody("Check the table headings in this version.");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+
+    await screen.findByText(text.saved);
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith({
+      target: objectTarget, body: "Check the table headings in this version.", parentId: null, mentions: [], explicitRequest: false,
+    });
+  });
+
+  it("uses the current material version after cancelling a reply even if the old refresh fails late", async () => {
+    const old = annotation({ target: target({ taskId: null, objectKind: "material", objectId: "paper", objectRevision: "draft-3" }) });
+    const current = { ...old.target, objectRevision: "draft-4" };
+    let rejectOld!: (error: Error) => void;
+    const pending = new Promise<AnnotationContext>((_, reject) => { rejectOld = reject; });
+    api.loadObject.mockResolvedValueOnce(context([old])).mockReturnValueOnce(pending).mockResolvedValue(context([old]));
+    const replyChanged = vi.fn();
+    const panel = render(<TaskAnnotations contextScope="object" objectTarget={old.target} members={[member()]} onReplyChange={replyChanged} />);
+    fireEvent.click(within(await screen.findByTestId("task-annotation")).getByRole("button", { name: text.reply }));
+    fireEvent.click(screen.getByRole("button", { name: text.refresh }));
+    panel.rerender(<TaskAnnotations contextScope="object" objectTarget={current} members={[member()]} onReplyChange={replyChanged} />);
+    await act(async () => { rejectOld(new Error("Earlier material no longer available")); });
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: text.cancelReply }));
+    expect(replyChanged).toHaveBeenLastCalledWith(null);
+    const mention = screen.getByRole("checkbox", { name: "@Reviewer" });
+    fireEvent.click(mention);
+    expect(mention).toBeChecked();
+    fireEvent.click(mention);
+    typeBody("Check the revised table.");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+
+    await waitFor(() => expect(api.submit).toHaveBeenCalledExactlyOnceWith({
+      target: current, body: "Check the revised table.", parentId: null, mentions: [], explicitRequest: false,
+    }));
+  });
+
   it("replies to an old decision at its original revision while the current target changes", async () => {
     const original = annotation({ source: { kind: "task_artifact", content: "original retained bytes", sha256: "original-digest" } });
     api.load.mockResolvedValue(context([original]));
@@ -240,6 +339,31 @@ describe("TaskAnnotations", () => {
     expect(screen.getAllByText("paper · task-1 · file · methods.tex · methods.tex")).toHaveLength(2);
   });
 
+  it("distinguishes a review awaiting evidence from a withdrawn requirement in material history", async () => {
+    const objectTarget = target({ taskId: null, objectKind: "material", objectId: "figure", objectRevision: null, path: null });
+    const old = annotation({ target: objectTarget, status: "dismissed", mentions: ["absent-member"] });
+    const reply = annotation({ id: "reply", target: objectTarget, body: "Need a new comparison.", parentId: old.id, author: { kind: "system", id: "system-internal" } });
+    const loaded = context([old, reply]);
+    loaded.handlings = [{ id: "comparison", annotationId: reply.id, author: { kind: "model", id: "model-internal" }, summary: "The matching source was not archived.", resultRefs: [], createdAt: 2 }];
+    loaded.distillations = [{ id: "review", sourceAnnotationId: reply.id, handlingId: "comparison", author: { kind: "member", id: "member-reviewer" }, rationale: "Wait for a comparison of the correct revision.", outcome: "needs_review", requirementId: null, replacedRequirementId: null, createdAt: 2 }];
+    loaded.requirements = [{
+      id: "old-requirement", scope: objectTarget, author: { kind: "member", id: "member-reviewer" }, text: "Use the old axis scale.", kind: "enduring", status: "withdrawn",
+      sourceAnnotationId: null, replacedBy: null, createdAt: 1, updatedAt: 2, withdrawnAt: 2,
+    }];
+    api.loadObject.mockResolvedValue(loaded);
+    const panel = render(<TaskAnnotations contextScope="object" objectTarget={objectTarget} describeTarget={() => "Retained figure"} members={[member()]} />);
+    const [originalCard, replyCard] = await screen.findAllByTestId("task-annotation");
+
+    expect(within(originalCard).getByText(text.dismissed)).toBeInTheDocument();
+    expect(within(replyCard).getByText(`${text.distillation} · ${text.needsReview}`)).toBeInTheDocument();
+    expect(within(replyCard).getByRole("link", { name: text.sourceAnnotation })).toHaveAttribute("href", `#${originalCard.id}`);
+    expect(within(replyCard).getByRole("link", { name: text.handling })).toHaveAttribute("href", `#${within(replyCard).getByTestId("annotation-handling").id}`);
+    fireEvent.click(screen.getByText(text.requirements));
+    expect(screen.getByText(`${text.enduring} · ${text.withdrawn}`)).toBeInTheDocument();
+    expect(screen.getByText("Use the old axis scale.")).toBeVisible();
+    expect(panel.container).not.toHaveTextContent(/system-internal|model-internal|absent-member|old-requirement/);
+  });
+
   it("keeps failed submissions editable for retry and clears the request only after a successful save", async () => {
     api.submit.mockRejectedValueOnce(new Error("Cannot save the annotation."));
     render(<TaskAnnotations task={task()} target={null} />);
@@ -304,6 +428,37 @@ describe("TaskAnnotations", () => {
     expect(screen.queryByText("Old project reply")).toBeNull();
     expect(screen.getByRole("textbox", { name: text.body })).toHaveValue("");
     expect(api.load).toHaveBeenLastCalledWith("other", "task-other");
+  });
+
+  it.each(["succeeds", "fails"] as const)("keeps the new manuscript's draft intact when the previous submission %s", async (outcome) => {
+    const earlier = target({ taskId: null, objectKind: "material", objectId: "earlier-paper" });
+    const current = target({ taskId: null, objectKind: "material", objectId: "current-paper" });
+    const onSaved = vi.fn();
+    let completeSubmission!: (result: TaskAnnotation) => void;
+    let rejectSubmission!: (error: Error) => void;
+    api.submit.mockImplementationOnce(() => new Promise<TaskAnnotation>((resolve, reject) => {
+      completeSubmission = resolve;
+      rejectSubmission = reject;
+    }));
+    const panel = render(<TaskAnnotations contextScope="object" objectTarget={earlier} onSaved={onSaved} />);
+    await screen.findByText(text.empty);
+    typeBody("Earlier manuscript feedback");
+    fireEvent.click(screen.getByRole("button", { name: text.save }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ target: earlier, body: "Earlier manuscript feedback" })));
+
+    panel.rerender(<TaskAnnotations contextScope="object" objectTarget={current} onSaved={onSaved} />);
+    await screen.findByText(text.empty);
+    typeBody("Current manuscript draft");
+    await act(async () => {
+      if (outcome === "succeeds") completeSubmission(annotation({ target: earlier, body: "Earlier manuscript feedback" }));
+      else rejectSubmission(new Error("Earlier manuscript save failed"));
+    });
+
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("Earlier manuscript feedback")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: text.body })).toHaveValue("Current manuscript draft");
+    expect(screen.getByRole("button", { name: text.save })).toBeEnabled();
   });
 });
 

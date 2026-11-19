@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { testCatalogTranslator } from "@oleafly/i18n-contract/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -58,11 +58,6 @@ const harness = vi.hoisted(() => ({
 vi.mock("./mainThreadWorker", () => ({
   installMainThreadPdfWorker: () => harness.installMainThread(),
 }));
-vi.mock("./pdfController", () => ({
-  registerPdfView: vi.fn(),
-  clearPdfView: vi.fn(),
-  pageClickToBp: vi.fn(() => null),
-}));
 vi.mock("pdfjs-dist/web/pdf_viewer.mjs", () => ({
   EventBus: class {
     dispatch() {}
@@ -91,6 +86,7 @@ vi.mock("pdfjs-dist", () => {
     readonly width: number;
     readonly height: number;
     readonly userUnit = 1;
+    readonly viewBox: [number, number, number, number];
     readonly rawDims: { pageWidth: number; pageHeight: number; pageX: number; pageY: number };
 
     constructor(
@@ -101,11 +97,20 @@ vi.mock("pdfjs-dist", () => {
       const quarterTurn = rotation % 180 !== 0;
       this.width = (quarterTurn ? spec.height : spec.width) * scale;
       this.height = (quarterTurn ? spec.width : spec.height) * scale;
+      this.viewBox = [0, 0, spec.width, spec.height];
       this.rawDims = { pageWidth: spec.width, pageHeight: spec.height, pageX: 0, pageY: 0 };
     }
 
     clone({ scale = this.scale }: { scale?: number; dontFlip?: boolean } = {}) {
       return new MockViewport(this.spec, scale, this.rotation);
+    }
+
+    convertToViewportPoint(x: number, y: number): number[] {
+      return [x * this.scale, this.height - y * this.scale];
+    }
+
+    convertToPdfPoint(x: number, y: number): number[] {
+      return [x / this.scale, (this.height - y) / this.scale];
     }
   }
 
@@ -211,7 +216,8 @@ vi.mock("pdfjs-dist", () => {
   };
 });
 
-import { PdfViewer } from "./PdfViewer";
+import { PdfViewer, type PdfViewerHandle } from "./PdfViewer";
+import { gotoPdfPage, pageClickToBp, pdfPageText } from "./pdfController";
 import { sharedPdfDocumentOptions } from "./pdfDocumentOptions";
 
 const t = testCatalogTranslator<PreviewMessageKey>("preview");
@@ -251,6 +257,132 @@ afterEach(() => {
 });
 
 describe("PdfViewer loading", () => {
+  it("keeps global manuscript navigation after an independent preview opens, zooms and closes", async () => {
+    harness.pages = [page(), page()];
+    const mainData = new Uint8Array([1]);
+    const previewData = new Uint8Array([2]);
+    const previewRef = createRef<PdfViewerHandle>();
+    const main = render(
+      <div style={{ overflowY: "auto" }}>
+        <PdfViewer data={mainData} scale={1} documentIdentity="manuscript" t={t} />
+      </div>,
+    );
+    const mainPane = main.container.firstElementChild as HTMLElement;
+    Object.defineProperties(mainPane, {
+      scrollHeight: { value: 2000 },
+      clientHeight: { value: 500 },
+    });
+    const mainScroll = vi.fn();
+    mainPane.scrollTo = mainScroll;
+    await waitFor(() => expect(mainPane.querySelector("[data-pdf-state]")).toHaveAttribute("data-pdf-state", "ready"));
+
+    const navigateManuscript = async () => {
+      mainScroll.mockClear();
+      expect(await gotoPdfPage(2)).toBe(true);
+      expect(mainScroll).toHaveBeenCalledOnce();
+    };
+    await navigateManuscript();
+
+    const preview = render(
+      <div style={{ overflowY: "auto" }}>
+        <PdfViewer ref={previewRef} data={previewData} scale={1} documentIdentity="paper" registerGlobalController={false} t={t} />
+      </div>,
+    );
+    const previewPane = preview.container.firstElementChild as HTMLElement;
+    Object.defineProperties(previewPane, {
+      scrollHeight: { value: 2000 },
+      clientHeight: { value: 500 },
+    });
+    const previewScroll = vi.fn();
+    previewPane.scrollTo = previewScroll;
+    await waitFor(() => expect(previewPane.querySelector("[data-pdf-state]")).toHaveAttribute("data-pdf-state", "ready"));
+    await navigateManuscript();
+    act(() => previewRef.current?.gotoPage(2));
+    expect(previewScroll).toHaveBeenCalledOnce();
+
+    preview.rerender(
+      <div style={{ overflowY: "auto" }}>
+        <PdfViewer ref={previewRef} data={previewData} scale={1.5} documentIdentity="paper" registerGlobalController={false} t={t} />
+      </div>,
+    );
+    // Let the 120 ms zoom-settle registration path run as well as initial layout.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 160)); });
+    await navigateManuscript();
+    preview.unmount();
+    await navigateManuscript();
+    main.unmount();
+    expect(await gotoPdfPage(2)).toBe(false);
+  });
+
+  it("serves navigation from the current source PDF and closes the route on unmount", async () => {
+    harness.pages = [page([text("First source")])];
+    const view = render(
+      <PdfViewer
+        data={new Uint8Array([1])}
+        scale={1}
+        documentIdentity="first"
+        t={t}
+      />,
+    );
+    await waitFor(() => expect(renderer().dataset.pdfState).toBe("ready"));
+
+    const firstPage = renderer().querySelector<HTMLElement>("[data-page='1']")!;
+    firstPage.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 612,
+        bottom: 792,
+        width: 612,
+        height: 792,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    expect(
+      pageClickToBp(firstPage, 1, { clientX: 72, clientY: 72 }),
+    ).toEqual({ page: 1, x: 72, y: 72 });
+    await expect(pdfPageText(1)).resolves.toEqual([
+      expect.objectContaining({
+        str: "First source",
+        x: 0,
+        width: 100,
+        height: 1,
+      }),
+    ]);
+
+    harness.pages = [page([text("Second source")])];
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        scale={1}
+        documentIdentity="second"
+        t={t}
+      />,
+    );
+    await waitFor(() => {
+      expect(renderer().dataset.pdfDocumentIdentity).toBe("second");
+      expect(renderer().dataset.pdfState).toBe("ready");
+    });
+    await waitFor(() =>
+      expect(renderer().querySelector(".textLayer")?.textContent).toContain(
+        "Second source",
+      ),
+    );
+
+    await expect(pdfPageText(1)).resolves.toEqual([
+      expect.objectContaining({
+        str: "Second source",
+        x: 0,
+        width: 100,
+        height: 1,
+      }),
+    ]);
+
+    view.unmount();
+    await expect(pdfPageText(1)).resolves.toBeNull();
+  });
+
   it("reports the renderer as unavailable when the main-thread fallback cannot start", async () => {
     harness.pages = [page()];
     harness.loadErrors = [Object.assign(new Error("Missing PDF"), { name: "MissingPDFException" })];
@@ -776,5 +908,57 @@ describe("PdfViewer page rendering failures", () => {
     expect(renderer().querySelector("[data-page='1'] .textLayer")).toBeEmptyDOMElement();
     expect(renderer().querySelector("[data-page='1'] .annotationLayer a")).toBeNull();
     expect(renderer()).not.toHaveTextContent(t("error.firstPage"));
+  });
+
+  it("recovers when a corrected source PDF arrives after a render failure", async () => {
+    harness.pages = [
+      page([text("Broken source")], {
+        renderError: new Error("temporary raster failure"),
+      }),
+    ];
+    const onLoadStateChange = vi.fn();
+    const view = render(
+      <PdfViewer
+        data={new Uint8Array([1])}
+        scale={1}
+        expectText={false}
+        documentIdentity="broken"
+        onLoadStateChange={onLoadStateChange}
+        t={t}
+      />,
+    );
+    await waitFor(() =>
+      expect(renderer()).toHaveTextContent(t("error.firstPage")),
+    );
+
+    harness.pages = [page([text("Recovered source")])];
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        scale={1}
+        expectText={false}
+        documentIdentity="corrected"
+        onLoadStateChange={onLoadStateChange}
+        t={t}
+      />,
+    );
+    await waitFor(() =>
+      expect(renderer().dataset.pdfState).toBe("loading-primary"),
+    );
+    await waitFor(() => {
+      expect(renderer().dataset.pdfDocumentIdentity).toBe("corrected");
+      expect(renderer().dataset.pdfState).toBe("ready");
+    });
+    await waitFor(() =>
+      expect(renderer().querySelector(".textLayer")?.textContent).toContain(
+        "Recovered source",
+      ),
+    );
+
+    expect(renderer()).not.toHaveTextContent(t("error.firstPage"));
+    expect(onLoadStateChange).toHaveBeenLastCalledWith({
+      status: "ready",
+      documentIdentity: "corrected",
+    });
   });
 });

@@ -3,6 +3,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tailwindPropertiesFallbackPlugin } from "./src/build/tailwind-properties-fallback";
+import { serializeMacosBuild } from "./src/build/serialize-macos-build";
 import {
   entriesLoadingBeforePolyfills,
   LEGAL_COMMENT_PATTERN,
@@ -47,7 +48,7 @@ export default defineConfig({
   root: path.resolve(repo, "web"),
   base: "/web/",
   publicDir: false,
-  plugins: [react(), tailwindcss(), tailwindPropertiesFallbackPlugin(), requirePolyfillsFirst(), pdfjsAssets()],
+  plugins: [serializeMacosBuild(repo), react(), tailwindcss(), tailwindPropertiesFallbackPlugin(), requirePolyfillsFirst(), pdfjsAssets()],
   resolve: { alias: WEB_ALIASES },
   worker: {
     format: "es",
@@ -71,6 +72,7 @@ export default defineConfig({
     },
     minify: "terser",
     terserOptions: {
+      maxWorkers: 1,
       ecma: 2020,
       compress: { passes: 2 },
       format: { comments: LEGAL_COMMENT_PATTERN },

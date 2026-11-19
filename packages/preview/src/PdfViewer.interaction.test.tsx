@@ -448,6 +448,46 @@ describe("PdfViewer search", () => {
     );
   });
 
+  it("keeps search highlights aligned while the reader zooms", async () => {
+    stubRangeRects();
+    harness.pages = [page("alpha")];
+    const onSearchStateChange = vi.fn();
+    const view = renderViewer({ searchQuery: "alpha", onSearchStateChange });
+    await waitFor(() =>
+      expect(pageWrap(1).querySelector(".pdf-search-highlight-current")).toHaveStyle({
+        left: "40px",
+        top: "20px",
+        width: "30px",
+        height: "12px",
+      }),
+    );
+    const marker = pageWrap(1).querySelector<HTMLElement>(".pdf-search-highlight-current")!;
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (delay === 120 && typeof handler === "function") return 0;
+      return nativeSetTimeout(handler, delay, ...args);
+    }) as typeof window.setTimeout);
+
+    try {
+      view.rerender({ scale: 2 });
+
+      await waitFor(() => expect(pageWrap(1).style.width).toBe("1224px"));
+      expect(marker).toBe(pageWrap(1).querySelector(".pdf-search-highlight-current"));
+      expect(marker).toHaveStyle({
+        left: "80px",
+        top: "40px",
+        width: "60px",
+        height: "24px",
+      });
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
   it("clears highlights and returns to idle when the query is emptied", async () => {
     stubRangeRects();
     harness.pages = [page("alpha beta")];
@@ -959,6 +999,60 @@ describe("PdfViewer link targets", () => {
     expect(click.defaultPrevented).toBe(true);
     expect(onOpenLink).toHaveBeenCalledWith("https://example.org/paper");
     expect(onInverse).not.toHaveBeenCalled();
+  });
+});
+
+describe("PdfViewer text selection", () => {
+  it("reports and copies a selection that spans two rendered pages", async () => {
+    harness.pages = [page("First page "), page("Second page")];
+    const { ref } = renderViewer({ documentIdentity: "doc-selection" });
+    await ready();
+    intersect([1, 2], true);
+    await pageTextRendered(1);
+    await pageTextRendered(2);
+    const first = pageWrap(1).querySelector<HTMLElement>(".textLayer span")!;
+    const second = pageWrap(2).querySelector<HTMLElement>(".textLayer span")!;
+    pageWrap(1).getBoundingClientRect = () => rect(0, 0, 612, 792);
+    pageWrap(2).getBoundingClientRect = () => rect(0, 808, 612, 792);
+    Object.defineProperty(Range.prototype, "getClientRects", {
+      configurable: true,
+      value: () => [rect(10, 10, 100, 12), rect(10, 818, 100, 12)],
+    });
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.setStart(first.firstChild as Text, 0);
+    range.setEnd(second.firstChild as Text, second.textContent!.length);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+
+    const hostCopy = vi.fn();
+    try {
+      const selected = ref.current?.getTextSelection();
+      expect(selected).toMatchObject({
+        documentIdentity: "doc-selection",
+        text: "First page Second page",
+        rotation: 0,
+        pages: [
+          { page: 1, rects: [{ x: 10 / 612, y: 10 / 792, width: 100 / 612, height: 12 / 792 }] },
+          { page: 2, rects: [{ x: 10 / 612, y: 10 / 792, width: 100 / 612, height: 12 / 792 }] },
+        ],
+      });
+
+      const setData = vi.fn();
+      document.addEventListener("copy", hostCopy);
+      const copy = new Event("copy", { bubbles: true, cancelable: true });
+      Object.defineProperty(copy, "clipboardData", { value: { setData } });
+      pageWrap(2).querySelector(".textLayer")!.dispatchEvent(copy);
+
+      expect(copy.defaultPrevented).toBe(true);
+      expect(setData).toHaveBeenCalledOnce();
+      expect(setData).toHaveBeenCalledWith("text/plain", "First page Second page");
+      expect(hostCopy).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("copy", hostCopy);
+      selection.removeAllRanges();
+    }
   });
 });
 

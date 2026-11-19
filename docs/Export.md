@@ -32,6 +32,10 @@ the persisted engine descriptor and writes only to a user-approved destination.
 - Export destinations must be absolute, existing, and non-directory paths.
 - The Rust sandbox rejects paths outside the approved destination policy.
 - Existing artifacts are preserved when a conversion fails.
+- Pandoc conversions that render citations check the complete diagnostics for
+  unsupported mathematical or structured content, even when the displayed
+  diagnostic report is shortened. A successful process exit alone does not
+  establish a successful conversion.
 - The engine descriptor is the source of truth for allowed conversion formats.
 - PDF and source downloads use explicit filenames and do not expose credentials.
 

@@ -243,6 +243,7 @@ class DocxUnsupportedRecord:
         "unknown_namespace",
         "broken_relationship",
         "missing_relationship",
+        "vml_picture",
     ]
     relationship_id: str | None
     failure_reason: str

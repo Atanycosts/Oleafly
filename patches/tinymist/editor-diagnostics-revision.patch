@@ -1,0 +1,1021 @@
+--- a/crates/tinymist/src/actor/editor.rs
++++ b/crates/tinymist/src/actor/editor.rs
+@@ -1,3 +1,5 @@
++// Modified by Oleafly: reject stale editor publications by project instance.
++
+ //! The actor maintaining output to the editor, including diagnostics and
+ //! compile status.
+ 
+@@ -8,7 +10,7 @@
+ use reflexo::path::unix_slash;
+ use reflexo_typst::typst::prelude::{eco_vec, EcoVec};
+ use serde::{Deserialize, Serialize};
+-use tinymist_project::CompileReport;
++use tinymist_project::{CompileReport, ProjectInsInstanceId};
+ use tinymist_query::DiagnosticsMap;
+ use tokio::sync::mpsc;
+ use typst_shim::syntax::VirtualPathExt;
+@@ -27,6 +29,8 @@
+     Config(EditorActorConfig),
+     /// Publishes diagnostics to the editor.
+     Diag(ProjVersion, Option<DiagnosticsMap>),
++    /// Removes one project instance and its diagnostic ordering state.
++    RemoveProject(ProjectInsId, ProjectInsInstanceId),
+     /// Updates compile status to the editor.
+     Status(CompileReport),
+     /// Updastes words count status to the editor.
+@@ -50,6 +54,8 @@
+     diagnostics: HashMap<Url, HashMap<ProjectInsId, EcoVec<Diagnostic>>>,
+     /// The map from project ID to the affected files.
+     affect_map: HashMap<ProjectInsId, Vec<Url>>,
++    /// The diagnostic publication order for each project instance.
++    diagnostic_revisions: DiagnosticRevisionGate,
+ 
+     /// The local state.
+     status: StatusAll,
+@@ -67,6 +73,7 @@
+             editor_rx,
+             diagnostics: HashMap::new(),
+             affect_map: HashMap::new(),
++            diagnostic_revisions: DiagnosticRevisionGate::default(),
+             config: EditorActorConfig { notify_status },
+ 
+             status: StatusAll {
+@@ -107,8 +114,18 @@
+                     diagnostics.as_ref().map(|files| files.len())
+                 );
+ 
++                if !self.diagnostic_revisions.accept(&version) {
++                    log::debug!("ignoring outdated diagnostics from {version:?}");
++                    return;
++                }
++
+                 self.publish(version.id, diagnostics);
+             }
++            EditorRequest::RemoveProject(id, instance) => {
++                if self.diagnostic_revisions.remove(&id, instance) {
++                    self.publish(id, None);
++                }
++            }
+             EditorRequest::Status(compile_status) => {
+                 log::trace!("received status request: {compile_status:?}");
+                 if self.config.notify_status && compile_status.id == ProjectInsId::PRIMARY {
+@@ -199,11 +216,94 @@
+     }
+ }
+ 
++/// Orders diagnostics across project restarts, which reuse [`ProjectInsId`]
++/// and begin again at revision 1.
++#[derive(Default)]
++pub(crate) struct DiagnosticRevisionGate {
++    projects: HashMap<ProjectInsId, DiagnosticProjectRevision>,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct DiagnosticProjectRevision {
++    instance: ProjectInsInstanceId,
++    revision: usize,
++    active: bool,
++}
++
++impl DiagnosticRevisionGate {
++    pub(crate) fn accept(&mut self, version: &ProjVersion) -> bool {
++        if !self.observe(&version.id, version.instance) {
++            return false;
++        }
++
++        let project = self.projects.get_mut(&version.id).unwrap();
++        if version.revision < project.revision {
++            return false;
++        }
++
++        project.revision = version.revision;
++        true
++    }
++
++    fn observe(&mut self, id: &ProjectInsId, instance: ProjectInsInstanceId) -> bool {
++        let Some(project) = self.projects.get_mut(id) else {
++            self.projects.insert(
++                id.clone(),
++                DiagnosticProjectRevision {
++                    instance,
++                    revision: 0,
++                    active: true,
++                },
++            );
++            return true;
++        };
++
++        if instance < project.instance {
++            return false;
++        }
++        if instance > project.instance {
++            project.instance = instance;
++            project.revision = 0;
++            project.active = true;
++            return true;
++        }
++
++        project.active
++    }
++
++    pub(crate) fn remove(&mut self, id: &ProjectInsId, instance: ProjectInsInstanceId) -> bool {
++        let Some(project) = self.projects.get_mut(id) else {
++            self.projects.insert(
++                id.clone(),
++                DiagnosticProjectRevision {
++                    instance,
++                    revision: 0,
++                    active: false,
++                },
++            );
++            return true;
++        };
++
++        if instance < project.instance {
++            return false;
++        }
++        if instance > project.instance {
++            project.instance = instance;
++            project.revision = 0;
++        }
++
++        project.active = false;
++        true
++    }
++}
++
+ /// The compilation revision of a project.
+ #[derive(Debug, Clone)]
+ pub struct ProjVersion {
+     /// The project ID.
+     pub id: ProjectInsId,
++    /// The project instance generation.
++    pub instance: ProjectInsInstanceId,
+     /// The revision of the project (compilation).
+     pub revision: usize,
+ }
+@@ -292,5 +392,225 @@
+     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+         let vec = EcoVec::<Diagnostic>::deserialize(deserializer)?;
+         Ok(ScatterVec(eco_vec![vec]))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    struct TestEditorActor {
++        _runtime: tokio::runtime::Runtime,
++        _receiver: sync_ls::TConnectionRx<sync_ls::LspMessage>,
++        _client_root: sync_ls::LspClientRoot,
++        actor: EditorActor,
++    }
++
++    impl TestEditorActor {
++        fn new() -> Self {
++            let runtime = tokio::runtime::Builder::new_current_thread()
++                .enable_all()
++                .build()
++                .unwrap();
++            let connection = sync_ls::Connection::<sync_ls::LspMessage>::channel();
++            let client_root =
++                sync_ls::LspClientRoot::new(runtime.handle().clone(), connection.sender);
++            let (_editor_tx, editor_rx) = mpsc::unbounded_channel();
++
++            Self {
++                _runtime: runtime,
++                _receiver: connection.receiver,
++                actor: EditorActor::new(client_root.weak(), editor_rx, false),
++                _client_root: client_root,
++            }
++        }
++    }
++
++    fn version(id: &ProjectInsId, instance: ProjectInsInstanceId, revision: usize) -> ProjVersion {
++        ProjVersion {
++            id: id.clone(),
++            instance,
++            revision,
++        }
++    }
++
++    fn diagnostics(uri: &Url) -> DiagnosticsMap {
++        HashMap::from([(uri.clone(), EcoVec::new())])
++    }
++
++    #[test]
++    fn diagnostic_revisions_reject_late_publications() {
++        let mut gate = DiagnosticRevisionGate::default();
++        let project_a = ProjectInsId("project-a".into());
++        let project_b = ProjectInsId("project-b".into());
++        let instance_a = ProjectInsInstanceId::new();
++        let instance_b = ProjectInsInstanceId::new();
++        let restarted_a = ProjectInsInstanceId::new();
++
++        assert!(gate.accept(&version(&project_a, instance_a, 7)));
++        assert!(!gate.accept(&version(&project_a, instance_a, 5)));
++        assert!(gate.accept(&version(&project_a, instance_a, 7)));
++        assert!(gate.accept(&version(&project_b, instance_b, 5)));
++
++        assert!(gate.remove(&project_a, instance_a));
++        assert!(gate.accept(&version(&project_a, restarted_a, 1)));
++        assert!(!gate.accept(&version(&project_a, instance_a, 8)));
++        assert!(!gate.remove(&project_a, instance_a));
++        assert_eq!(
++            gate.projects.get(&project_a),
++            Some(&DiagnosticProjectRevision {
++                instance: restarted_a,
++                revision: 1,
++                active: true,
++            })
++        );
+     }
++
++    #[test]
++    fn editor_actor_rejects_late_diagnostic_revision() {
++        let mut actor = TestEditorActor::new();
++        let project = ProjectInsId("project".into());
++        let instance = ProjectInsInstanceId::new();
++        let current_uri = Url::parse("file:///current.typ").unwrap();
++        let stale_uri = Url::parse("file:///stale.typ").unwrap();
++
++        actor.actor.handle(EditorRequest::Diag(
++            version(&project, instance, 7),
++            Some(diagnostics(&current_uri)),
++        ));
++        actor.actor.handle(EditorRequest::Diag(
++            version(&project, instance, 5),
++            Some(diagnostics(&stale_uri)),
++        ));
++
++        assert_eq!(
++            actor
++                .actor
++                .diagnostic_revisions
++                .projects
++                .get(&project)
++                .map(|project| project.revision),
++            Some(7)
++        );
++        assert_eq!(
++            actor.actor.affect_map.get(&project),
++            Some(&vec![current_uri.clone()])
++        );
++        assert!(!actor.actor.diagnostics.contains_key(&stale_uri));
++    }
++
++    #[test]
++    fn editor_actor_applies_diagnostic_revision_to_clear() {
++        let mut actor = TestEditorActor::new();
++        let project = ProjectInsId("project".into());
++        let instance = ProjectInsInstanceId::new();
++        let current_uri = Url::parse("file:///current.typ").unwrap();
++        let stale_uri = Url::parse("file:///stale.typ").unwrap();
++
++        actor.actor.handle(EditorRequest::Diag(
++            version(&project, instance, 7),
++            Some(diagnostics(&current_uri)),
++        ));
++        actor
++            .actor
++            .handle(EditorRequest::Diag(version(&project, instance, 7), None));
++        actor.actor.handle(EditorRequest::Diag(
++            version(&project, instance, 5),
++            Some(diagnostics(&stale_uri)),
++        ));
++
++        assert!(!actor.actor.affect_map.contains_key(&project));
++        assert!(!actor
++            .actor
++            .diagnostics
++            .get(&current_uri)
++            .is_some_and(|diagnostics| diagnostics.contains_key(&project)));
++        assert!(!actor.actor.diagnostics.contains_key(&stale_uri));
++    }
++
++    #[test]
++    fn editor_actor_remove_diagnostic_revision_clears_without_replacement() {
++        let mut actor = TestEditorActor::new();
++        let project = ProjectInsId("project".into());
++        let instance = ProjectInsInstanceId::new();
++        let uri = Url::parse("file:///current.typ").unwrap();
++
++        actor.actor.handle(EditorRequest::Diag(
++            version(&project, instance, 7),
++            Some(diagnostics(&uri)),
++        ));
++        actor
++            .actor
++            .handle(EditorRequest::RemoveProject(project.clone(), instance));
++
++        assert!(!actor.actor.affect_map.contains_key(&project));
++        assert!(!actor
++            .actor
++            .diagnostics
++            .get(&uri)
++            .is_some_and(|diagnostics| diagnostics.contains_key(&project)));
++    }
++
++    #[test]
++    fn editor_actor_isolates_restarted_diagnostic_revision() {
++        let mut actor = TestEditorActor::new();
++        let project = ProjectInsId("project".into());
++        let old_instance = ProjectInsInstanceId::new();
++        let new_instance = ProjectInsInstanceId::new();
++        let old_uri = Url::parse("file:///old.typ").unwrap();
++        let new_uri = Url::parse("file:///new.typ").unwrap();
++
++        actor.actor.handle(EditorRequest::Diag(
++            version(&project, old_instance, 7),
++            Some(diagnostics(&old_uri)),
++        ));
++        actor
++            .actor
++            .handle(EditorRequest::RemoveProject(project.clone(), old_instance));
++        actor.actor.handle(EditorRequest::Diag(
++            version(&project, new_instance, 1),
++            Some(diagnostics(&new_uri)),
++        ));
++        actor.actor.handle(EditorRequest::Diag(
++            version(&project, old_instance, 8),
++            Some(diagnostics(&old_uri)),
++        ));
++
++        assert_eq!(
++            actor.actor.affect_map.get(&project),
++            Some(&vec![new_uri.clone()])
++        );
++        assert!(!actor
++            .actor
++            .diagnostics
++            .get(&old_uri)
++            .is_some_and(|diagnostics| diagnostics.contains_key(&project)));
++        assert!(actor
++            .actor
++            .diagnostics
++            .get(&new_uri)
++            .is_some_and(|diagnostics| diagnostics.contains_key(&project)));
++
++        actor
++            .actor
++            .handle(EditorRequest::RemoveProject(project.clone(), old_instance));
++
++        assert_eq!(
++            actor.actor.diagnostic_revisions.projects.get(&project),
++            Some(&DiagnosticProjectRevision {
++                instance: new_instance,
++                revision: 1,
++                active: true,
++            })
++        );
++        assert_eq!(
++            actor.actor.affect_map.get(&project),
++            Some(&vec![new_uri.clone()])
++        );
++        assert!(actor
++            .actor
++            .diagnostics
++            .get(&new_uri)
++            .is_some_and(|diagnostics| diagnostics.contains_key(&project)));
++    }
+ }
+--- a/crates/tinymist/src/project.rs
++++ b/crates/tinymist/src/project.rs
+@@ -1,3 +1,5 @@
++// Modified by Oleafly: order compiler diagnostics and removals by project instance.
++
+ //! The project.
+ //!
+ //! ```ascii
+@@ -107,6 +109,10 @@
+         );
+ 
+         let mut old_project = std::mem::replace(&mut self.project, new_project);
++        old_project.stop();
++        spawn_cpu(move || {
++            drop(old_project);
++        });
+ 
+         // todo: the old dedicate projects should be transferred.
+ 
+@@ -123,10 +129,6 @@
+         self.project
+             .interrupt(Interrupt::Memory(MemoryEvent::Update(snapshot)));
+ 
+-        spawn_cpu(move || {
+-            old_project.stop();
+-        });
+-
+         Ok(())
+     }
+ 
+@@ -361,8 +363,17 @@
+         if let Interrupt::Compiled(compiled) = &intr {
+             let proj = compiler.projects().find(|p| &p.id == compiled.id());
+             if let Some(proj) = proj {
+-                proj.ext
+-                    .compiled(&proj.verse.revision, proj.handler.as_ref(), compiled);
++                if proj.instance == compiled.instance() {
++                    proj.ext
++                        .compiled(&proj.verse.revision, proj.handler.as_ref(), compiled);
++                } else {
++                    log::info!(
++                        "Project({:?}): discard artifact from removed instance {:?}, current: {:?}",
++                        compiled.id(),
++                        compiled.instance(),
++                        proj.instance,
++                    );
++                }
+             } else {
+                 log::info!(
+                     "Project({:?}): process compiled not found",
+@@ -381,7 +392,7 @@
+ 
+     /// Stops the project.
+     pub(crate) fn stop(&mut self) {
+-        // todo: stop all compilations
++        self.compiler.notify_all_removed();
+     }
+ 
+     /// Restarts a dedicate project.
+@@ -468,12 +479,83 @@
+     /// The client used to send events back to the server itself or the clients.
+     pub(crate) client: Arc<dyn ProjectClient>,
+     /// The status revision map, used to track the status of the projects.
+-    pub(crate) status_revision: Mutex<FxHashMap<ProjectInsId, usize>>,
++    pub(crate) status_revision: Mutex<FxHashMap<ProjectInsId, StatusRevision>>,
+     /// The notified revision map, used to track the notified revisions of the
+     /// projects.
+-    pub(crate) notified_revision: Mutex<FxHashMap<ProjectInsId, (usize, CompileSignal)>>,
++    pub(crate) notified_revision: Mutex<FxHashMap<ProjectInsId, NotifiedRevision>>,
+ }
+ 
++#[derive(Default)]
++pub(crate) struct StatusRevision {
++    instance: ProjectInsInstanceId,
++    revision: usize,
++    active: bool,
++}
++
++impl StatusRevision {
++    fn observe(&mut self, instance: ProjectInsInstanceId) -> bool {
++        if instance < self.instance {
++            return false;
++        }
++        if instance > self.instance {
++            self.instance = instance;
++            self.revision = 0;
++            self.active = true;
++            return true;
++        }
++        self.active
++    }
++
++    fn remove(&mut self, instance: ProjectInsInstanceId) -> bool {
++        if instance < self.instance {
++            return false;
++        }
++        if instance > self.instance {
++            self.instance = instance;
++            self.revision = 0;
++        }
++        self.active = false;
++        true
++    }
++}
++
++#[derive(Default)]
++pub(crate) struct NotifiedRevision {
++    instance: ProjectInsInstanceId,
++    revision: usize,
++    signal: CompileSignal,
++    active: bool,
++}
++
++impl NotifiedRevision {
++    fn observe(&mut self, instance: ProjectInsInstanceId) -> bool {
++        if instance < self.instance {
++            return false;
++        }
++        if instance > self.instance {
++            self.instance = instance;
++            self.revision = 0;
++            self.signal = CompileSignal::default();
++            self.active = true;
++            return true;
++        }
++        self.active
++    }
++
++    fn remove(&mut self, instance: ProjectInsInstanceId) -> bool {
++        if instance < self.instance {
++            return false;
++        }
++        if instance > self.instance {
++            self.instance = instance;
++            self.revision = 0;
++            self.signal = CompileSignal::default();
++        }
++        self.active = false;
++        true
++    }
++}
++
+ /// The client of the project.
+ pub trait ProjectClient: Send + Sync + 'static {
+     /// Sends an interrupt event back to the server.
+@@ -532,6 +614,7 @@
+     fn notify_diagnostics(&self, art: &LspCompiledArtifact) {
+         let dv = ProjVersion {
+             id: art.id().clone(),
++            instance: art.instance(),
+             revision: art.world().revision().get(),
+         };
+         // todo: better way to remove diagnostics
+@@ -680,17 +763,25 @@
+     fn status(&self, revision: usize, rep: CompileReport) {
+         {
+             let mut n_revs = self.status_revision.lock();
+-            let n_rev = n_revs.entry(rep.id.clone()).or_default();
+-            if *n_rev > revision {
+-                log::info!("Project: outdated status for revision {revision} <= {n_rev}");
++            let state = n_revs.entry(rep.id.clone()).or_default();
++            if !state.observe(rep.instance) {
++                log::info!("Project: outdated status from removed project instance");
+                 return;
+             }
+-            *n_rev = revision;
++            if state.revision > revision {
++                log::info!(
++                    "Project: outdated status for revision {revision} <= {}",
++                    state.revision
++                );
++                return;
++            }
++            state.revision = revision;
+         }
+ 
+         if matches!(rep.status, tinymist_project::CompileStatusEnum::Suspend) {
+             let dv = ProjVersion {
+                 id: rep.id.clone(),
++                instance: rep.instance,
+                 revision,
+             };
+             self.push_diagnostics(dv, None);
+@@ -711,18 +802,20 @@
+         self.editor_tx.send(EditorRequest::Status(rep)).unwrap();
+     }
+ 
+-    fn notify_removed(&self, id: &ProjectInsId) {
+-        let n_revs = &mut self.notified_revision.lock();
+-        let last_rev = n_revs.remove(id).unwrap_or_default();
+-
+-        let dv = ProjVersion {
+-            id: id.clone(),
+-            revision: last_rev.0,
+-        };
+-
+-        // todo: race condition with notify_compile?
+-        // remove diagnostics
+-        self.push_diagnostics(dv, None);
++    fn notify_removed(&self, id: &ProjectInsId, instance: ProjectInsInstanceId) {
++        self.notified_revision
++            .lock()
++            .entry(id.clone())
++            .or_default()
++            .remove(instance);
++        self.status_revision
++            .lock()
++            .entry(id.clone())
++            .or_default()
++            .remove(instance);
++        self.editor_tx
++            .send(EditorRequest::RemoveProject(id.clone(), instance))
++            .log_error("failed to send project removal");
+     }
+ 
+     fn notify_compile(&self, art: &LspCompiledArtifact) {
+@@ -732,34 +825,44 @@
+ 
+         {
+             let mut n_revs = self.notified_revision.lock();
+-            let (n_rev, n_signal) = n_revs.entry(art.id().clone()).or_default();
++            let state = n_revs.entry(art.id().clone()).or_default();
++            if !state.observe(art.instance()) {
++                log::info!("Project: discard notification from removed project instance");
++                return;
++            }
+ 
+             let rev = art.world().revision().get();
+ 
+             // If the revision is outdated, update it and notify the client.
+-            if *n_rev < rev {
+-                *n_rev = rev;
++            if state.revision < rev {
++                state.revision = rev;
+                 // The signal must be reset to the current one.
+-                *n_signal = art.snap.signal;
++                state.signal = art.snap.signal;
+ 
+                 // Otherwise,
+                 // 1. if the revision is not the same, ignores the signal.
+                 // 2. if a fresh signal is found, merges and emits it.
+-            } else if *n_rev == rev && n_signal.exclude(art.snap.signal).any() {
+-                n_signal.merge(art.snap.signal);
++            } else if state.revision == rev && state.signal.exclude(art.snap.signal).any() {
++                state.signal.merge(art.snap.signal);
+ 
+                 // Otherwise we have already notified the client for this
+                 // revision.
+             } else {
+                 log::info!(
+-                    "Project: already notified for revision {} <= {n_rev}, signal: {n_signal:?} contains {:?}",
++                    "Project: already notified for revision {} <= {}, signal: {:?} contains {:?}",
+                     art.world().revision(),
++                    state.revision,
++                    state.signal,
+                     art.snap.signal
+                 );
+                 return;
+             }
+         }
+ 
++        // This check only prevents an old generation from starting follow-on
++        // work after its removal tombstone is visible. It is not a transaction:
++        // a removal can race after the lock is released.
++
+         // Prints the diagnostics when we are running the compilation in standalone
+         // CLI.
+         #[cfg(feature = "system")]
+--- a/crates/tinymist/src/lsp/workspace_change_tests.rs
++++ b/crates/tinymist/src/lsp/workspace_change_tests.rs
+@@ -1,3 +1,5 @@
++// Modified by Oleafly: order diagnostic assertions by project instance.
++
+ use std::collections::BTreeSet;
+ use std::fs;
+ use std::path::{Path, PathBuf};
+@@ -15,7 +17,7 @@
+ use tokio::sync::mpsc;
+ use typst::ecow::EcoString;
+ 
+-use crate::actor::editor::{EditorRequest, ProjVersion};
++use crate::actor::editor::{DiagnosticRevisionGate, EditorRequest, ProjVersion};
+ use crate::input::{FileChange, FileChangeResult, FsChangeParams};
+ use crate::project::{Interrupt, LspInterrupt, ProjectInsId};
+ use crate::{CompileFontArgs, Config, ConstConfig, ServerState};
+@@ -210,7 +212,7 @@
+     receiver: sync_ls::TConnectionRx<LspMessage>,
+     server: ServerState,
+     editor_rx: mpsc::UnboundedReceiver<EditorRequest>,
+-    last_diag_revision: usize,
++    diagnostic_revisions: DiagnosticRevisionGate,
+ }
+ 
+ #[derive(Debug)]
+@@ -256,7 +258,7 @@
+             receiver,
+             server: ServerState::new(client, config, editor_tx),
+             editor_rx,
+-            last_diag_revision: 0,
++            diagnostic_revisions: DiagnosticRevisionGate::default(),
+         };
+         harness
+             .server
+@@ -573,18 +575,23 @@
+     ) -> bool {
+         let mut matched = false;
+         while let Ok(request) = self.editor_rx.try_recv() {
+-            if let EditorRequest::Diag(version, diagnostics) = request {
+-                if version.id != ProjectInsId::PRIMARY {
+-                    continue;
+-                }
+-                if version.revision < self.last_diag_revision {
+-                    continue;
++            match request {
++                EditorRequest::Diag(version, diagnostics) => {
++                    if version.id != ProjectInsId::PRIMARY {
++                        continue;
++                    }
++                    if !self.diagnostic_revisions.accept(&version) {
++                        continue;
++                    }
++                    matched |= on_publication(DiagnosticPublication {
++                        version,
++                        diagnostics,
++                    });
+                 }
+-                self.last_diag_revision = version.revision;
+-                matched |= on_publication(DiagnosticPublication {
+-                    version,
+-                    diagnostics,
+-                });
++                EditorRequest::RemoveProject(id, instance) => {
++                    self.diagnostic_revisions.remove(&id, instance);
++                }
++                _ => {}
+             }
+         }
+ 
+@@ -874,7 +881,50 @@
+             "{} has an undocumented representative probe",
+             row.id
+         );
++    }
++}
++
++#[test]
++fn primary_reload_diagnostic_revision_removes_old_instance_without_final_diagnostic() {
++    let main = main_source(NEW_DEP, "newer");
++    let mut harness = LspHarness::new(&[(MAIN, &main)]);
++    harness.compile_primary();
++    let stale = harness.wait_for_diagnostics(
++        Duration::from_secs(2),
++        "initial primary diagnostics",
++        false,
++        |publication, main_uri| {
++            diagnostics_are_present_on_main(publication.diagnostics.as_ref(), main_uri)
++        },
++    );
++
++    let DiagnosticPublication {
++        version,
++        diagnostics,
++    } = stale;
++    let retired_instance = version.instance;
++    harness.server.reload_projects().unwrap();
++    let mut removed = false;
++    while let Ok(request) = harness.editor_rx.try_recv() {
++        if let EditorRequest::RemoveProject(id, instance) = request {
++            removed |= id == version.id && instance == retired_instance;
++            harness.diagnostic_revisions.remove(&id, instance);
++        }
+     }
++    assert!(removed, "reload must retire the old primary instance");
++
++    harness
++        .server
++        .editor_tx
++        .send(EditorRequest::Diag(version, diagnostics))
++        .unwrap();
++
++    assert!(
++        !harness.drain_diagnostic_publications(|publication| {
++            publication.version.instance == retired_instance
++        }),
++        "late diagnostics from the replaced primary must be rejected"
++    );
+ }
+ 
+ #[test]
+--- a/crates/tinymist-project/src/compiler.rs
++++ b/crates/tinymist-project/src/compiler.rs
+@@ -1,8 +1,11 @@
++// Modified by Oleafly: tag compile artifacts and reports with project instances.
++
+ //! Project compiler for tinymist.
+ 
+ use core::fmt;
+ use std::collections::HashSet;
+ use std::path::Path;
++use std::sync::atomic::{AtomicUsize, Ordering};
+ use std::sync::{Arc, OnceLock};
+ 
+ use ecow::{EcoString, EcoVec, eco_vec};
+@@ -23,6 +26,21 @@
+ use typst::diag::{At, FileError};
+ use typst::syntax::Span;
+ 
++static NEXT_PROJECT_INS_INSTANCE_ID: AtomicUsize = AtomicUsize::new(1);
++
++/// A process-local generation of a project instance.
++///
++/// Unlike [`ProjectInsId`], this value is not reused when a project restarts.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub struct ProjectInsInstanceId(usize);
++
++impl ProjectInsInstanceId {
++    /// Creates the next project instance generation.
++    pub fn new() -> Self {
++        Self(NEXT_PROJECT_INS_INSTANCE_ID.fetch_add(1, Ordering::Relaxed))
++    }
++}
++
+ /// A compiled artifact.
+ pub struct CompiledArtifact<F: CompilerFeat> {
+     /// The used compute graph.
+@@ -33,6 +51,8 @@
+     pub doc: Option<TypstDocument>,
+     /// The depended files.
+     pub deps: OnceLock<EcoVec<FileId>>,
++    /// The project instance that produced this artifact.
++    instance: ProjectInsInstanceId,
+ }
+ 
+ impl<F: CompilerFeat> fmt::Display for CompiledArtifact<F> {
+@@ -57,6 +77,7 @@
+             doc: self.doc.clone(),
+             diag: self.diag.clone(),
+             deps: self.deps.clone(),
++            instance: self.instance,
+         }
+     }
+ }
+@@ -67,6 +88,11 @@
+         &self.graph.snap.id
+     }
+ 
++    /// Returns the project instance that produced this artifact.
++    pub fn instance(&self) -> ProjectInsInstanceId {
++        self.instance
++    }
++
+     /// Returns the last successfully compiled document.
+     pub fn success_doc(&self) -> Option<TypstDocument> {
+         self.doc
+@@ -100,6 +126,7 @@
+             graph,
+             doc,
+             deps: OnceLock::default(),
++            instance: ProjectInsInstanceId::default(),
+         }
+     }
+ 
+@@ -113,6 +140,7 @@
+             graph,
+             doc: None,
+             deps: OnceLock::default(),
++            instance: ProjectInsInstanceId::default(),
+         }
+     }
+ 
+@@ -151,6 +179,8 @@
+ pub struct CompileReport {
+     /// The project ID.
+     pub id: ProjectInsId,
++    /// The project instance generation.
++    pub instance: ProjectInsInstanceId,
+     /// The file getting compiled.
+     pub compiling_id: Option<FileId>,
+     /// The number of pages in the compiled document, zero if failed.
+@@ -225,7 +255,7 @@
+     /// Called when a compilation is done.
+     fn notify_compile(&self, res: &CompiledArtifact<F>);
+     /// Called when a project is removed.
+-    fn notify_removed(&self, _id: &ProjectInsId) {}
++    fn notify_removed(&self, _id: &ProjectInsId, _instance: ProjectInsInstanceId) {}
+     /// Called when the compilation status is changed.
+     fn status(&self, revision: usize, rep: CompileReport);
+ }
+@@ -417,6 +447,7 @@
+         ProjectInsState::run_compile(
+             self.handler.clone(),
+             snap,
++            self.primary.instance,
+             self.export_target,
+             self.syntax_only,
+         )()
+@@ -436,6 +467,7 @@
+     ) -> ProjectInsState<F, Ext> {
+         ProjectInsState {
+             id,
++            instance: ProjectInsInstanceId::new(),
+             ext: Default::default(),
+             syntax_only,
+             verse,
+@@ -465,7 +497,19 @@
+ 
+     /// Clear all dedicate projects.
+     pub fn clear_dedicates(&mut self) {
++        for proj in &self.dedicates {
++            self.handler.notify_removed(&proj.id, proj.instance);
++        }
+         self.dedicates.clear();
++    }
++
++    /// Marks the primary and dedicate instances removed in publication tracking.
++    pub fn notify_all_removed(&mut self) {
++        self.handler
++            .notify_removed(&self.primary.id, self.primary.instance);
++        for proj in &self.dedicates {
++            self.handler.notify_removed(&proj.id, proj.instance);
++        }
+     }
+ 
+     /// Restart a dedicate project.
+@@ -500,8 +544,9 @@
+     fn remove_dedicates(&mut self, id: &ProjectInsId) {
+         let proj = self.dedicates.iter().position(|e| e.id == *id);
+         if let Some(idx) = proj {
++            let instance = self.dedicates[idx].instance;
+             // Resets the handle state, e.g. notified revision
+-            self.handler.notify_removed(id);
++            self.handler.notify_removed(id, instance);
+             self.deps.project_deps.remove_mut(id);
+ 
+             let _proj = self.dedicates.remove(idx);
+@@ -536,8 +581,26 @@
+                 proj.reason.merge(reason_by_entry_change());
+             }
+             Interrupt::Compiled(artifact) => {
+-                let proj =
+-                    Self::find_project(&mut self.primary, &mut self.dedicates, artifact.id());
++                let Some(proj) = std::iter::once(&mut self.primary)
++                    .chain(self.dedicates.iter_mut())
++                    .find(|project| &project.id == artifact.id())
++                else {
++                    log::info!(
++                        "Project({:?}): discard artifact for removed project instance {:?}",
++                        artifact.id(),
++                        artifact.instance(),
++                    );
++                    return;
++                };
++                if proj.instance != artifact.instance() {
++                    log::info!(
++                        "Project({:?}): discard artifact from removed instance {:?}, current: {:?}",
++                        artifact.id(),
++                        artifact.instance(),
++                        proj.instance,
++                    );
++                    return;
++                }
+ 
+                 let processed = proj.process_compile(artifact);
+ 
+@@ -577,6 +640,7 @@
+                         self.handler.status(proj.verse.revision.get(), {
+                             CompileReport {
+                                 id: proj.id.clone(),
++                                instance: proj.instance,
+                                 compiling_id: None,
+                                 page_count: 0,
+                                 status: CompileStatusEnum::Suspend,
+@@ -776,6 +840,8 @@
+ pub struct ProjectInsState<F: CompilerFeat, Ext> {
+     /// The project instance id.
+     pub id: ProjectInsId,
++    /// The project instance generation.
++    pub instance: ProjectInsInstanceId,
+     /// The extension
+     pub ext: Ext,
+     /// The underlying universe.
+@@ -863,6 +929,7 @@
+         Some(Self::run_compile(
+             handler.clone(),
+             snap,
++            self.instance,
+             self.export_target,
+             self.syntax_only,
+         ))
+@@ -872,6 +939,7 @@
+     fn run_compile(
+         h: Arc<dyn CompileHandler<F, Ext>>,
+         graph: Arc<WorldComputeGraph<F>>,
++        instance: ProjectInsInstanceId,
+         export_target: ExportTarget,
+         syntax_only: bool,
+     ) -> impl FnOnce() -> CompiledArtifact<F> {
+@@ -884,6 +952,7 @@
+         h.status(revision, {
+             CompileReport {
+                 id: graph.snap.id.clone(),
++                instance,
+                 compiling_id: Some(id),
+                 page_count: 0,
+                 status: CompileStatusEnum::Compiling,
+@@ -891,7 +960,7 @@
+         });
+ 
+         move || {
+-            let compiled = if syntax_only {
++            let mut compiled = if syntax_only {
+                 let main = graph.snap.world.main();
+                 let source_res = graph.world().source(main).at(Span::detached());
+                 let syntax_res = source_res.and_then(|source| {
+@@ -909,6 +978,7 @@
+                     graph,
+                     doc: None,
+                     deps: OnceLock::default(),
++                    instance,
+                 }
+             } else {
+                 match export_target {
+@@ -917,6 +987,7 @@
+                     ExportTarget::Paged => CompiledArtifact::from_graph(graph, false),
+                 }
+             };
++            compiled.instance = instance;
+ 
+             let res = CompileStatusResult {
+                 diag: (compiled.warning_cnt() + compiled.error_cnt()) as u32,
+@@ -924,6 +995,7 @@
+             };
+             let rep = CompileReport {
+                 id: compiled.id().clone(),
++                instance,
+                 compiling_id: Some(id),
+                 page_count: compiled.doc.as_ref().map_or(0, |doc| doc.num_of_pages()),
+                 status: match &compiled.doc {

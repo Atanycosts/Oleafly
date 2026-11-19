@@ -1,6 +1,7 @@
 //! Native screen capture using platform APIs.
 //! macOS: CoreGraphics CGWindowListCreateImage
 //! Linux: webkit2gtk WebView::snapshot()
+//! Windows: WebView2 DevTools page capture.
 //! Other platforms: not yet supported.
 
 /// Encode bytes to base64 (no external dependency).
@@ -459,9 +460,81 @@ pub mod platform {
     }
 }
 
+// ── Windows implementation via WebView2 DevTools page capture ───────────────
+
+#[cfg(target_os = "windows")]
+pub mod platform {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use webview2_com::{
+        CallDevToolsProtocolMethodCompletedHandler,
+        Microsoft::Web::WebView2::Win32::ICoreWebView2,
+    };
+    use windows::core::HSTRING;
+
+    pub fn screenshot<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        window_label: &str,
+    ) -> Result<Vec<u8>, String> {
+        use tauri::Manager;
+
+        let target = app
+            .get_webview(window_label)
+            .ok_or_else(|| format!("webview '{window_label}' not found"))?;
+        let (tx, rx) = mpsc::channel();
+
+        target
+            .with_webview(move |platform| {
+                let result = (|| {
+                    let controller = platform.controller();
+                    let webview: ICoreWebView2 =
+                        unsafe { controller.CoreWebView2() }.map_err(|error| error.to_string())?;
+                    let callback_tx = tx.clone();
+                    let handler =
+                        CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                            move |status, response| {
+                                let result = (|| {
+                                    status.map_err(|error| error.to_string())?;
+                                    let response = serde_json::from_str::<serde_json::Value>(
+                                        &response,
+                                    )
+                                    .map_err(|error| format!("decode screenshot response: {error}"))?;
+                                    let data = response
+                                        .get("data")
+                                        .and_then(serde_json::Value::as_str)
+                                        .ok_or_else(|| {
+                                            "WebView2 screenshot response had no data".to_string()
+                                        })?;
+                                    crate::server::base64_decode(data)
+                                })();
+                                let _ = callback_tx.send(result);
+                                Ok(())
+                            },
+                        ));
+                    let method = HSTRING::from("Page.captureScreenshot");
+                    let params =
+                        HSTRING::from(r#"{"format":"png","fromSurface":true}"#);
+                    unsafe {
+                        webview
+                            .CallDevToolsProtocolMethod(&method, &params, &handler)
+                    }
+                    .map_err(|error| error.to_string())
+                })();
+                if let Err(error) = result {
+                    let _ = tx.send(Err(error));
+                }
+            })
+            .map_err(|error| error.to_string())?;
+
+        rx.recv_timeout(Duration::from_secs(10))
+            .map_err(|_| "WebView2 screenshot timeout after 10s".to_string())?
+    }
+}
+
 // ── Fallback for other platforms ────────────────────────────────────────────
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub mod platform {
     pub fn screenshot<R: tauri::Runtime>(
         _app: &tauri::AppHandle<R>,

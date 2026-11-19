@@ -1226,7 +1226,7 @@
         "label": "PT Serif"
       },
       "typst-cjk": {
-        "description": "Noto Sans and Serif CJK, Fandol and LXGW WenKai. They also stand in for SimSun, SimHei and KaiTi.",
+        "description": "Noto Sans and Serif CJK, Fandol and LXGW WenKai. These do not replace exact SimSun, SimHei or KaiTi requirements. Install each requested family separately.",
         "label": "Chinese, Japanese and Korean"
       },
       "typst-icons": {

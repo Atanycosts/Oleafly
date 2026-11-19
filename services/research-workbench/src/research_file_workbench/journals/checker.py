@@ -26,7 +26,7 @@ _VERDICTS = (
     "cannot_determine",
     "not_checked",
 )
-_HISTORICAL_CHECKER_VERSION = "journal-geometry-checker-1.0.0"
+_HISTORICAL_CHECKER_VERSIONS = {"journal-geometry-checker-1.0.0", "journal-geometry-checker-1.1.0"}
 
 
 def check_world(world: JsonObject, result: DocxReadResult) -> JsonObject:
@@ -45,12 +45,13 @@ def check_world(world: JsonObject, result: DocxReadResult) -> JsonObject:
     for rule in require_objects(world["rules"], "world rules"):
         property_name = cast(str, rule["property"])
         basis = cast(str, rule["basis_status"])
+        supported = property_name != "body_font_family"
         applicable = rule["scope"] == {**scope, "section_scope": "all_sections"}
         findings: list[JsonObject] = []
         observed_count = 0
         mismatches = 0
         limitations: list[str] = []
-        if applicable and basis != "conflict":
+        if applicable and basis != "conflict" and supported:
             expected = cast(int, rule["expected"])
             for section in result.sections:
                 observed = getattr(section, property_name)
@@ -78,12 +79,17 @@ def check_world(world: JsonObject, result: DocxReadResult) -> JsonObject:
                 )
         elif not applicable:
             limitations.append("Rule scope is outside this checker's selected manuscript context.")
+        elif not supported:
+            limitations.append(
+                "Font requirements are retained for exact font acquisition. This checker does "
+                "not verify manuscript font declarations, installed font bytes or rendered glyphs."
+            )
         else:
             limitations.append(
                 "Conflicting supplied expectations require a separate evidence decision."
             )
         verdict = _aggregate_verdict(
-            basis, applicable, len(result.sections), observed_count, mismatches
+            basis, applicable and supported, len(result.sections), observed_count, mismatches
         )
         summary[verdict] += 1
         results.append(
@@ -121,7 +127,7 @@ def check_world(world: JsonObject, result: DocxReadResult) -> JsonObject:
     return check
 
 
-def _finding_verdict(basis: str, observed: object, expected: int) -> str:
+def _finding_verdict(basis: str, observed: object, expected: int | str) -> str:
     if observed is None:
         return "cannot_determine"
     if basis == "confirmed":
@@ -160,10 +166,15 @@ def validate_check_result(check: JsonObject, world: JsonObject) -> None:
     verdict; new checks use the current method and explicit finding verdicts.
     """
     validate_world_identity(world)
+    if "template" in world:
+        from research_file_workbench.journals.template_checks import validate_template_check
+
+        validate_template_check(check, world)
+        return
     method = require_text(check.get("checker_version"), "checker version")
-    if method not in {CHECKER_VERSION, _HISTORICAL_CHECKER_VERSION}:
+    if method not in {CHECKER_VERSION, *_HISTORICAL_CHECKER_VERSIONS}:
         raise WorldAnalysisError("Unsupported stored checker method")
-    historical = method == _HISTORICAL_CHECKER_VERSION
+    historical = method == "journal-geometry-checker-1.0.0"
     if check.get("world_version_id") != world["version_id"] or check.get("scope") != world["scope"]:
         raise WorldAnalysisError("Check world identity or scope differs from its world")
     source_hash = require_text(check.get("source_sha256"), "manuscript source digest")
@@ -248,7 +259,8 @@ def validate_check_result(check: JsonObject, world: JsonObject) -> None:
                 mismatches += value != expected
             if not historical and finding["verdict"] != _finding_verdict(basis, value, expected):
                 raise WorldAnalysisError("Finding verdict differs from its observed geometry")
-        should_compare = applicable and basis != "conflict"
+        supported = rule["property"] != "body_font_family"
+        should_compare = applicable and basis != "conflict" and supported
         if len(findings) != (total if should_compare else 0) or calculated_observed != observed:
             raise WorldAnalysisError("Check findings do not match its declared coverage")
         if should_compare and indices != set(range(1, total + 1)):
@@ -258,7 +270,7 @@ def validate_check_result(check: JsonObject, world: JsonObject) -> None:
                 raise WorldAnalysisError("Checked rules disagree about source section locators")
             source_sections = section_locators
         verdict = _aggregate_verdict(
-            basis, applicable, total, observed, mismatches, historical=historical
+            basis, applicable and supported, total, observed, mismatches, historical=historical
         )
         if record["verdict"] != verdict:
             raise WorldAnalysisError("Check verdict does not match its findings and coverage")

@@ -129,3 +129,49 @@ it("loads a project image whose path was saved with the app's own address", asyn
   await waitFor(() => expect(screen.getByRole("img", { name: "plot" })).toHaveAttribute("src", "blob:plot"));
   expect(loadAssetThumbnail).toHaveBeenCalledWith("first", "figures/plot 1.png");
 });
+
+it("renders retained content independently and maps selected rendered text to its actual source block", async () => {
+  const { fireEvent } = await import("@testing-library/react");
+  const { useMaterialAnnotationsStore } = await import("@/store/material-annotations");
+  const en = (await import("@/i18n/locales/en/editor.json")).default;
+  openContent("# Current buffer");
+  const content = "# Retained\n\nA **bold** result.";
+  render(<MarkdownPreview content={content} projectId="retained-project" path="old.md" />);
+  expect(screen.queryByRole("heading", { name: "Current buffer" })).toBeNull();
+  const text = screen.getByText("bold").firstChild!;
+  const range = document.createRange(); range.selectNodeContents(text);
+  const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.mouseUp(screen.getByTestId("markdown-preview"));
+  fireEvent.click(screen.getByRole("button", { name: en.materials.annotateSelection }));
+  await waitFor(() => expect(useMaterialAnnotationsStore.getState().document?.projectId).toBe("retained-project"));
+  const anchor = useMaterialAnnotationsStore.getState().anchor;
+  expect(anchor.kind).toBe("text");
+  if (anchor.kind === "text") expect(anchor.quote).toBe(content.slice(anchor.from, anchor.to));
+  expect(anchor).toEqual({ kind: "text", from: 12, to: content.length, quote: "A **bold** result." });
+});
+
+
+it("preserves a retained material identity when adding feedback and reveals its source block anchor", async () => {
+  const { fireEvent } = await import("@testing-library/react");
+  const { useMaterialAnnotationsStore } = await import("@/store/material-annotations");
+  const en = (await import("@/i18n/locales/en/editor.json")).default;
+  const document = { projectId: "original-project", documentId: "retained:stable-id", path: "old.md", title: "Retained", kind: "markdown" as const, revision: "exact-hash", source: { text: "# Retained" } };
+  render(<MarkdownPreview document={document} anchor={{ kind: "text", from: 0, to: 10, quote: "# Retained" }} />);
+  expect(screen.getByRole("heading")).toHaveAttribute("data-material-anchor", "true");
+  fireEvent.click(screen.getByRole("button", { name: en.materials.annotateWhole }));
+  expect(useMaterialAnnotationsStore.getState().document).toBe(document);
+});
+
+
+it("never reloads current project or remote image bytes when displaying a retained Markdown document", async () => {
+  const en = (await import("@/i18n/locales/en/editor.json")).default;
+  const content = "![Original plot](figures/plot.png)\n\n![Remote plot](https://example.com/plot.png)";
+  const document = { projectId: "original-project", documentId: "retained-md", path: "old.md", title: "Retained", kind: "markdown" as const, revision: "frozen-text", source: { text: content } };
+  render(<MarkdownPreview document={document} />);
+  expect(loadAssetThumbnail).not.toHaveBeenCalled();
+  expect(screen.queryByRole("img")).toBeNull();
+  const placeholders = screen.getAllByTestId("retained-image-placeholder");
+  expect(placeholders).toHaveLength(2);
+  expect(placeholders[0]).toHaveTextContent(`Original plot · ${en.materials.retainedImageUnavailable}`);
+  expect(placeholders[1]).toHaveTextContent(`Remote plot · ${en.materials.retainedImageUnavailable}`);
+});

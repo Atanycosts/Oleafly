@@ -108,6 +108,112 @@ are exercised by `src/lib/editor-support-contract.test.ts`.
   prose mask, so math bodies, verbatim blocks, and machine arguments are not
   counted; a non-empty selection adds a selection count.
 
+## Word documents
+
+The file tree recognizes `.doc` and `.docx` names without regard to case and
+opens them as a tab in the central workspace. Switching to a source file,
+Journal checks or a PDF keeps the Word editing session and its unsaved changes
+in memory. The project file is a read-only source:
+**Save** creates a new Workbench working-copy baseline, while **Download DOCX**
+exports the bytes currently open in the editor. Oleafly reuses an existing
+working copy for the same path and source. It follows a rename by content hash;
+when an external replacement finds the old draft or an exact copy of the new
+content, it asks whether to continue an existing working copy or create one. A
+new source with no matching working copy imports directly. The file tree and
+Journal checks share this editor and its exact-font state. Legacy `.doc`
+normalization uses the configured LibreOffice installation; Strict OOXML
+`.docx` files must be resaved as Transitional OOXML.
+
+The first manuscript import parses its retained bytes once. Reopening an
+unchanged mapped file uses verified project metadata and the current saved
+baseline without first reading the full manuscript catalog and history.
+
+Journal checks starts with a manuscript and a Word template. The left sidebar
+selects those inputs and starts a check; the central Journal checks tab shows
+the results, expected and observed formats, source text and earlier checks.
+Template facts are available before a manuscript is imported. The right-hand
+Agent can discuss and edit the open document through the existing document
+tools. Continue with Agent prepares an editable request in that chat.
+
+Word's Document tools panel shows missing font families, acquisition status,
+source and license information, installed versions and task activity. Installing
+or removing a font from Settings refreshes the same open Word session. Internal
+IDs, hashes, raw JSON, XML and developer diagnostics are absent from these
+product views. Coverage messages explain which content still needs review,
+such as an unknown text role or the visual layout of an embedded object.
+The equation panel inserts one LaTeX equation at the current paragraph position or
+replaces a selected native Word equation. It retains the equation source and explicit
+math macros inside the DOCX, and reports a stale association if the generated equation
+changes outside that source workflow. Insertion uses the collapsed caret, or the paragraph
+end when no caret offset is available; display equations require an empty paragraph.
+Replacing imported or stale math requires adopting the supplied source. A changed document
+keeps the user's source draft and requires an explicit refresh before writing. The optional
+LaTeX preview includes the supplied macros and does not reproduce Word's page rendering.
+The change is undoable and saving is a separate action. Conversion
+losses are reported; algorithm figures, arbitrary TeX projects and tracked equation
+replacement are outside this entry point.
+Journal annotations use readable target names and open their retained source
+through the source viewer; saved feedback keeps its exact original reference.
+Source compile and export controls return when a source tab is
+active. A saved Word PDF opens inside the same central workspace, with a Back
+to document action that preserves the editor session. PDF conversion and loading
+start when Open PDF or Document tools is opened; opening Word alone does not
+start a background conversion. Closing those views retains the completed PDF
+without requesting a new one.
+
+The Display menu switches between the working copy, the version opened at the
+start of the session, and a comparison on the same paper surface. The version
+spine stays visible, with the earlier version behind the active paper. Its
+compressed shell follows the rendered paper width, and selecting a version
+exchanges the two labels without changing the document viewport dimensions.
+One paper layer is visible and
+accepts interaction, with one shared formatting toolbar. The editable session
+stays mounted while the historical version uses a read-only instance of the
+same DOCX renderer. Changing the display preserves the editable session and its undo history.
+Saving advances the working baseline while the original stays fixed until the
+document is reopened.
+
+The Agent receives the material and version actually being viewed, its supported
+selection, and the writable Word session as separate facts. A historical selection
+does not become an editing address. Caret and edit notifications publish the
+current paragraph identity without enumerating the manuscript. When the Agent
+requests context, the host resolves a write address against the live session and
+revision. Chat, desktop MCP and research tasks share
+the live document services for formatting, fonts, saving, checking and export.
+The left sidebar and central surface show actual operation receipts. Following
+the assigned flow can reveal its current Word target. Editing, scrolling or
+navigating pauses that movement, while execution continues. **Continue following**
+resumes at the latest reported target. Other flows update state without taking
+over the current navigation.
+
+## Material feedback and results
+
+PDFs, images, Markdown previews, source, diagrams and local HTML reports share
+the central workspace with Word. Feedback opens from a compact paper-edge entry
+as a panel inside that workspace. Minimizing it keeps an unfinished comment.
+The right-hand Agent remains available for conversation.
+PDF feedback can refer to the whole document, the current page or selected
+text. Images support a selected area, diagrams a node or edge, Markdown a
+source block, source a character range, and HTML selected text. Word currently
+supports whole-document feedback and a single selected paragraph.
+
+Saving feedback retains the displayed source bytes and its version. It does
+not start an AI task. Selecting **Request AI handling** sends that feedback and
+the retained source to an isolated task. Its handling record links back to the
+request and resulting files. Complete text, image and DOCX task results have an
+**Open in workspace** action; available starting and final versions use the
+same renderer for comparison. Retained views are read only.
+
+An earlier feedback item opens its own version and location. PDF locations
+restore the page and rotation, without drawing a rectangle overlay. A retained
+Markdown text snapshot shows placeholders for image attachments rather than
+loading a newer image from the project. HTML snapshots include static local
+resource references and run in a sandbox. Dynamically constructed resource
+URLs and remote resources are outside that snapshot.
+Visiting another retained material keeps the earlier renderer mounted. **Back**
+returns to that exact version with its local reading state. Closing the visit
+chain returns to the prior working surface and its editing session.
+
 ## Visual editor
 
 Visual mode is the same editor with a different set of decorations. The

@@ -37,9 +37,22 @@ pub struct ResearchWorkspace {
     pub roots: Vec<LinkedResearchRoot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub word_documents: Vec<WordDocumentLink>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_research: Option<JournalResearchLink>,
     pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordDocumentLink {
+    pub path: String,
+    pub workbench_project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

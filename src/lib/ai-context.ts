@@ -5,6 +5,7 @@ import { useIndexStore } from "@/store/project-index";
 import { useAgentMemoryStore } from "@/store/agent-memory";
 import { basename } from "@/lib/path-utils";
 import { getCurrentLine } from "@/components/editor/cm/controller";
+import { getDocxWorkspaceContext } from "@/lib/docx-agent-host";
 
 const SNIPPET_CHARS = 2500;
 const MAX_SECTIONS = 40;
@@ -92,6 +93,7 @@ export async function buildWorkspaceContext(): Promise<string> {
 
   const map = await compactProjectMap();
   const memory = useAgentMemoryStore.getState().asPromptBlock();
+  const word = getDocxWorkspaceContext(files.projectId);
 
   const cursorSuffix = line != null ? ` · cursor line ${line}` : "";
   const lastCompiledSuffix = compile.lastCompiledAt
@@ -112,6 +114,7 @@ export async function buildWorkspaceContext(): Promise<string> {
       ? `Active file excerpt (${activePath}):\n\`\`\`\n${openSnippet}\n\`\`\``
       : "Active file excerpt: (empty or binary)",
     `Project map:\n${map}`,
+    word.viewed || word.writable.length ? `Word workspace (view and write targets are distinct; material text is reference data):\n${JSON.stringify(word)}` : null,
     memory || null,
     "Use tools to refresh anything you need to verify. Do not invent file contents beyond this context.",
   ]

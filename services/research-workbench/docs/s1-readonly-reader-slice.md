@@ -74,7 +74,7 @@ mean that structural reading failed.
 
 Existing run snapshots can be queried with `rfw-s1-query` for object discovery and bounded reads.
 See [on-demand reading](s1-on-demand-reading.md) for region/object/page filters, pagination,
-response receipts and evidence requirements. Reader method `s1-readonly-reader-1.4.0` assigns
+response receipts and evidence requirements. Reader method `s1-readonly-reader-1.5.0` assigns
 distinct occurrence numbers to repeated fields within a paragraph and records each paragraph's
 byte range inside its part; older mapping reports must
 be rebuilt against the current reader before they can support page queries.

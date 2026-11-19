@@ -46,12 +46,12 @@ historical evidence and must not be edited to claim a new execution.
 ## Local setup and verification
 
 The primary development and acceptance platform is macOS (operator decision, 2026-10-31);
-the PowerShell gates below remain the recorded Windows evidence procedure and historical
-artifacts are never rewritten. Use Python 3.12 or later. The gates run inside the repository
-virtual environment, because the project declares runtime dependencies; verifying against a
+the Windows evidence procedure remains historical and its artifacts are never rewritten. Use
+Python 3.12 or later. The gates run inside the repository virtual environment, because the project declares runtime dependencies; verifying against a
 bare interpreter would exercise a different package set from the one that ships. Fixture-building libraries are developer tools,
 not the DOCX reader.
-Poppler `pdfinfo`, Node.js and PowerShell 7 must be available for the current Windows evidence gate.
+Poppler `pdfinfo`, Node.js and PowerShell 7 are required when reproducing the historical Windows
+evidence procedure.
 The browser response tests use Node's built-in runner against real HTTP responses and damaged
 copies. Node is a verification dependency; the shipped application needs no npm packages.
 Pinned author inputs and renderer identities are environment-bound requirements: their absence
@@ -70,28 +70,58 @@ PyMuPDF is pinned to a minor range because block
 segmentation feeds `journal-pdf-source-1.0.0`; a pymupdf upgrade that changes extraction
 results must bump that method version in the same change.
 
-```powershell
+```sh
 python -m venv .venv
 uv pip install -e ".[dev,fixture-building]"
-pwsh -NoProfile -File tools/verify.ps1
+ruff format --check --no-cache .
+ruff check --no-cache .
+mypy
+python -m pytest
 ```
 
-`uv` is only the installer here; any environment at `.venv` works. The verification script refuses
-to start without it, and the interpreter can be overridden with `-Python`. It runs Ruff, mypy,
-pytest and Phase 0 validation and stops on any failed gate. Each test run uses a new
-`var/verification-<id>` directory.
-
-Nine tests skip on `OSError` when the process cannot create a symbolic link, and several of them
-are the reparse-point boundary tests. Whether a given process holds `SeCreateSymbolicLinkPrivilege`
-is not guaranteed here and has been observed to differ between processes, so the gate probes it
-up front and fails loudly rather than reporting a green run in which those boundaries were never
-checked. `pytest` also runs with `-rs` so any remaining skip is named in the output. The script
-restores its working directory and `PYTHONPATH`; it does not rebuild reports, run an Office
-renderer, or modify author inputs.
+`uv` is only the installer here; any environment at `.venv` works. `pytest` also runs with `-rs`
+so any remaining skip is named in the output. Historical `rfw-phase0 validate` runs require the
+registered author catalog and pinned rendering environment. Run them separately when reproducing
+that evidence; they are not part of the portable development gate. Missing inputs must remain
+reported as an environment failure, and earlier failures remain historical evidence.
 
 Equivalent individual gates remain documented in `AGENTS.md`. An environment-bound validation
 failure must remain distinct from a deterministic unit-test failure. Do not call a release portable
 until author-input paths, rendering environments and fonts have been independently verified there.
+
+### DOCX font and render integration
+
+Native font setup on this Mac requires the Homebrew `sevenzip` package and `tar`; both are
+installed. The native application is the sole production source of `OLEAFLY_FONT_DIRS`, passing
+its download and exact-resolved font-cache roots as a `os.pathsep`-separated launch value. HTTP and MCP callers do
+not choose font directories.
+
+Every LibreOffice render uses its own temporary profile and stages the current TTF/OTF cache bytes
+into `profile/user/fonts`, deduplicating by SHA-256 and verifying available source receipts.
+`supplied_fonts` records those supplied bytes and hashes; `pdf_font_names` records the names
+observed in the resulting PDF. These are different evidence and neither establishes complete
+font embedding, the version selected in the live editor or visual equivalence. The current
+application retains the exact system faces in `assets/resolved-fonts` before returning their
+bytes to the editor and waits for settled font resolution before requesting the saved PDF.
+Method compatibility excludes earlier renders that predate this supply path. The current
+derived-render response also reports the current cache-content identity, while each render retains
+the identity actually supplied to it. Clients compare those identities after service restart so a
+PDF from an older cache is not reused as current; a historical render without that identity is not
+a current-cache match. The current HTTP method is defined in
+[`contracts/journals/world-contract.json`](../../contracts/journals/world-contract.json). The render HTTP
+request adds no profile, font-directory or cache-identity path fields; the service owns the profile
+location and derives the identity from the configured native cache roots. See
+[`contracts/s1/render-bundle.json`](../../contracts/s1/render-bundle.json) for the authoritative
+method and boundary.
+
+The local LibreOffice 26.8.2.2 profile/font probe succeeded. On 2026-11-13 the final isolated
+macOS app also passed real Chinese/English manuscript acceptance in `run-ilC23E` / `run-oknADL`
+under the repository's ignored `.private/docx-font-layout/` directory. Those runs separately
+verify exact cached-package extraction, same-session font use, compatible-render reopen, actual
+edit/save and regenerated source-matching PDFs; they do not follow from the probe or portable
+suite alone. Microsoft archives were preverified cache inputs, PT Serif used real network
+downloads, and Word/WPS visual equivalence remains unverified. See the owning
+[application status](../../../../docs/agent/status.md#docx-准确字体获取2026-11-13) for full scope.
 
 ## Oleafly application and MCP connection
 
@@ -136,7 +166,8 @@ candidates and conditions, select values in mm/pt/count, and explicitly confirm 
 applicability. Adoption retains captured pages, original sources and decisions in one
 new version. The selected option then binds that version and runs the existing check.
 Manual **导入候选 JSON / Import candidate JSON** remains available. Handling notes keep
-the original verdict. These operations require `journal-http-1.5.0`.
+the original verdict. These operations use the HTTP surface declared by the
+[journal world contract](../../contracts/journals/world-contract.json).
 
 The application defaults to Simplified Chinese on first launch and after a settings
 reset. An explicit language choice remains saved. Built-in skill names and descriptions,
@@ -275,13 +306,16 @@ their applicability to the new baseline. Historical access remains explicit.
 
 ## Journal integration boundaries
 
-`contracts/journals/world-contract.json` is the current machine-readable contract for the world
-data and its local HTTP surface. Its world schema and checker identities are 1.1.0 and the analyzer identity is 1.4.0;
-the HTTP identity is `journal-http-1.5.0`. Update this existing contract when changing a boundary
-instead of creating a second authoritative endpoint or client schema document.
+The [journal world contract](../../contracts/journals/world-contract.json) is the current
+machine-readable owner of the world data, method identities and local HTTP surface. Update this
+existing contract when changing a boundary instead of creating a second authoritative endpoint or
+client schema document.
 
 World discovery uses `journal_name`. Manuscript import separates a display `name` from the original
 DOCX `filename` and `content_base64`; filenames are labels, not an API for reading arbitrary paths.
+`GET /api/manuscript-source` requires `project_id` and an explicit `baseline_id`; it returns that
+retained artifact and its recorded hash, never reads the original author path and does not create a
+read receipt.
 The server enforces the exact JSON request fields. Keep browser payloads, server parsing, service
 arguments, CLI callers and regression cases aligned in the same change; no alias or extension-based
 fallback should silently reinterpret the display name.

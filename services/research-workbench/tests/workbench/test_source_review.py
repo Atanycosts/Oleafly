@@ -30,8 +30,9 @@ def test_review_api_returns_exact_source_fragments_and_rule_links(running_server
     assert paragraph["text"] == "All manuscript pages must use A4 paper."
     assert sentence["text"] == paragraph["text"]
     assert sentence["parent_fragment_id"] == paragraph["fragment_id"]
-    assert len(review["rule_links"]) == len(world["rules"]) == 2
-    assert all(item["fragment_ids"] == [paragraph["fragment_id"]] for item in review["rule_links"])
+    assert len(review["rule_links"]) == len(world["rules"]) == 7
+    assert all(item["link_status"] == "located" for item in review["rule_links"])
+    assert all(item["source_id"] != paragraph["source_id"] for item in review["rule_links"])
     _, unchanged = _request(running_server, "GET", f"/api/world?version_id={world['version_id']}")
     assert unchanged == world
 

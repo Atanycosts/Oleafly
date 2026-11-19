@@ -8,6 +8,7 @@ import pytest
 
 from research_file_workbench.docx.models import DocxReadError, DocxReadResult
 from research_file_workbench.docx.reader import read_docx_bytes
+from research_file_workbench.docx.report import READER_VERSION, docx_read_result_to_report
 
 WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 MATH = "http://schemas.openxmlformats.org/officeDocument/2006/math"
@@ -16,6 +17,7 @@ REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 DRAWING = "http://schemas.openxmlformats.org/drawingml/2006/main"
 CHART = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+VML = "urn:schemas-microsoft-com:vml"
 
 
 def _read(body: str = "<w:p><w:r><w:t>Body</w:t></w:r></w:p>", **parts: str) -> DocxReadResult:
@@ -29,7 +31,8 @@ def _read(body: str = "<w:p><w:r><w:t>Body</w:t></w:r></w:p>", **parts: str) -> 
         archive.writestr(
             "word/document.xml",
             f'<w:document xmlns:w="{WORD}" xmlns:m="{MATH}" xmlns:mc="{MC}" '
-            f'xmlns:r="{REL}" xmlns:wp="{WP}" xmlns:a="{DRAWING}" xmlns:c="{CHART}">'
+            f'xmlns:r="{REL}" xmlns:wp="{WP}" xmlns:a="{DRAWING}" xmlns:c="{CHART}" '
+            f'xmlns:v="{VML}">'
             f"<w:body>{body}</w:body></w:document>",
         )
         for name, content in parts.items():
@@ -54,6 +57,10 @@ def _picture(identifier: str = "image") -> str:
         '<wp:docPr id="1" name="image"/><a:graphic><a:graphicData>'
         f'<a:blip r:embed="{identifier}"/></a:graphicData></a:graphic></wp:inline></w:drawing>'
     )
+
+
+def _vml_picture(identifier: str = "vmlImage") -> str:
+    return f'<w:pict><v:shape><v:imagedata r:id="{identifier}"/></v:shape></w:pict>'
 
 
 def test_zero_abstract_numbering_id_retains_its_declared_level() -> None:
@@ -110,6 +117,75 @@ def test_missing_package_target_does_not_become_a_parsed_image() -> None:
     assert result.images[0].resource_part is None
     assert result.images[0].parse_status == "partial"
     assert any(issue.startswith("unresolved-relationship:") for issue in result.issues)
+
+
+def test_vml_picture_is_unsupported_without_changing_drawing_image_count() -> None:
+    result = _read(
+        f"<w:p><w:r>{_picture('drawingImage')}</w:r></w:p>"
+        f"<w:p><w:r>{_vml_picture('vmlImage')}</w:r></w:p>",
+        **{
+            "word/_rels/document.xml.rels": _relationships(
+                ("drawingImage", "image", "media/drawing.png"),
+                ("vmlImage", "image", "media/vml.png"),
+            ),
+            "word/media/drawing.png": "drawing-bytes",
+            "word/media/vml.png": "vml-bytes",
+        },
+    )
+
+    assert [image.node_locator for image in result.images] == ["word/document.xml#drawing[1]"]
+    assert result.images[0].resource_part == "word/media/drawing.png"
+    assert [
+        (
+            item.source_location,
+            item.kind,
+            item.relationship_id,
+            item.related_part,
+            item.parse_status,
+        )
+        for item in result.unsupported_records
+    ] == [
+        (
+            "word/document.xml#pict[1]/imagedata",
+            "vml_picture",
+            "vmlImage",
+            "word/media/vml.png",
+            "unsupported",
+        ),
+    ]
+    report = docx_read_result_to_report(result)
+    assert report["reader_version"] == READER_VERSION == "s1-readonly-reader-1.5.0"
+    assert len(report["images"]) == 1
+    assert report["unsupported_records"][0]["kind"] == "vml_picture"
+
+
+def test_vml_alternate_content_registers_only_the_selected_fallback() -> None:
+    result = _read(
+        "<w:p><mc:AlternateContent>"
+        f'<mc:Choice Requires="unsupported">{_vml_picture("choiceImage")}</mc:Choice>'
+        f"<mc:Fallback>{_vml_picture('fallbackImage')}</mc:Fallback>"
+        "</mc:AlternateContent></w:p>",
+        **{
+            "word/_rels/document.xml.rels": _relationships(
+                ("choiceImage", "image", "media/choice.png"),
+                ("fallbackImage", "image", "media/fallback.png"),
+            ),
+            "word/media/choice.png": "choice-bytes",
+            "word/media/fallback.png": "fallback-bytes",
+        },
+    )
+
+    assert result.images == ()
+    assert [
+        (item.source_location, item.relationship_id, item.related_part)
+        for item in result.unsupported_records
+    ] == [
+        (
+            "word/document.xml#pict[1]/imagedata",
+            "fallbackImage",
+            "word/media/fallback.png",
+        )
+    ]
 
 
 def test_duplicate_zip_members_are_rejected_instead_of_reading_one_twice() -> None:

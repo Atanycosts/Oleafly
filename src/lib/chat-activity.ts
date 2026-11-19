@@ -1,4 +1,5 @@
 import { i18n } from "@/i18n";
+import type { RetainedPaperReference } from "@/lib/research-literature";
 
 export type ResearchToolStatus =
   | "running"
@@ -103,6 +104,13 @@ export type ResearchToolView = {
   exitCode?: number | null;
   results?: LiteratureResultView[];
   diagnostics?: string[];
+  retainedPaper?: {
+    reference: RetainedPaperReference;
+    pageStart?: number;
+    pageEnd?: number;
+    pageCount?: number;
+  };
+  paperWindow?: { offset: number; endOffset: number; textSha256: string; nextOffset: number | null };
 };
 
 const LABEL_KEYS: Record<string, keyof typeof LABEL_LOOKUP> = {
@@ -154,6 +162,7 @@ const LABEL_LOOKUP = {
 };
 
 function toolLabel(name: string): string | undefined {
+  if (name === "read_paper") return i18n.t(($) => $.ai.paperReader.label);
   const key = LABEL_KEYS[name];
   return key ? LABEL_LOOKUP[key]() : undefined;
 }
@@ -396,6 +405,7 @@ function diagnosticMessages(value: unknown): string[] {
 }
 
 function kindFor(name: string): ResearchToolView["kind"] {
+  if (name === "read_paper") return "source";
   if (name === "run_command" || name === "exec_command" || name === "shell_command") return "command";
   if (name === "literature_search" || name === "alphaxiv_search") return "literature";
   if (name === "verify_citation") return "citation";
@@ -590,14 +600,33 @@ function buildToolView(entry: ToolActivityEntry): ResearchToolView {
     .map(literatureResult)
     .filter((result): result is LiteratureResultView => result !== null);
   const failures = kind === "literature" ? sourceFailures(data?.failures) : [];
-  const path = stringValue(data?.path) ?? stringValue(data?.file) ??
+  const path = name === "read_paper" ? undefined : stringValue(data?.path) ?? stringValue(data?.file) ??
     stringValue(data?.relativePath) ?? stringValue(data?.relative_path) ??
     stringValue(args?.path) ?? stringValue(args?.file);
   const line = numberValue(data?.line) ?? numberValue(data?.offset);
   const page = numberValue(data?.page);
   const command = stringValue(data?.command) ?? stringValue(args?.command) ?? stringValue(args?.cmd);
   const doi = stringValue(data?.doi)?.replace(/^https?:\/\/doi\.org\//i, "");
-  const url = safeWebUrl(stringValue(data?.url) ?? stringValue(data?.source_url));
+  const url = safeWebUrl(stringValue(data?.url) ?? stringValue(data?.source_url) ?? stringValue(data?.sourceUrl));
+  const pdfReference = name === "read_paper" ? record(data?.pdfReference) : null;
+  const paperSource = name === "read_paper" ? record(data?.source) : null;
+  const pdf = record(paperSource?.pdf);
+  const paperWindow = paperSource && typeof paperSource.offset === "number" && typeof paperSource.endOffset === "number" && typeof paperSource.fileSha256 === "string" ? {
+    offset: paperSource.offset,
+    endOffset: paperSource.endOffset,
+    textSha256: paperSource.fileSha256,
+    nextOffset: numberValue(data?.nextOffset) ?? null,
+  } : undefined;
+  const retainedPaper = pdfReference && stringValue(pdfReference.projectId) && stringValue(pdfReference.path) && stringValue(pdfReference.pdfSha256) ? {
+    reference: {
+      projectId: pdfReference.projectId as string,
+      path: pdfReference.path as string,
+      pdfSha256: pdfReference.pdfSha256 as string,
+    },
+    pageStart: numberValue(pdf?.pageStart),
+    pageEnd: numberValue(pdf?.pageEnd),
+    pageCount: numberValue(pdf?.pageCount),
+  } : undefined;
   const verified = typeof data?.verified === "boolean" ? data.verified : undefined;
   const errors = diagnosticMessages(data?.errors);
   const diagnostics = [...errors, ...diagnosticMessages(data?.diagnostics), ...failures];
@@ -617,8 +646,10 @@ function buildToolView(entry: ToolActivityEntry): ResearchToolView {
     label: toolLabel(name) ?? entry.name.replaceAll("_", " "),
     status,
     statusLabel: statusLabel(status, value),
-    output: readableOutput(entry.output, value),
-    summary,
+    output: name === "read_paper" && typeof data?.text === "string" ? data.text : readableOutput(entry.output, value),
+    summary: name === "read_paper" && status === "completed" ? stringValue(data?.title) ?? stringValue(data?.key) : summary,
+    retainedPaper,
+    paperWindow,
     path,
     artifactTarget: artifactTarget(name, data, path, line, page),
     line,

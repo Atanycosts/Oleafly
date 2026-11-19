@@ -3,6 +3,7 @@
 import json
 
 from research_file_workbench.workbench import cli
+from tests.journals.test_analysis import component_bytes
 
 
 def test_init_creates_library_and_reports_resolved_root(tmp_path, capsys):
@@ -16,6 +17,45 @@ def test_init_creates_library_and_reports_resolved_root(tmp_path, capsys):
     # The library creates application subdirectories lazily on first manuscript import.
     assert not (root / "inputs").exists()
     assert not (root / "projects").exists()
+
+
+def test_cli_preserves_a_numeric_font_name_as_text(tmp_path, capsys):
+    from research_file_workbench.journals.models import SourceInput
+    from research_file_workbench.workbench.service import WorkbenchService
+
+    library = tmp_path / "library"
+    service = WorkbenchService.create(library)
+    world = service.import_world(
+        "journal-test",
+        "Test",
+        [
+            SourceInput(
+                "font.json",
+                "rule_component_json",
+                component_bytes([("body_font_family", "PT Serif")]),
+            )
+        ],
+    )
+    rule_id = world["rules"][0]["rule_id"]
+    assert (
+        cli.main(
+            [
+                "--library-root",
+                str(library),
+                "revise",
+                "--version-id",
+                world["version_id"],
+                "--rule-id",
+                rule_id,
+                "--expected",
+                "123",
+                "--reason",
+                "Confirmed exact family name",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["rules"][0]["expected"] == "123"
 
 
 def test_serve_rejects_protected_root_after_initialization(monkeypatch, tmp_path, capsys):
@@ -74,9 +114,20 @@ def test_cli_journal_loop_round_trips_without_the_browser(tmp_path, capsys):
     guide = tmp_path / "guide.pdf"
     guide.write_bytes(document.tobytes())
     document.close()
+    declaration = tmp_path / "rules.json"
+    declaration.write_bytes(component_bytes([("page_width_twips", 11906)]))
     manifest = tmp_path / "sources.json"
     manifest.write_text(
-        json.dumps([{"name": "guide.pdf", "kind": "guide_pdf", "path": guide.as_posix()}]),
+        json.dumps(
+            [
+                {"name": "guide.pdf", "kind": "guide_pdf", "path": guide.as_posix()},
+                {
+                    "name": "rules.json",
+                    "kind": "rule_component_json",
+                    "path": declaration.as_posix(),
+                },
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -105,7 +156,8 @@ def test_cli_journal_loop_round_trips_without_the_browser(tmp_path, capsys):
     )
     review = json.loads(capsys.readouterr().out)
     located = [link for link in review["rule_links"] if link["link_status"] == "located"]
-    assert located and located[0]["locator"] == "page:1/block:1"
+    assert located and located[0]["locator"].startswith("json:/")
+    assert any(fragment["locator"] == "page:1/block:1" for fragment in review["fragments"])
 
     docx = tmp_path / "稿件.docx"
     docx.write_bytes(docx_bytes("<w:p><w:r><w:t>Body text.</w:t></w:r></w:p>"))
@@ -178,7 +230,11 @@ def test_cli_journal_loop_round_trips_without_the_browser(tmp_path, capsys):
                 "--version-id",
                 world["version_id"],
                 "--source-id",
-                world["sources"][0]["source_id"],
+                next(
+                    source["source_id"]
+                    for source in world["sources"]
+                    if source["kind"] == "guide_pdf"
+                ),
                 "--page",
                 "1",
                 "--out",

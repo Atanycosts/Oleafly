@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -52,6 +52,7 @@ vi.mock("@/components/typst-export/open", () => ({ openTypstExport: mocks.openTy
 
 import { TopToolbar } from "./TopToolbar";
 import { useCompileStore } from "@/store/compile";
+import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import { useFilesStore } from "@/store/files";
 import { useSaveAsTemplateStore } from "@/store/save-as-template";
 import { useSettingsStore } from "@/store/settings";
@@ -90,6 +91,7 @@ const openProject = vi.fn(async () => {});
 const closeProject = vi.fn(async () => {});
 
 beforeEach(() => {
+  useWorkspaceSurfaceStore.setState({ active: "files" });
   for (const mock of Object.values(mocks)) mock.mockClear();
   mocks.pickSavePath.mockResolvedValue("/tmp/out.zip");
   mocks.ensurePandoc.mockResolvedValue(true);
@@ -120,6 +122,18 @@ beforeEach(() => {
     assistantOpen: false,
     workspaceHidden: false,
   });
+});
+
+it.each(["word", "journal"] as const)("keeps source compile and export controls out of the %s surface", (active) => {
+  useWorkspaceSurfaceStore.setState({ active });
+  const view = renderToolbar();
+  expect(screen.queryByTestId("toolbar-views")).not.toBeInTheDocument();
+  expect(view.container.querySelector('[data-toolbar-item="compile"]')).toBeNull();
+  expect(screen.queryByLabelText(toolbar.export)).not.toBeInTheDocument();
+  act(() => useWorkspaceSurfaceStore.getState().showFiles());
+  expect(screen.getByTestId("toolbar-views")).toBeInTheDocument();
+  expect(view.container.querySelector('[data-toolbar-item="compile"]')).toBeInTheDocument();
+  expect(screen.getByLabelText(toolbar.export)).toBeInTheDocument();
 });
 
 describe("TopToolbar title", () => {

@@ -1239,6 +1239,7 @@ async function saveBeforeCompileGate(ctx: CompileGateContext): Promise<boolean> 
   try {
     await saveAllForCompile({ mainDoc: ctx.mainDoc, explicit: ctx.origin === "explicit" });
   } catch (e) {
+    if (!compileIdentityGate(ctx)) return false;
     if (ctx.capturedProjectId && folderLostDuringSave(ctx.capturedProjectId, e)) {
       setCompileUnavailable(ctx, i18n.t(($) => $.core.folderUnavailable.compile));
       ctx.abortIntent();
@@ -1301,6 +1302,7 @@ async function clearBuildDirGate(
   try {
     await clearBuildDir(projectId);
   } catch (error) {
+    if (!compileIdentityGate(ctx)) return false;
     notifyError("clear build directory", error);
     ctx.abortIntent();
     return false;

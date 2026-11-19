@@ -254,6 +254,22 @@ describe("TaskGroupPanel", () => {
   expect(view.queryByText("Check evidence")).toBeNull();
   expect(view.getByText("create")).toBeTruthy();
  });
+ it("keeps the creation form unavailable until a failed bootstrap retry succeeds", async () => {
+  api.loadTaskGroup.mockReset()
+    .mockRejectedValueOnce(new Error("Group unavailable"))
+    .mockResolvedValueOnce(snapshot());
+  const callback = vi.fn();
+  const view = testing.render(<Panel task={task} agents={agents} onSnapshot={callback} />);
+  await testing.waitFor(() => expect(view.getByText("Group unavailable")).toBeTruthy());
+  expect(view.queryByText("create")).toBeNull();
+  expect(callback).toHaveBeenCalledWith(null);
+
+  testing.fireEvent.click(view.getByText("refresh"));
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+  expect(view.queryByText("Group unavailable")).toBeNull();
+  expect(api.loadTaskGroup).toHaveBeenCalledTimes(2);
+  expect(callback).toHaveBeenLastCalledWith(snapshot());
+ });
  it("does not replace an ACP coordinator with a built-in member", async () => {
   const view = testing.render(<Panel task={{ ...task, runtimeId: "acp" }} agents={agents} />);
   await testing.waitFor(() => expect(view.getByText("acpUnsupported")).toBeTruthy());
@@ -268,6 +284,123 @@ describe("TaskGroupPanel", () => {
   await testing.waitFor(() => expect(api.loadTaskGroupMessages).toHaveBeenCalledWith("p1", "t1", "g1", 1));
   expect(api.loadTaskGroup).toHaveBeenCalledTimes(1);
   expect(view.getAllByText("Returned evidence").length).toBe(2);
+ });
+
+ it("refreshes an unchanged group scope when the task revision changes", async () => {
+  api.loadTaskGroup.mockResolvedValue(snapshot());
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+  api.loadTaskGroupMessages.mockClear();
+
+  view.rerender(<Panel task={{ ...task, updatedAt: 2 }} agents={agents} />);
+
+  await testing.waitFor(() => expect(api.loadTaskGroupMessages).toHaveBeenCalledWith("p1", "t1", "g1", 1));
+  expect(api.loadTaskGroup).toHaveBeenCalledTimes(1);
+ });
+
+ it("updates group status, member pause, and explicit interests", async () => {
+  const loaded = snapshot();
+  loaded.interests = [{ memberId: "m1", kind: "path", value: "notes.md" }];
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupMessages.mockResolvedValue(emptyIncremental(loaded));
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+
+  const status = view.getByLabelText("status") as HTMLSelectElement;
+  testing.fireEvent.change(status, { target: { value: "paused" } });
+  await testing.waitFor(() => expect(api.setTaskGroupStatus).toHaveBeenCalledWith("p1", "g1", "paused"));
+  await testing.waitFor(() => expect(status.disabled).toBe(false));
+
+  const paused = view.getByLabelText("paused") as HTMLInputElement;
+  testing.fireEvent.click(paused);
+  await testing.waitFor(() => expect(api.setGroupMemberPaused).toHaveBeenCalledWith("p1", "g1", "m1", true));
+  await testing.waitFor(() => expect(paused.disabled).toBe(false));
+
+  testing.fireEvent.change(view.getByLabelText("member"), { target: { value: "m1" } });
+  testing.fireEvent.change(view.getByLabelText("interestKind"), { target: { value: "object" } });
+  const interestValue = view.getByLabelText("interestValue");
+  testing.fireEvent.change(interestValue, { target: { value: "draft.md" } });
+  testing.fireEvent.click(view.getByText("addInterest"));
+  await testing.waitFor(() => expect(api.setGroupMemberInterest).toHaveBeenCalledWith("p1", "g1", {
+    memberId: "m1",
+    kind: "object",
+    value: "draft.md",
+  }, true));
+  await testing.waitFor(() => expect((interestValue as HTMLInputElement).disabled).toBe(false));
+  expect((interestValue as HTMLInputElement).value).toBe("");
+
+  const interests = view.getByRole("group", { name: "explicitInterests" });
+  testing.fireEvent.click(testing.within(interests).getByText("remove"));
+  await testing.waitFor(() => expect(api.setGroupMemberInterest).toHaveBeenCalledWith("p1", "g1", {
+    memberId: "m1",
+    kind: "path",
+    value: "notes.md",
+  }, false));
+ });
+
+ it("preserves a failed message draft and clears it only after an explicit retry succeeds", async () => {
+  api.loadTaskGroup.mockResolvedValue(snapshot());
+  api.sendGroupMessage
+    .mockRejectedValueOnce(new Error("Message send failed"))
+    .mockResolvedValueOnce(undefined);
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+  const message = view.getByLabelText("message") as HTMLTextAreaElement;
+  const requestWork = view.getByLabelText("requestWork") as HTMLInputElement;
+  testing.fireEvent.change(message, { target: { value: "Retry this request" } });
+  testing.fireEvent.click(requestWork);
+  testing.fireEvent.click(view.getByText("send"));
+
+  await testing.waitFor(() => expect(view.getByText("Message send failed")).toBeTruthy());
+  expect(message.value).toBe("Retry this request");
+  expect(requestWork.checked).toBe(true);
+  expect((view.getByText("send") as HTMLButtonElement).disabled).toBe(false);
+  expect(api.loadTaskGroupMessages).not.toHaveBeenCalled();
+
+  testing.fireEvent.click(view.getByText("send"));
+  await testing.waitFor(() => expect(api.sendGroupMessage).toHaveBeenCalledTimes(2));
+  await testing.waitFor(() => expect(message.value).toBe(""));
+  expect(requestWork.checked).toBe(false);
+  expect(view.queryByText("Message send failed")).toBeNull();
+  expect(api.sendGroupMessage.mock.calls).toEqual([
+    ["p1", "g1", {
+      body: "Retry this request",
+      recipients: [],
+      replyTo: null,
+      requestWork: true,
+      object: null,
+    }],
+    ["p1", "g1", {
+      body: "Retry this request",
+      recipients: [],
+      replyTo: null,
+      requestWork: true,
+      object: null,
+    }],
+  ]);
+ });
+
+ it("does not clear or refresh a new task when a previous scope's send completes late", async () => {
+  let finishSend!: () => void;
+  api.loadTaskGroup.mockReset()
+    .mockResolvedValueOnce(snapshot())
+    .mockResolvedValueOnce(null);
+  api.sendGroupMessage.mockReturnValueOnce(new Promise<void>(done => { finishSend = done; }));
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  await testing.waitFor(() => expect(view.getByText(/actual-model/)).toBeTruthy());
+  testing.fireEvent.change(view.getByLabelText("message"), { target: { value: "Late send" } });
+  testing.fireEvent.click(view.getByText("send"));
+  await testing.waitFor(() => expect(api.sendGroupMessage).toHaveBeenCalledOnce());
+
+  view.rerender(<Panel task={{ ...task, id: "t2", projectId: "p2" }} agents={agents} />);
+  await testing.waitFor(() => expect(api.loadTaskGroup).toHaveBeenCalledWith("p2", "t2"));
+  await testing.waitFor(() => expect(view.getByText("create")).toBeTruthy());
+  await testing.act(async () => finishSend());
+
+  expect(view.queryByText("Late send")).toBeNull();
+  expect(view.queryByRole("alert")).toBeNull();
+  expect(view.getByText("create")).toBeTruthy();
+  expect(api.loadTaskGroupMessages).not.toHaveBeenCalled();
  });
 
  it("shares the loaded snapshot and shows the source and result message once", async () => {
@@ -554,6 +687,56 @@ describe("TaskGroupPanel", () => {
   expect(view.queryByText("file hidden.md · v1")).toBeNull();
  });
 
+ it("inspects an event outside the loaded window once and keeps it in the work detail", async () => {
+  const loaded = attributedSnapshot();
+  loaded.events = [];
+  const event = { ...eventRecord(2), id: "e2" };
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupEvent.mockResolvedValue(event);
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-w2");
+
+  testing.fireEvent.click(testing.within(work).getByText("sourceInspect"));
+  await testing.waitFor(() => expect(api.loadTaskGroupEvent).toHaveBeenCalledWith("p1", "t1", "g1", "e2"));
+  await testing.waitFor(() => expect(testing.within(
+    view.getByTestId("work-w2"),
+  ).getByText(/Event 2/)).toBeTruthy());
+  expect(testing.within(view.getByTestId("work-w2")).queryByText("sourceInspect")).toBeNull();
+  expect(api.loadTaskGroupEvent).toHaveBeenCalledOnce();
+ });
+
+ it("clears an event inspection error after the user retries the exact lookup", async () => {
+  const loaded = attributedSnapshot();
+  loaded.events = [];
+  const event = { ...eventRecord(2), id: "e2" };
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupEvent
+    .mockRejectedValueOnce(new Error("Event lookup failed"))
+    .mockResolvedValueOnce(event);
+  const view = testing.render(<Panel task={task} agents={agents} />);
+  const work = await view.findByTestId("work-w2");
+
+  testing.fireEvent.click(testing.within(work).getByText("sourceInspect"));
+  await testing.waitFor(() => expect(api.loadTaskGroupEvent).toHaveBeenCalledWith("p1", "t1", "g1", "e2"));
+  await testing.waitFor(() => expect(view.getByText("Event lookup failed")).toBeTruthy());
+  await testing.waitFor(() => expect((
+    testing.within(view.getByTestId("work-w2")).getByText("sourceInspect") as HTMLButtonElement
+  ).disabled).toBe(false));
+
+  testing.fireEvent.click(testing.within(view.getByTestId("work-w2")).getByText("sourceInspect"));
+  await testing.waitFor(() => expect(api.loadTaskGroupEvent).toHaveBeenCalledTimes(2));
+  await testing.waitFor(() => expect(testing.within(
+    view.getByTestId("work-w2"),
+  ).getByText(/Event 2/)).toBeTruthy());
+
+  expect(view.queryByText("Event lookup failed")).toBeNull();
+  expect(view.queryByRole("alert")).toBeNull();
+  expect(api.loadTaskGroupEvent.mock.calls).toEqual([
+    ["p1", "t1", "g1", "e2"],
+    ["p1", "t1", "g1", "e2"],
+  ]);
+ });
+
  it("shows the retained content and reason for responsibility-based participation", async () => {
   const loaded = attributedSnapshot();
   loaded.work[0].causeKind = "event";
@@ -683,6 +866,28 @@ describe("TaskGroupPanel", () => {
   await testing.waitFor(() => expect(api.loadTaskGroupExecution).toHaveBeenCalledWith("p1", "t1", "g1", "x1"));
   await testing.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("research_task_observation_call", { taskId: "t1", executionGeneration: 2, callId: "call-read" }));
   expect(testing.within(work).getByText((_, element) => element?.tagName === "PRE" && element.textContent?.includes("historical-read-hash") === true)).toBeTruthy();
+ });
+
+ it("loads and orders an older execution page from the visible cursor", async () => {
+  const loaded = attributedSnapshot();
+  loaded.executions = [executionRecord(101), executionRecord(100)];
+  loaded.executionsHasMore = true;
+  api.loadTaskGroup.mockResolvedValue(loaded);
+  api.loadTaskGroupExecutionsPage.mockResolvedValue({
+    executions: [executionRecord(99)],
+    hasMore: false,
+  });
+  const callback = vi.fn();
+  const view = testing.render(<Panel task={task} agents={agents} onSnapshot={callback} />);
+  await testing.waitFor(() => expect(view.getByText("loadEarlierExecutions")).toBeTruthy());
+
+  testing.fireEvent.click(view.getByText("loadEarlierExecutions"));
+
+  await testing.waitFor(() => expect(view.getByText(/execution-099 · Reviewer/)).toBeTruthy());
+  expect(api.loadTaskGroupExecutionsPage).toHaveBeenCalledWith("p1", "t1", "g1", 100, "execution-100");
+  const final = callback.mock.calls.at(-1)?.[0] as GroupSnapshot;
+  expect(final.executions.map(execution => execution.startedAt)).toEqual([101, 100, 99]);
+  expect(final.executionsHasMore).toBe(false);
  });
 
  it("merges an empty incremental poll without clearing loaded history", async () => {

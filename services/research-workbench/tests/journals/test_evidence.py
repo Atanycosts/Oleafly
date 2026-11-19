@@ -18,7 +18,7 @@ from research_file_workbench.journals.models import (
     world_version_id,
 )
 from research_file_workbench.journals.pdf_analysis import PDF_SOURCE_VERSION
-from tests.journals.test_analysis import docx_bytes, template_bytes
+from tests.journals.test_analysis import component_bytes, docx_bytes, template_bytes
 from tests.journals.test_components import component
 from tests.journals.test_pdf_analysis import build_pdf
 
@@ -58,10 +58,17 @@ def test_repeated_punctuation_does_not_become_a_standalone_sentence():
 
 
 def test_exact_rule_links_are_distinct_from_ranked_similar_sources():
-    exact = SourceInput("guide", "guide_text", b"All manuscript pages must use A4 paper.")
+    exact = SourceInput(
+        "component.json",
+        "rule_component_json",
+        component_bytes(
+            [("page_width_twips", 11906), ("page_height_twips", 16838)],
+            quote="All manuscript pages must use A4 paper.",
+        ),
+    )
     related = SourceInput("notes", "guide_text", b"A4 paper is recommended for manuscript pages.")
     world, evidence = inspect_sources(exact, related)
-    assert len(evidence["rule_links"]) == 2
+    assert len(evidence["rule_links"]) == 4
     assert all(item["source_id"] == exact.source_id for item in evidence["rule_links"])
     fragments = {item["fragment_id"]: item for item in evidence["fragments"]}
     for link in evidence["rule_links"]:
@@ -69,13 +76,17 @@ def test_exact_rule_links_are_distinct_from_ranked_similar_sources():
         assert len(link["fragment_ids"]) == 1
         fragment = fragments[link["fragment_ids"][0]]
         assert fragment["text"] == link["quote"]
-        assert fragment["locator"] == "line:1"
-    associations = [item for item in evidence["relations"] if item["kind"] == "related_source"]
+        assert fragment["kind"] in {"component_rule", "source_quote"}
+    associations = [
+        item
+        for item in evidence["relations"]
+        if item["kind"] == "related_source"
+        and fragments[item["to_id"]]["source_id"] == related.source_id
+    ]
     assert associations
-    assert all(fragments[item["to_id"]]["source_id"] == related.source_id for item in associations)
     assert all(item["score_kind"] == "lexical_cosine" for item in associations)
     assert all("verdict" not in item and "probability" not in item for item in associations)
-    assert {rule["basis_status"] for rule in world["rules"]} == {"confirmed"}
+    assert {rule["basis_status"] for rule in world["rules"]} == {"candidate"}
 
 
 def test_evidence_is_deterministic_and_does_not_rewrite_the_world():
@@ -227,17 +238,15 @@ def test_invalid_pdf_bytes_fail_loudly_without_fabricating_fragments():
         inspect_sources(SourceInput("guide.pdf", "guide_pdf", b"%PDF-captured"))
 
 
-def test_pdf_rule_evidence_links_locate_page_bound_fragments():
+def test_pdf_guide_prose_remains_page_bound_evidence_without_rules():
     payload = build_pdf([[(50, 100, "All manuscript pages must use A4 paper.", 10.0, "helv")]])
     source = SourceInput("guide.pdf", "guide_pdf", payload)
     world, evidence = inspect_sources(source)
-    assert len(world["rules"]) == 2  # A4 paper width and height from one line
-    links = [link for link in evidence["rule_links"] if link["locator"] == "page:1/block:1"]
-    assert links and all(link["link_status"] == "located" for link in links)
-    located = links[0]["fragment_ids"]
-    fragments = {item["fragment_id"]: item for item in evidence["fragments"]}
-    assert all(fragment_id in fragments for fragment_id in located)
-    assert fragments[located[0]]["kind"] == "pdf_block"
+    assert world["rules"] == []
+    assert evidence["rule_links"] == []
+    block = next(item for item in evidence["fragments"] if item["kind"] == "pdf_block")
+    assert block["locator"] == "page:1/block:1"
+    assert block["text"] == "All manuscript pages must use A4 paper."
 
 
 @pytest.mark.parametrize("mutation", ["missing", "extra", "changed"])
@@ -256,7 +265,11 @@ def test_source_identity_must_match_before_any_fragments_are_returned(mutation):
 
 
 def test_historical_rules_are_read_without_executing_an_old_analyzer():
-    source = SourceInput("guide", "guide_text", b"All manuscript pages must use 2 columns.")
+    source = SourceInput(
+        "component.json",
+        "rule_component_json",
+        component_bytes([("columns", 2)]),
+    )
     world = analyze_world("journal-test", "Test", [source])
     world["analyzer_version"] = "journal-world-analyzer-historical"
     world["reader_version"] = "s1-reader-historical"
@@ -268,7 +281,14 @@ def test_historical_rules_are_read_without_executing_an_old_analyzer():
 
 
 def test_related_source_ranking_is_bounded_and_never_adds_authoritative_evidence():
-    exact = SourceInput("guide", "guide_text", b"All manuscript pages must use A4 paper.")
+    exact = SourceInput(
+        "component.json",
+        "rule_component_json",
+        component_bytes(
+            [("page_width_twips", 11906), ("page_height_twips", 16838)],
+            quote="All manuscript pages must use A4 paper.",
+        ),
+    )
     notes = SourceInput(
         "notes",
         "guide_text",
@@ -282,4 +302,4 @@ def test_related_source_ranking_is_bounded_and_never_adds_authoritative_evidence
         assert [item["score"] for item in suggestions] == sorted(
             (item["score"] for item in suggestions), reverse=True
         )
-        assert len(rule["evidence"]) == 1
+        assert len(rule["evidence"]) == 2

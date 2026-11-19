@@ -53,6 +53,31 @@ covers the port pattern, the contribution registry, and the alias wiring.
 - [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your OS
 - No system document engines are required. The setup scripts stage the same pinned Tectonic, Biber, Pandoc, and Typst binaries shipped with Oleafly.
 
+The local macOS development setup uses Homebrew for global tools:
+
+```bash
+brew install node@22 pnpm@11 python@3.12 uv rustup gh
+```
+
+Some formulae are keg-only. Put their executable directories first in both login
+and non-login shell configuration:
+
+```bash
+export PATH="$(brew --prefix node@22)/bin:$(brew --prefix pnpm@11)/bin:$(brew --prefix python@3.12)/libexec/bin:$(brew --prefix rustup)/bin:$(brew --prefix)/bin:$PATH"
+```
+
+This also puts Homebrew's `cargo` and `rustc` proxies ahead of older rustup proxies
+in `~/.cargo/bin`; the existing compiler installations remain available. Set
+`pnpm_config_pm_on_fail=warn` to keep using the installed Homebrew pnpm within
+the required major version instead of downloading another package-manager runtime;
+pnpm reports the difference from the exact `packageManager` pin. Keep that repository
+pin and the frozen lockfile unchanged. Configure uv with
+`python-preference = "only-system"` and `python-downloads = "never"` in its user
+`uv.toml`, so project environments use the Homebrew Python rather than an automatic
+interpreter download. Homebrew manages rustup; rustup still selects the exact Rust
+compiler required by `rust-toolchain.toml`. Maven and a JDK are not Oleafly build
+dependencies.
+
 ## First run
 
 ```bash
@@ -108,6 +133,161 @@ Cargo or pnpm workspaces. Application data remains outside source control; the s
 does not relocate existing journal libraries. See the service README for portable tests and
 separate environment-bound acceptance checks.
 
+The journal panel can explicitly adopt `.doc` or `.docx` templates. Legacy Word conversion
+uses the existing local LibreOffice locator with a private profile and temporary directory.
+Only Transitional DOCX is supported by this format adapter. Strict OOXML is rejected with
+an instruction to resave it. The selected template retains original and normalized bytes,
+conversion provenance, complete package parts and a source-bound effective-format snapshot
+from the pinned DOCX core. Workbench owns storage, role/region comparison, coverage gaps and
+bounded raw/snapshot/finding queries. See the [journal contract](../services/research-workbench/contracts/journals/world-contract.json)
+and [template architecture](agent/architecture.md#word-模板与有效格式2026-11-14).
+
+The retained DOCX working-copy editor pins `@docx-editor.dev/core`, `react` and
+`fonts` to the same version. It loads on demand from both the project file tree
+and the Journal checks panel. Those entry points mount the same central
+`DocxWorkspaceHost`, share `useDocxWorkspaceStore`, and recognize `.doc` and
+`.docx` names case-insensitively. The core has scoped multi-column
+paragraph-frame, format-execution, unchanged-entry preservation and OMML
+recognition patches. Format execution adds frame/column edits, disjoint font spans
+and selected style dependency imports through the existing transaction and fragment
+machinery. The OMML patches give the bounded reader and painter matrix, delimiter,
+equation-array, function and mathematical alphabet models. Compact editing still refuses
+source it cannot preserve; controlled LaTeX writes replace a validated complete formula
+through the same transaction and source binding. Unknown math retains a located fallback. Keep readable sources,
+installed ESM/CJS patch, declarations and public-API regressions together; see the
+[rebuild instructions](../patches/docx-core/README.md) before upgrading.
+After upgrading those packages, run `pnpm docx:notices` and check the generated
+upstream notices with `node scripts/sync-docx-notices.mjs --check`. Vite lowers
+HarfBuzz's async initialization through `vite-plugin-top-level-await`; its scoped
+SWC pin follows the upstream compatibility issue linked in `pnpm-workspace.yaml`.
+The same workspace file explicitly permits SWC's native-binding installation check
+alongside esbuild, so a fresh pnpm install completes without an ignored-build error.
+The adapter preserves distribution comments and UTF-8 catalogs, keeps the engine
+out of the startup graph, and retains the PDF polyfill import order. Verify with
+`src/lib/vite-config.test.ts`, a production build and `pnpm check:performance`.
+The desktop and browser builds use one Terser worker to limit peak memory.
+On macOS, builds from the same checkout queue automatically, including direct
+Vite invocations from independent agent chats. They run at reduced CPU priority
+so interactive applications get preference. Keep Rust compilation and broad
+typechecking separate from frontend builds on a 16 GB machine. The scoped
+[`vite-plugin-top-level-await` patch](../patches/vite-plugin-top-level-await@1.6.0.patch)
+retains compact dependency facts and processes chunk ASTs sequentially instead
+of retaining every chunk's AST at once. Provider/search icons import their
+rendered variants directly so unused brands and UI components never enter the
+build graph. After updating the async plugin, regenerate its pnpm patch and
+verify async dependency loading with `src/lib/vite-config.test.ts`.
+Large desktop builds still need a larger Node heap; use
+`NODE_OPTIONS=--max-old-space-size=6144 pnpm build`. This limits the JavaScript
+heap, not the build process's total memory.
+The project file remains a read-only source. Opening an unmanaged document
+imports it into a Workbench working copy and records the path-to-workbench
+mapping. **Save** commits the current editor bytes as a new baseline;
+**Download DOCX** exports those bytes without changing the baseline. Concurrent
+opens are deduplicated, and a later open reads the latest saved baseline.
+Same-path, same-source opens restore that working copy, renames follow the
+content hash, and an external replacement offers the old draft, an exact draft
+for the replacement content, or a new draft. A source with no exact candidate
+imports directly; an unavailable old draft does not hide the other choices.
+`WorkspaceCenter` keeps source, Word and Journal work surfaces mounted while
+navigation hides inactive surfaces. Its host survives the source editor/PDF
+layout switches. The shared tab strip routes Word close requests through the
+existing save/discard flow; it cannot bypass an in-flight save or check.
+`useWorkspaceSurfaceStore` owns navigation only. The existing document and
+Workbench stores continue to own sessions, saved versions and journal records.
+Journal checks uses one controller: it renders manuscript/template selection
+and check actions into the sidebar and displays results in the center.
+Rule evidence, retained annotation sources, source-library reviews, version comparisons
+and historical-check selection share the controller's request sequence, so a late response cannot
+replace the details after another manuscript opens from the file tree.
+Submission context and additional requirement sources remain available, while
+internal IDs, JSON import/export, raw XML and developer diagnostics have no
+controls in the normal Word or Journal views. Coverage uses the domain gap
+code to select a readable explanation instead of rendering backend diagnostics.
+Journal annotations pass the shared annotation component a target description;
+this replaces internal identities in its display and opens retained sources in
+the existing journal viewer while preserving stored targets and source bytes.
+Source-specific compile/export
+and view controls are shown only on the source surface. The existing right-hand
+Agent receives a readable, editable request and reads domain records through
+its tools rather than asking the user to copy a JSON component.
+The font package is excluded from Vite's development dependency optimizer: its
+`import.meta.url` assets must resolve beside the installed package, rather than
+under `.vite/assets` where missing fonts can return the HTML fallback with status 200.
+The development regression verifies actual font bytes, not the response status alone.
+The editor's exact-font origin reuses native `system_fonts`/fontdb and the existing
+application font-pack caches. It supplies static standalone TTF/OTF bytes through
+FontResolver, requiring the requested family, weight and style. TTC, variable fonts
+and oblique faces are currently unavailable through this origin. Do not substitute
+another family or nearest face to satisfy a journal font requirement. The host sets
+the public shaping ceiling to 64 MiB, matching the per-face admission ceiling.
+
+Confirmed journal body-font requirements carry exact family names and source evidence
+through the existing world/review/version contract. Settings downloads and the Word
+panel share catalog, progress and revision state through `useFontPacksStore`.
+Concurrent catalog loads are shared; installations and removals run serially.
+The DOCX editor automatically acquires an exact catalog family through the
+existing font-pack service and refreshes its FontResolver with public `setFonts()`
+without reopening the document. A missing catalog source, failed download or
+unreadable face remains visible. Font availability does not establish manuscript
+compliance. Oleafly passes the application font-cache roots to Workbench,
+which copies current TTF/OTF bytes into each conversion's private `profile/user/fonts` directory.
+Native exact face resolution also retains those original bytes and metadata in
+`assets/resolved-fonts`, including system-only Latin fonts. Rendering waits for editor
+initialization and settled font resolution before snapshotting those caches. Multiple
+versions of the same face still require inspecting the actual PDF font evidence.
+An editor font refresh also regenerates the saved PDF; explicit PDF refresh forces conversion,
+while an ordinary reopen recovers the latest compatible retained render. Native download/font/round-trip acceptance uses the isolated runner
+in [E2E](../e2e/README.md#native-docx-fonts-and-layout). Do not install substitute fonts
+as an acceptance prerequisite. Existing Noto installations remain valid when that exact
+family is requested.
+The exact Microsoft SimSun, SimHei and KaiTi sources reuse the Fontist-pinned Office for Mac
+15.11.1 package. DengXian uses Microsoft's standalone East Asian package. Package extraction
+requires `7zz` or `7z` and `tar`; on this Mac use `brew install sevenzip` and the existing tar.
+The application checks for 7-Zip before downloading a package. These are local setup prerequisites,
+not bundled tools. The shared Office archive is approximately 737 MB and remains cached for
+other faces and projects. Interrupted downloads currently restart from the beginning.
+For optional static PDF inspection use Homebrew Poppler (`brew install poppler`).
+Downloaded archives and extracted faces are SHA-256 checked; package fonts also verify actual
+family, PostScript name, weight, style and recorded version. This verifies the catalog source,
+without adding a version requirement to a journal rule that only names a family. Source receipts
+retain actual versions/hashes; the font UI presents names, versions and provenance. The render record distinguishes supplied cache bytes
+from actual PDF font names; same-family versions selected by system and LibreOffice may differ.
+DOCX work maintains new UI keys in the Chinese and English catalogs. Complete
+other-language coverage and validation are outside this round's scope. The current
+verified DOCX browser flow is macOS-only; Windows native validation is out of scope
+for this round rather than a pending check. See the current
+[Agent status](agent/status.md#docx-任务活动与保存归属2026-11-12).
+
+Saved DOCX PDF previews use a locally installed LibreOffice executable. The native bridge checks
+`OLEAFLY_LIBREOFFICE`, the configured `soffice` locator, and standard macOS/Windows install
+locations; the sidebar also accepts an explicit executable path. Workbench reads only the retained
+baseline, creates a private temporary LibreOffice profile below its own library, checks the PDF
+signature and page count with its installed PDF reader, and records renderer identity with the
+derived bundle. This preview does not need the separate Poppler inspector used for historical
+evidence. A missing or non-LibreOffice executable fails the render. WPS remains an optional
+external editor/render source and is not required for the embedded flow.
+
+DOCX recovery checkpoints live in the selected application's private data directory.
+Startup lists available copies without starting Workbench or loading the editor. Explicit
+restore validates the original baseline/source identity and opens unsaved bytes in a fresh
+session. A newer retained version blocks an overwrite; the recovery list can save an exact
+copy through the native save dialog. Discard requires confirmation and the selected content
+hash. Recovery covers the latest completed checkpoint, with a fresh revision/undo history.
+The macOS [native recovery acceptance](../e2e/README.md#native-docx-crash-recovery)
+uses isolated app and WebKit data, actual process death, retained DOCX bytes and LibreOffice.
+Checkpoints also retain explicit task sources and a fixed pending save when present.
+Native commit replays the exact bytes and request before the frontend clears the copy;
+resume records a new session's explicit recovery edge. An unchanged recovered copy saves
+its original bytes. Its first subsequent edit withdraws recovered save attribution;
+undo or matching text does not reacquire it. A structured, persisted refusal permits explicit
+discard without a Saved receipt; transport, hash and receipt errors retain the fixed request.
+While that request is unresolved, later edits stay in memory and do not replace its checkpoint.
+The opt-in task-attribution recovery mode
+in the same runner exercises both acceptance-before-save death and a committed save
+whose response never reaches the frontend, plus a stale request's confirmed refusal and discard.
+The owning wire contract is
+[`docx_recovery.rs`](../src-tauri/src/docx_recovery.rs).
+
 ## Documentation and artifacts
 
 The root [`AGENTS.md`](../AGENTS.md) is the short entry for people and agents
@@ -142,6 +322,15 @@ pnpm tauri dev          # run the app with hot reload (frontend) + cargo increme
 pnpm build              # typecheck + build the frontend (tsc -b && vite build)
 pnpm tauri build        # produce a distributable bundle
 ```
+
+The workspace Cargo configuration defaults to one compilation job, including
+Rust builds started by Tauri. This reduces concurrent compiler memory use on
+16 GB development machines; a single compiler or linker can still use substantial
+memory. Avoid starting another heavy build from a second checkout or chat at the
+same time. Use `cargo ... --jobs N` or `CARGO_BUILD_JOBS=N` to override the default
+when the machine has capacity. The CI workflow explicitly uses two compilation
+jobs on GitHub-hosted runners. This setting does not limit Rust test execution
+threads or frontend build memory.
 
 The command-line adapter ships inside the desktop app and has a dedicated
 standalone release workflow. Cargo builds it locally as `oleaflyc`, because the
@@ -200,11 +389,70 @@ people who depend on the output are usually scripting against it.
 
 ### Checks before opening a PR
 
-Make sure these pass:
+The pre-commit hook runs lightweight checks on the affected areas: staged diff
+whitespace, Biome lint for staged frontend files, generated translation types
+and English/Simplified Chinese catalogs when localization files change, and
+`cargo fmt --all -- --check` when Rust files or configuration change. Deleted
+catalogs and Rust files also trigger their checks. These tools read the working
+files for the selected paths; partially staged files can therefore include
+unstaged edits in their lint or format result.
+
+Committing never starts a frontend or documentation build, Rust compilation,
+Clippy, typechecking or a test suite, including after lockfile/toolchain changes.
+Check the changed behavior explicitly before opening a PR. Select the relevant
+tests and include affected callers when changing a shared crate. Report the
+commands actually run and any unverified behavior.
+
+Full checks are an explicit operation when the machine has capacity:
+
+```bash
+sh scripts/check-full.sh frontend         # lint, catalogs, typecheck/build, Vitest
+sh scripts/check-full.sh rust             # format, workspace Clippy and tests
+sh scripts/check-full.sh docs             # docsite build, requires its dependencies
+sh scripts/check-full.sh all              # run those areas sequentially
+```
+
+Running the script without an area prints help and runs no checks. It uses one
+Cargo compilation job and one Vitest worker; it does not remove the memory cost
+of a full frontend build or a large Rust link. It is not installed as a pre-push
+hook. The Rust path retains the existing Windows library/CLI test split. These
+commands cover the earlier local hook gates; CI has additional platform and
+integration checks. On machines with limited memory, run focused checks locally
+and leave full builds and platform suites to GitHub Actions. The
+[CI workflow](../.github/workflows/ci.yml) runs for code changes in pull requests
+targeting `main` and for pushes to `main`. Use one integration PR targeting
+`main` to validate a stack; PRs targeting intermediate branches do not run the
+full matrix. Documentation-only changes still skip automatic CI. The workflow
+uses standard GitHub-hosted runners, whose execution time is free for public
+repositories; artifact and cache storage have separate allowances.
+
+The same workflow runs the Workbench Python formatting, lint, type and portable
+test gates on Linux and Windows. It installs the service's development and
+fixture-building extras; private manuscript and real Office rendering acceptance
+remain separate environment-bound procedures.
+
+For an existing branch that has not received a new pull request event, dispatch
+CI explicitly in your own fork:
+
+```bash
+gh workflow run ci.yml -R OWNER/Oleafly --ref YOUR_BRANCH
+gh run list -R OWNER/Oleafly --workflow ci.yml --branch YOUR_BRANCH
+```
+
+Replace `OWNER` and `YOUR_BRANCH` with your fork owner and pushed branch. A
+manual dispatch tests that branch's commit without coverage gates; a pull
+request run tests GitHub's merge commit with its target branch and applies the
+coverage gates. CI builds E2E applications for its tests; it does not publish a
+release or replace the installed application. SonarQube Cloud analysis runs
+only when the repository variables `SONAR_ORGANIZATION`
+and `SONAR_PROJECT_KEY` are configured; an opted-in repository must also provide
+the `SONAR_TOKEN` secret. Build, lint and test jobs run without those settings.
+
+Other focused and integration checks remain available:
 
 ```bash
 pnpm lint                                 # Biome lint over src/ and packages/
-pnpm build                                # frontend typecheck (noUnusedLocals/Parameters on)
+pnpm build                                # frontend typecheck and production bundle
 pnpm test                                 # vitest across src/ and packages/
 pnpm language-servers:test                # manifest, checksum, target, URL, and license policy
 pnpm audit --prod --audit-level high      # registry-backed npm advisory check
@@ -216,20 +464,53 @@ cargo deny --workspace --all-features --config src-tauri/deny.toml check  # Rust
 ```
 
 The two audit commands require registry/network access. CI records their
-current results on every code change. An offline local run cannot certify that
-the dependency graph is advisory-free.
+results when its workflow runs. An offline local run cannot certify that the
+dependency graph is advisory-free. The workspace patches Harper 2.10.0 to use
+zip 9 and replaces Chrono with Jiff in server mail timestamps and the Linux
+trash adapter. The retained upstream versions keep spelling rules and trash
+behavior stable; their source pins, licenses and downstream changes are recorded
+in [`vendor/harper-core/README.oleafly.md`](../vendor/harper-core/README.oleafly.md)
+and [`vendor/trash/README.oleafly.md`](../vendor/trash/README.oleafly.md).
+`node --test scripts/local-checks.node-tests.mjs`
+verifies local check selection and failure propagation with stubbed tools and
+temporary Git repositories; it starts no real build or test suite.
 
 CI also runs `pnpm test:coverage`, which fails if frontend coverage drops below
 the thresholds in `vitest.config.ts` (98% of lines, 92% of branches, 96% of
 functions and statements). New code needs tests that keep it there. SonarCloud
 counts the same files: `src/` and `packages/`, without tests, `tests/` folders,
 the `src/main.tsx` bootstrap and the e2e-only probes.
+When a frontend or Rust coverage report was generated, CI uploads it even if
+the preceding test or coverage gate failed, retaining it for one day. A failed
+gate still fails the job; the report lets contributors locate the uncovered code.
+The frontend test/coverage job runs independently of the frontend build job.
+Browser and native E2E jobs depend on the build, so a coverage failure remains
+visible without suppressing integration results. The packaged Tinymist
+diagnostics smoke runs as a separate gate, so Rust tests and native E2E can
+report their own results even if it fails. SonarCloud waits for the coverage
+job and the Rust job before downloading their reports.
+
+The browser-harness and native desktop E2E jobs share the
+[`workbench-runtime` action](../.github/actions/workbench-runtime/action.yml).
+It installs Python 3.12 and the Workbench environment at
+`services/research-workbench/.venv`, then passes its absolute interpreter path
+to the packaged application. It installs LibreOffice for each runner platform
+and passes the executable path for DOCX save/check/PDF scenarios. Browser
+harness checks use synthetic documents, real Workbench HTTP and the production
+React editor with scripted Tauri commands. The native jobs run those business
+operations through the packaged app.
+Private-manuscript and real-model acceptance remain opt-in and are not enabled
+by this job.
+The frontend test job separately runs `pnpm exec vitest run --config e2e/vitest.config.ts`
+for the retained Word acceptance helpers, including the independent XML oracle
+and the live-provider relay's fixed forwarding route. These checks use synthetic
+inputs and local HTTP servers; they do not launch an app or call a model.
 
 ### The Rust toolchain pin
 
 `rust-toolchain.toml` names one Rust version. rustup applies it to every plain
-`cargo` call in the repo, so the pre-commit hook, CI, the e2e builds, and the
-release workflow all compile and lint with the same compiler. Before the pin,
+`cargo` call in the repo, so local checks, CI, the e2e builds and releases use
+the same toolchain, including the pre-commit formatter. Before the pin,
 CI floated on the latest stable while local machines stayed wherever they
 were, and a commit could pass clippy locally and then fail it on CI with no
 code change behind the break.
@@ -249,15 +530,17 @@ The minimum Rust versions are separate promises. The shared crates
 (`oleafly-core`, `oleafly-secrets`, `oleafly-doctools`, `oleafly-synctex`,
 `oleafly-synctex-wasm`, `oleafly-sandbox`, `oleafly-forge`) and the agent
 crate `oleafly-agent` build on Rust 1.87.
-`oleafly-preflight` and
-`oleafly-research` need 1.88 because they read PDFs with lopdf 0.42, which uses
-let chains (it declares 1.85, which is too low); research gets it through
-pdf-extract. `oleafly-acp` needs 1.88 for the official Agent Client Protocol
-crates. `oleafly-downloads` needs 1.88 for zip 9, the first zip release with
-the fixes for its 2026 advisories. `oleafly-lint` builds on 1.88 without its
+`oleafly-preflight` needs 1.88 because it reads PDFs with lopdf 0.42, which uses
+let chains (it declares 1.85, which is too low). `oleafly-acp` needs 1.88 for
+the official Agent Client Protocol crates. `oleafly-downloads` needs 1.88 for
+zip 9, the first zip release with the fixes for its 2026 advisories.
+`oleafly-lint` builds on 1.88 without its
 `proofread` feature.
 `oleafly-online` needs 1.89 for the `aes` crate that decrypts copied browser
 cookies, and `oleaflyc` needs 1.89 because it links the collaboration client.
+`oleafly-history` and `oleafly-research` also need 1.89 for rusqlite 0.41,
+which bundles SQLite 3.54 or newer to fix the crafted-WAL memory disclosure
+([RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459)).
 CI checks each group with explicit `cargo +1.87.0`, `cargo +1.88.0` and
 `cargo +1.89.0` runs, which take priority over the pin.
 
@@ -454,6 +737,15 @@ The test process holds every person's copy of the project, so its own memory
 grows with the documents. `CROWD_SOAK_MAX_CHARS` keeps that bounded.
 
 ## Coding style
+
+Local delegated development follows one controller, independent responsibility
+chats and bounded subagents. Give each assignment its goal, necessary inputs,
+owned files, acceptance criteria and prohibited actions. Keep concurrent writes
+disjoint and stay within the execution platform's available slots. Personal
+model and endpoint preferences belong to the current user's Codex instructions;
+apply the latest explicit request rather than duplicating those settings here.
+Development delegation does not change the application's model catalog or the
+user's task runtime defaults.
 
 - TypeScript: follow what's already there. No comments unless asked. Respect `noUnusedLocals`/`noUnusedParameters`.
 - Rust: idiomatic, small commands, friendly error strings.

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from research_file_workbench.common.clock import utc_now_iso
 from research_file_workbench.common.json_io import JsonObject
+from research_file_workbench.common.sqlite import sqlite_file_uri
 from research_file_workbench.projects.models import (
     BaselineRequest,
     ProjectStoreError,
@@ -128,7 +129,7 @@ def connect_project(
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(
-            database_path.resolve().as_uri() + "?mode=rw",
+            sqlite_file_uri(database_path, "rw"),
             uri=True,
             timeout=_BUSY_TIMEOUT_MS / 1000,
         )
@@ -158,7 +159,7 @@ def inspect_identity(database_path: Path) -> JsonObject:
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(
-            database_path.resolve().as_uri() + "?mode=ro",
+            sqlite_file_uri(database_path, "ro"),
             uri=True,
             timeout=_BUSY_TIMEOUT_MS / 1000,
         )

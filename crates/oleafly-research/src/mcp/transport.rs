@@ -163,12 +163,12 @@ pub(super) async fn call(
             .try_acquire()
             .map_err(|_| "The research session is busy or has closed.".to_string())?;
         let mut stopped = context.shutdown.clone();
-        let operation = application.call(name.into(), arguments.clone());
+        let operation = application.call_content(name.into(), arguments.clone());
         return tokio::select! {
             biased;
             _ = stopped.wait_for(|closed| *closed) => Err("This research session has closed.".into()),
-            result = tokio::time::timeout(CALL_TIMEOUT, operation) => {
-                tools::payload(result.map_err(|_| "The research tool timed out. Try a narrower request.".to_string())??)
+            result = tokio::time::timeout(application.call_timeout(name), operation) => {
+                result.map_err(|_| "The research tool timed out. Try a narrower request.".to_string())?
             }
         };
     }

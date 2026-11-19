@@ -180,7 +180,9 @@ let detailsGeneration = 0;
 let accountGeneration = 0;
 let flowGeneration = 0;
 let syncInFlight: Promise<void> | null = null;
+let syncInFlightAccount: number | null = null;
 let settingsInFlight: Promise<void> | null = null;
+let settingsInFlightAccount: number | null = null;
 let pasteInFlight = false;
 let credentialsInFlight = false;
 let detailsViewers = 0;
@@ -404,10 +406,16 @@ export const useCloudStore = create<CloudStoreState>((set, get) => {
   };
 
   const runRound = (manual: boolean, includeSettings: boolean): Promise<void> => {
-    if (syncInFlight) return syncInFlight;
+    const account = accountGeneration;
+    if (syncInFlight) {
+      if (syncInFlightAccount === account) return syncInFlight;
+      const previous = syncInFlight;
+      const runForAccount = () =>
+        account === accountGeneration ? runRound(manual, includeSettings) : Promise.resolve();
+      return previous.then(runForAccount, runForAccount);
+    }
     const { status, state } = get();
     if (status !== "connected" || !state?.enabled) return Promise.resolve();
-    const account = accountGeneration;
     const round = async () => {
       set({ syncing: true });
       let report: SyncReport | null = null;
@@ -435,8 +443,10 @@ export const useCloudStore = create<CloudStoreState>((set, get) => {
     };
     syncInFlight = round().finally(() => {
       syncInFlight = null;
+      syncInFlightAccount = null;
       set((current) => ({ syncing: false, progress: withoutRoundProgress(current.progress, current.downloading) }));
     });
+    syncInFlightAccount = account;
     return syncInFlight;
   };
 
@@ -459,6 +469,9 @@ export const useCloudStore = create<CloudStoreState>((set, get) => {
       settingsChoice: null,
       settingsChoiceError: null,
       settingsProblem: null,
+      downloading: [],
+      downloadProgress: null,
+      progress: {},
     });
     await get().refresh();
     if (get().settingsImport === "awaitingConnect") set({ settingsImport: "resume" });
@@ -478,19 +491,24 @@ export const useCloudStore = create<CloudStoreState>((set, get) => {
   const downloadOne = async (
     cloudId: string,
   ): Promise<{ ok: true; restored: boolean } | { ok: false; error: string }> => {
+    const account = accountGeneration;
     set((current) => ({ downloading: [...without(current.downloading, cloudId), cloudId] }));
     try {
       const done = await cloudDownloadProject(cloudId);
-      set((current) => ({ remote: current.remote.filter((project) => project.cloudId !== cloudId) }));
+      if (account === accountGeneration) {
+        set((current) => ({ remote: current.remote.filter((project) => project.cloudId !== cloudId) }));
+      }
       return { ok: true, restored: done.restored };
     } catch (error) {
       void logError("cloud download project", error);
       return { ok: false, error: rawError(error) };
     } finally {
-      set((current) => {
-        const { [cloudId]: _finished, ...progress } = current.progress;
-        return { downloading: without(current.downloading, cloudId), progress };
-      });
+      if (account === accountGeneration) {
+        set((current) => {
+          const { [cloudId]: _finished, ...progress } = current.progress;
+          return { downloading: without(current.downloading, cloudId), progress };
+        });
+      }
     }
   };
 
@@ -621,13 +639,19 @@ export const useCloudStore = create<CloudStoreState>((set, get) => {
     syncNow: (manual = false) => runRound(manual, true),
 
     syncSettings: () => {
-      if (settingsInFlight) return settingsInFlight;
+      const account = accountGeneration;
+      if (settingsInFlight) {
+        if (settingsInFlightAccount === account) return settingsInFlight;
+        const previous = settingsInFlight;
+        const syncForAccount = () =>
+          account === accountGeneration ? get().syncSettings() : Promise.resolve();
+        return previous.then(syncForAccount, syncForAccount);
+      }
       const { status, state, settingsChoice } = get();
       const asking = settingsChoice !== null && !settingsChoice.deferred;
       if (status !== "connected" || !state?.enabled || asking || applyingDepth > 0) {
         return Promise.resolve();
       }
-      const account = accountGeneration;
       const exchange = async () => {
         try {
           const sent = await gatherCloudSettings();
@@ -651,7 +675,9 @@ export const useCloudStore = create<CloudStoreState>((set, get) => {
       };
       settingsInFlight = exchange().finally(() => {
         settingsInFlight = null;
+        settingsInFlightAccount = null;
       });
+      settingsInFlightAccount = account;
       return settingsInFlight;
     },
 
@@ -827,8 +853,10 @@ export const useCloudStore = create<CloudStoreState>((set, get) => {
 
     downloadProject: async (cloudId) => {
       if (get().downloading.length > 0 || get().downloadProgress) return;
+      const account = accountGeneration;
       const name = get().remote.find((project) => project.cloudId === cloudId)?.name ?? "";
       const result = await downloadOne(cloudId);
+      if (account !== accountGeneration) return;
       if (result.ok) {
         toast.successUnique(
           DOWNLOAD_TOAST,
@@ -863,13 +891,14 @@ export const useCloudStore = create<CloudStoreState>((set, get) => {
         await previous;
         if (account !== accountGeneration) return;
         const result = await downloadOne(cloudId);
+        if (account !== accountGeneration) return;
         if (!result.ok) failed += 1;
         done += 1;
         set({ downloadProgress: { done, total } });
         if (result.ok) await get().refresh();
       }, Promise.resolve());
-      set({ downloadProgress: null });
       if (account !== accountGeneration) return;
+      set({ downloadProgress: null });
       if (failed === 0) {
         toast.successUnique(
           DOWNLOAD_TOAST,
@@ -1000,6 +1029,7 @@ export const useCloudStore = create<CloudStoreState>((set, get) => {
         settingsChoiceError: null,
         settingsProblem: null,
         downloadProgress: null,
+        downloading: [],
         progress: {},
         resumedAt: {},
       });

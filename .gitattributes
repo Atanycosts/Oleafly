@@ -12,14 +12,24 @@
 *.tar.gz binary
 *.zip binary
 
+# Keep published dictionary, rule and fixture bytes intact in these downstream patches.
+vendor/harper-core/** -text whitespace=-blank-at-eol,-blank-at-eof
+vendor/trash/** -text whitespace=-blank-at-eol,-blank-at-eof
+
 # Parsed with "\n"-based markers by scripts/fetch-language-servers.node-tests.mjs.
 .github/workflows/*.yml text eol=lf
 
 # Vitest's module runner cannot load a CRLF hashbang in this imported script.
 scripts/update-tagging-status.mjs text eol=lf
 
-# Applied by the skill importer on every host. Blank context lines keep a space.
+# These source patches use LF on every host. Blank context lines keep a space.
 scripts/skills/patches/*.patch text eol=lf whitespace=-blank-at-eol
+patches/tinymist/*.patch text eol=lf whitespace=-blank-at-eol
+
+# The compiled DOCX patch includes upstream string-literal whitespace and is
+# SHA-256 pinned by pnpm. The readable source patch has spaced blank context lines.
+patches/@docx-editor.dev__core@2.36.0.patch -text whitespace=-blank-at-eol
+patches/docx-core/*.source.patch text eol=lf whitespace=-blank-at-eol
 
 
 src-tauri/resources/templates/**/*.tex text eol=lf

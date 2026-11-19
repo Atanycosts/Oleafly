@@ -1,0 +1,48 @@
+name: Validate Tinymist source patch
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "patches/tinymist/**"
+      - "scripts/ci/validate-tinymist-candidate.mjs"
+      - "scripts/language-servers/manifest.json"
+      - "scripts/smoke-language-servers.mjs"
+      - ".github/workflows/validate-tinymist-patch.yml"
+      - ".github/workflows/tinymist-source-candidate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tinymist-patch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux source validation
+    uses: ./.github/workflows/tinymist-source-candidate.yml
+    with:
+      runner: ubuntu-22.04
+      target: x86_64-unknown-linux-gnu
+
+  remaining-platforms:
+    name: Tinymist candidate (${{ matrix.target }})
+    needs: linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    uses: ./.github/workflows/tinymist-source-candidate.yml
+    with:
+      runner: ${{ matrix.os }}
+      target: ${{ matrix.target }}

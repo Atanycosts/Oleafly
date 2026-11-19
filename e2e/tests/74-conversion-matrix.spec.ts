@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { unzipSync } from "fflate";
 import { test, expect } from "../fixtures";
 import { scriptValue } from "../script-value";
 import {
@@ -10,6 +11,7 @@ import {
   evaluateLong,
   grantPickedPaths,
   readProjectText,
+  replaceEditorSource,
   setNextSavePath,
   waitLong,
   writeProjectText,
@@ -79,6 +81,9 @@ async function exportThroughMenu(page: Page, label: string, destination: string)
     10_000,
   );
   await page.getByText(label, { exact: true }).click();
+}
+
+async function waitForArtifact(destination: string) {
   const deadline = Date.now() + 180_000;
   let priorSize = -1;
   let stableReads = 0;
@@ -96,6 +101,11 @@ async function exportThroughMenu(page: Page, label: string, destination: string)
     if (Date.now() > deadline) throw new Error(`export did not finish: ${destination}`);
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+}
+
+async function exportAndWait(page: Page, label: string, destination: string) {
+  await exportThroughMenu(page, label, destination);
+  await waitForArtifact(destination);
 }
 
 async function convertTable(page: Page, path: string, target: "latex" | "typst") {
@@ -120,8 +130,8 @@ test.describe("LaTeX project exports (registry routes)", () => {
     await waitLong(tauriPage, `import("/src/store/compile.ts").then((m) => m.useCompileStore.getState().pdfBytes !== null)`, 120_000);
   });
 
-  test("exports Typst, Word, MathML HTML, and Markdown", async ({ tauriPage }) => {
-    test.setTimeout(300_000);
+  test("exports supported formats and refuses lossy Word conversion", async ({ tauriPage }) => {
+    test.setTimeout(480_000);
     await goHome(tauriPage);
     await tauriPage.evaluate(
       `import("/src/store/files.ts").then(async (m) => {
@@ -135,27 +145,48 @@ test.describe("LaTeX project exports (registry routes)", () => {
     await waitLong(tauriPage, `!!document.querySelector('[data-tour="project-editor"] .cm-content')`, 60_000);
 
     const typ = join(scratch, "paper.typ");
-    await exportThroughMenu(tauriPage, "Export as Typst (.typ)", typ);
+    await exportAndWait(tauriPage, "Export as Typst (.typ)", typ);
     const typSource = readFileSync(typ, "utf8");
     expect(typSource).toContain("= Introduction");
     expect(typSource).toContain("=");
     expect(typSource.length).toBeGreaterThan(500);
 
-    const docx = join(scratch, "paper.docx");
-    await exportThroughMenu(tauriPage, "Export as Word (.docx)", docx);
-    expect(readFileSync(docx).subarray(0, 2)).toEqual(new Uint8Array([0x50, 0x4b]));
+    const refusedDocx = join(scratch, "tikz-paper.docx");
+    await exportThroughMenu(tauriPage, "Export as Word (.docx)", refusedDocx);
+    await expect(
+      tauriPage.locator('[data-sonner-toast]').filter({
+        hasText: "Export stopped because Pandoc could not preserve mathematical or structured content",
+      }),
+    ).toBeVisible({ timeout: 180_000 });
+    expect(existsSync(refusedDocx)).toBe(false);
 
-    const html = join(scratch, "paper.html");
-    await exportThroughMenu(tauriPage, "Export as HTML (MathML)", html);
+    const md = join(scratch, "paper.md");
+    await exportAndWait(tauriPage, "Export as Markdown (.md)", md);
+    const mdSource = readFileSync(md, "utf8");
+    expect(mdSource).toContain("# Introduction");
+    expect(mdSource).toContain("$");
+
+    await goHome(tauriPage);
+    await createBlankProject(tauriPage, `Lossless Word ${Date.now()}`);
+    const losslessSource = readFileSync(fixture("lossless-paper/main.tex"), "utf8");
+    await replaceEditorSource(tauriPage, losslessSource);
+    const compiled = await compileAndProbe(tauriPage);
+    expect(compiled.text).toContain("LOSSLESS-CONVERSION-MATRIX");
+
+    const html = join(scratch, "lossless-paper.html");
+    await exportAndWait(tauriPage, "Export as HTML (MathML)", html);
     const htmlSource = readFileSync(html, "utf8");
     expect(htmlSource).toContain("<math");
     expect(htmlSource).toContain("Introduction");
 
-    const md = join(scratch, "paper.md");
-    await exportThroughMenu(tauriPage, "Export as Markdown (.md)", md);
-    const mdSource = readFileSync(md, "utf8");
-    expect(mdSource).toContain("# Introduction");
-    expect(mdSource).toContain("$");
+    const losslessDocx = join(scratch, "lossless-paper.docx");
+    await exportAndWait(tauriPage, "Export as Word (.docx)", losslessDocx);
+    const docx = unzipSync(readFileSync(losslessDocx));
+    expect(Object.keys(docx)).toEqual(
+      expect.arrayContaining(["[Content_Types].xml", "word/document.xml"]),
+    );
+    const documentXml = new TextDecoder().decode(docx["word/document.xml"]);
+    expect(documentXml).toContain("LOSSLESS-CONVERSION-MATRIX");
   });
 });
 

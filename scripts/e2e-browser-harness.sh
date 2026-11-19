@@ -8,7 +8,7 @@ if [[ "${#SPECS[@]}" -eq 0 ]] || [[ ! -f "${SPECS[0]}" ]]; then
   echo "e2e-browser-harness: no e2e/tests/*-browser.spec.ts files found" >&2
   exit 1
 fi
-PROBE_URL="http://localhost:1420/e2e/settings-install-harness.html"
+PROBE_URL="http://127.0.0.1:1420/e2e/settings-install-harness.html"
 
 if lsof -ti :1420 >/dev/null 2>&1; then
   echo "e2e-browser-harness: port 1420 is already owned by pid(s): $(lsof -ti :1420 | tr '\n' ' ')" >&2
@@ -16,7 +16,7 @@ if lsof -ti :1420 >/dev/null 2>&1; then
 fi
 
 VITE_LOG="$(mktemp)"
-pnpm exec vite --port 1420 --strictPort >"$VITE_LOG" 2>&1 &
+pnpm exec vite --host 127.0.0.1 --port 1420 --strictPort >"$VITE_LOG" 2>&1 &
 VITE_PID=$!
 
 cleanup() {

@@ -34,6 +34,7 @@ const PLAIN_TEXT_BLOCKS: Record<string, string> = {
 };
 const NATIVE_TITLE_ALLOWED: Record<string, string> = {
   "src/components/editor/MarkdownPreview.tsx": "a previewed image keeps the title its author wrote in the Markdown source",
+  "src/components/materials/MaterialHtmlView.tsx": "the embedded material iframe needs a document title for assistive technology to identify its content",
 };
 const NATIVE_TITLE_BACKLOG: Record<string, number> = {
   "src/components/ai/AiToolManager.tsx": 1,

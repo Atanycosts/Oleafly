@@ -105,8 +105,9 @@ Commands that report failures a user is expected to read and act on return a str
 | Biome `style/noJsxLiterals` with an allow list of glyphs | JSX text children | `pnpm lint`, pre-commit, CI |
 | Biome plugin `.biome/i18n-attributes.grit` | literal `placeholder`, `aria-label`, `title`, `label` and `tooltip` attributes | same |
 | Biome plugin `.biome/i18n-toast-literals.grit` | literal toast and `notifyError` messages | same |
-| `pnpm i18n:types:check` plus `tsc` | stale generated types, unknown keys, wrong namespace, missing interpolation values | pre-commit, `pnpm build`, CI |
-| `pnpm i18n:validate` (`scripts/i18n/validate.ts`) | missing or extra keys in a shipped locale, empty values, placeholder and tag parity, plural suffixes, style rules, glossary terms | pre-commit, CI |
+| `pnpm i18n:types:check` | stale generated namespace types | pre-commit when localization files change, manual full checks, CI |
+| `tsc` | unknown keys, wrong namespace, missing interpolation values | explicit typechecking, `pnpm build`, CI |
+| `pnpm i18n:validate` (`scripts/i18n/validate.ts`) | missing or extra keys in a shipped locale, empty values, placeholder and tag parity, plural suffixes, style rules, glossary terms | manual all-locale validation; the current pre-commit, full-check script and CI select English/Simplified Chinese |
 | Vitest missing-key handler | components that render an unknown key | `pnpm test` |
 | Rust parity test | missing native strings in any locale | `cargo test` |
 | `check:performance` | locale chunks leaking into the entry chunk | CI |

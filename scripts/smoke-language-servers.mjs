@@ -335,7 +335,7 @@ function monotonicMilliseconds() {
   return Number(performance.now().toFixed(3));
 }
 
-async function smokeDiagnostics(
+export async function smokeDiagnostics(
   serverId,
   server,
   executable,
@@ -634,40 +634,45 @@ async function smokeDiagnostics(
   }
 }
 
-const options = parseArgs(process.argv.slice(2));
-const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"));
-const target = currentTarget();
-const workspace = resolve(options.workspace);
-const workspaceMetadata = await stat(workspace);
-if (!workspaceMetadata.isDirectory()) {
-  fail(`workspace is not a directory: ${workspace}`);
-}
-const serverIds =
-  options.server === "all" ? ["texlab", "tinymist"] : [options.server];
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"));
+  const target = currentTarget();
+  const workspace = resolve(options.workspace);
+  const workspaceMetadata = await stat(workspace);
+  if (!workspaceMetadata.isDirectory()) {
+    fail(`workspace is not a directory: ${workspace}`);
+  }
+  const serverIds =
+    options.server === "all" ? ["texlab", "tinymist"] : [options.server];
 
-for (const serverId of serverIds) {
-  const server =
-    manifest.servers[serverId] ??
-    fail(`manifest has no ${serverId} server`);
-  const targetEntry =
-    server.targets[target] ??
-    fail(`${serverId} has no ${target} target`);
-  const executable = await executablePath(
-    manifest,
-    serverId,
-    server,
-    target,
-    targetEntry,
-  );
-  try {
-    await verifyPinnedBinary(executable.path, targetEntry);
-    await smokeDiagnostics(
+  for (const serverId of serverIds) {
+    const server =
+      manifest.servers[serverId] ??
+      fail(`manifest has no ${serverId} server`);
+    const targetEntry =
+      server.targets[target] ??
+      fail(`${serverId} has no ${target} target`);
+    const executable = await executablePath(
+      manifest,
       serverId,
       server,
-      executable.path,
-      workspace,
+      target,
+      targetEntry,
     );
-  } finally {
-    await executable.cleanup();
+    try {
+      await verifyPinnedBinary(executable.path, targetEntry);
+      await smokeDiagnostics(
+        serverId,
+        server,
+        executable.path,
+        workspace,
+      );
+    } finally {
+      await executable.cleanup();
+    }
   }
 }
+
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
+if (invokedPath === import.meta.url) await main();

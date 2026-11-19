@@ -5,6 +5,9 @@ const WEB_PORT = 1431;
 
 export default defineConfig({
   testDir: ".",
+  // Playwright clears its result directory on startup. Keep the preceding
+  // desktop browser harness's traces available to CI's artifact step.
+  outputDir: "./test-results",
   timeout: 60_000,
   retries: process.env.CI ? 1 : 0,
   workers: 1,

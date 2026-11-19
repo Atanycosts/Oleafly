@@ -89,14 +89,8 @@ Every observable change gets a focused regression for its success path and its r
 integrity path. Tests use temporary application libraries and controlled author copies; they do
 not launch Office, rewrite reviewed annotations or mutate author workspaces.
 
-The minimum backend gate is:
-
-```powershell
-pwsh -NoProfile -File tools/verify.ps1
-```
-
-This runs Ruff formatting, Ruff lint, strict mypy, the Python suite and Phase 0 validation in
-the project virtual environment. JavaScript syntax and Rust checks are separate desktop gates.
+The minimum backend gate is Ruff formatting, Ruff lint, strict mypy and the Python suite in the
+project virtual environment. JavaScript syntax and Rust checks are separate desktop gates.
 An environment failure must be reported separately from a product test failure. Passing these
 automated checks does not satisfy the outstanding independent S1/IJAM object and page evidence
 review documented in `docs/s1-progress.md`.

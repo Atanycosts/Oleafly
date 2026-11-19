@@ -52,6 +52,25 @@ controls stay hidden.
 Selecting text in the PDF never jumps to the source, so copying text leaves the
 editor where it is. A single click jumps.
 
+## Feedback and retained versions
+
+The compiled PDF toolbar supports feedback on the whole document, current page
+or selected text. This uses the PDF bytes currently displayed, including all
+pages and rotation of a text selection. Feedback opens inside the central
+workspace and can be saved without starting an AI task. An explicit request
+creates a task with the retained PDF as an input.
+
+Project PDFs, retained paper PDFs and task-compiled PDFs use the same PDF.js
+renderer. Earlier feedback opens the exact retained bytes, restores its page
+and rotation, and leaves the right-hand Agent available. Saved selection
+rectangles remain attached to the feedback but do not yet have a visual
+highlight overlay when reopening. See [material feedback](Editor.md#material-feedback-and-results).
+
+The saved Word PDF in the central workspace uses the same material reader. Its
+Agent context identifies the retained baseline, render bundle and PDF hash,
+including the current page or selected text. This viewed PDF remains separate
+from the writable Word session; returning to the document restores that session.
+
 ## Reliability rules
 
 - A PDF result carries a project revision identity.

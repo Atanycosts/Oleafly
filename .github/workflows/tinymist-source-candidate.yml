@@ -1,0 +1,107 @@
+name: Build and validate a Tinymist candidate
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+      target:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Tinymist candidate (${{ inputs.target }})
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      # Isolate Cargo output and toolchain selection from the Oleafly checkout.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.tinymist-source/target
+      RUSTUP_TOOLCHAIN: "1.92.0"
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      TARGET: ${{ inputs.target }}
+      TINYMIST_SOURCE_COMMIT: 32f908199ee17ea295512bbc27166e890c438175
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out the exact Tinymist source
+        uses: actions/checkout@v7
+        with:
+          repository: Myriad-Dreamin/tinymist
+          ref: ${{ env.TINYMIST_SOURCE_COMMIT }}
+          path: .tinymist-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Apply the reviewed source patch
+        working-directory: .tinymist-source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TINYMIST_SOURCE_COMMIT"
+          git apply --check --whitespace=error-all ../patches/tinymist/editor-diagnostics-revision.patch
+          git apply --whitespace=error-all ../patches/tinymist/editor-diagnostics-revision.patch
+
+      - name: Install the upstream Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.92.0
+          targets: ${{ inputs.target }}
+          components: rustfmt
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Cache the source build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .tinymist-source -> target
+          shared-key: tinymist-0.15.8-${{ inputs.target }}
+
+      - name: Check changed Rust formatting
+        working-directory: .tinymist-source
+        run: |
+          set -euo pipefail
+          rustfmt --check --edition 2021 crates/tinymist/src/actor/editor.rs crates/tinymist/src/project.rs crates/tinymist/src/lsp/workspace_change_tests.rs
+          rustfmt --check --edition 2024 crates/tinymist-project/src/compiler.rs
+
+      - name: Test diagnostic ordering and project reloads
+        working-directory: .tinymist-source
+        run: cargo test --locked -p tinymist --no-default-features --features system diagnostic_revision --lib
+
+      - name: Build the candidate executable
+        working-directory: .tinymist-source
+        run: cargo build --locked --release -p tinymist-cli --bin tinymist --target "$TARGET"
+
+      - name: Verify the binary and unchanged LSP diagnostic smoke
+        run: |
+          set -euo pipefail
+          binary=".tinymist-source/target/$TARGET/release/tinymist"
+          if [[ "$TARGET" == *windows* ]]; then binary="$binary.exe"; fi
+          node scripts/ci/validate-tinymist-candidate.mjs "$binary" "tinymist-candidate" "$TINYMIST_SOURCE_COMMIT"
+          cp .tinymist-source/LICENSE tinymist-candidate/LICENSE
+          if [[ -f .tinymist-source/NOTICE ]]; then cp .tinymist-source/NOTICE tinymist-candidate/NOTICE; fi
+
+      - name: Upload the verified candidate and provenance
+        uses: actions/upload-artifact@v7
+        with:
+          name: tinymist-candidate-${{ inputs.target }}
+          path: tinymist-candidate/
+          if-no-files-found: error
+          retention-days: 7

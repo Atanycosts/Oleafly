@@ -169,12 +169,13 @@ def import_captured_document(
     *,
     filename: str,
     request_id: str,
-    expected_baseline_id: str,
+    expected_baseline_id: str | None,
     confirmation_reason: str,
 ) -> JsonObject:
     """Apply a user-selected byte snapshot without reopening or writing an author path.
 
     The existing baseline transaction owns replay, compare-and-swap and evidence storage.
+    A null expected baseline applies only while the project has no current baseline.
     A basename is retained as provenance only; it is never used to resolve a local file.
     """
     if not confirmation_reason.strip():

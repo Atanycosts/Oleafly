@@ -188,6 +188,10 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: { source:
             failedDiagrams.add(key);
             if (cancelled) return;
             inFlight = null;
+            if (currentTheme() !== theme) {
+              ensureCurrent(true);
+              return;
+            }
             if (mountedTheme.current === null) setState({ status: "error" });
           },
         );

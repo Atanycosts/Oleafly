@@ -80,6 +80,14 @@ vi.mock("@/lib/ai-tools", () => {
           inputSchema: objectSchema({ text: { type: "string" } }, ["text"]),
           execute: async (input: { text: string }) => ({ echoed: input.text }),
         },
+        core_image: {
+          description: "Return a core-tool image.",
+          inputSchema: objectSchema({}, []),
+          execute: async () => {
+            opts.onImage?.("data:image/png;base64,QUJD");
+            return { loaded: true };
+          },
+        },
         write_file: {
           description: "Write a file",
           inputSchema: objectSchema({ path: { type: "string" } }, ["path"]),
@@ -579,6 +587,16 @@ describe("MCP bridge runtime", () => {
     expect(large?.content.map((part) => part.type)).toEqual(["image", "image", "text"]);
     expect(large?.content[0].data).toHaveLength(9 * 1024 * 1024 - 22);
     expect(large?.content[1].data).toBe("QUJD");
+  });
+
+  it("keeps core-tool images on the independent MCP image channel", async () => {
+    await bridge.startMcpBridge();
+    call(1, "core_image");
+    const result = await settled(1);
+    expect(result?.content).toEqual([
+      { type: "image", data: "QUJD", mimeType: "image/png" },
+      { type: "text", text: '{"loaded":true}' },
+    ]);
   });
 
   it("refuses figure tools when the engine cannot run them", async () => {

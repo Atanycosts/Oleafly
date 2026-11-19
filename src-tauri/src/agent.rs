@@ -1010,7 +1010,10 @@ pub async fn agent_run(
 
 pub const SUBAGENT_TOOL: &str = "spawn_subagents";
 
-const READ_RISK_TOOLS: [&str; 33] = [
+const READ_RISK_TOOLS: [&str; 36] = [
+    "list_docx_documents",
+    "read_docx_document",
+    "capture_docx_target",
     "read_file",
     "read_skill_file",
     "load_skill",
@@ -1048,8 +1051,9 @@ const READ_RISK_TOOLS: [&str; 33] = [
 
 const SERIAL_READ_TOOLS: [&str; 1] = ["show_location"];
 
-const NETWORK_TOOLS: [&str; 3] = [
+const NETWORK_TOOLS: [&str; 4] = [
     "literature_search",
+    "read_paper",
     "verify_citation",
     "list_overleaf_projects",
 ];
@@ -1065,6 +1069,16 @@ fn tool_risk(name: &str) -> oleafly_agent::ToolRisk {
         return oleafly_agent::ToolRisk::Network;
     }
     oleafly_agent::ToolRisk::Write
+}
+
+fn tool_call_risk(call: &oleafly_agent::ToolCall) -> oleafly_agent::ToolRisk {
+    if call.name == "read_paper"
+        && serde_json::from_str(&call.arguments)
+            .is_ok_and(|args| !crate::trust::paper_read_uses_network(&args))
+    {
+        return oleafly_agent::ToolRisk::Read;
+    }
+    tool_risk(&call.name)
 }
 
 const ORCHESTRATION_TOOLS: [&str; 8] = [
@@ -1098,7 +1112,7 @@ fn approval_classifier(
     project_id: Option<String>,
 ) -> oleafly_agent::tools::orchestrator::Classifier {
     std::sync::Arc::new(move |call| {
-        let risk = tool_risk(&call.name);
+        let risk = tool_call_risk(call);
         let decision = project_id.as_deref().and_then(|project| {
             crate::paths::oleafly_root().ok().and_then(|root| {
                 crate::approvals::effective_decision_for(&root, project, &call.name).map(

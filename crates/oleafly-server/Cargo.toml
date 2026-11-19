@@ -15,7 +15,7 @@ web = ["dep:oleafly-collab", "dep:rust-embed"]
 [dependencies]
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "query", "tokio", "ws"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+jiff = "0.2.46"
 futures-util = "0.3"
 # The frame type a response body yields, so a large download can be sent
 # in pieces and stopped at its deadline. axum depends on it already.
@@ -28,7 +28,7 @@ oleafly-collab-protocol = { path = "../oleafly-collab-protocol" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
 ring = "0.17"
 oleafly-s3 = { path = "../oleafly-s3" }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }
 rust-embed = { version = "8.5", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

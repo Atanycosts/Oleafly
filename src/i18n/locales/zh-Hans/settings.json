@@ -1219,7 +1219,7 @@
         "label": "PT Serif"
       },
       "typst-cjk": {
-        "description": "Noto Sans 和 Serif CJK、Fandol 以及霞鹜文楷。它们也可以代替宋体、黑体和楷体。",
+        "description": "Noto Sans 和 Serif CJK、Fandol 以及霞鹜文楷不能代替明确要求宋体、黑体或楷体的字体，请分别安装所要求的字体族。",
         "label": "中文、日文和韩文"
       },
       "typst-icons": {

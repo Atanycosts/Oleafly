@@ -16,7 +16,8 @@ import enCommon from "@/i18n/locales/en/common.json" with { type: "json" };
 import enResearchTools from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { taskFieldsSince047 } from "./tests/task-fixtures";
 import * as timelineBuilders from "./task-timeline";
-import type { AnnotationTarget, GroupSnapshot } from "@/lib/task-collaboration";
+import type { AnnotationTarget, GroupMessage, GroupSnapshot } from "@/lib/task-collaboration";
+import type { JournalAnnotationObject } from "@/lib/journal-workbench";
 import type { TaskAnnotationsProps } from "./TaskAnnotations";
 
 let TaskDetailDialog: typeof import("./TaskDetailDialog").TaskDetailDialog;
@@ -49,6 +50,7 @@ const previewMocks = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   approvals: vi.fn(),
   decide: vi.fn(),
+  notifyError: vi.fn(),
 }));
 
 vi.mock("@/lib/research-tasks", () => ({
@@ -77,6 +79,7 @@ vi.mock("@/lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tauri")>()),
   getConfig: previewMocks.config,
 }));
+vi.mock("@/lib/toast", () => ({ notifyError: previewMocks.notifyError }));
 
 vi.mock("@/components/editor/diff/InlineDiffPreview", () => ({
   InlineDiffPreview: ({ oldText, newText }: { oldText: string; newText: string }) => (
@@ -87,14 +90,37 @@ vi.mock("@/components/editor/diff/InlineDiffPreview", () => ({
 vi.mock("./TaskCompiledPdfs", () => ({ TaskCompiledPdfs: ({ reference }: { reference?: { path: string; generation: number } }) => reference ? <div data-testid="mock-retained-pdf" data-path={reference.path} data-generation={reference.generation} /> : null }));
 
 const annotationMocks = vi.hoisted(() => ({ props: null as TaskAnnotationsProps | null, group: vi.fn(), message: vi.fn(), annotations: vi.fn(), pdf: vi.fn() }));
+const groupPanelMocks = vi.hoisted(() => ({
+  props: null as null | { onAnnotate: (message: GroupMessage) => void },
+}));
 const journalReference = vi.hoisted(() => ({ load: vi.fn() }));
-vi.mock("@/lib/journal-workbench", () => ({ loadJournalTarget: journalReference.load }));
+const materialViewer = vi.hoisted(() => ({ open: vi.fn() }));
+const retainedMaterial = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock("@/lib/material-annotations", async (original) => ({ ...await original<typeof import("@/lib/material-annotations")>(), readMaterialAnnotation: retainedMaterial.read }));
+const htmlPreview = vi.hoisted(() => ({ read: vi.fn(), close: vi.fn() }));
+vi.mock("@/lib/notebook-commands", () => ({ readTaskHtmlPreview: htmlPreview.read, closeHtmlPreview: htmlPreview.close }));
+vi.mock("@/store/material-viewer", () => ({ useMaterialViewerStore: { getState: () => materialViewer } }));
+vi.mock(import("@/lib/journal-workbench"), async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/journal-workbench")>(),
+  loadJournalTarget: journalReference.load,
+}));
 vi.mock("@/lib/pdf-selection", () => ({ loadTaskPdfSelection: annotationMocks.pdf }));
 vi.mock("./TaskPdfSelection", () => ({ TaskPdfSelection: ({ taskId, openOriginal }: { taskId: string; openOriginal?: boolean }) => <div data-testid="mock-task-pdf" data-task={taskId} data-open-original={String(openOriginal)} /> }));
 vi.mock("./TaskAnnotations", () => ({
   TaskAnnotations: (props: TaskAnnotationsProps) => { annotationMocks.props = props; return null; },
 }));
-vi.mock("@/lib/task-collaboration", () => ({ loadTaskGroup: annotationMocks.group, loadTaskGroupMessage: annotationMocks.message, loadTaskAnnotations: annotationMocks.annotations }));
+vi.mock("./TaskGroupPanel", () => ({
+  TaskGroupPanel: (props: { onAnnotate: (message: GroupMessage) => void }) => {
+    groupPanelMocks.props = props;
+    return null;
+  },
+}));
+vi.mock(import("@/lib/task-collaboration"), async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/task-collaboration")>(),
+  loadTaskGroup: annotationMocks.group,
+  loadTaskGroupMessage: annotationMocks.message,
+  loadTaskAnnotations: annotationMocks.annotations,
+}));
 
 const markdownDraws = vi.hoisted(() => ({ texts: [] as string[] }));
 
@@ -255,15 +281,64 @@ function props(current: ResearchTask, onCancel = vi.fn(async () => {})) {
   };
 }
 
+function retainedJournalSource(
+  target: AnnotationTarget,
+  sourceText: string,
+): JournalAnnotationObject {
+  const identity = JSON.parse(target.objectId) as {
+    libraryRoot: string;
+    manuscriptId: string;
+    id: string;
+  };
+  return {
+    reference: {
+      libraryRoot: identity.libraryRoot,
+      workbenchProjectId: identity.manuscriptId,
+      kind: "source",
+      objectId: identity.id,
+      worldVersionId: target.objectRevision ?? "",
+      checkId: null,
+    },
+    target,
+    source: {
+      kind: "journal_object",
+      content: JSON.stringify({ object: { text: sourceText } }),
+    },
+    relatedTasks: [],
+    continuationTaskId: null,
+  };
+}
+
+function encodedJournalSourceTarget(
+  projectId: string,
+  taskId: string,
+  objectId: string,
+  objectRevision: string,
+): AnnotationTarget {
+  return {
+    projectId,
+    taskId,
+    objectKind: "journal_source",
+    objectId: JSON.stringify({
+      libraryRoot: "/retained/library",
+      manuscriptId: "manuscript",
+      id: objectId,
+    }),
+    objectRevision,
+    path: null,
+  };
+}
+
 function observedRun(id: string): TaskObservationView {
   const row = (sequence: number, event: TaskRuntimeEvent) => ({ taskId: id, executionGeneration: 1, sequence, event, createdAt: sequence });
   return {
     summary: {
       taskId: id, projectId: "paper", executionGeneration: 1, status: "awaiting_review", goal: "Read evidence", successCriteria: ["Source can be recovered"],
-      runtime: row(1, { kind: "observation", observation: { type: "runtime", runtimeId: "builtin", providerId: "actual-provider", modelId: "actual-model", sessionId: "session", tools: [{ name: "read_file", source: "builtin", schemaSha256: "schema-hash" }], declaredSkills: ["selected"], injectedSkills: [{ id: "selected", sectionSha256: "section-hash" }], unavailable: ["commands:disabled"] } }),
+      runtime: row(1, { kind: "observation", observation: { type: "runtime", runtimeId: "builtin", providerId: "actual-provider", modelId: "actual-model", sessionId: "session", tools: [{ name: "read_file", source: "builtin", schemaSha256: "schema-hash" }], declaredSkills: ["selected"], injectedSkills: [{ id: "selected", sectionSha256: "section-hash" }], unavailable: ["commands:disabled", "desktop_apps:disabled", "web_tools:unavailable"] } }),
       usage: row(2, { kind: "observation", observation: { type: "usage", inputTokens: 0, outputTokens: null } }),
       baseline: { kind: "git_worktree", executionRoot: "workspace", sourceRevision: "revision-start", baselineHash: "baseline-hash", fileCount: 2, createdAt: 1, initialGitStatus: [" M main.tex", "?? notes.md"], initialGitStatusComplete: true },
-      changedFiles: [], changedFileCount: 1, evidence: { checkedAt: 1, checks: [] }, coverageGaps: [],
+      changedFiles: [{ path: "main.tex", kind: "modified", beforeSha256: "before-main", afterSha256: "after-main", beforeSize: 12, afterSize: 14 }],
+      changedFileCount: 1, evidence: { checkedAt: 1, checks: [] }, coverageGaps: [],
     },
     page: { events: [
       row(3, { kind: "observation", observation: { type: "toolRequested", callId: "source-call", name: "read_file", inputSha256: "input-hash" } }),
@@ -274,12 +349,18 @@ function observedRun(id: string): TaskObservationView {
 
 describe("TaskDetailDialog", () => {
   beforeEach(() => {
+    materialViewer.open.mockReset();
+    retainedMaterial.read.mockReset();
+    journalReference.load.mockReset();
+    htmlPreview.read.mockReset();
+    htmlPreview.close.mockReset().mockResolvedValue(undefined);
     previewMocks.file.mockReset();
     previewMocks.artifact.mockReset();
     previewMocks.events.mockReset();
     previewMocks.referencedEvents.mockReset().mockResolvedValue({ events: [], nextSequence: null });
     previewMocks.compiledPdfs.mockReset().mockResolvedValue([]);
     annotationMocks.props = null;
+    groupPanelMocks.props = null;
     annotationMocks.pdf.mockReset().mockResolvedValue(null);
     annotationMocks.message.mockReset().mockResolvedValue(null);
     annotationMocks.annotations.mockReset().mockResolvedValue({ annotations: [] });
@@ -297,6 +378,7 @@ describe("TaskDetailDialog", () => {
     previewMocks.cancelRun.mockReset();
     previewMocks.approvals.mockReset().mockResolvedValue([]);
     previewMocks.decide.mockReset();
+    previewMocks.notifyError.mockReset();
   });
 
   afterEach(() => cleanup());
@@ -347,6 +429,69 @@ describe("TaskDetailDialog", () => {
       expect(page().getByRole("tab", { name: enResearchTools.tasks.annotations.title })).toHaveAttribute("data-state", "active");
       expect(page().queryByTestId("mock-task-pdf")).not.toBeInTheDocument();
     }
+  });
+
+  it("clears an opened retained PDF input when the selected task changes", async () => {
+    const first = task("pdf-first");
+    const second = task("pdf-second");
+    const target: AnnotationTarget = { projectId: first.projectId, taskId: first.id, objectKind: "pdf_selection", objectId: "pdf-object", objectRevision: "sha256:original", path: "main.tex" };
+    annotationMocks.pdf.mockResolvedValue({ annotationId: "child-pdf" });
+    annotationMocks.annotations.mockResolvedValue({ annotations: [{ id: "child-pdf", target }] });
+    const view = render(<TaskDetailDialog {...props(first)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenTarget).toBeDefined());
+    await act(async () => { annotationMocks.props?.onOpenTarget?.(target); });
+    await waitFor(() => expect(page().getByTestId("mock-task-pdf")).toHaveAttribute("data-open-original", "true"));
+
+    view.rerender(<TaskDetailDialog {...props(second)} initialTab="annotations" />);
+
+    await waitFor(() => expect(page().getByTestId("mock-task-pdf")).toHaveAttribute("data-task", second.id));
+    expect(page().getByTestId("mock-task-pdf")).toHaveAttribute("data-open-original", "false");
+  });
+
+  it("rejects foreign and malformed references before querying another retained source", async () => {
+    const current = task("invalid-reference");
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenTarget).toBeDefined());
+
+    const invalidTargets: AnnotationTarget[] = [
+      {
+        projectId: "another-project",
+        taskId: current.id,
+        objectKind: "message",
+        objectId: `${current.id}:1:1`,
+        objectRevision: "generation:1",
+        path: null,
+      },
+      {
+        projectId: current.projectId,
+        taskId: current.id,
+        objectKind: "task_pdf",
+        objectId: "claimed-pdf",
+        objectRevision: "not-a-generation",
+        path: "compiled-artifacts/result.pdf",
+      },
+      {
+        projectId: current.projectId,
+        taskId: current.id,
+        objectKind: "message",
+        objectId: "not-a-task-event",
+        objectRevision: "generation:1",
+        path: null,
+      },
+    ];
+
+    for (const target of invalidTargets) {
+      await act(async () => {
+        annotationMocks.props?.onOpenTarget?.(target);
+      });
+      expect(
+        within(page().getByTestId("task-annotation-source")).getByRole("alert"),
+      ).toHaveTextContent(enResearchTools.tasks.annotations.referenceUnavailable);
+    }
+
+    expect(previewMocks.compiledPdfs).not.toHaveBeenCalled();
+    expect(previewMocks.referencedEvents).not.toHaveBeenCalled();
+    expect(annotationMocks.message).not.toHaveBeenCalled();
   });
 
   it("reads a saved message reference from its recorded generation and reports a missing original sequence", async () => {
@@ -400,9 +545,239 @@ describe("TaskDetailDialog", () => {
     await act(async () => { annotationMocks.props?.onOpenTarget?.(target); });
     const original = await page().findByTestId("journal-retained-object");
     expect(within(original).getByText("Original retained journal instruction")).toBeInTheDocument();
-    expect(within(original).getByText("guide:page-4")).toBeInTheDocument();
+    expect(within(original).queryByText("guide:page-4")).not.toBeInTheDocument();
     expect(journalReference.load).toHaveBeenCalledExactlyOnceWith(target);
     expect(previewMocks.referencedEvents).not.toHaveBeenCalled();
+  });
+
+  it("keeps the newest retained journal reference when an older lookup finishes late", async () => {
+    const current = task("journal-reference-race");
+    const older = deferred<JournalAnnotationObject>();
+    const olderTarget = encodedJournalSourceTarget(
+      current.projectId,
+      current.id,
+      "older-source",
+      "world-old",
+    );
+    const newerTarget = encodedJournalSourceTarget(
+      current.projectId,
+      current.id,
+      "newer-source",
+      "world-current",
+    );
+    journalReference.load
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce(retainedJournalSource(newerTarget, "Newest retained instruction"));
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenTarget).toBeDefined());
+
+    act(() => {
+      annotationMocks.props?.onOpenTarget?.(olderTarget);
+    });
+    await waitFor(() => expect(journalReference.load).toHaveBeenCalledExactlyOnceWith(olderTarget));
+    act(() => {
+      annotationMocks.props?.onOpenTarget?.(newerTarget);
+    });
+
+    const source = page().getByTestId("task-annotation-source");
+    expect(await within(source).findByText("Newest retained instruction")).toBeInTheDocument();
+    await act(async () => {
+      older.resolve(retainedJournalSource(olderTarget, "Stale retained instruction"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(within(source).getByText("Newest retained instruction")).toBeInTheDocument();
+    expect(within(source).queryByText("Stale retained instruction")).not.toBeInTheDocument();
+    expect(journalReference.load.mock.calls.map(([target]) => target)).toEqual([olderTarget, newerTarget]);
+  });
+
+  it("keeps a newer task run's file preview when the older generation finishes late", async () => {
+    const older = deferred<TaskFilePreview>();
+    const first = task("preview-run-race");
+    const current = { ...task("preview-run-race"), executionGeneration: 2 };
+    if (!first.result || !current.result) throw new Error("Missing review fixtures");
+    first.result.changedFiles[0].path = "older/main.tex";
+    current.result.changedFiles[0].path = "current/main.tex";
+    previewMocks.file
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce({ ...preview("current generation"), path: "current/main.tex" });
+    const input = props(first);
+    const view = render(<TaskDetailDialog {...input} initialTab="review" />);
+
+    fireEvent.click(page().getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(previewMocks.file).toHaveBeenCalledWith(
+      first.id,
+      "older/main.tex",
+    ));
+    view.rerender(
+      <TaskDetailDialog
+        {...input}
+        task={current}
+        tasks={[current]}
+        initialTab="review"
+      />,
+    );
+    fireEvent.click(page().getByRole("button", { name: "Preview" }));
+    expect(await page().findByText("before -> current generation")).toBeInTheDocument();
+
+    await act(async () => {
+      older.resolve({ ...preview("stale generation"), path: "older/main.tex" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(page().getByText("before -> current generation")).toBeInTheDocument();
+    expect(page().queryByText("before -> stale generation")).not.toBeInTheDocument();
+    expect(previewMocks.file.mock.calls).toEqual([
+      [first.id, "older/main.tex"],
+      [current.id, "current/main.tex"],
+    ]);
+  });
+
+  it.each([
+    { explicitRequest: false, sameTask: true, role: "evidence" },
+    { explicitRequest: true, sameTask: true, role: "task_input" },
+    { explicitRequest: true, sameTask: false, role: "evidence" },
+  ])("opens retained material with $role for request=$explicitRequest and sameTask=$sameTask", async ({ explicitRequest, sameTask, role }) => {
+    const current = task("retained-material");
+    const snapshot = { document: { projectId: current.projectId, documentId: "file:report.md", title: "Report", path: "report.md", kind: "markdown", revision: "old-sha" }, anchor: { kind: "text", from: 0, to: 3, quote: "old" }, sha256: "old-sha", mediaType: "text/markdown", size: 3 };
+    const annotation = { id: "material-annotation", explicitRequest, target: { projectId: current.projectId, taskId: sameTask ? current.id : "another-task", objectKind: "material", objectId: "file:report.md", objectRevision: "old-sha", path: null }, source: { kind: "material_snapshot", content: JSON.stringify(snapshot), sha256: "reference-sha" } };
+    retainedMaterial.read.mockResolvedValue({ snapshot, bytes: [111, 108, 100] });
+    const input = props(current);
+    render(<TaskDetailDialog {...input} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenAnnotationSource).toBeDefined());
+    expect(annotationMocks.props?.describeAnnotation?.(annotation as never)).toContain("Report");
+    expect(annotationMocks.props?.describeAnnotation?.(annotation as never)).not.toContain("old-sha");
+    await act(async () => { annotationMocks.props?.onOpenAnnotationSource?.(annotation as never); });
+    await waitFor(() => expect(materialViewer.open).toHaveBeenCalledOnce());
+    expect(retainedMaterial.read).toHaveBeenCalledWith(current.projectId, "material-annotation");
+    const request = materialViewer.open.mock.calls[0][0];
+    expect(request.role).toBe(role);
+    expect(request.anchor).toEqual(snapshot.anchor);
+    expect(request.revision).toBe("old-sha");
+    expect(await request.load()).toEqual(new Uint8Array([111, 108, 100]));
+    expect(input.onOpenChange).toHaveBeenCalledWith(false);
+    expect(previewMocks.referencedEvents).not.toHaveBeenCalled();
+  });
+
+  it("reports an unreadable retained material source without opening the viewer", async () => {
+    const current = task("missing-retained-material");
+    const target: AnnotationTarget = {
+      projectId: current.projectId,
+      taskId: current.id,
+      objectKind: "material",
+      objectId: "file:report.md",
+      objectRevision: "old-sha",
+      path: null,
+    };
+    const annotation = {
+      id: "missing-material-annotation",
+      explicitRequest: false,
+      target,
+      source: { kind: "material_snapshot", content: "{}", sha256: "reference-sha" },
+    };
+    retainedMaterial.read.mockRejectedValueOnce(new Error("The retained material snapshot is unavailable."));
+    render(<TaskDetailDialog {...props(current)} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenAnnotationSource).toBeDefined());
+
+    await act(async () => {
+      annotationMocks.props?.onOpenAnnotationSource?.(annotation as never);
+    });
+
+    expect(within(page().getByTestId("task-annotation-source")).getByRole("alert"))
+      .toHaveTextContent("The retained material snapshot is unavailable.");
+    expect(materialViewer.open).not.toHaveBeenCalled();
+  });
+
+  it("does not open a retained material whose read finishes after the task changes", async () => {
+    const first = task("material-first");
+    const second = task("material-second");
+    const pending = deferred<{
+      snapshot: {
+        document: { projectId: string; documentId: string; title: string; path: string; kind: "markdown"; revision: string };
+        anchor: { kind: "text"; from: number; to: number; quote: string };
+        sha256: string;
+        mediaType: string;
+        size: number;
+      };
+      bytes: number[];
+    }>();
+    const target: AnnotationTarget = {
+      projectId: first.projectId,
+      taskId: first.id,
+      objectKind: "material",
+      objectId: "file:report.md",
+      objectRevision: "old-sha",
+      path: null,
+    };
+    const annotation = {
+      id: "pending-material-annotation",
+      explicitRequest: true,
+      target,
+      source: { kind: "material_snapshot", content: "{}", sha256: "reference-sha" },
+    };
+    retainedMaterial.read.mockReturnValueOnce(pending.promise);
+    const input = props(first);
+    const view = render(<TaskDetailDialog {...input} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.props?.onOpenAnnotationSource).toBeDefined());
+    act(() => { annotationMocks.props?.onOpenAnnotationSource?.(annotation as never); });
+    await waitFor(() => expect(retainedMaterial.read).toHaveBeenCalledWith(first.projectId, annotation.id));
+
+    view.rerender(<TaskDetailDialog {...input} task={second} tasks={[second]} initialTab="annotations" />);
+    await waitFor(() => expect(annotationMocks.group).toHaveBeenLastCalledWith(second.projectId, second.id));
+    await act(async () => {
+      pending.resolve({
+        snapshot: {
+          document: { projectId: first.projectId, documentId: "file:report.md", title: "Report", path: "report.md", kind: "markdown", revision: "old-sha" },
+          anchor: { kind: "text", from: 0, to: 3, quote: "old" },
+          sha256: "old-sha",
+          mediaType: "text/markdown",
+          size: 3,
+        },
+        bytes: [111, 108, 100],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(materialViewer.open).not.toHaveBeenCalled();
+    expect(input.onOpenChange).not.toHaveBeenCalled();
+    expect(page().queryByTestId("task-annotation-source")).not.toBeInTheDocument();
+  });
+
+  it("scopes an annotation started from a group message to the current task", async () => {
+    const current = task("group-annotation");
+    const message: GroupMessage = {
+      id: "message-current",
+      sequence: 4,
+      groupId: "group-current",
+      author: { kind: "member", id: "reviewer", executionId: null },
+      body: "Use the retained measurement.",
+      recipients: [],
+      replyTo: null,
+      object: null,
+      requestWork: false,
+      createdAt: 4,
+    };
+    render(<TaskDetailDialog {...props(current)} initialTab="group" />);
+    await waitFor(() => expect(groupPanelMocks.props?.onAnnotate).toBeDefined());
+
+    act(() => {
+      groupPanelMocks.props?.onAnnotate(message);
+    });
+
+    await waitFor(() => expect(annotationMocks.props?.target).toEqual({
+      projectId: current.projectId,
+      taskId: current.id,
+      objectKind: "group_message",
+      objectId: message.id,
+      objectRevision: `sequence:${message.sequence}`,
+      path: null,
+    }));
+    expect(annotationMocks.props?.source).toEqual({
+      kind: "group_message",
+      content: message.body,
+    });
+    expect(page().getByRole("tab", { name: enResearchTools.tasks.annotations.title }))
+      .toHaveAttribute("data-state", "active");
   });
 
   it("opens a historical group message result by exact identity", async () => {
@@ -512,14 +887,18 @@ describe("TaskDetailDialog", () => {
     const current = task("observed");
     const view = observedRun(current.id);
     previewMocks.observations.mockResolvedValue(view);
-    previewMocks.source.mockResolvedValue({ source: view.page.events[1], text: "证据" });
+    const read = view.page.events[1];
+    if (read.event.kind !== "observation" || read.event.observation.type !== "toolExecution" || !read.event.observation.source) {
+      throw new Error("Missing retained source fixture");
+    }
+    previewMocks.source.mockResolvedValue({ source: read.event.observation.source, text: "证据" });
     const events = [{ taskId: current.id, executionGeneration: 1, sequence: 5, createdAt: 5, event: { kind: "tool" as const, callId: "source-call", name: "read_file", phase: "request" as const, detail: '{"path":"main.tex"}', status: "running" } }];
     render(<TaskDetailDialog {...props(current)} events={events} />);
     openTab(enResearchTools.tasks.detail.tabActivity);
     const section = within(page().getByTestId("task-observations"));
     await waitFor(() => expect(section.getByText("actual-provider / actual-model · builtin")).toBeInTheDocument());
     expect(section.getByText(/Reported input.*0 \/ Unknown/)).toBeInTheDocument();
-    expect(section.getByText(/Commands turned off/)).toBeInTheDocument();
+    expect(section.getByText(/Commands turned off.*Desktop apps turned off.*Web tools unavailable/)).toBeInTheDocument();
     fireEvent.click(section.getByText(enResearchTools.tasks.observations.records));
     expect(section.getByText(/#3 → #4/)).toHaveTextContent("source-call");
     const scroll = vi.mocked(HTMLElement.prototype.scrollIntoView);
@@ -538,6 +917,8 @@ describe("TaskDetailDialog", () => {
     expect(section.getByText(/M main.tex/)).toHaveTextContent("?? notes.md");
     fireEvent.click(section.getByRole("button", { name: "Review 1 file changes" }));
     expect(page().getByRole("tab", { name: enResearchTools.tasks.detail.tabReview })).toHaveAttribute("data-state", "active");
+    expect(page().getByText(enResearchTools.tasks.detail.fileChanges)).toBeInTheDocument();
+    expect(page().getAllByText("main.tex").length).toBeGreaterThan(0);
   });
 
   it("recovers observation query errors and ignores an old page after a newer task revision", async () => {
@@ -574,14 +955,17 @@ describe("TaskDetailDialog", () => {
 
   it("shows shortened Git, file and check coverage instead of implying a complete summary", async () => {
     const current = task("partial-observed");
+    const evidence: EvidenceReport = { checkedAt: 1, checks: [{ id: "build", status: "pass", items: [] }] };
+    current.evidence = evidence;
     const view = observedRun(current.id);
     view.summary.coverageGaps = ["observations.git_status_shortened", "observations.file_list_shortened", "observations.check_items_shortened"];
+    view.summary.evidence = evidence;
     if (!view.summary.baseline) throw new Error("Missing baseline fixture");
     const baseline = view.summary.baseline;
     baseline.initialGitStatus = [];
     baseline.initialGitStatusComplete = false;
     previewMocks.observations.mockResolvedValue(view);
-    const input = props(current);
+    const input = { ...props(current), onRefreshEvidence: vi.fn(async () => {}) };
     const ui = render(<TaskDetailDialog {...input} />);
     openTab(enResearchTools.tasks.detail.tabActivity);
     const section = within(page().getByTestId("task-observations"));
@@ -593,8 +977,10 @@ describe("TaskDetailDialog", () => {
     baseline.initialGitStatusComplete = null;
     ui.rerender(<TaskDetailDialog {...input} task={{ ...current, updatedAt: 2 }} />);
     await waitFor(() => expect(section.getByText(enResearchTools.tasks.observations.gitCompletenessUnknown)).toBeInTheDocument());
-    fireEvent.click(section.getByRole("button", { name: "View 0 evidence checks" }));
+    fireEvent.click(section.getByRole("button", { name: "View 1 evidence checks" }));
     expect(page().getByRole("tab", { name: enResearchTools.tasks.detail.tabReview })).toHaveAttribute("data-state", "active");
+    const checklist = await page().findByTestId("research-evidence");
+    expect(checklist).toHaveTextContent(enResearchTools.evidence.checks.build);
   });
 
   it("the detail dialog toggles keep running and loads earlier activity", async () => {
@@ -636,6 +1022,36 @@ describe("TaskDetailDialog", () => {
     expect(page().queryByRole("button", { name: earlier })).not.toBeInTheDocument();
   });
 
+  it("keeps keep-running available for retry after saving it fails", async () => {
+    const current = {
+      ...task("keep-running-retry"),
+      status: "running" as const,
+      result: null,
+      keepRunningAfterQuit: false,
+    };
+    const failure = new Error("The setting could not be saved");
+    previewMocks.keepRunning
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(undefined);
+    render(<TaskDetailDialog {...props(current)} />);
+    const keep = page().getByRole("checkbox", { name: new RegExp(enResearchTools.brief.keepRunning) });
+    await waitFor(() => expect(keep).toBeEnabled());
+
+    fireEvent.click(keep);
+
+    await waitFor(() => expect(previewMocks.notifyError).toHaveBeenCalledWith(
+      "research-task-keep-running",
+      failure,
+      enResearchTools.backgroundHelper.keepRunningFailed,
+    ));
+    await waitFor(() => expect(keep).toBeEnabled());
+    fireEvent.click(keep);
+    await waitFor(() => expect(previewMocks.keepRunning.mock.calls).toEqual([
+      [current.id, true],
+      [current.id, true],
+    ]));
+  });
+
   it("drops the earlier activity it loaded when the task starts another run", async () => {
     previewMocks.events.mockImplementation((taskId: string, generation: number) => Promise.resolve({
       events: [
@@ -664,6 +1080,42 @@ describe("TaskDetailDialog", () => {
     fireEvent.click(page().getByRole("button", { name: earlier }));
     expect(await page().findByText("Generation 3 notes")).toBeInTheDocument();
     expect(previewMocks.events).toHaveBeenLastCalledWith("resumed", 3, Number.MAX_SAFE_INTEGER, 200);
+  });
+
+  it("reports a failed earlier-activity read and allows the user to retry", async () => {
+    const failure = new Error("The earlier activity store is unavailable.");
+    previewMocks.events
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce({
+        events: [{
+          taskId: "history-retry",
+          executionGeneration: 2,
+          sequence: 1,
+          event: { kind: "status", message: "Recovered earlier activity" },
+          createdAt: 1,
+        }],
+        nextSequence: null,
+        previousSequence: null,
+        resumedFrom: null,
+      });
+    const current: ResearchTask = {
+      ...task("history-retry"),
+      status: "running",
+      executionGeneration: 3,
+      resumedFrom: 2,
+    };
+    render(<TaskDetailDialog {...props(current)} />);
+    const earlier = enResearchTools.backgroundHelper.earlierActivity;
+
+    fireEvent.click(page().getByRole("button", { name: earlier }));
+    await waitFor(() => expect(previewMocks.notifyError).toHaveBeenCalledWith(
+      "research-task-earlier-activity",
+      failure,
+    ));
+    await waitFor(() => expect(page().getByRole("button", { name: earlier })).toBeEnabled());
+
+    fireEvent.click(page().getByRole("button", { name: earlier }));
+    expect(await page().findByText("Recovered earlier activity")).toBeInTheDocument();
   });
 
   it("stops showing earlier activity at a run that started fresh", async () => {
@@ -720,6 +1172,41 @@ describe("TaskDetailDialog", () => {
     const header = page().getByRole("heading", { name: "Task header" }).closest("header");
     expect(header?.className).toContain("overflow-y-auto");
     expect(header?.className).toMatch(/max-h-/);
+  });
+
+  it("shows the full prompt on request and renders settled task output", async () => {
+    const current = task("output");
+    current.brief = { ...current.brief, goal: "Review the final measurements" };
+    const artifact = { path: "report.md", label: "Review report", mediaType: "text/markdown" };
+    if (!current.result) throw new Error("Missing review fixture");
+    current.result = { ...current.result, artifacts: [artifact] };
+    previewMocks.artifact.mockResolvedValue({
+      artifact,
+      content: {
+        exists: true,
+        text: "Final retained report",
+        base64: null,
+        mediaType: "text/markdown",
+        binary: false,
+        truncated: false,
+        size: 21,
+        sha256: "artifact-sha",
+      },
+    });
+    render(<TaskDetailDialog {...props(current)} initialTab="output" />);
+
+    const promptSummary = page().getByText(enResearchTools.tasks.composer.promptLabel);
+    const promptDetails = promptSummary.closest("details");
+    expect(promptDetails).not.toHaveAttribute("open");
+    fireEvent.click(promptSummary);
+    expect(promptDetails).toHaveAttribute("open");
+    expect(within(promptDetails as HTMLElement).getByText(current.prompt)).toBeInTheDocument();
+
+    expect(page().getByTestId("mock-task-pdf")).toHaveAttribute("data-task", current.id);
+    expect(page().getByText(current.result.summary)).toBeInTheDocument();
+    fireEvent.click(page().getByRole("button", { name: new RegExp(artifact.label) }));
+    expect(await page().findByText("Final retained report")).toBeInTheDocument();
+    expect(previewMocks.artifact).toHaveBeenCalledWith(current.id, artifact.path, current.executionGeneration);
   });
 
   it("says Applying only while its own apply runs", async () => {
@@ -818,6 +1305,21 @@ describe("TaskDetailDialog", () => {
       ),
     ).toBeInTheDocument();
     expect(alert.textContent).not.toContain("@oleafly/error:");
+  });
+
+  it("dismisses an operation error from the task header", async () => {
+    const onDismissError = vi.fn();
+    const current = task("operation-error");
+    const input = { ...props(current), error: "The retained source could not be opened.", onDismissError };
+    const view = render(<TaskDetailDialog {...input} />);
+
+    const alert = page().getByRole("alert");
+    expect(alert).toHaveTextContent(input.error);
+    fireEvent.click(within(alert).getByRole("button", { name: enResearchTools.tasks.detail.dismiss }));
+    expect(onDismissError).toHaveBeenCalledOnce();
+
+    view.rerender(<TaskDetailDialog {...input} error={null} />);
+    expect(page().queryByText(input.error)).not.toBeInTheDocument();
   });
 
   it("rejects a file preview that completes after the selected task changes", async () => {
@@ -1199,6 +1701,17 @@ describe("TaskDetailDialog", () => {
     if (kind === "text") expect(page().getByText("Evidence from the saved task")).toBeInTheDocument();
     if (kind === "image") expect(page().getByRole("img", { name: artifact.label })).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
     if (kind === "binary") expect(page().getByText(/Binary file · 32 bytes/)).toBeInTheDocument();
+    if (kind === "text") {
+      fireEvent.click(page().getByRole("button", { name: enResearchTools.tasks.detail.openInWorkspace }));
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ role: "result", revision: "artifact-sha" });
+      expect(await request.load()).toBe("Evidence from the saved task");
+    } else if (kind === "image") {
+      fireEvent.click(page().getByRole("button", { name: enResearchTools.tasks.detail.openInWorkspace }));
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ kind: "image", role: "result", revision: "artifact-sha", mediaType: "image/png" });
+      expect(await request.load()).toEqual(new TextEncoder().encode("image"));
+    } else expect(page().queryByRole("button", { name: enResearchTools.tasks.detail.openInWorkspace })).not.toBeInTheDocument();
     expect(page().queryByRole("button", { name: "Open elsewhere" })).not.toBeInTheDocument();
     expect(previewMocks.artifact).toHaveBeenCalledWith(current.id, artifact.path, current.executionGeneration);
   });
@@ -1295,6 +1808,108 @@ describe("TaskDetailDialog", () => {
       })) as never;
       return current;
     }
+
+    it("opens complete Markdown result and its exact previous version in the workspace", async () => {
+      const current = withFiles({ path: "results/report.md", kind: "modified" });
+      const content = { ...preview("# Findings"), path: "results/report.md" };
+      content.after.sha256 = "after-exact-sha";
+      content.before.sha256 = "before-exact-sha";
+      previewMocks.file.mockResolvedValue(content);
+      const input = props(current);
+      render(<TaskDetailDialog {...input} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ projectId: current.projectId, documentId: `task:${current.id}:results/report.md`, path: "results/report.md", kind: "markdown", role: "candidate", revision: "after-exact-sha", previous: { role: "task_input", revision: "before-exact-sha" } });
+      expect(await request.load()).toBe("# Findings");
+      expect(await request.previous.load()).toBe("before");
+      expect(input.onOpenChange).toHaveBeenCalledWith(false);
+    });
+
+    it("keeps source and diagram renderers distinct and omits incomplete previous content", async () => {
+      const current = withFiles({ path: "diagram.mmd", kind: "modified" });
+      const content = { ...preview("graph LR; A-->B"), path: "diagram.mmd" };
+      content.before.truncated = true;
+      previewMocks.file.mockResolvedValue(content);
+      render(<TaskDetailDialog {...props(current)} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      expect(materialViewer.open).toHaveBeenCalledWith(expect.objectContaining({ kind: "diagram", previous: undefined }));
+    });
+
+    it("opens an ordinary LaTeX result as source rather than assuming it is a diagram", async () => {
+      previewMocks.file.mockResolvedValue(preview("\\section{Findings}"));
+      render(<TaskDetailDialog {...props(task("source-result"))} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      expect(materialViewer.open).toHaveBeenCalledWith(expect.objectContaining({ kind: "source", path: "main.tex" }));
+    });
+
+    it("does not offer workspace opening for truncated text or binary metadata", async () => {
+      const current = withFiles({ path: "big.tex", kind: "modified" }, { path: "figure.pdf", kind: "added" });
+      previewMocks.file.mockImplementation(async (_id: string, path: string) => path === "big.tex" ? { ...preview("part"), path, after: { ...preview("part").after, truncated: true } } : binaryPreview(path, false, true));
+      render(<TaskDetailDialog {...props(current)} />);
+      for (const button of page().getAllByRole("button", { name: "Preview" })) fireEvent.click(button);
+      await waitFor(() => expect(page().getAllByRole("button", { name: detail.refreshPreview })).toHaveLength(2));
+      expect(page().queryByRole("button", { name: detail.openInWorkspace })).not.toBeInTheDocument();
+    });
+
+    it("opens complete DOCX bytes and the previous DOCX version through the Word renderer", async () => {
+      const current = withFiles({ path: "result.docx", kind: "modified" });
+      const bytes = new Uint8Array([80, 75, 3, 4, 0, 255]);
+      const beforeBytes = new Uint8Array([80, 75, 3, 4, 0, 1]);
+      const sha = (value: Uint8Array) => import("node:crypto").then(({ createHash }) => createHash("sha256").update(value).digest("hex"));
+      const side = async (value: Uint8Array) => ({ exists: true, text: null, base64: Buffer.from(value).toString("base64"), mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", binary: true, truncated: false, size: value.length, sha256: await sha(value) });
+      const before = await side(beforeBytes);
+      const after = await side(bytes);
+      previewMocks.file.mockResolvedValue({ ...preview(""), path: "result.docx", before, after });
+      render(<TaskDetailDialog {...props(current)} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ kind: "docx", role: "candidate", revision: after.sha256, previous: { role: "task_input", revision: before.sha256 } });
+      expect(await request.load()).toEqual(bytes);
+      expect(await request.previous.load()).toEqual(beforeBytes);
+    });
+
+    it.each(["truncated", "wrong MIME"] as const)("does not open %s DOCX bytes", async (reason) => {
+      const current = withFiles({ path: "result.docx", kind: "added" });
+      previewMocks.file.mockResolvedValue({ ...preview(""), path: "result.docx", after: { exists: true, text: null, base64: "UEsDBAD/", mediaType: reason === "wrong MIME" ? "application/octet-stream" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document", binary: true, truncated: reason === "truncated", size: 6, sha256: "sha" } });
+      render(<TaskDetailDialog {...props(current)} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      await page().findByRole("button", { name: detail.refreshPreview });
+      expect(page().queryByRole("button", { name: detail.openInWorkspace })).not.toBeInTheDocument();
+    });
+
+    it("opens verified HTML bundles with the HTML renderer and no raw-source comparison", async () => {
+      const current = withFiles({ path: "report.html", kind: "modified" });
+      const content = { ...preview("<h1>Report</h1>"), path: "report.html" };
+      previewMocks.file.mockResolvedValue(content);
+      htmlPreview.read.mockResolvedValue({ bundle: '{"entry":"report.html","files":{}}', revision: "bundle-sha", path: "report.html", url: "http://127.0.0.1/retained/report.html" });
+      const input = props(current);
+      render(<TaskDetailDialog {...input} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      await waitFor(() => expect(materialViewer.open).toHaveBeenCalledOnce());
+      expect(htmlPreview.read).toHaveBeenCalledWith(current.id, "report.html", current.executionGeneration, content.after.sha256);
+      expect(htmlPreview.close).toHaveBeenCalledWith("http://127.0.0.1/retained/report.html");
+      const request = materialViewer.open.mock.calls[0][0];
+      expect(request).toMatchObject({ kind: "html", role: "candidate", revision: "bundle-sha", mediaType: "application/vnd.oleafly.html-bundle+json" });
+      expect(request.previous).toBeUndefined();
+      expect(await request.load()).toBe('{"entry":"report.html","files":{}}');
+    });
+
+    it("retains the task preview and reports failed HTML capture without opening source", async () => {
+      const current = withFiles({ path: "report.html", kind: "added" });
+      previewMocks.file.mockResolvedValue({ ...preview("<h1>Changed</h1>"), path: "report.html" });
+      htmlPreview.read.mockRejectedValue(new Error("HTML entry changed"));
+      render(<TaskDetailDialog {...props(current)} />);
+      fireEvent.click(page().getByRole("button", { name: "Preview" }));
+      fireEvent.click(await page().findByRole("button", { name: detail.openInWorkspace }));
+      await waitFor(() => expect(page().getByRole("alert")).toHaveTextContent("HTML entry changed"));
+      expect(materialViewer.open).not.toHaveBeenCalled();
+      expect(page().getByRole("button", { name: detail.openInWorkspace })).toBeEnabled();
+    });
 
     it("labels added and deleted files and sizes binary previews", async () => {
       const current = withFiles({ path: "fig.pdf", kind: "added" }, { path: "old.pdf", kind: "deleted" });
@@ -1770,9 +2385,29 @@ describe("TaskDetailDialog", () => {
       const panel = page().getByRole("tabpanel");
       const scrolled = vi.fn();
       Object.defineProperty(panel, "scrollHeight", { configurable: true, get: () => 900 });
-      Object.defineProperty(panel, "scrollTop", { configurable: true, get: () => 0, set: scrolled });
+      Object.defineProperty(panel, "clientHeight", { configurable: true, get: () => 300 });
+      let scrollTop = 0;
+      Object.defineProperty(panel, "scrollTop", {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+          scrolled(value);
+        },
+      });
 
+      fireEvent.scroll(panel);
       view.rerender(<TaskDetailDialog {...props(running())} events={[text(1, "Thinking about the ledger")]} />);
+      expect(scrolled).not.toHaveBeenCalled();
+
+      scrollTop = 600;
+      fireEvent.scroll(panel);
+      view.rerender(
+        <TaskDetailDialog
+          {...props(running())}
+          events={[text(1, "Thinking about the ledger and the measured result")]}
+        />,
+      );
 
       expect(scrolled).toHaveBeenCalledWith(900);
     });

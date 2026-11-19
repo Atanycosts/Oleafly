@@ -4,8 +4,10 @@ import base64
 import json
 import socket
 import struct
+import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPConnection
 from io import BytesIO
 from pathlib import Path
@@ -14,7 +16,7 @@ from zipfile import ZipFile
 import pymupdf
 import pytest
 
-from research_file_workbench.common.hashing import sha256_file
+from research_file_workbench.common.hashing import sha256_file, sha256_text
 from research_file_workbench.journals.store import WorldStoreError
 from research_file_workbench.projects.models import BaselineConflictError
 from research_file_workbench.projects.render_service import register_render_bytes
@@ -77,8 +79,13 @@ def _world_payload():
                 "kind": "guide_text",
                 "content_base64": base64.b64encode(
                     b"All manuscript pages must use A4 paper."
-                ).decode("ascii"),
-            }
+                ).decode(),
+            },
+            {
+                "name": "template.docx",
+                "kind": "template_docx",
+                "content_base64": base64.b64encode(template_bytes()).decode(),
+            },
         ],
     }
 
@@ -258,7 +265,7 @@ def test_source_page_preview_serves_pdf_and_refuses_invalid_targets(running_serv
 def test_http_user_flow_uses_display_name_and_actual_filename(running_server):
     _, session = _request(running_server, "GET", "/api/session")
     token = session["token"]
-    assert session["contract_version"] == "journal-http-1.5.0"
+    assert session["contract_version"] == "journal-http-1.13.0"
     assert len(session["asset_version"]) == 64
     status, world = _request(running_server, "POST", "/api/worlds", _world_payload(), token)
     assert status == 200
@@ -297,7 +304,7 @@ def test_http_user_flow_uses_display_name_and_actual_filename(running_server):
         token,
     )
     assert status == 200, check
-    assert check["summary"]["compliant"] == 2
+    assert check["summary"]["observed_match"] == 7
     assert check["world"]["journal_name"] == "Test Journal"
     _, state = _request(running_server, "GET", "/api/state")
     assert state["worlds"][0]["journal_name"] == "Test Journal"
@@ -381,6 +388,17 @@ def test_network_binding_is_not_silently_exposed(tmp_path):
     service = WorkbenchService.create(tmp_path / "library")
     with pytest.raises(ValueError, match="回环"):
         WorkbenchHttpServer(("0.0.0.0", 0), service)
+
+
+def test_loopback_binding_does_not_require_reverse_dns(tmp_path, monkeypatch):
+    def unexpected_lookup(host):
+        pytest.fail(f"Unexpected DNS lookup for {host}")
+
+    monkeypatch.setattr("socket.getfqdn", unexpected_lookup)
+    service = WorkbenchService.create(tmp_path / "library")
+    with WorkbenchHttpServer(("127.0.0.1", 0), service) as server:
+        assert server.server_name == "127.0.0.1"
+        assert server.server_port == server.server_address[1] > 0
 
 
 @pytest.mark.parametrize("token", ["invalid-\u00e9", "\u00ff"])
@@ -610,8 +628,8 @@ def test_component_import_retains_sources_decisions_and_binding(running_server):
     assert len(imported["sources"]) == len(world["sources"]) + 1
     assert all(source in imported["sources"] for source in world["sources"])
     rules = {rule["property"]: rule for rule in imported["rules"]}
-    assert rules["columns"]["basis_status"] == "candidate"
-    assert rules["columns"]["expected"] == 2
+    assert rules["columns"]["basis_status"] == "conflict"
+    assert rules["columns"]["expected"] is None
     assert rules["page_width_twips"]["expected"] == 12240
     assert rules["page_width_twips"]["resolution"]["reason"] == "Operator-selected letter width."
     assert running_server.service.store.get_binding(project["project_id"]) == original_binding
@@ -727,6 +745,236 @@ def _render_bundle_for_project(project_root: Path, baseline_id: str, source_sha2
         document_annotation=json.dumps(annotation).encode("utf-8"),
         page_evidence=json.dumps(evidence).encode("utf-8"),
     )
+
+
+def test_http_libreoffice_render_registers_pdf_after_explicit_baseline(
+    running_server, tmp_path, monkeypatch
+):
+    token = running_server.session_token
+    status, project = _request(
+        running_server,
+        "POST",
+        "/api/projects",
+        {
+            "name": "LibreOffice manuscript",
+            "filename": "source.docx",
+            "content_base64": base64.b64encode(template_bytes()).decode("ascii"),
+        },
+        token,
+    )
+    assert status == 200
+    pdf = (
+        Path(__file__).resolve().parents[2]
+        / "reports/phase0/fixtures/s1-figures-tables/s1-figures-tables.pdf"
+    ).read_bytes()
+    executable = tmp_path / "soffice"
+    executable.write_bytes(b"fake LibreOffice")
+    executable.chmod(0o755)
+    font_root = tmp_path / "font-cache"
+    font_root.mkdir()
+    font = font_root / "Controlled-Regular.ttf"
+    font.write_bytes(b"controlled-font-cache-bytes")
+    font_identity = sha256_text(sha256_file(font))
+    running_server.service.font_dirs = (font_root,)
+
+    def runner(command: list[str], timeout: int) -> subprocess.CompletedProcess[bytes]:
+        if command[1:] == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, b"LibreOffice 25.2\n", b"")
+        output_root = Path(command[command.index("--outdir") + 1])
+        (output_root / "baseline.pdf").write_bytes(pdf)
+        return subprocess.CompletedProcess(command, 0, b"converted", b"")
+
+    monkeypatch.setattr(
+        "research_file_workbench.projects.render_service._run_command",
+        runner,
+    )
+    payload = {
+        "project_id": project["project_id"],
+        "baseline_id": project["baseline_id"],
+        "reason": "Render the saved baseline",
+        "libreoffice_executable": executable.as_posix(),
+    }
+    status, rendered = _request(
+        running_server,
+        "POST",
+        "/api/render-baseline",
+        payload,
+        token,
+    )
+
+    assert status == 200, rendered
+    assert rendered["manifest"]["evidence_kind"] == "derived_pdf"
+    assert rendered["manifest"]["mapping"] is None
+    assert rendered["manifest"]["render_record"]["font_cache_sha256"] == font_identity
+    assert (
+        Path(rendered["manifest"]["render_record"]["libreoffice_profile"]).parent
+        == running_server.service.root / "var" / "libreoffice-profile"
+    )
+    status, listed = _request(
+        running_server,
+        "GET",
+        f"/api/derived-renders?project_id={project['project_id']}"
+        f"&baseline_id={project['baseline_id']}",
+    )
+    assert status == 200
+    assert listed == {
+        "project_id": project["project_id"],
+        "baseline_id": project["baseline_id"],
+        "font_cache_sha256": font_identity,
+        "derived_renders": [rendered],
+    }
+    font.write_bytes(b"replacement-font-cache-bytes")
+    status, listed_after_change = _request(
+        running_server,
+        "GET",
+        f"/api/derived-renders?project_id={project['project_id']}"
+        f"&baseline_id={project['baseline_id']}",
+    )
+    assert status == 200
+    assert listed_after_change["font_cache_sha256"] != font_identity
+    assert listed_after_change["derived_renders"] == [rendered]
+    status, content_type, body = _binary_request(
+        running_server,
+        f"/api/render?project_id={project['project_id']}"
+        f"&baseline_id={project['baseline_id']}"
+        f"&bundle_id={rendered['bundle_id']}&role=pdf&page_number=none",
+    )
+    assert status == 200
+    assert content_type == "application/pdf"
+    assert body == pdf
+    status, manuscript = _request(
+        running_server,
+        "GET",
+        f"/api/manuscript?project_id={project['project_id']}&baseline_id=current",
+    )
+    assert status == 200
+    assert manuscript["render_bundles"] == []
+    assert any(item["kind"] == "derived_render" for item in manuscript["evidence"])
+
+
+def test_http_libreoffice_renders_are_serialized_per_workbench_service(
+    running_server, tmp_path, monkeypatch
+):
+    token = running_server.session_token
+    status, project = _request(
+        running_server,
+        "POST",
+        "/api/projects",
+        {
+            "name": "Concurrent LibreOffice manuscript",
+            "filename": "source.docx",
+            "content_base64": base64.b64encode(template_bytes()).decode("ascii"),
+        },
+        token,
+    )
+    assert status == 200
+    executable = tmp_path / "soffice"
+    executable.write_bytes(b"fake LibreOffice")
+    executable.chmod(0o755)
+    first_started = threading.Event()
+    second_started = threading.Event()
+    second_dispatched = threading.Event()
+    release_first = threading.Event()
+    state_lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+    calls = 0
+
+    def render(*args, **kwargs):
+        nonlocal active, maximum_active, calls
+        with state_lock:
+            calls += 1
+            active += 1
+            maximum_active = max(maximum_active, active)
+            current_call = calls
+            (first_started if current_call == 1 else second_started).set()
+        try:
+            if current_call == 1:
+                assert release_first.wait(5)
+        finally:
+            with state_lock:
+                active -= 1
+        return {"baseline_id": kwargs["baseline_id"]}
+
+    monkeypatch.setattr(
+        "research_file_workbench.projects.render_service.render_libreoffice_baseline",
+        render,
+    )
+    payload = {
+        "project_id": project["project_id"],
+        "baseline_id": project["baseline_id"],
+        "reason": "Verify concurrent render requests",
+        "libreoffice_executable": executable.as_posix(),
+    }
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            _request, running_server, "POST", "/api/render-baseline", payload, token
+        )
+        assert first_started.wait(5)
+
+        def second_request():
+            second_dispatched.set()
+            return _request(running_server, "POST", "/api/render-baseline", payload, token)
+
+        second = executor.submit(second_request)
+        assert second_dispatched.wait(5)
+        assert not second_started.wait(0.25)
+        release_first.set()
+        assert second_started.wait(5)
+        first_response = first.result(timeout=5)
+        second_response = second.result(timeout=5)
+
+    assert first_response[0] == second_response[0] == 200
+    assert maximum_active == 1
+
+
+def test_http_render_baseline_reports_missing_libreoffice_without_fallback(
+    running_server, tmp_path
+):
+    token = running_server.session_token
+    _, project = _request(
+        running_server,
+        "POST",
+        "/api/projects",
+        {
+            "name": "Missing renderer manuscript",
+            "filename": "source.docx",
+            "content_base64": base64.b64encode(template_bytes()).decode("ascii"),
+        },
+        token,
+    )
+    status, rejected = _request(
+        running_server,
+        "POST",
+        "/api/render-baseline",
+        {
+            "project_id": project["project_id"],
+            "baseline_id": project["baseline_id"],
+            "reason": "Reject a caller-selected profile",
+            "libreoffice_executable": (tmp_path / "missing-soffice").as_posix(),
+            "libreoffice_profile": (tmp_path / "outside-profile").as_posix(),
+        },
+        token,
+    )
+    assert status == 400
+    assert set(rejected) == {"error"}
+    assert not (tmp_path / "outside-profile").exists()
+    status, result = _request(
+        running_server,
+        "POST",
+        "/api/render-baseline",
+        {
+            "project_id": project["project_id"],
+            "baseline_id": project["baseline_id"],
+            "reason": "Exercise unavailable renderer",
+            "libreoffice_executable": (tmp_path / "missing-soffice").as_posix(),
+        },
+        token,
+    )
+
+    assert status == 503
+    assert result["code"] == "renderer_unavailable"
+    assert "error" in result
 
 
 def test_http_render_page_image_serves_retained_bytes_and_rejects_invalid_selection(

@@ -183,11 +183,19 @@ async function chooseSettingsOption(
   const trigger = `[aria-label=${JSON.stringify(triggerLabel)}]`;
   // Radix keeps a closing Select portal mounted briefly for its exit
   // animation. Two adjacent selects can contain identically named options
-  // (for example both dialect and dictionary expose "English (UK)"), so a
+  // (for example both dialect and dictionary expose "English (United Kingdom)"), so a
   // page-wide option selector can click the stale portal from the previous
   // control. Scope the choice to the currently open listbox.
   const option = `[role="listbox"][data-state="open"] [role="option"][data-label=${JSON.stringify(optionLabel)}]`;
-  await page.click(trigger);
+  await page.waitForFunction(
+    `!document.querySelector('[role="listbox"][data-state="closed"]')`,
+    8_000,
+  );
+  await page.focus(trigger);
+  // Radix Select and Settings both react to Escape. Use the trigger's
+  // accessible Enter path so a click bridge that omits pointer-down cannot
+  // leave the portal closed and let a retry dismiss the whole Settings modal.
+  await page.press(trigger, "Enter");
   await page.waitForFunction(
     `!!document.querySelector(${JSON.stringify(option)})`,
     8_000,
@@ -386,13 +394,13 @@ test("every Harper dialect selected in Settings produces its dialect-sensitive r
   const cases = [
     {
       id: "american",
-      label: "English (US)",
+      label: "English (United States)",
       includes: "`colour`",
       excludes: "`aluminum`",
     },
     {
       id: "british",
-      label: "English (UK)",
+      label: "English (United Kingdom)",
       includes: "`aluminum`",
       excludes: "`colour`",
     },
@@ -1118,7 +1126,7 @@ ${globalWord} ${projectWord} colur
   await chooseSettingsOption(
     tauriPage,
     "Proofreading English dialect",
-    "English (UK)",
+    "English (United Kingdom)",
   );
   await chooseSettingsOption(
     tauriPage,

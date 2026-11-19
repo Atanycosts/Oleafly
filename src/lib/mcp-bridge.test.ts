@@ -186,6 +186,8 @@ describe("mcp tool registry", () => {
       "insert_figure",
       "load_image",
       "run_command",
+      "write_docx_equation",
+      "replace_docx_text_range",
     ]) {
       expect(registry[name], name).toBeDefined();
     }

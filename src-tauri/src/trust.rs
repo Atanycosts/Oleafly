@@ -23,6 +23,7 @@ const DESKTOP_APPS_REFUSAL: &str =
     "Oleafly limits this folder until the user trusts it, so Computer Use is off here.";
 const NETWORK_TOOLS: &[&str] = &[
     "literature_search",
+    "read_paper",
     "verify_citation",
     "list_overleaf_projects",
     "import_overleaf_projects",
@@ -148,7 +149,12 @@ const MAX_SHOWN_TARGET: usize = 200;
 fn shown_target(arguments: &serde_json::Value) -> Option<String> {
     let (raw, quoted) = match arguments.get("url").and_then(serde_json::Value::as_str) {
         Some(url) => (url, false),
-        None => (arguments.get("query")?.as_str()?, true),
+        None => (
+            ["query", "doi", "arxiv"]
+                .iter()
+                .find_map(|key| arguments.get(key)?.as_str())?,
+            true,
+        ),
     };
     let clean: String = raw
         .chars()
@@ -638,6 +644,16 @@ pub fn write_needs_approval(relative_path: &str) -> bool {
     }
 }
 
+pub(crate) fn paper_read_uses_network(arguments: &serde_json::Value) -> bool {
+    !arguments["reference"].is_object()
+        && ["doi", "arxiv", "url"].iter().any(|key| {
+            arguments
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+}
+
 pub fn ai_tool_gate(tool: &str, arguments: &serde_json::Value) -> AiToolGate {
     let argument = |key: &str| {
         arguments
@@ -647,6 +663,7 @@ pub fn ai_tool_gate(tool: &str, arguments: &serde_json::Value) -> AiToolGate {
             .to_string()
     };
     match tool {
+        "read_paper" if !paper_read_uses_network(arguments) => AiToolGate::Allow,
         "run_command" => AiToolGate::Forbid(RUN_COMMAND_REFUSAL),
         "write_file" | "replace_in_file" | "create_file" | "delete_file" => {
             let path = argument("path");
@@ -1718,6 +1735,28 @@ mod tests {
             "{spoofed}"
         );
         assert_eq!(target("list_overleaf_projects", json!({})), None);
+    }
+
+    #[test]
+    fn paper_reads_only_confirm_remote_inputs_in_restricted_folders() {
+        use serde_json::json;
+        assert_eq!(
+            ai_tool_gate(
+                "read_paper",
+                &json!({"path": "source.pdf", "root_id": "references"})
+            ),
+            AiToolGate::Allow
+        );
+        assert_eq!(
+            ai_tool_gate(
+                "read_paper",
+                &json!({"doi": "10.1000/source", "path": "source.pdf"})
+            ),
+            AiToolGate::Confirm(AiConfirm::Network {
+                tool: "read_paper".into(),
+                target: Some("\u{201c}10.1000/source\u{201d}".into()),
+            })
+        );
     }
 
     #[test]

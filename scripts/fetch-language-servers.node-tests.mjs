@@ -884,7 +884,7 @@ test("every clean CI and release Tauri build fetches only pinned Tinymist", asyn
     /^run: node scripts\/fetch-language-servers\.mjs --server tinymist --target (?:\$\{\{ matrix\.rust_target \}\}|aarch64-apple-darwin|x86_64-apple-darwin|aarch64-unknown-linux-gnu|x86_64-unknown-linux-gnu|x86_64-pc-windows-msvc) --install-mode resource$/;
   for (const [name, workflow, expectedFetchCount] of [
     ["release", releaseWorkflow, 1],
-    ["CI", ciWorkflow, 5],
+    ["CI", ciWorkflow, 6],
   ]) {
     const fetchCommands = workflow
       .split("\n")
@@ -944,11 +944,11 @@ test("every clean CI and release Tauri build fetches only pinned Tinymist", asyn
     releaseJob,
     /fetch-language-servers\.mjs --check --server tinymist[^\n]*--install-mode resource/,
   );
-  const rustJob = workflowJobBlock(ciWorkflow, "rust");
-  const stageIndex = rustJob.indexOf(
+  const diagnosticsJob = workflowJobBlock(ciWorkflow, "tinymist-diagnostics");
+  const stageIndex = diagnosticsJob.indexOf(
     "fetch-language-servers.mjs --server tinymist",
   );
-  const smokeIndex = rustJob.indexOf(
+  const smokeIndex = diagnosticsJob.indexOf(
     "smoke-language-servers.mjs --server tinymist",
   );
   assert.ok(stageIndex >= 0 && smokeIndex > stageIndex);

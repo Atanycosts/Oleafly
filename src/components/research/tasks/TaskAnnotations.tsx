@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Bot, User } from "lucide-react";
+import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { CopyableBlock } from "@/components/ui/copyable-block";
@@ -16,6 +18,7 @@ interface AnnotationPanelOptions {
   members?: GroupMember[];
   revision?: number;
   onOpenTarget?: (target: AnnotationTarget) => void;
+  onOpenAnnotationSource?: (annotation: TaskAnnotation) => void;
   onSaved?: (annotation: TaskAnnotation) => void;
   onExplicitRequest?: (body: string) => Promise<void>;
   submitAnnotation?: (draft: TaskAnnotationDraft) => Promise<TaskAnnotation>;
@@ -23,6 +26,8 @@ interface AnnotationPanelOptions {
   requestHint?: string;
   source?: AnnotationSourceDraft;
   loadSource?: (target: AnnotationTarget) => Promise<AnnotationSourceDraft | undefined>;
+  describeTarget?: (target: AnnotationTarget) => string;
+  describeAnnotation?: (annotation: TaskAnnotation) => string;
 }
 
 export type TaskAnnotationsProps = AnnotationPanelOptions & (
@@ -30,9 +35,9 @@ export type TaskAnnotationsProps = AnnotationPanelOptions & (
   | { contextScope: "object"; objectTarget: AnnotationTarget; task?: never; target?: never }
 );
 
-function TargetReference({ target, onOpen }: Readonly<{ target: AnnotationTarget; onOpen?: (target: AnnotationTarget) => void }>) {
+function TargetReference({ target, onOpen, describe }: Readonly<{ target: AnnotationTarget; onOpen?: (target: AnnotationTarget) => void; describe?: (target: AnnotationTarget) => string }>) {
   const { t } = useTranslation("researchTools");
-  const label = `${target.objectKind}:${target.objectId} · ${target.objectRevision ?? t(($) => $.researchTools.tasks.annotations.unversioned)}${target.path ? ` · ${target.path}` : ""}`;
+  const label = describe?.(target) ?? `${target.objectKind}:${target.objectId} · ${target.objectRevision ?? t(($) => $.researchTools.tasks.annotations.unversioned)}${target.path ? ` · ${target.path}` : ""}`;
   return onOpen
     ? <Button type="button" variant="link" size="xs" className="h-auto max-w-full whitespace-normal break-all px-0 text-left" onClick={() => onOpen(target)}>{label}</Button>
     : <p className="break-all font-mono text-xs">{label}</p>;
@@ -46,7 +51,7 @@ export function TaskAnnotations(props: Readonly<TaskAnnotationsProps>) {
 }
 
 function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
-  const { members = [], revision, onOpenTarget, onSaved } = props;
+  const { members = [], revision, onOpenTarget, onSaved, describeTarget } = props;
   const task = props.contextScope === "object" ? null : props.task;
   const taskProjectId = task?.projectId;
   const taskIdForQuery = task?.id;
@@ -96,7 +101,12 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
       : author.kind === "model" ? t(($) => $.researchTools.tasks.annotations.authorModel)
       : t(($) => $.researchTools.tasks.annotations.authorSystem);
     const name = author.kind === "member" ? members.find((member) => member.id === author.id)?.name : null;
-    return `${kind} · ${name ? `${name} · ` : ""}${author.id}`;
+    return describeTarget ? (name ? `${kind} · ${name}` : kind) : `${kind} · ${name ? `${name} · ` : ""}${author.id}`;
+  };
+  const authorAvatar = (author: AnnotationAuthor) => {
+    const member = author.kind === "member" ? members.find((entry) => entry.id === author.id) : undefined;
+    return <Avatar person={{ id: author.id, name: member?.name ?? authorLabel(author) }} size="xs"
+      fallbackIcon={author.kind === "user" ? <User /> : author.kind === "model" || author.kind === "system" ? <Bot /> : undefined} />;
   };
   const anchorPrefix = task ? `task-${encodeURIComponent(task.id)}` : `object-${encodeURIComponent(projectId)}-${encodeURIComponent(objectKind)}-${encodeURIComponent(objectId)}`;
   const anchor = (kind: string, id: string) => `${anchorPrefix}-${kind}-${encodeURIComponent(id)}`;
@@ -104,7 +114,8 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
     const present = kind === "annotation" ? context?.annotations.some((item) => item.id === id)
       : kind === "handling" ? context?.handlings.some((item) => item.id === id)
       : context?.requirements.some((item) => item.id === id);
-    return present ? <a className="break-all text-primary underline underline-offset-2" href={`#${anchor(kind, id)}`}>{id}</a> : <code className="break-all">{id}</code>;
+    const label = describeTarget ? t(($) => kind === "annotation" ? $.researchTools.tasks.annotations.sourceAnnotation : kind === "handling" ? $.researchTools.tasks.annotations.handling : $.researchTools.tasks.annotations.requirement) : id;
+    return present ? <a className="break-all text-primary underline underline-offset-2" href={`#${anchor(kind, id)}`}>{label}</a> : <span className="break-all">{label}</span>;
   };
   const save = async () => {
     if (!body.trim() || saving) return;
@@ -157,16 +168,16 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
       const handlings = context.handlings.filter((item) => item.annotationId === annotation.id);
       const distillations = context.distillations.filter((item) => item.sourceAnnotationId === annotation.id);
       return <li key={annotation.id} id={anchor("annotation", annotation.id)} data-testid="task-annotation" className="min-w-0 space-y-2 rounded-md border p-3">
-        <p className="break-all text-xs text-muted-foreground">{authorLabel(annotation.author)} · {formatDateTime(annotation.createdAt)}</p>
-        <p className="break-all font-mono text-xs">{annotation.id}</p>
-        <TargetReference target={annotation.target} onOpen={onOpenTarget} />
+        <p className="flex items-center gap-1.5 break-all text-xs text-muted-foreground">{authorAvatar(annotation.author)}<span>{authorLabel(annotation.author)} · {formatDateTime(annotation.createdAt)}</span></p>
+        {!describeTarget && <p className="break-all font-mono text-xs">{annotation.id}</p>}
+        <TargetReference target={annotation.target} onOpen={props.onOpenAnnotationSource ? () => props.onOpenAnnotationSource?.(annotation) : onOpenTarget} describe={props.describeAnnotation && annotation.source?.kind === "material_snapshot" ? () => props.describeAnnotation?.(annotation) ?? "" : describeTarget} />
         {annotation.parentId ? <p className="text-xs">{t(($) => $.researchTools.tasks.annotations.replyTo)}: {reference("annotation", annotation.parentId)}</p> : null}
         <CopyableBlock source={annotation.body}><p className="whitespace-pre-wrap break-words text-sm">{annotation.body}</p></CopyableBlock>
-        {annotation.source ? <details className="text-xs"><summary>{t(($) => $.researchTools.tasks.annotations.recordedObject)}</summary>
+        {annotation.source && (describeTarget || annotation.source.kind === "material_snapshot") ? <Button type="button" variant="link" size="xs" className="h-auto px-0" onClick={() => props.onOpenAnnotationSource ? props.onOpenAnnotationSource(annotation) : onOpenTarget?.(annotation.target)}>{t(($) => $.researchTools.tasks.annotations.recordedObject)}</Button> : annotation.source ? <details className="text-xs"><summary>{t(($) => $.researchTools.tasks.annotations.recordedObject)}</summary>
           <p className="mt-1 break-all font-mono">{t(($) => $.researchTools.tasks.annotations.sourceSha256, { sha256: annotation.source.sha256 })}</p>
           <CopyableBlock source={annotation.source.content}><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words">{annotation.source.content}</pre></CopyableBlock>
         </details> : null}
-        {annotation.mentions.length > 0 ? <p className="break-all text-xs">{annotation.mentions.map((id) => `@${members.find((member) => member.id === id)?.name ?? id}`).join(" · ")}</p> : null}
+        {annotation.mentions.length > 0 ? <p className="break-all text-xs">{annotation.mentions.map((id) => `@${members.find((member) => member.id === id)?.name ?? (describeTarget ? t(($) => $.researchTools.tasks.annotations.authorMember) : id)}`).join(" · ")}</p> : null}
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
           <span>{t(($) => $.researchTools.tasks.annotations.saved)}</span>
           <span>{annotation.explicitRequest ? t(($) => $.researchTools.tasks.annotations.requested) : t(($) => $.researchTools.tasks.annotations.feedback)}</span>
@@ -175,13 +186,13 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
           {annotation.status === "handled" && handlings.length > 0 ? <span>{t(($) => $.researchTools.tasks.annotations.handled)}</span> : null}
         </div>
         {handlings.map((handling) => <div key={handling.id} id={anchor("handling", handling.id)} data-testid="annotation-handling" className="space-y-1 border-l-2 pl-3 text-xs">
-          <p>{t(($) => $.researchTools.tasks.annotations.handling)} · <code>{handling.id}</code></p>
-          <p className="break-all text-muted-foreground">{authorLabel(handling.author)} · {formatDateTime(handling.createdAt)}</p>
+          <p>{t(($) => $.researchTools.tasks.annotations.handling)}{!describeTarget && <> · <code>{handling.id}</code></>}</p>
+          <p className="flex items-center gap-1.5 break-all text-muted-foreground">{authorAvatar(handling.author)}<span>{authorLabel(handling.author)} · {formatDateTime(handling.createdAt)}</span></p>
           <p className="whitespace-pre-wrap break-words">{handling.summary}</p>
-          {handling.resultRefs.length > 0 ? <div className="space-y-1"><p>{t(($) => $.researchTools.tasks.annotations.resultRefs)}</p>{handling.resultRefs.map((result) => <TargetReference key={`${result.objectKind}:${result.objectId}:${result.objectRevision}:${result.path}`} target={result} onOpen={onOpenTarget} />)}</div> : null}
+          {handling.resultRefs.length > 0 ? <div className="space-y-1"><p>{t(($) => $.researchTools.tasks.annotations.resultRefs)}</p>{handling.resultRefs.map((result) => <TargetReference key={`${result.objectKind}:${result.objectId}:${result.objectRevision}:${result.path}`} target={result} onOpen={onOpenTarget} describe={describeTarget} />)}</div> : null}
         </div>)}
         {distillations.map((distillation) => <div key={distillation.id} className="space-y-1 border-l-2 pl-3 text-xs">
-          <p>{t(($) => $.researchTools.tasks.annotations.distillation)} · <code>{distillation.id}</code> · {distillation.outcome === "promoted" ? t(($) => $.researchTools.tasks.annotations.promoted) : distillation.outcome === "candidate" ? t(($) => $.researchTools.tasks.annotations.candidate) : distillation.outcome === "needs_review" ? t(($) => $.researchTools.tasks.annotations.needsReview) : t(($) => $.researchTools.tasks.annotations.noEnduringRequirement)}</p>
+          <p>{t(($) => $.researchTools.tasks.annotations.distillation)}{!describeTarget && <> · <code>{distillation.id}</code></>} · {distillation.outcome === "promoted" ? t(($) => $.researchTools.tasks.annotations.promoted) : distillation.outcome === "candidate" ? t(($) => $.researchTools.tasks.annotations.candidate) : distillation.outcome === "needs_review" ? t(($) => $.researchTools.tasks.annotations.needsReview) : t(($) => $.researchTools.tasks.annotations.noEnduringRequirement)}</p>
           <p className="break-all text-muted-foreground">{authorLabel(distillation.author)} · {formatDateTime(distillation.createdAt)}</p>
           <p className="whitespace-pre-wrap break-words">{distillation.rationale}</p>
           <p>{t(($) => $.researchTools.tasks.annotations.handling)}: {reference("handling", distillation.handlingId)}</p>
@@ -194,17 +205,17 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
     })}</ol>
     {context && context.requirements.length > 0 ? <details><summary className="text-sm">{t(($) => $.researchTools.tasks.annotations.requirements)}</summary>
       <ul className="mt-2 space-y-2">{context.requirements.map((requirement) => <li key={requirement.id} id={anchor("requirement", requirement.id)} className="space-y-1 rounded-md border p-2 text-xs">
-        <p className="break-all"><code>{requirement.id}</code> · {requirement.kind === "enduring" ? t(($) => $.researchTools.tasks.annotations.enduring) : t(($) => $.researchTools.tasks.annotations.candidate)} · {requirement.status === "active" ? t(($) => $.researchTools.tasks.annotations.active) : requirement.status === "withdrawn" ? t(($) => $.researchTools.tasks.annotations.withdrawn) : t(($) => $.researchTools.tasks.annotations.superseded)}</p>
+        <p className="break-all">{!describeTarget && <><code>{requirement.id}</code> · </>}{requirement.kind === "enduring" ? t(($) => $.researchTools.tasks.annotations.enduring) : t(($) => $.researchTools.tasks.annotations.candidate)} · {requirement.status === "active" ? t(($) => $.researchTools.tasks.annotations.active) : requirement.status === "withdrawn" ? t(($) => $.researchTools.tasks.annotations.withdrawn) : t(($) => $.researchTools.tasks.annotations.superseded)}</p>
         <p className="break-all text-muted-foreground">{authorLabel(requirement.author)} · {formatDateTime(requirement.createdAt)}</p>
         <p className="whitespace-pre-wrap break-words">{requirement.text}</p>
-        <p className="break-all font-mono">{[requirement.scope.projectId, requirement.scope.taskId, requirement.scope.objectKind, requirement.scope.objectId, requirement.scope.objectRevision, requirement.scope.path].filter(Boolean).join(" · ")}</p>
+        {!describeTarget && <p className="break-all font-mono">{[requirement.scope.projectId, requirement.scope.taskId, requirement.scope.objectKind, requirement.scope.objectId, requirement.scope.objectRevision, requirement.scope.path].filter(Boolean).join(" · ")}</p>}
         {requirement.sourceAnnotationId ? <p>{t(($) => $.researchTools.tasks.annotations.sourceAnnotation)}: {reference("annotation", requirement.sourceAnnotationId)}</p> : null}
         {requirement.replacedBy ? <p>{t(($) => $.researchTools.tasks.annotations.replacedBy)}: {reference("requirement", requirement.replacedBy)}</p> : null}
       </li>)}</ul>
     </details> : null}
     <form className="space-y-2 border-t pt-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <p className="text-xs font-medium">{t(($) => $.researchTools.tasks.annotations.target)}</p>
-      <TargetReference target={currentTarget} onOpen={onOpenTarget} />
+      <TargetReference target={currentTarget} onOpen={onOpenTarget} describe={describeTarget} />
       {reply ? <div className="flex flex-wrap items-center gap-2 text-xs"><span>{t(($) => $.researchTools.tasks.annotations.replyTo)}: {reference("annotation", reply.id)}</span><Button type="button" variant="ghost" size="xs" disabled={saving} onClick={() => { setReply(null); props.onReplyChange?.(null); }}>{t(($) => $.researchTools.tasks.annotations.cancelReply)}</Button></div> : null}
       <label htmlFor={`${formId}-body`} className="block text-xs">{t(($) => $.researchTools.tasks.annotations.body)}</label>
       <Textarea id={`${formId}-body`} value={body} onChange={(event) => { setBody(event.target.value); setSaved(false); }} rows={3} maxLength={64000} disabled={saving} />

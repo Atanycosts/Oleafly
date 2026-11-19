@@ -14,6 +14,7 @@ interface RenderCall {
   scale: number;
   canvas: HTMLCanvasElement;
   resolve: () => void;
+  reject: (error: Error) => void;
   cancelled: boolean;
 }
 
@@ -24,6 +25,10 @@ const harness = vi.hoisted(() => ({
   textRequests: [] as Array<{ documentId: number; pageNumber: number; paintedBefore: boolean }>,
   deferRenders: false,
   blockedGeometry: new Set<string>(),
+  controller: null as null | { ensurePageRendered: (pageNumber: number) => void },
+  setController(view: { ensurePageRendered: (pageNumber: number) => void }) {
+    this.controller = view;
+  },
   reset() {
     this.documents = new Map([
       [1, [
@@ -44,12 +49,14 @@ const harness = vi.hoisted(() => ({
     this.textRequests = [];
     this.deferRenders = false;
     this.blockedGeometry = new Set();
+    this.controller = null;
   },
 }));
 
 vi.mock("./mainThreadWorker", () => ({ installMainThreadPdfWorker: vi.fn() }));
 vi.mock("./pdfController", () => ({
-  registerPdfView: vi.fn(),
+  registerPdfView: (view: { ensurePageRendered: (pageNumber: number) => void }) =>
+    harness.setController(view),
   clearPdfView: vi.fn(),
   pageClickToBp: vi.fn(() => null),
 }));
@@ -129,6 +136,7 @@ vi.mock("pdfjs-dist", () => {
           scale: viewport.scale,
           canvas,
           resolve,
+          reject,
           cancelled: false,
         };
         harness.renderCalls.push(call);
@@ -278,6 +286,86 @@ function baseCanvases(wrap: HTMLElement): HTMLCanvasElement[] {
   );
 }
 
+describe("PdfViewer subscriptions", () => {
+  it("removes scroll and resize subscriptions when the source changes and the viewer closes", async () => {
+    const observers: Array<{
+      observe: ReturnType<typeof vi.fn>;
+      disconnect: ReturnType<typeof vi.fn>;
+    }> = [];
+    class MockResizeObserver {
+      observe = vi.fn();
+      disconnect = vi.fn();
+
+      constructor(_callback: ResizeObserverCallback) {
+        observers.push(this);
+      }
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    const pane = document.createElement("div");
+    pane.style.overflowY = "auto";
+    document.body.append(pane);
+    const addScrollListener = vi.spyOn(pane, "addEventListener");
+    const removeScrollListener = vi.spyOn(pane, "removeEventListener");
+    let unmount: (() => void) | null = null;
+
+    try {
+      const view = render(
+        <PdfViewer
+          data={new Uint8Array([1])}
+          documentIdentity="doc-1"
+          scale={1}
+          expectText={false}
+        />,
+        { container: pane },
+      );
+      unmount = view.unmount;
+      const renderer = view.getByTestId("pdf-renderer");
+      await waitFor(() => expect(renderer.dataset.pdfState).toBe("ready"));
+      expect(observers).toHaveLength(1);
+      expect(observers[0].observe).toHaveBeenCalledWith(pane);
+
+      view.rerender(
+        <PdfViewer
+          data={new Uint8Array([2])}
+          documentIdentity="doc-2"
+          scale={1}
+          expectText={false}
+        />,
+      );
+      await waitFor(() => {
+        expect(renderer.dataset.pdfDocumentIdentity).toBe("doc-2");
+        expect(renderer.dataset.pdfState).toBe("ready");
+      });
+      expect(observers[0].disconnect).toHaveBeenCalledOnce();
+      expect(observers.length).toBeGreaterThan(1);
+
+      const addedHandlers = addScrollListener.mock.calls
+        .filter(([type, , options]) => type === "scroll"
+          && typeof options === "object" && options.passive === true)
+        .map(([, listener]) => listener);
+      view.unmount();
+      unmount = null;
+
+      const removedHandlers = new Set(
+        removeScrollListener.mock.calls
+          .filter(([type]) => type === "scroll")
+          .map(([, listener]) => listener),
+      );
+      expect(addedHandlers.length).toBeGreaterThanOrEqual(2);
+      expect(addedHandlers.every((handler) => removedHandlers.has(handler))).toBe(
+        true,
+      );
+      expect(
+        observers.every((observer) => observer.disconnect.mock.calls.length > 0),
+      ).toBe(true);
+    } finally {
+      unmount?.();
+      pane.remove();
+    }
+  });
+});
+
 describe("PdfViewer raster swaps", () => {
   it("attaches a page's canvas only once its raster has painted", async () => {
     harness.deferRenders = true;
@@ -381,6 +469,32 @@ describe("PdfViewer raster swaps", () => {
 });
 
 describe("PdfViewer reloads", () => {
+  it("releases a painted page that a shorter reloaded document no longer has", async () => {
+    const { view, renderer, wrap } = await openViewer(1, 1, "doc-1");
+    act(() => intersect([2]));
+    await waitFor(() => expect(baseCanvases(wrap(2))).toHaveLength(1));
+    const carried = baseCanvases(wrap(2))[0];
+    expect(carried.width).toBeGreaterThan(0);
+
+    harness.documents.set(2, [{ width: 612, height: 792 }]);
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        documentIdentity="doc-2"
+        scale={1}
+        expectText={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(renderer.dataset.pdfDocumentIdentity).toBe("doc-2"),
+    );
+    expect(renderer.querySelector("[data-page='2']")).toBeNull();
+    expect(carried.isConnected).toBe(false);
+    expect(carried.width).toBe(0);
+    expect(carried.height).toBe(0);
+  });
+
   it("keeps each page's old raster on screen until the new document paints it", async () => {
     const { view, wrap } = await openViewer(1, 1, "doc-1");
     await waitFor(() => expect(baseCanvases(wrap(1))).toHaveLength(1));
@@ -404,6 +518,94 @@ describe("PdfViewer reloads", () => {
     expect(old.isConnected).toBe(false);
     expect(old.width).toBe(0);
     expect(baseCanvases(wrap(1))).toEqual([fresh.canvas]);
+  });
+
+  it("cancels an in-flight raster from the old document when the source changes", async () => {
+    harness.deferRenders = true;
+    const { view, renderer, wrap } = await openViewer(1, 1, "doc-1");
+    await waitFor(() =>
+      expect(
+        harness.renderCalls.some(
+          (call) => call.documentId === 1 && call.pageNumber === 1,
+        ),
+      ).toBe(true),
+    );
+    const stale = harness.renderCalls.find(
+      (call) => call.documentId === 1 && call.pageNumber === 1,
+    )!;
+    expect(stale.canvas.isConnected).toBe(false);
+
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        documentIdentity="doc-2"
+        scale={1}
+        expectText={false}
+      />,
+    );
+    await waitFor(() =>
+      expect(renderer.dataset.pdfDocumentIdentity).toBe("doc-2"),
+    );
+    expect(stale.cancelled).toBe(true);
+    expect(stale.canvas.isConnected).toBe(false);
+    expect(stale.canvas.width).toBe(0);
+
+    await waitFor(() =>
+      expect(
+        harness.renderCalls.some(
+          (call) => call.documentId === 2 && call.pageNumber === 1,
+        ),
+      ).toBe(true),
+    );
+    const fresh = harness.renderCalls.find(
+      (call) => call.documentId === 2 && call.pageNumber === 1,
+    )!;
+    expect(fresh.canvas.isConnected).toBe(false);
+
+    await act(async () => fresh.resolve());
+    await waitFor(() => expect(fresh.canvas.isConnected).toBe(true));
+    expect(stale.canvas.isConnected).toBe(false);
+    expect(baseCanvases(wrap(1))).toEqual([fresh.canvas]);
+  });
+
+  it("reports a replacement raster failure after holding the old page during the attempt", async () => {
+    const { view, renderer, wrap } = await openViewer(1, 1, "doc-1");
+    await waitFor(() => expect(baseCanvases(wrap(1))).toHaveLength(1));
+    const old = baseCanvases(wrap(1))[0];
+
+    harness.deferRenders = true;
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        documentIdentity="doc-2"
+        scale={1}
+        expectText={false}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        harness.renderCalls.some(
+          (call) => call.documentId === 2 && call.pageNumber === 1,
+        ),
+      ).toBe(true),
+    );
+    const replacement = harness.renderCalls.find(
+      (call) => call.documentId === 2 && call.pageNumber === 1,
+    )!;
+    expect(old.isConnected).toBe(true);
+    expect(old.dataset.pdfRaster).toBe("stale");
+
+    await act(async () =>
+      replacement.reject(new Error("Replacement raster failed")),
+    );
+
+    await waitFor(() =>
+      expect(renderer.dataset.pdfRenderError).toContain(
+        "Replacement raster failed",
+      ),
+    );
+    expect(old.isConnected).toBe(false);
+    expect(replacement.canvas.isConnected).toBe(false);
   });
 
   it("lays a reloaded document out with the previous page sizes until its own arrive", async () => {
@@ -438,6 +640,91 @@ describe("PdfViewer reloads", () => {
     await waitFor(() => expect(renderer.dataset.pdfState).toBe("loading-primary"));
     await waitFor(() => expect(renderer.dataset.pdfState).toBe("ready"));
     expect(scrollParent.scrollTop).toBe(1_700);
+  });
+
+  it("keeps the current page across a reload", async () => {
+    const { view, scrollParent, renderer, wrap, onPageChange } = await openViewer(
+      1,
+      1,
+      "doc-1",
+    );
+    await waitFor(() => expect(wrap(4).dataset.pdfGeometry).toBe("exact"));
+
+    const pageTop = (pageNumber: number) => {
+      let top = 16;
+      for (let page = 1; page < pageNumber; page++) {
+        top += Number.parseFloat(wrap(page).style.height) + 16;
+      }
+      return top;
+    };
+    Object.defineProperty(scrollParent, "clientHeight", {
+      configurable: true,
+      value: 600,
+    });
+    scrollParent.getBoundingClientRect = () =>
+      ({
+        top: 0,
+        bottom: 600,
+        left: 0,
+        right: 800,
+        width: 800,
+        height: 600,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const nativeRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const pageNumber = Number(this.dataset.page);
+        if (!pageNumber) return nativeRect.call(this);
+        const height = Number.parseFloat(this.style.height);
+        const width = Number.parseFloat(this.style.width);
+        const y = pageTop(pageNumber) - scrollParent.scrollTop;
+        return {
+          top: y,
+          bottom: y + height,
+          left: 0,
+          right: width,
+          width,
+          height,
+          x: 0,
+          y,
+          toJSON: () => ({}),
+        } as DOMRect;
+      },
+    );
+
+    scrollParent.scrollTop = pageTop(3) + 120;
+    act(() => scrollParent.dispatchEvent(new Event("scroll")));
+    await waitFor(() => expect(onPageChange).toHaveBeenLastCalledWith(3, 4));
+    onPageChange.mockClear();
+
+    view.rerender(
+      <PdfViewer
+        data={new Uint8Array([2])}
+        documentIdentity="doc-2"
+        scale={1}
+        expectText={false}
+        onPageChange={onPageChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(renderer.dataset.pdfDocumentIdentity).toBe("doc-2");
+      expect(renderer.dataset.pdfState).toBe("ready");
+    });
+    expect(onPageChange).toHaveBeenLastCalledWith(3, 4);
+    await waitFor(() =>
+      expect(
+        harness.renderCalls.some(
+          (call) => call.documentId === 2 && call.pageNumber === 3,
+        ),
+      ).toBe(true),
+    );
+    expect(
+      harness.renderCalls.find((call) => call.documentId === 2)?.pageNumber,
+    ).toBe(3);
   });
 });
 
@@ -490,6 +777,57 @@ describe("PdfViewer scrolling", () => {
     await waitFor(() =>
       expect(harness.renderCalls.slice(before).map((call) => call.pageNumber)).toContain(4),
     );
+  });
+
+  it("restarts the fast-scroll quiet time after another big jump", async () => {
+    const { scrollParent, wrap } = await openViewer();
+    layOut(scrollParent, wrap, 4);
+    await waitFor(() => expect(harness.renderCalls.length).toBeGreaterThan(0));
+    await waitFor(() => expect(wrap(4).dataset.pdfGeometry).toBe("exact"));
+    act(() => intersect([1], false));
+    const before = harness.renderCalls.length;
+
+    let clock = 1_000;
+    const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      scrollParent.scrollTop = 700;
+      act(() => scrollParent.dispatchEvent(new Event("scroll")));
+      clock += 16;
+      scrollParent.scrollTop = 1_400;
+      act(() => scrollParent.dispatchEvent(new Event("scroll")));
+
+      vi.advanceTimersByTime(50);
+      clock += 50;
+      scrollParent.scrollTop = 2_100;
+      act(() => scrollParent.dispatchEvent(new Event("scroll")));
+      act(() => intersect([4], true));
+
+      await act(async () => {
+        vi.advanceTimersByTime(60);
+        clock += 60;
+        for (let tick = 0; tick < 50; tick++) await Promise.resolve();
+      });
+      expect(
+        harness.renderCalls
+          .slice(before)
+          .map((call) => call.pageNumber),
+      ).not.toContain(4);
+
+      await act(async () => {
+        vi.advanceTimersByTime(20);
+        clock += 20;
+        for (let tick = 0; tick < 50; tick++) await Promise.resolve();
+      });
+      expect(
+        harness.renderCalls
+          .slice(before)
+          .map((call) => call.pageNumber),
+      ).toContain(4);
+    } finally {
+      vi.useRealTimers();
+      now.mockRestore();
+    }
   });
 
   it("keeps the reader's place in view while a zoom resizes the pages", async () => {
@@ -585,6 +923,51 @@ describe("PdfViewer scrolling", () => {
     await waitFor(() => expect(again.canvas.isConnected).toBe(true));
     expect(preview.isConnected).toBe(false);
     expect(preview.width).toBeGreaterThan(0);
+  });
+
+  it("caps controller-requested rasters by evicting pages farthest from the reader", async () => {
+    harness.documents.set(
+      1,
+      Array.from({ length: 15 }, () => ({ width: 612, height: 792 })),
+    );
+    const { wrap } = await openViewer();
+    await waitFor(() => expect(harness.controller).not.toBeNull());
+    await waitFor(() => expect(baseCanvases(wrap(1))).toHaveLength(1));
+
+    for (let pageNumber = 2; pageNumber <= 14; pageNumber++) {
+      harness.controller?.ensurePageRendered(pageNumber);
+      await waitFor(() => expect(baseCanvases(wrap(pageNumber))).toHaveLength(1));
+    }
+
+    harness.controller?.ensurePageRendered(15);
+    await waitFor(() => expect(baseCanvases(wrap(15))).toHaveLength(1));
+
+    expect(baseCanvases(wrap(1))).toHaveLength(1);
+    expect(baseCanvases(wrap(14))).toHaveLength(0);
+  });
+
+  it("keeps the painted page when a preview copy cannot be created", async () => {
+    const drawImage = vi.fn(() => {
+      throw new Error("Preview copy failed");
+    });
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+      drawImage,
+    } as unknown as CanvasRenderingContext2D);
+    const { wrap } = await openViewer();
+    await waitFor(() => expect(baseCanvases(wrap(1))).toHaveLength(1));
+    const painted = baseCanvases(wrap(1))[0];
+
+    await waitFor(() =>
+      expect(drawImage).toHaveBeenCalledWith(
+        painted,
+        0,
+        0,
+        expect.any(Number),
+        expect.any(Number),
+      ),
+    );
+    expect(painted.isConnected).toBe(true);
+    expect(wrap(1).querySelector("canvas[data-pdf-raster='preview']")).toBeNull();
   });
 });
 

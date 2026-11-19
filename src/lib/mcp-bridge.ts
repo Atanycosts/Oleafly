@@ -52,6 +52,18 @@ export interface McpToolEntry {
 }
 
 const MUTATING_TOOLS = new Set([
+  "reveal_docx_working_copy",
+  "prepare_docx_fonts",
+  "export_docx_document",
+  "suggest_docx_change",
+  "apply_docx_suggestion",
+  "write_docx_equation",
+  "replace_docx_text_range",
+  "apply_docx_format",
+  "apply_docx_format_batch",
+  "import_docx_template_styles",
+  "save_docx_document",
+  "check_docx_template",
   "write_file",
   "replace_in_file",
   "create_file",
@@ -446,6 +458,7 @@ export function buildMcpToolRegistry(opts: {
   const all: Record<string, McpToolEntry> = {
     ...(createOleaflyTools({
       confirm: opts.confirm,
+      onImage: opts.onImage,
       mutationAllowed: opts.mutationAllowed,
     }) as Record<string, McpToolEntry>),
     ...gateFigureTools(

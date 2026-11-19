@@ -379,6 +379,9 @@ def register_write_tools(
             "analyzer, and retain a new immediately usable world version. Sources carry name, "
             "kind and base64 content exactly like the HTTP contract; identical repeated "
             "analysis reuses the retained world version."
+            " Guide prose is retained for interpretation and never generates requirements. "
+            "Use rule_component_json for explicit structured requirements with source evidence; "
+            "revise_rule records an authorized decision as a new version."
         ),
     )
     def import_world(
@@ -410,7 +413,10 @@ def register_write_tools(
         ),
     )
     def revise_rule(
-        version_id: str, rule_id: str, expected: Annotated[int, Field(ge=0)], reason: str
+        version_id: str,
+        rule_id: str,
+        expected: Annotated[int, Field(ge=0)] | str,
+        reason: str,
     ) -> dict[str, Any]:
         return write(lambda: service.revise(version_id, rule_id, expected, reason))
 

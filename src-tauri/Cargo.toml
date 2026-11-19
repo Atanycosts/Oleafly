@@ -51,7 +51,7 @@ toml = "0.8"
 # Package names follow Typst's identifier rule (XID_Start, XID_Continue).
 unicode-ident = "1"
 unicode-normalization = "0.1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }
 portable-pty = "0.9"
 base64 = "0.23"
 png = "0.18"
@@ -79,6 +79,8 @@ async-trait = "0.1"
 keyring-core = "1"
 ring = "0.17"
 roxmltree = "0.20"
+# Capture static HTML preview dependencies using HTML attribute tokenization.
+html5ever = "0.40.1"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 argon2 = "0.5"
 aes = { version = "0.9", features = ["zeroize"] }
