@@ -68,19 +68,15 @@ jobs:
         shell: bash
         run: bash scripts/ci/unpack-windows-e2e-app.sh oleafly-e2e-windows.tar.gz e2e-app
       - run: pnpm exec playwright install chromium
-      - name: Run the original DOCX spec with independent converter stdin
+      - name: Verify DOCX task activity and saved PDF rendering
         shell: pwsh
         env:
           OLEAFLY_E2E_APP_BINARY: ${{ steps.unpack.outputs.binary }}
-        run: |
-          $site = & $env:OLEAFLY_WORKBENCH_PYTHON -c "import sysconfig; print(sysconfig.get_path('purelib'))"
-          Copy-Item scripts/ci/workbench-render-probe.py (Join-Path $site 'sitecustomize.py')
-          powershell -File scripts/e2e.ps1 --retries=0 e2e/tests/128-docx-task-activity.spec.ts
-          exit $LASTEXITCODE
+        run: powershell -File scripts/e2e.ps1 --retries=0 e2e/tests/128-docx-task-activity.spec.ts
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-render-diagnostics
+          name: windows-saved-docx-render
           path: |
             test-results/**/*.log
             test-results/**/error-context.md
