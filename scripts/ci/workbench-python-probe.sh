@@ -12,5 +12,7 @@ import sys
 
 print("Workbench probe: Python entered", file=sys.stderr, flush=True)
 faulthandler.dump_traceback_later(20)
+if sys.argv[1:2] == ["research_file_workbench.workbench.launcher"]:
+    sys.argv.pop(1)
 runpy.run_module("research_file_workbench.workbench.launcher", run_name="__main__")
 ' "$@"
