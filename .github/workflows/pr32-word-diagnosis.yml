@@ -51,7 +51,7 @@ jobs:
           retention-days: 7
 
   windows-render:
-    if: github.head_ref == 'codex/pr32-e2e-stability' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.action == 'opened' && github.head_ref == 'codex/pr32-e2e-stability' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-2022
     timeout-minutes: 22
     steps:
