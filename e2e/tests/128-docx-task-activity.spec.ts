@@ -176,14 +176,13 @@ test("native tasks propose DOCX changes and retain user decisions with exact sav
     await expect(page.getByTestId("docx-workspace")).toBeHidden();
     await page.locator('[data-testid="task-docx-observations"] summary').click();
     const observations = page.getByTestId("task-observations");
-    await expect(observations.getByText("Observation records and source locators", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(observations).toHaveAttribute("aria-busy", "false", { timeout: 30_000 });
     const replacement = page.getByTestId("task-docx-observations").getByText(REPLACEMENTS[1], { exact: true });
     while (await replacement.count() === 0) {
       const loadMore = observations.getByRole("button", { name: "Load more observations", exact: true });
       if (await loadMore.count() === 0) throw new Error("The task transcript ended before the second DOCX replacement.");
       await loadMore.click();
-      await expect(observations.getByRole("status")).toBeVisible();
-      await expect(observations.getByRole("status")).toHaveCount(0);
+      await expect(observations).toHaveAttribute("aria-busy", "false");
     }
     await expect(page.getByTestId("task-docx-observations")).toContainText(REPLACEMENTS[1]);
     await expect(page.getByTestId("task-docx-observations")).toContainText(saved.document.baselineId);

@@ -111,7 +111,7 @@ export function TaskObservations({ taskId, generation, revision, availableCalls,
     }
   }
   const gitStatus = view?.summary.baseline?.initialGitStatus?.join("\n") || (view?.summary.baseline?.initialGitStatusComplete === true ? t(($) => $.researchTools.tasks.observations.clean) : unknown);
-  return <section data-testid="task-observations" className="mb-4 min-w-0 space-y-3 rounded-lg border p-3 text-sm">
+  return <section data-testid="task-observations" aria-busy={loading} className="mb-4 min-w-0 space-y-3 rounded-lg border p-3 text-sm">
     <h4 className="font-medium">{t(($) => $.researchTools.tasks.observations.title)}</h4>
     {loading ? <p role="status">{t(($) => $.researchTools.tasks.observations.loading)}</p> : null}
     {error ? <p role="alert" className="break-words text-destructive">{error}</p> : null}
