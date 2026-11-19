@@ -169,7 +169,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-bash scripts/ensure-e2e-sidecars.sh
+bash scripts/ensure-e2e-sidecars.sh "$APP_BINARY"
 
 DATA_DIR="${OLEAFLY_E2E_REUSE_DATA_DIR:-$(mktemp -d /tmp/oleafly-e2e.XXXXXX)}"
 LOG="$(mktemp /tmp/oleafly-e2e-log.XXXXXX)"

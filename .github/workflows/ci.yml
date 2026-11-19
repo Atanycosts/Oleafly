@@ -210,8 +210,10 @@ jobs:
       - name: Test the e2e spec selection
         run: bash scripts/e2e-specs.test.sh
 
-      - name: Test the e2e runner lock and launchers
-        run: bash scripts/e2e-run-lock.test.sh
+      - name: Test the e2e runner lock and packaged sidecars
+        run: |
+          bash scripts/e2e-run-lock.test.sh
+          bash scripts/ensure-e2e-sidecars.test.sh
 
       - name: Test lightweight commit and explicit full checks
         run: node --test scripts/local-checks.node-tests.mjs

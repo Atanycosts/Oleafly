@@ -96,7 +96,11 @@ OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Con
 ```
 
 `scripts/e2e.sh` and `scripts/e2e.ps1` pass the same overlay to
-`pnpm tauri dev`. Each run starts by deleting the e2e identifier's storage, so
+`pnpm tauri dev`. When given `OLEAFLY_E2E_APP_BINARY`, the Bash runner checks
+the packaged compilers beside that executable without using Rust or staging
+another set of compilers.
+
+Each run starts by deleting the e2e identifier's storage, so
 a local run begins as empty as a CI runner. Storage still survives the app
 restarts inside one run, just as it does inside a CI shard. In
 `scripts/e2e.sh`, setting `OLEAFLY_E2E_REUSE_DATA_DIR` skips the reset.
