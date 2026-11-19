@@ -31,10 +31,10 @@ jobs:
           mkdir e2e-app
           tar -xzf oleafly-e2e-macos.tar.gz -C e2e-app
           pnpm exec playwright install chromium
-      - name: Verify the four affected Workbench specs
+      - name: Verify external journal subscription polling
         env:
           OLEAFLY_E2E_APP_BINARY: ${{ github.workspace }}/e2e-app/Oleafly.app/Contents/MacOS/Oleafly
-        run: ./scripts/e2e.sh --retries=0 e2e/tests/{116-journal-checks,123-journal-annotations,124-journal-subscriptions,128-docx-task-activity}.spec.ts
+        run: ./scripts/e2e.sh --retries=0 e2e/tests/124-journal-subscriptions.spec.ts
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -47,7 +47,7 @@ jobs:
           retention-days: 7
 
   windows-render:
-    if: false
+    if: github.head_ref == 'codex/pr32-e2e-stability' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-2022
     timeout-minutes: 22
     steps:
@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: bash scripts/ci/unpack-windows-e2e-app.sh oleafly-e2e-windows.tar.gz e2e-app
       - run: pnpm exec playwright install chromium
-      - name: Diagnose conversion in the original DOCX spec
+      - name: Run the original DOCX spec with independent converter stdin
         shell: pwsh
         env:
           OLEAFLY_E2E_APP_BINARY: ${{ steps.unpack.outputs.binary }}

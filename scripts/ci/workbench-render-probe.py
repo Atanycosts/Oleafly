@@ -1,4 +1,4 @@
-"""Observe Windows LibreOffice progress without changing the render result."""
+"""Test starting LibreOffice without the desktop owner's control pipe."""
 
 import contextlib
 import subprocess
@@ -23,6 +23,7 @@ def traced_run(command, *args, **kwargs):
                 print(processes.stdout.decode(errors="replace").strip(), file=sys.stderr, flush=True)
 
     print("Render probe: starting PDF conversion", file=sys.stderr, flush=True)
+    kwargs["stdin"] = subprocess.DEVNULL
     timer = threading.Timer(20, snapshot)
     timer.daemon = True
     timer.start()
