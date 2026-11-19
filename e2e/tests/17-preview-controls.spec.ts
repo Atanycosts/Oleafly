@@ -154,6 +154,21 @@ async function activatePreviewControl(
   await menu.getByText(label, { exact: true }).click();
 }
 
+async function expectPreviewControlAvailable(
+  tauriPage: TauriPage,
+  label: string,
+) {
+  const direct = tauriPage.locator(`[aria-label=${JSON.stringify(label)}]`);
+  if (await direct.isVisible()) return;
+
+  const moreControls = tauriPage.locator('[aria-label="More preview controls"]');
+  await expect(moreControls).toBeVisible();
+  await moreControls.focus();
+  await moreControls.press("Enter");
+  await expect(tauriPage.getByRole("menu").getByText(label, { exact: true })).toBeVisible();
+  await tauriPage.keyboard.press("Escape");
+}
+
 test.beforeEach(async ({ tauriPage }) => {
   test.setTimeout(240_000);
   await expect(
@@ -476,7 +491,7 @@ test("fullscreen controls hide, restore, and exit the preview toolbar", async ({
   await tauriPage.click('[aria-label="Show toolbar"]');
   await expect(tauriPage.locator('[aria-label="Exit fullscreen"]')).toBeVisible();
   await activatePreviewControl(tauriPage, "Exit fullscreen");
-  await expect(tauriPage.locator('[aria-label="Fullscreen preview"]')).toBeVisible();
+  await expectPreviewControlAvailable(tauriPage, "Fullscreen preview");
 });
 
 test("open-in-window control creates the detached preview window and reattaches it", async ({

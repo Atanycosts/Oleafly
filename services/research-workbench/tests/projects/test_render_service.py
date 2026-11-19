@@ -25,7 +25,10 @@ from research_file_workbench.projects.models import ProjectStoreError
 from research_file_workbench.projects.render_service import (
     RenderConversionError,
     RendererUnavailableError,
+    _command_path,
+    _file_uri,
     _launch_executable,
+    _normalized_windows_path,
     load_render_mapping,
     read_render_artifact,
     register_render_bundle,
@@ -371,6 +374,18 @@ def test_windows_libreoffice_uses_the_console_launcher_when_available(tmp_path, 
     monkeypatch.setattr("research_file_workbench.projects.render_service.os.name", "nt")
 
     assert _launch_executable(executable) == console_launcher
+
+
+def test_windows_long_paths_are_converted_to_libreoffice_paths(monkeypatch):
+    monkeypatch.setattr("research_file_workbench.projects.render_service.os.name", "nt")
+    long_path = r"\\?\C:\Users\runneradmin\AppData\Local\Temp\oleafly-e2e\profile"
+
+    normalized = r"C:\Users\runneradmin\AppData\Local\Temp\oleafly-e2e\profile"
+    command_path = "C:/Users/runneradmin/AppData/Local/Temp/oleafly-e2e/profile"
+    assert _normalized_windows_path(long_path) == normalized
+    assert _command_path(Path(long_path)) == command_path
+    assert _file_uri(Path(long_path)) == f"file:///{command_path}"
+    assert _normalized_windows_path(r"\\?\UNC\server\share\profile") == r"\\server\share\profile"
 
 
 def test_libreoffice_start_failure_preserves_the_platform_error(rendered_project, tmp_path):

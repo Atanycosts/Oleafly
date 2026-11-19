@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 from typing import cast
 
@@ -63,6 +63,26 @@ def _launch_executable(executable: Path) -> Path:
         if console_launcher.is_file():
             return console_launcher
     return executable
+
+
+def _normalized_windows_path(path: str) -> str:
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
+
+
+def _command_path(path: Path) -> str:
+    if os.name == "nt":
+        return PureWindowsPath(_normalized_windows_path(str(path))).as_posix()
+    return path.as_posix()
+
+
+def _file_uri(path: Path) -> str:
+    if os.name == "nt":
+        return PureWindowsPath(_normalized_windows_path(str(path))).as_uri()
+    return path.resolve().as_uri()
 
 
 def render_libreoffice_baseline(
@@ -147,8 +167,8 @@ def render_libreoffice_baseline(
             supplied_fonts = _stage_fonts(font_dirs, render_profile / "user" / "fonts")
             font_cache_sha256 = _font_set_sha256(supplied_fonts)
             command = [
-                launch_executable.as_posix(),
-                f"-env:UserInstallation={render_profile.resolve().as_uri()}",
+                _command_path(launch_executable),
+                f"-env:UserInstallation={_file_uri(render_profile.resolve())}",
                 "--headless",
                 "--nologo",
                 "--nodefault",
@@ -156,8 +176,8 @@ def render_libreoffice_baseline(
                 "--convert-to",
                 "pdf:writer_pdf_Export",
                 "--outdir",
-                output_root.as_posix(),
-                source_copy.as_posix(),
+                _command_path(output_root),
+                _command_path(source_copy),
             ]
             try:
                 conversion_result = invoke(command, LIBREOFFICE_RENDER_TIMEOUT_SECONDS)
