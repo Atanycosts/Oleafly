@@ -23,6 +23,12 @@ on:
   schedule:
     - cron: "0 9 * * *"
   workflow_dispatch:
+    inputs:
+      build_macos_citation_preview:
+        description: "Also build the macOS E2E citation-preview artifact. Leave unchecked for the standard E2E app only."
+        required: false
+        default: false
+        type: boolean
 
 # No job here writes to the repo, comments on PRs, or creates releases, so a
 # read-only default covers every job below.
@@ -701,8 +707,16 @@ jobs:
     # instead of each compiling the whole app from source. The bundle carries
     # test hooks (VITE_E2E_HOOKS=1) and must never ship; the production build
     # keeps its hook audit fatal.
-    name: E2E app build (macOS)
+    #
+    # The standard matrix entry is the only automatic build. A maintainer can
+    # add the citation-preview entry from workflow_dispatch; it gets a separate
+    # cache and artifact because VITE_DOCX_CITATION_PREVIEW changes the bundle.
+    name: E2E app build (macOS${{ matrix.variant == 'citation-preview' && ', citation preview' || '' }})
     needs: [frontend, rust]
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ github.event_name == 'workflow_dispatch' && inputs.build_macos_citation_preview && fromJSON('["standard", "citation-preview"]') || fromJSON('["standard"]') }}
     runs-on: macos-15
     # A cold run spends about 15 minutes on the shared crates before packaging.
     # The assembled Word workspace then needs more than the old 38-minute
@@ -731,9 +745,12 @@ jobs:
       # them changed since a cached build, the packed app is restored and the
       # compile is skipped, which turns a spec-only or scripts-only push into a
       # download instead of a build.
+      #
+      # The standard key stays e2e-app-macos-v2-*; the preview has its own key
+      # so neither variant can reuse the other's differently built frontend.
       - name: Compute the packaged app cache key
         id: e2e-app-key
-        run: echo "key=e2e-app-macos-v2-${{ hashFiles('src/**', 'packages/**', 'crates/**', 'vendor/**', 'src-tauri/src/**', 'src-tauri/Cargo.toml', 'src-tauri/build.rs', 'src-tauri/tauri.conf.json', 'src-tauri/tauri.e2e.conf.json', 'src-tauri/tauri.macos.conf.json', 'src-tauri/capabilities/**', 'src-tauri/resources/**', 'src-tauri/icons/**', 'Cargo.toml', 'Cargo.lock', 'package.json', 'pnpm-lock.yaml', 'vite.config.ts', 'tsconfig.json', 'index.html', 'public/**', 'patches/**', 'scripts/fetch-tectonic.sh', 'scripts/fetch-biber.sh', 'scripts/fetch-pandoc.sh', 'scripts/fetch-typst.sh', 'scripts/typst/bundled-typst.mjs', 'scripts/fetch-language-servers.mjs', 'scripts/tauri-sandbox.mjs') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=e2e-app-macos-${{ matrix.variant == 'citation-preview' && 'citation-preview-v1' || 'v2' }}-${{ hashFiles('src/**', 'packages/**', 'crates/**', 'vendor/**', 'src-tauri/src/**', 'src-tauri/Cargo.toml', 'src-tauri/build.rs', 'src-tauri/tauri.conf.json', 'src-tauri/tauri.e2e.conf.json', 'src-tauri/tauri.macos.conf.json', 'src-tauri/capabilities/**', 'src-tauri/resources/**', 'src-tauri/icons/**', 'Cargo.toml', 'Cargo.lock', 'package.json', 'pnpm-lock.yaml', 'vite.config.ts', 'tsconfig.json', 'index.html', 'public/**', 'patches/**', 'scripts/fetch-tectonic.sh', 'scripts/fetch-biber.sh', 'scripts/fetch-pandoc.sh', 'scripts/fetch-typst.sh', 'scripts/typst/bundled-typst.mjs', 'scripts/fetch-language-servers.mjs', 'scripts/tauri-sandbox.mjs') }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore the packed app from the cache
         id: e2e-app-cache
@@ -829,6 +846,7 @@ jobs:
         if: steps.e2e-app-cache.outputs.cache-hit != 'true'
         env:
           VITE_E2E_HOOKS: "1"
+          VITE_DOCX_CITATION_PREVIEW: ${{ matrix.variant == 'citation-preview' && '1' || '0' }}
         run: pnpm tauri build --debug --features e2e-testing --bundles app --config src-tauri/tauri.e2e.conf.json
 
       - name: Pack the app bundle
@@ -843,11 +861,21 @@ jobs:
           key: ${{ steps.e2e-app-key.outputs.key }}
 
       - name: Upload the app bundle
+        if: matrix.variant == 'standard'
         uses: actions/upload-artifact@v7
         with:
+          # This name is consumed by the macOS e2e shards below.
           name: e2e-app-macos
           path: oleafly-e2e-macos.tar.gz
           retention-days: 1
+
+      - name: Upload the citation-preview app bundle
+        if: matrix.variant == 'citation-preview'
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-app-macos-citation-preview
+          path: oleafly-e2e-macos.tar.gz
+          retention-days: 7
 
   e2e-build-linux:
     # Same idea as e2e-build-macos: compile the packaged e2e app once instead of
