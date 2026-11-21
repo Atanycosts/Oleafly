@@ -2,6 +2,25 @@ const UA: &str = "Oleafly/0.2 (https://github.com/Oleafly/Oleafly; citation look
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 const MAX_REDIRECTS: usize = 3;
+const CROSSREF_SEARCH_SELECT: &str =
+    "DOI,title,author,issued,container-title,type,volume,issue,page";
+
+fn crossref_search_params(query: &str) -> [(&str, &str); 3] {
+    [
+        ("query.bibliographic", query),
+        ("rows", "8"),
+        ("select", CROSSREF_SEARCH_SELECT),
+    ]
+}
+
+fn crossref_journal_title_params(title: &str) -> [(&str, &str); 4] {
+    [
+        ("query.title", title),
+        ("filter", "type:journal-article"),
+        ("rows", "8"),
+        ("select", CROSSREF_SEARCH_SELECT),
+    ]
+}
 
 /// Whether a lookup follows a redirect to `next` after `previous` hops. A DOI
 /// whose agency cannot answer content negotiation redirects to the
@@ -200,17 +219,25 @@ pub async fn fetch_arxiv(id: &str) -> Result<String, String> {
 }
 
 pub async fn crossref_search(query: &str) -> Result<String, String> {
-    let q = query.trim();
-    if q.is_empty() {
+    let query = query.trim();
+    if query.is_empty() {
         return Ok(String::new());
     }
+    search_crossref(&crossref_search_params(query)).await
+}
+
+pub async fn crossref_search_journal_titles(title: &str) -> Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(String::new());
+    }
+    search_crossref(&crossref_journal_title_params(title)).await
+}
+
+async fn search_crossref(params: &[(&str, &str)]) -> Result<String, String> {
     let resp = client()?
         .get("https://api.crossref.org/works")
-        .query(&[
-            ("query.bibliographic", q),
-            ("rows", "8"),
-            ("select", "DOI,title,author,issued,container-title,type"),
-        ])
+        .query(params)
         .send()
         .await
         .map_err(|e| format!("search failed: {e}"))?
@@ -1031,6 +1058,28 @@ mod tests {
         assert!(check.verified);
         assert_eq!(check.doi.as_deref(), Some("10.1/b"));
         assert_eq!(check.source, "crossref-search");
+    }
+
+    #[test]
+    fn crossref_journal_title_search_filters_before_limiting_results() {
+        let url = reqwest::Url::parse_with_params(
+            "https://api.crossref.org/works",
+            crossref_journal_title_params("Random Forests"),
+        )
+        .unwrap();
+        let query = url
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(query["query.title"], "Random Forests");
+        assert_eq!(query["filter"], "type:journal-article");
+        assert_eq!(query["rows"], "8");
+        let fields = query["select"].split(',').collect::<Vec<_>>();
+        for field in ["volume", "issue", "page"] {
+            assert!(fields.contains(&field), "missing {field}");
+        }
+        let general = crossref_search_params("Random Forests");
+        assert!(general.contains(&("query.bibliographic", "Random Forests")));
+        assert!(general.iter().all(|(key, _)| *key != "filter"));
     }
 
     #[test]

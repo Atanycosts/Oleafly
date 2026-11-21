@@ -15,11 +15,6 @@ import "/src/styles/globals.css";
 
 const DocxWorkspaceDialog = lazy(() => import("/src/components/research/DocxWorkspaceDialog"));
 
-const [{ setHarfBuzzWasmUrl }, { default: harfBuzzWasmUrl }] = await Promise.all([
-  import("@docx-editor.dev/core/layout"),
-  import("@docx-editor.dev/core/harfbuzz.wasm?url"),
-]);
-setHarfBuzzWasmUrl(harfBuzzWasmUrl);
 await prepareHarnessI18n();
 
 const initial = await journalRequest<JournalState>("/api/state");
@@ -45,6 +40,7 @@ function Harness() {
         appProjectId="journal-template-harness"
         project={state.projects[0]}
         world={fullWorld}
+        feedbackVisible={false}
         onClose={() => {}}
         onSaved={async () => setState(await journalRequest<JournalState>("/api/state"))}
       />

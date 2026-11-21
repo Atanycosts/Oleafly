@@ -868,8 +868,10 @@ describe("keyboard shortcuts", () => {
     expect(mocks.editorRedo).toHaveBeenCalledTimes(1);
   });
 
-  it("routes Word keyboard and native menu history to the registered working editor", async () => {
+  it("routes Word keyboard and native menu history by the focused control", async () => {
     mocks.tauri = true;
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { value: execCommand, configurable: true });
     await renderApp();
     await waitFor(() => expect(mocks.listeners.has("menu://undo")).toBe(true));
     const root = document.createElement("section");
@@ -893,6 +895,19 @@ describe("keyboard shortcuts", () => {
       [{ type: "undo" }],
       [{ type: "redo" }],
     ]);
+
+    const search = document.createElement("input");
+    search.type = "search";
+    search.dataset.docxHistory = "field";
+    root.append(search);
+    search.focus();
+    keydown(search, { key: "z", metaKey: true });
+    keydown(search, { key: "z", metaKey: true, shiftKey: true });
+    emit("menu://undo", null);
+    emit("menu://redo", null);
+
+    expect(execCommand.mock.calls).toEqual([["undo"], ["redo"], ["undo"], ["redo"]]);
+    expect(exec).toHaveBeenCalledTimes(4);
     expect(mocks.editorUndo).not.toHaveBeenCalled();
     expect(mocks.editorRedo).not.toHaveBeenCalled();
     root.remove();

@@ -1,0 +1,73 @@
+name: Build a macOS Word workspace candidate
+
+on:
+  push:
+    branches:
+      - 'codex/word-candidate/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: Word workspace candidate (Apple Silicon)
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      TARGET: aarch64-apple-darwin
+      CARGO_BUILD_JOBS: "2"
+      NODE_OPTIONS: --max-old-space-size=6144
+      VITE_E2E_HOOKS: "0"
+      VITE_DOCX_CITATION_PREVIEW: "0"
+      VITE_LOCAL_WORKBENCH: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: ./.github/actions/rust-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> src-tauri/target
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch pinned bundled tools
+        run: |
+          bash scripts/fetch-tectonic.sh "$TARGET"
+          bash scripts/fetch-biber.sh "$TARGET"
+          bash scripts/fetch-pandoc.sh "$TARGET"
+          bash scripts/fetch-typst.sh "$TARGET"
+          node scripts/fetch-language-servers.mjs --server tinymist --target "$TARGET" --install-mode resource
+
+      - name: Build the app without test hooks
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: >-
+          pnpm tauri build --ci --target "$TARGET" --bundles app
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Pack the Finder app
+        run: |
+          app="src-tauri/target/$TARGET/release/bundle/macos/Oleafly.app"
+          test -x "$app/Contents/MacOS/oleafly"
+          codesign --verify --deep --strict "$app"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/Oleafly.app.zip"
+
+      - name: Upload the candidate for desktop acceptance
+        uses: actions/upload-artifact@v7
+        with:
+          name: word-workspace-macos-${{ github.sha }}
+          path: ${{ runner.temp }}/Oleafly.app.zip
+          if-no-files-found: error
+          retention-days: 7

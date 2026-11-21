@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { PanelRightClose } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { TaskAnnotations } from "@/components/research/tasks/TaskAnnotations";
@@ -9,7 +9,7 @@ import { materialAnnotationSnapshot, readMaterialAnnotation, requestMaterialAnno
 import { materialTarget, type MaterialAnchor, type MaterialDocument } from "@/lib/material-surface";
 import { defaultBrief, listResearchTasks, type ResearchTask } from "@/lib/research-tasks";
 import { loadObjectAnnotations, loadTaskGroup, type AnnotationTarget, type GroupMember, type TaskAnnotation, type TaskAnnotationDraft } from "@/lib/task-collaboration";
-import { useMaterialAnnotationsStore, type MaterialAnnotationOptions } from "@/store/material-annotations";
+import type { MaterialAnnotationOptions } from "@/store/material-annotations";
 import { useMaterialViewerStore } from "@/store/material-viewer";
 import { useResearchTasksStore } from "@/store/research-tasks";
 import { researchTasksEnabled, setResearchTasksEnabled } from "@/store/research-tasks-flag";
@@ -19,16 +19,16 @@ export interface MaterialAnnotationsProps {
   onOpenSnapshot?: (retained: RetainedMaterial) => void;
   onOpenTarget?: (target: AnnotationTarget) => void;
   onMinimize?: () => void;
+  onClose: () => void;
+  current: boolean;
+  active?: boolean;
+  wordRevision?: number;
+  document: MaterialDocument;
+  anchor: MaterialAnchor;
+  options: MaterialAnnotationOptions;
 }
 
-export function MaterialAnnotations(props: Readonly<MaterialAnnotationsProps>) {
-  const document = useMaterialAnnotationsStore((state) => state.document);
-  const anchor = useMaterialAnnotationsStore((state) => state.anchor);
-  const options = useMaterialAnnotationsStore((state) => state.options);
-  return document ? <MaterialAnnotationPanel key={JSON.stringify([document.projectId, document.documentId, document.revision])} document={document} anchor={anchor} options={options} {...props} /> : null;
-}
-
-function MaterialAnnotationPanel({ document, anchor, options, onOpenSnapshot, onOpenTarget, onMinimize }: Readonly<MaterialAnnotationsProps & { document: MaterialDocument; anchor: MaterialAnchor; options: MaterialAnnotationOptions }>) {
+export function MaterialAnnotations({ document, anchor, options, onOpenSnapshot, onOpenTarget, onMinimize, onClose, current, active, wordRevision }: Readonly<MaterialAnnotationsProps>) {
   const { t } = useTranslation("researchTools");
   const { t: tEditor } = useTranslation("editor");
   const text = t(($) => $.researchTools.materialAnnotations, { returnObjects: true });
@@ -37,6 +37,14 @@ function MaterialAnnotationPanel({ document, anchor, options, onOpenSnapshot, on
   const [members, setMembers] = useState<GroupMember[]>([]);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
+  const wordSelection = document.kind === "docx" && anchor.kind === "object";
+  useLayoutEffect(() => {
+    const element = composer.current;
+    if (active && wordSelection && element?.ownerDocument.activeElement?.closest("[data-testid='workspace-word-surface'] .docx-pages")) {
+      element.focus({ preventScroll: true });
+    }
+  }, [active, wordSelection]);
   const retainedRoot = useRef<{ key: string; annotation: TaskAnnotation } | null>(null);
   const taskBindings = useRef(new Map<string, { revision: string; bind: NonNullable<MaterialAnnotationOptions["beforeStartTask"]> }>());
   const target = materialTarget(document);
@@ -66,7 +74,8 @@ function MaterialAnnotationPanel({ document, anchor, options, onOpenSnapshot, on
   }, [projectId, activeTaskId]);
   const describeTarget = (reference: AnnotationTarget) => {
     if (reference.objectKind !== "material") return reference.path ?? text.result;
-    const sameVersion = reference.objectRevision?.replace(/^sha256:/u, "") === document.revision.replace(/^sha256:/u, "");
+    const earlierWorkingDraft = wordRevision !== undefined && options.wordSessionRevision !== wordRevision;
+    const sameVersion = !earlierWorkingDraft && reference.objectRevision?.replace(/^sha256:/u, "") === document.revision.replace(/^sha256:/u, "");
     return `${document.title} · ${sameVersion ? text.currentVersion : text.oldVersion}`;
   };
 
@@ -147,18 +156,20 @@ function MaterialAnnotationPanel({ document, anchor, options, onOpenSnapshot, on
     } catch (cause) { setError(describeError(cause)); }
   }
 
-  return <aside data-testid="material-annotations" className="min-w-0 space-y-3 border-l bg-background p-3" aria-label={text.title}>
+  return <aside data-testid={current ? "material-annotations" : undefined} className="min-w-0 space-y-3 border-l bg-background p-3" aria-label={text.title}>
     <div className="flex items-center justify-between gap-2">
       <h3 className="min-w-0 truncate text-sm font-medium">{document.title}</h3>
       {onMinimize && <Button type="button" size="icon" variant="ghost" className="ml-auto size-7 shrink-0" aria-label={text.minimize} onClick={onMinimize}><PanelRightClose className="size-4" /></Button>}
-      <Button type="button" size="xs" variant="ghost" onClick={() => useMaterialAnnotationsStore.getState().close()}>{text.close}</Button>
+      <Button type="button" size="xs" variant="ghost" onClick={onClose}>{text.close}</Button>
     </div>
     <p className="text-xs text-muted-foreground">{text[anchor.kind]}</p>
+    {document.kind === "docx" && anchor.kind === "object" && anchor.label && <blockquote className="max-h-24 overflow-auto whitespace-pre-wrap border-l-2 pl-2 text-xs">{anchor.label}</blockquote>}
     {anchor.kind === "text" || anchor.kind === "html" || anchor.kind === "page" || anchor.kind === "pdf" ? anchor.quote && <p className="max-h-24 overflow-auto whitespace-pre-wrap text-xs">{anchor.quote}</p> : null}
     {pendingStart && <div className="space-y-2 rounded-md border p-2 text-xs"><p>{text.requestPending}</p><Button type="button" size="sm" disabled={starting} onClick={() => void start(pendingStart)}>{text.retryStart}</Button></div>}
     {activeTask && <Button type="button" variant="link" size="sm" className="h-auto whitespace-normal px-0 text-left" onClick={() => { void openHandlingTask(activeTask.id, "annotations"); }}>{text.openTask} · {activeTask.title}</Button>}
     {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}
     <TaskAnnotations contextScope="object" objectTarget={target} submitAnnotation={submit} members={members}
+      composerRef={composer} staticDraftTarget={document.kind === "docx"}
       onOpenTarget={(reference) => { void openTarget(reference); }} onOpenAnnotationSource={(annotation) => { void openSource(annotation); }}
       describeTarget={describeTarget} describeAnnotation={(annotation) => {
         const snapshot = materialAnnotationSnapshot(annotation);

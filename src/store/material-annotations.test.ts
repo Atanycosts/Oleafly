@@ -37,3 +37,20 @@ it("clears document, selection and live binding on close before opening another 
   expect(useMaterialAnnotationsStore.getState().document).toBe(next);
   expect(useMaterialAnnotationsStore.getState().options).toEqual({});
 });
+
+it("keeps identical text in one paragraph separate by model range and reuses an exact range", () => {
+  const options = { wordSessionId: "word", wordSessionRevision: 3 };
+  const first = { kind: "object" as const, id: "paragraph-1", label: "same", range: { from: 0, to: 4 } };
+  const second = { kind: "object" as const, id: "paragraph-1", label: "same", range: { from: 12, to: 16 } };
+  openMaterialAnnotations(retained, first, options);
+  const firstKey = useMaterialAnnotationsStore.getState().feedback[0].key;
+  openMaterialAnnotations(retained, second, options);
+  expect(useMaterialAnnotationsStore.getState().feedback).toHaveLength(2);
+  expect(useMaterialAnnotationsStore.getState().feedback[0].key).not.toBe(firstKey);
+  expect(useMaterialAnnotationsStore.getState().feedback[0].anchor).toBe(second);
+
+  openMaterialAnnotations(retained, { ...first }, options);
+  const state = useMaterialAnnotationsStore.getState();
+  expect(state.feedback).toHaveLength(2);
+  expect(state.feedback[0]).toMatchObject({ key: firstKey, anchor: first, document: retained, options });
+});

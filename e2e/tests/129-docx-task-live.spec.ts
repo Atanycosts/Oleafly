@@ -305,7 +305,9 @@ test.describe("opt-in native DOCX live model acceptance", () => {
       expect(untouched.document.sessionRevision).toBe(before.document.sessionRevision);
       expect(untouched.document.dirty).toBe(false);
       expect(untouched.document.baselineId).toBe(before.document.baselineId);
-      await expect(page.getByTestId("docx-suggestion")).toHaveCount(1);
+      const tools = page.getByTestId("docx-document-tools");
+      if (await tools.getAttribute("aria-expanded") !== "true") await tools.click();
+      await expect(page.getByTestId("docx-suggestion")).toBeVisible();
       await page.screenshot({ path: resolve(run!, "proposal-before-acceptance.png") });
       await evidence(testInfo, report);
       // The automation acts through the same explicit human acceptance/save UI.

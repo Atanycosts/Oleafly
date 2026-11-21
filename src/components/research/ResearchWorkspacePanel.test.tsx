@@ -160,7 +160,9 @@ describe("ResearchWorkspacePanel integration", () => {
     function InitiallyHiddenResearchSidebar() {
       const shown = useSettingsStore((state) => state.showTree);
       const rail = useSettingsStore((state) => state.railTab);
-      return <><MaterialAnnotations />{shown && rail === "research" ? <ResearchWorkspacePanel /> : null}</>;
+      const { document, anchor, options, close } = useMaterialAnnotationsStore();
+      return <>{document && <MaterialAnnotations current document={document} anchor={anchor} options={options} onClose={() => close()} />}
+        {shown && rail === "research" ? <ResearchWorkspacePanel /> : null}</>;
     }
     render(<QueryClientProvider client={queryClient}><InitiallyHiddenResearchSidebar /></QueryClientProvider>);
     const open = await page().findByRole("button", { name: `${enResearchTools.materialAnnotations.openTask} · ${reviewed.title}` });

@@ -19,7 +19,8 @@ runs:
         import subprocess
         root = Path.cwd()
         interpreter = root / "services/research-workbench/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        subprocess.run([str(interpreter), "-m", "pip", "install", "-e", "./services/research-workbench"], check=True)
+        subprocess.run([str(interpreter), "-m", "pip", "install", "./services/research-workbench"], check=True)
+        subprocess.run([str(interpreter), "-m", "pip", "check"], check=True)
         with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
             output.write(f"OLEAFLY_WORKBENCH_PYTHON={interpreter}\n")
         PY

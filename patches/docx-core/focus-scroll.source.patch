@@ -1,0 +1,36 @@
+--- a/packages/core/src/editor/paginated-surface.ts
++++ b/packages/core/src/editor/paginated-surface.ts
+@@ -449,6 +449,15 @@
+   const mountDocument = container.ownerDocument;
+ 
+   const pagesLayer = mountDocument.createElement('div');
++  function focusPagesWithoutScroll(): void {
++    const scroller = surfaceScroller(container);
++    const top = scroller?.scrollTop ?? 0;
++    const left = scroller?.scrollLeft ?? 0;
++    pagesLayer.focus({ preventScroll: true });
++    if (scroller && (scroller.scrollTop !== top || scroller.scrollLeft !== left)) {
++      scroller.scrollTo({ top, left, behavior: 'instant' });
++    }
++  }
+   const hostListeners = createSurfaceHostListeners(() => pagesLayer);
+   pagesLayer.className = 'docx-pages';
+   pagesLayer.style.position = 'relative';
+@@ -5757,7 +5766,7 @@
+       // An already-focused surface may have a newer native selection or active IME
+       // composition. A redundant focus request must not overwrite either with the model.
+       if (pagesLayer.ownerDocument.activeElement === pagesLayer) return;
+-      pagesLayer.focus({ preventScroll: true });
++      focusPagesWithoutScroll();
+       // Returning from a toolbar input can place the browser caret at the document's
+       // start. Restore the saved model range before selectionchange adopts that caret
+       // and follows it into view (including when no formatting command was executed).
+@@ -6141,7 +6150,7 @@
+       // it into view — to its top. The first click anywhere in a long document therefore
+       // threw the reader back to page 1 before the caret it had just placed could be seen.
+       // The caret is positioned from layout regardless, so nothing needs the browser's scroll.
+-      focus: () => pagesLayer.focus({ preventScroll: true }),
++      focus: focusPagesWithoutScroll,
+       // An armed format painter paints the selection the gesture just produced. Word's
+       // gesture exactly: arm, then drag over the text that should take the formatting.
+       onSelectionSettled: () => formatPainter.applyIfArmed(),

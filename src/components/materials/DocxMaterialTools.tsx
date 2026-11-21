@@ -9,29 +9,25 @@ export type DocxMaterialView = "working" | "original" | "compare";
 interface Props {
   view: DocxMaterialView;
   onViewChange(view: DocxMaterialView): void;
-  selectionAvailable: boolean;
   disabled?: boolean;
   onAnnotateWhole(): Promise<void>;
-  onAnnotateSelection(): Promise<void>;
 }
 
 export function DocxMaterialTools({
   view,
   onViewChange,
-  selectionAvailable,
   disabled = false,
   onAnnotateWhole,
-  onAnnotateSelection,
 }: Readonly<Props>) {
   const { t } = useTranslation("editor");
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function capture(action: () => Promise<void>) {
+  async function capture() {
     setCapturing(true);
     setError(null);
     try {
-      await action();
+      await onAnnotateWhole();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -52,15 +48,8 @@ export function DocxMaterialTools({
     </Select>
     <Button type="button" size="sm" variant="outline" disabled={disabled || capturing}
       onMouseDown={(event) => event.preventDefault()}
-      onClick={() => void capture(onAnnotateWhole)}>
+      onClick={() => void capture()}>
       <MessageSquarePlus className="mr-1 size-3.5" />{t(($) => $.editor.materials.annotateWhole)}
-    </Button>
-    <Button type="button" size="sm" variant="outline"
-      title={selectionAvailable ? undefined : t(($) => $.editor.materials.selectionMissing)}
-      disabled={disabled || capturing || !selectionAvailable}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={() => void capture(onAnnotateSelection)}>
-      <MessageSquarePlus className="mr-1 size-3.5" />{t(($) => $.editor.materials.annotateSelection)}
     </Button>
     {error && <span role="alert" className="max-w-80 text-xs text-destructive">{error}</span>}
   </>;

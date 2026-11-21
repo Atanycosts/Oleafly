@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import type { DocxSession } from "@/lib/docx-session";
@@ -19,7 +20,14 @@ vi.mock("@/features/equation-export", () => ({
   equationToSvgDocument: previewMocks.equationToSvgDocument,
 }));
 
-import { DocxEquationPanel } from "./DocxEquationPanel";
+import { DocxEquationPanel, type DocxEquationDraft, type DocxEquationTarget } from "./DocxEquationPanel";
+
+const clickedEquation: DocxEquationTarget = {
+  paragraphRef: "first",
+  revision: 0,
+  equation: { objectRef: "first:math-1", expectedFingerprint: "fp-2", offset: 3, end: 4,
+    status: "unbound", latex: "", macros: "", display: false },
+};
 
 function paragraphHandle(ref: string): AutomationHandle<"paragraph"> {
   return { kind: "paragraph", ref } as AutomationHandle<"paragraph">;
@@ -87,8 +95,8 @@ function session(initial: { text: string; equations: readonly unknown[] } = { te
   };
 }
 
-function equation(source: Record<string, unknown>) {
-  return { equationFingerprint: "fp-1", source };
+function equation(source: Record<string, unknown>, fingerprint = "fp-1") {
+  return { equationFingerprint: fingerprint, source };
 }
 
 function equationSource(overrides: Record<string, unknown> = {}) {
@@ -109,6 +117,270 @@ beforeEach(() => {
 });
 
 describe("DocxEquationPanel", () => {
+  it("binds an explicit captured target to its exact equation in the same paragraph", async () => {
+    const harness = session({ text: "abc", equations: [
+      equation(equationSource({ latex: "first-latex" })),
+      equation(equationSource({ latex: "second-latex" }), "fp-2"),
+    ] });
+    const view = render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={{ paraId: "para-first", revision: "0" }} captured={clickedEquation} />);
+    const target = screen.getByLabelText(text.target) as HTMLSelectElement;
+    expect(target).toHaveValue("first:math-1");
+    expect(screen.getByLabelText(text.source)).toHaveValue("second-latex");
+    expect(screen.getByRole("button", { name: text.replace })).toBeVisible();
+
+    view.rerender(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={{ paraId: "para-first", revision: "0" }} captured={null} />);
+    await waitFor(() => expect(target).toHaveValue(""));
+    expect(screen.getByRole("button", { name: text.insert })).toBeVisible();
+    expect(screen.queryByRole("button", { name: text.replace })).not.toBeInTheDocument();
+  });
+
+  it("drops a captured target when the session revision changes", async () => {
+    const harness = session({ text: "abc", equations: [
+      equation(equationSource({ latex: "first-latex" })),
+      equation(equationSource({ latex: "second-latex" }), "fp-2"),
+    ] });
+    render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={{ paraId: "para-first", revision: "0" }} captured={clickedEquation} />);
+    expect(screen.getByLabelText(text.target)).toHaveValue("first:math-1");
+    act(() => { harness.bump(); harness.publish(); });
+    await waitFor(() => expect(screen.getByLabelText(text.target)).toHaveValue(""));
+    expect(screen.getByRole("button", { name: text.insert })).toBeVisible();
+    expect(screen.queryByRole("button", { name: text.replace })).not.toBeInTheDocument();
+  });
+
+  it("does not submit a formula draft after the user returns to text in the same paragraph", () => {
+    const harness = session({ text: "abc", equations: [
+      equation(equationSource()),
+      equation(equationSource(), "fp-2"),
+    ] });
+    const selection = { paragraphRef: clickedEquation.paragraphRef, revision: "0" };
+    const view = render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={selection} captured={clickedEquation} />);
+    const source = screen.getByLabelText(text.source);
+    fireEvent.change(source, { target: { value: "draft" } });
+    expect(screen.getByRole("button", { name: text.replace })).toBeEnabled();
+
+    view.rerender(<DocxEquationPanel active sessionId="session-1" session={harness.session} selection={selection} />);
+    expect(source).toHaveValue("draft");
+    const replace = screen.getByRole("button", { name: text.replace });
+    expect(replace).toBeDisabled();
+    fireEvent.click(replace);
+    expect(mocks.writeEquation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: text.refresh }));
+    expect(screen.queryByRole("button", { name: text.replace })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: text.insert })).toBeDisabled();
+  });
+
+  it("replaces only the activated equation with explicit source adoption", async () => {
+    const harness = session();
+    const onClose = vi.fn();
+    render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      contextual={{ target: clickedEquation, onClose }} />);
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(text.source), { target: { value: "y^2" } });
+    const replace = screen.getByRole("button", { name: text.replace });
+    expect(replace).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
+    fireEvent.click(replace);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(mocks.writeEquation).toHaveBeenCalledExactlyOnceWith({
+      sessionId: "session-1", paragraphRef: "first", expectedRevision: 0,
+      latex: "y^2", objectRef: "first:math-1", expectedFingerprint: "fp-2", adoptSource: true,
+    }, { signal: expect.any(AbortSignal) });
+  });
+
+  it("keeps the contextual draft but refuses replacement after a revision change", () => {
+    const harness = session();
+    render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      contextual={{ target: clickedEquation, onClose: vi.fn() }} />);
+    fireEvent.change(screen.getByLabelText(text.source), { target: { value: "draft" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
+    act(() => { harness.bump(); harness.publish(); });
+    expect(screen.getByLabelText(text.source)).toHaveValue("draft");
+    expect(screen.getByRole("status")).toHaveTextContent(text.contextChanged);
+    expect(screen.getByRole("button", { name: text.replace })).toBeDisabled();
+    expect(mocks.writeEquation).not.toHaveBeenCalled();
+  });
+
+  it("restores the complete contextual draft after the editor surface unmounts", () => {
+    const harness = session();
+    let draft: DocxEquationDraft | undefined;
+    const storeDraft = (next: DocxEquationDraft | null) => { draft = next ?? undefined; };
+    const panel = () => <DocxEquationPanel active sessionId="session-1" session={harness.session}
+      contextual={{ target: clickedEquation, draft, onDraftChange: storeDraft, onClose: vi.fn() }} />;
+    const view = render(panel());
+    fireEvent.change(screen.getByLabelText(text.source), { target: { value: "y^2" } });
+    fireEvent.change(screen.getByLabelText(text.macros), { target: { value: "\\newcommand{\\sq}[1]{#1^2}" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
+    expect(draft).toEqual({
+      latex: "y^2",
+      macros: "\\newcommand{\\sq}[1]{#1^2}",
+      adoptSource: true,
+    });
+
+    view.unmount();
+    render(panel());
+    expect(screen.getByLabelText(text.source)).toHaveValue("y^2");
+    expect(screen.getByLabelText(text.macros)).toHaveValue("\\newcommand{\\sq}[1]{#1^2}");
+    expect(screen.getByRole("checkbox", { name: text.adopt })).toBeChecked();
+    expect(screen.getByRole("button", { name: text.replace })).toBeEnabled();
+  });
+
+  it("keeps focus on Close while replacing an equation and showing conversion warnings", async () => {
+    const user = userEvent.setup();
+    const harness = session();
+    let finishWrite!: (result: { ok: boolean; warnings: string[] }) => void;
+    mocks.writeEquation.mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
+    render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      contextual={{ target: clickedEquation, onClose: vi.fn() }} />);
+    screen.getByLabelText(text.source).focus();
+    await user.keyboard("y^2");
+    const adopt = screen.getByRole("checkbox", { name: text.adopt });
+    adopt.focus();
+    await user.keyboard("[Space]");
+    expect(adopt).toBeChecked();
+    const replace = screen.getByRole("button", { name: text.replace });
+    expect(replace).toBeEnabled();
+    replace.focus();
+    await user.keyboard("{Enter}");
+    const close = screen.getByRole("button", { name: /^Close$/u });
+    expect(replace).toBeDisabled();
+    expect(close).toHaveFocus();
+    await act(async () => finishWrite({ ok: true, warnings: ["Conversion warning"] }));
+    expect(screen.getByRole("status")).toHaveTextContent("Conversion warning");
+    expect(replace).not.toBeInTheDocument();
+    expect(close).toHaveFocus();
+  });
+
+  it("keeps Escape in document tools while a replacement is pending", async () => {
+    const user = userEvent.setup();
+    const harness = session({ text: "\uFFFC", equations: [equation({ status: "unbound" })] });
+    const onEscape = vi.fn();
+    mocks.writeEquation.mockImplementationOnce(() => new Promise(() => {}));
+    const { unmount } = render(<aside aria-label={text.title} onKeyDown={(event) => {
+      if (event.key === "Escape") onEscape();
+    }}><DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={{ paraId: "para-first", revision: "0" }} /></aside>);
+    await screen.findByRole("checkbox", { name: text.adopt });
+    fireEvent.change(screen.getByLabelText(text.source), { target: { value: "y^2" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
+    const replace = screen.getByRole("button", { name: text.replace });
+    replace.focus();
+    await user.keyboard("{Enter}");
+    expect(replace).toBeDisabled();
+    expect(screen.getByRole("heading", { name: text.title })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(onEscape).toHaveBeenCalledOnce();
+    unmount();
+  });
+
+  it("keeps Escape in document tools after a replacement warning", async () => {
+    const user = userEvent.setup();
+    const harness = session({ text: "\uFFFC", equations: [equation({ status: "unbound" })] });
+    const onEscape = vi.fn();
+    let finishWrite!: (result: { ok: boolean; warnings: string[] }) => void;
+    mocks.writeEquation.mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
+    render(<aside aria-label={text.title} onKeyDown={(event) => {
+      if (event.key === "Escape") onEscape();
+    }}><DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={{ paraId: "para-first", revision: "0" }} /></aside>);
+    await screen.findByRole("checkbox", { name: text.adopt });
+    fireEvent.change(screen.getByLabelText(text.source), { target: { value: "y^2" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
+    const replace = screen.getByRole("button", { name: text.replace });
+    replace.focus();
+    await user.keyboard("{Enter}");
+    await act(async () => finishWrite({ ok: true, warnings: ["Conversion warning"] }));
+    expect(screen.getByRole("status")).toHaveTextContent("Conversion warning");
+    expect(screen.getByRole("heading", { name: text.title })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(onEscape).toHaveBeenCalledOnce();
+  });
+
+  it("does not restore paper focus when context completes after the user leaves", async () => {
+    const user = userEvent.setup();
+    const harness = session();
+    const outsideLabel = "Outside";
+    const onClose = vi.fn();
+    let finishWrite!: (result: { ok: boolean; warnings: string[] }) => void;
+    mocks.writeEquation.mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
+    render(<><DocxEquationPanel active sessionId="session-1" session={harness.session}
+      contextual={{ target: clickedEquation, onClose }} />
+      <button type="button">{outsideLabel}</button></>);
+    fireEvent.change(screen.getByLabelText(text.source), { target: { value: "y^2" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
+    const replace = screen.getByRole("button", { name: text.replace });
+    replace.focus();
+    await user.keyboard("{Enter}");
+    const outside = screen.getByRole("button", { name: outsideLabel });
+    outside.focus();
+    await act(async () => finishWrite({ ok: true, warnings: [] }));
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(false);
+    expect(outside).toHaveFocus();
+  });
+
+  it("keeps focus on Close when replacement starts while the source field has focus", async () => {
+    const harness = session();
+    let finishWrite!: (result: { ok: boolean; warnings: string[] }) => void;
+    mocks.writeEquation.mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
+    render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      contextual={{ target: clickedEquation, onClose: vi.fn() }} />);
+    const source = screen.getByLabelText(text.source);
+    fireEvent.change(source, { target: { value: "y^2" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
+    source.focus();
+
+    fireEvent.click(screen.getByRole("button", { name: text.replace }));
+    const close = screen.getByRole("button", { name: /^Close$/u });
+    expect(close).toHaveFocus();
+    await act(async () => finishWrite({ ok: true, warnings: ["Conversion warning"] }));
+    expect(close).toHaveFocus();
+  });
+
+  it("cancels a pending contextual write when its surface closes", () => {
+    const harness = session();
+    mocks.writeEquation.mockImplementationOnce(() => new Promise(() => {}));
+    const { unmount } = render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      contextual={{ target: clickedEquation, onClose: vi.fn() }} />);
+    fireEvent.change(screen.getByLabelText(text.source), { target: { value: "y^2" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
+    fireEvent.click(screen.getByRole("button", { name: text.replace }));
+    const signal = mocks.writeEquation.mock.calls[0][1].signal;
+    expect(signal.aborted).toBe(false);
+    unmount();
+    expect(signal.aborted).toBe(true);
+  });
+
+  it("lets a reopened document tools panel retry while the cancelled conversion finishes", async () => {
+    const harness = session();
+    let finishFirst!: (result: { ok: boolean; warnings: string[] }) => void;
+    let finishRetry!: (result: { ok: boolean; warnings: string[] }) => void;
+    mocks.writeEquation
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishRetry = resolve; }));
+    const panel = (active: boolean) => <DocxEquationPanel active={active} sessionId="session-1" session={harness.session}
+      selection={{ paraId: "para-first", revision: "0" }} />;
+    const { rerender } = render(panel(true));
+    fireEvent.change(screen.getByLabelText(text.source), { target: { value: "x^2" } });
+    const insert = () => screen.getByRole("button", { name: text.insert });
+    fireEvent.click(insert());
+    expect(insert()).toBeDisabled();
+    rerender(panel(false));
+    expect(mocks.writeEquation.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    rerender(panel(true));
+    expect(screen.getByLabelText(text.source)).toHaveValue("x^2");
+    expect(insert()).toBeEnabled();
+    fireEvent.click(insert());
+    expect(insert()).toBeDisabled();
+    await act(async () => finishFirst({ ok: true, warnings: ["Cancelled conversion"] }));
+    expect(screen.queryByTestId("docx-equation-result")).not.toBeInTheDocument();
+    expect(insert()).toBeDisabled();
+    await act(async () => finishRetry({ ok: true, warnings: [] }));
+    expect(screen.getByTestId("docx-equation-result")).toHaveTextContent(text.results);
+  });
+
   it("inserts an inline equation from an empty selected paragraph", async () => {
     const harness = session();
     render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
@@ -119,7 +391,7 @@ describe("DocxEquationPanel", () => {
     await waitFor(() => expect(mocks.writeEquation).toHaveBeenCalledExactlyOnceWith({
       sessionId: "session-1", paragraphRef: "first", expectedRevision: 0,
       latex: "x^2", offset: 0, display: false,
-    }, undefined));
+    }, { signal: expect.any(AbortSignal) }));
     expect(screen.getByTestId("docx-equation-result")).toHaveTextContent(text.results);
   });
 
@@ -132,7 +404,7 @@ describe("DocxEquationPanel", () => {
     fireEvent.change(screen.getByLabelText(text.source), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: text.insert }));
     await waitFor(() => expect(mocks.writeEquation).toHaveBeenCalledWith(
-      expect.objectContaining({ offset: 2, display: false }), undefined,
+      expect.objectContaining({ offset: 2, display: false }), { signal: expect.any(AbortSignal) },
     ));
   });
 
@@ -148,6 +420,59 @@ describe("DocxEquationPanel", () => {
     expect(screen.getByLabelText(text.source)).toHaveValue("draft");
     expect(screen.getByRole("status")).toHaveTextContent(text.fingerprintMismatch);
     expect(screen.getByRole("button", { name: text.replace })).toBeDisabled();
+  });
+
+  it("keeps LaTeX and macros when refreshing the same unchanged equation", () => {
+    const harness = session({ text: "E", equations: [equation(equationSource())] });
+    render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={{ paraId: "para-first", revision: "0" }} />);
+    const latex = screen.getByLabelText(text.source);
+    const macros = screen.getByLabelText(text.macros);
+    fireEvent.change(latex, { target: { value: "y^2" } });
+    fireEvent.change(macros, { target: { value: "\\newcommand{\\vect}{\\mathbf}" } });
+    act(() => { harness.bump(); harness.publish(); });
+    expect(screen.getByRole("button", { name: text.replace })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: text.refresh }));
+    expect(latex).toHaveValue("y^2");
+    expect(macros).toHaveValue("\\newcommand{\\vect}{\\mathbf}");
+    fireEvent.click(screen.getByRole("button", { name: text.replace }));
+    expect(mocks.writeEquation).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1,
+      expectedFingerprint: "fp-1", objectRef: "first:math-0", latex: "y^2" }), expect.anything());
+  });
+
+  it("does not reuse a draft for a different equation occupying the same slot", () => {
+    const harness = session({ text: "E", equations: [equation(equationSource())] });
+    render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={{ paraId: "para-first", revision: "0" }} />);
+    const latex = screen.getByLabelText(text.source);
+    fireEvent.change(latex, { target: { value: "draft" } });
+    act(() => {
+      harness.setEquations([equation(equationSource({ latex: "replacement", macros: "" }), "fp-replacement")]);
+      harness.bump();
+      harness.publish();
+    });
+    fireEvent.click(screen.getByRole("button", { name: text.refresh }));
+    expect(latex).toHaveValue("replacement");
+    expect(mocks.writeEquation).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the newly selected equation instead of rebinding an older draft", () => {
+    const harness = session({ text: "abc", equations: [
+      equation(equationSource({ latex: "first-latex" })),
+      equation(equationSource({ latex: "second-latex", macros: "" }), "fp-2"),
+    ] });
+    const selection = { paragraphRef: "first", revision: "0" };
+    const { rerender } = render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={selection} />);
+    const source = screen.getByLabelText(text.source);
+    fireEvent.change(source, { target: { value: "draft for the first equation" } });
+    rerender(<DocxEquationPanel active sessionId="session-1" session={harness.session}
+      selection={selection} captured={clickedEquation} />);
+    expect(screen.getByRole("button", { name: text.replace })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: text.refresh }));
+    expect(screen.getByLabelText(text.target)).toHaveValue("first:math-1");
+    expect(source).toHaveValue("second-latex");
+    expect(mocks.writeEquation).not.toHaveBeenCalled();
   });
 
   it("syncs all source fields when switching between equations", async () => {
@@ -191,7 +516,7 @@ describe("DocxEquationPanel", () => {
     ] });
     render(<DocxEquationPanel active sessionId="session-1" session={harness.session}
       selection={{ paraId: "para-first", revision: "0" }} />);
-    await waitFor(() => expect(document.getElementById("docx-equation-adopt")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: text.adopt })).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText(text.source), { target: { value: "new" } });
     expect(screen.getByRole("button", { name: text.replace })).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: text.adopt }));
@@ -200,7 +525,7 @@ describe("DocxEquationPanel", () => {
     await waitFor(() => expect(mocks.writeEquation).toHaveBeenCalledWith({
       sessionId: "session-1", paragraphRef: "first", expectedRevision: 0,
       latex: "new", objectRef: "first:math-0", expectedFingerprint: "fp-1", adoptSource: true,
-    }, undefined));
+    }, { signal: expect.any(AbortSignal) }));
     expect(screen.getByTestId("docx-equation-result")).toHaveTextContent(text.results);
   });
 
@@ -343,7 +668,9 @@ describe("DocxEquationPanel", () => {
     await waitFor(() => expect(screen.getByTestId("docx-equation-result")).toHaveTextContent(text.results));
     const write = { sessionId: "session-1", paragraphRef: "first", expectedRevision: 0, objectRef: "first:math-0",
       expectedFingerprint: "fp-1", latex: "\\sq{x}", macros: "\\newcommand{\\sq}[1]{#1^2}", adoptSource: true };
-    expect(mocks.writeEquation.mock.calls).toEqual([[write, undefined], [write, undefined]]);
+    expect(mocks.writeEquation.mock.calls).toEqual([
+      [write, { signal: expect.any(AbortSignal) }], [write, { signal: expect.any(AbortSignal) }],
+    ]);
   });
 
   it("offers a display equation only in an empty paragraph and clears the target when its paragraph disappears", async () => {
@@ -360,7 +687,7 @@ describe("DocxEquationPanel", () => {
     await waitFor(() => expect(screen.getByTestId("docx-equation-result")).toHaveTextContent(text.results));
     expect(mocks.writeEquation).toHaveBeenCalledExactlyOnceWith({
       sessionId: "session-1", paragraphRef: "first", expectedRevision: 0, latex: "x^2", offset: 0, display: true,
-    }, undefined);
+    }, { signal: expect.any(AbortSignal) });
 
     view.rerender(<DocxEquationPanel active sessionId="session-2" session={filled.session} selection={selected} />);
     expect(screen.getByRole("radio", { name: text.display })).toBeDisabled();
@@ -394,7 +721,7 @@ describe("DocxEquationPanel", () => {
     expect(mocks.writeEquation).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-1", paragraphRef: "first", expectedRevision: 0,
       latex: "new", offset: 0, display: false,
-    }), undefined);
+    }), { signal: expect.any(AbortSignal) });
     expect(screen.getByTestId("docx-equation-result")).toBeInTheDocument();
   });
 

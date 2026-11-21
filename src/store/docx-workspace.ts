@@ -18,6 +18,7 @@ export const useDocxWorkspaceStore = create<{
   context: Pick<DocxWorkspaceRequest, "world" | "onSaved"> | null;
   minimized: boolean;
   recoveryOpen: boolean;
+  toolsOpen: boolean;
   savedVersion: number;
   closeRequested: number;
   closingBlocked: boolean;
@@ -26,6 +27,7 @@ export const useDocxWorkspaceStore = create<{
   requestClose(): void;
   updateContext(context: Pick<DocxWorkspaceRequest, "world" | "onSaved">): void;
   setRecoveryOpen(open: boolean): void;
+  setToolsOpen(open: boolean): void;
   open(request: DocxWorkspaceRequest): void;
   minimize(): void;
   restore(): void;
@@ -35,6 +37,7 @@ export const useDocxWorkspaceStore = create<{
   context: null,
   minimized: false,
   recoveryOpen: false,
+  toolsOpen: false,
   savedVersion: 0,
   closeRequested: 0,
   closingBlocked: false,
@@ -46,11 +49,12 @@ export const useDocxWorkspaceStore = create<{
   },
   updateContext: (context) => set({ context }),
   setRecoveryOpen: (recoveryOpen) => set({ recoveryOpen }),
+  setToolsOpen: (toolsOpen) => set({ toolsOpen }),
   open: (request) => {
     useWorkspaceSurfaceStore.getState().showWord();
     set((state) => {
       const context = { world: request.world, onSaved: request.onSaved };
-      if (!state.request) return { request, context, minimized: false, closeRequested: 0 };
+      if (!state.request) return { request, context, minimized: false, closeRequested: 0, toolsOpen: !!request.recovery?.taskState };
       if (state.request.appProjectId === request.appProjectId && state.request.project.project_id === request.project.project_id) {
         return { context, minimized: false };
       }
@@ -65,6 +69,6 @@ export const useDocxWorkspaceStore = create<{
       useFilesStore.getState().closeTab(request.sourcePath);
     }
     if (useWorkspaceSurfaceStore.getState().active === "word") useWorkspaceSurfaceStore.getState().showFiles();
-    set({ request: null, context: null, minimized: false, closingBlocked: false });
+    set({ request: null, context: null, minimized: false, closingBlocked: false, toolsOpen: false });
   },
 }));

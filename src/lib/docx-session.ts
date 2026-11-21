@@ -25,6 +25,7 @@ import {
 } from "./docx-images";
 import {
   createBrowserAutomationHost,
+  editorPreviewActive,
   type DocxEditorInstance,
   type PaginatedSurface,
   type TreeDocxSessionView,
@@ -61,6 +62,7 @@ import { planDocxObjectFormat } from "./docx-object-format";
 import { readDocxMathPayload } from "./docx-math";
 import { readDocxEquationSource, equationOfAtom, writeDocxEquation, type DocxEquationWriteRequest } from "./docx-equations";
 import type { CompiledDocxEquation } from "./docx-equation-conversion";
+import { insertDocxCitation, type DocxCitationInsertRequest } from "./docx-citation-write";
 
 export interface DocxParagraph {
   readonly handle: AutomationHandle<"paragraph">;
@@ -140,6 +142,8 @@ export type DocxApplyErrorCode =
   | AutomationErrorCode
   | "stale-target"
   | "unsupported-target"
+  | "ambiguous-citation-source"
+  | "unsupported-citation-metadata"
   | "invalid-format"
   | "invalid-range"
   | "expected-text-mismatch"
@@ -195,6 +199,7 @@ export interface DocxSession {
   readParagraphModelText?(paragraph: AutomationHandle<"paragraph">): string;
   readImage?(input: DocxImageReadRequest): DocxImageReadResult;
   writeEquation?(input: DocxEquationWriteRequest, compiled: CompiledDocxEquation): DocxApplyResult;
+  insertCitation?(input: DocxCitationInsertRequest): DocxApplyResult;
   readParagraphFormatting?(
     paragraph: AutomationHandle<"paragraph">,
   ): DocxParagraphFormatting;
@@ -2186,6 +2191,32 @@ export function createDocxHostSession(host: AutomationHost): DocxSession {
   return createDocxSessionFromHost(host);
 }
 
+function createDocxParagraphReader(host: AutomationHost, tree?: TreeDocxSessionView) {
+  let identityRevision = -1;
+  let identityHandles = new Map<string, AutomationHandle<"paragraph">>();
+  const listParagraphHandles = () => paragraphHandles(host, bodyOf(host));
+  return {
+    revision: () => host.revision(),
+    listParagraphHandles,
+    paragraphHandleForId(paraId: string) {
+      if (identityRevision !== host.revision()) {
+        const handles = listParagraphHandles();
+        const values = execute(host, { operations: handles.map((paragraph) => ({ op: "getParagraphId" as const, paragraph })) });
+        identityHandles = new Map(handles.map((handle, index) => [textAt(values, index), handle]));
+        identityRevision = values.revision;
+      }
+      return identityHandles.get(paraId);
+    },
+    readParagraph: (paragraph: AutomationHandle<"paragraph">) => readParagraphSemantics(host, paragraph, tree),
+    dispose: () => host.dispose(),
+  };
+}
+
+export function createDocxFieldReader(editor: DocxEditorInstance, tree: TreeDocxSessionView) {
+  const { paragraphHandleForId, readParagraph, revision, dispose } = createDocxParagraphReader(createBrowserAutomationHost(editor), tree);
+  return { paragraphHandleForId, readParagraph, revision, dispose };
+}
+
 function createDocxSessionFromHost(
   host: AutomationHost,
   inspect?: CanonicalInspector,
@@ -2210,21 +2241,8 @@ function createDocxSessionFromHost(
   ) => DocxApplyResult,
   tree?: TreeDocxSessionView,
 ): DocxSession {
-  let identityRevision = -1;
-  let identityHandles = new Map<string, AutomationHandle<"paragraph">>();
   return {
-    revision: () => host.revision(),
-    listParagraphHandles: () =>
-      paragraphHandles(host, bodyOf(host)),
-    paragraphHandleForId: (paraId) => {
-      if (identityRevision !== host.revision()) {
-        const handles = paragraphHandles(host, bodyOf(host));
-        const values = execute(host, { operations: handles.map((paragraph) => ({ op: "getParagraphId" as const, paragraph })) });
-        identityHandles = new Map(handles.map((handle, index) => [textAt(values, index), handle]));
-        identityRevision = values.revision;
-      }
-      return identityHandles.get(paraId);
-    },
+    ...createDocxParagraphReader(host, tree),
     listParagraphs: () => listDocxParagraphs(host),
     captureTarget: (paragraph) => captureDocxTarget(host, paragraph, inspect),
     applySuggestion: (target, text) =>
@@ -2243,8 +2261,6 @@ function createDocxSessionFromHost(
         }),
         0,
       ),
-    readParagraph: (paragraph) =>
-      readParagraphSemantics(host, paragraph, tree),
     ...(tree
       ? { readImage: (input: DocxImageReadRequest) => readTreeImage(host, tree, input) }
       : {}),
@@ -2268,7 +2284,6 @@ function createDocxSessionFromHost(
         listener(event.revision),
       );
     },
-    dispose: () => host.dispose(),
   };
 }
 
@@ -2524,6 +2539,14 @@ export function createDocxSession(editor: DocxEditorInstance): DocxSession {
   );
   return {
     ...session,
+    insertCitation(input) {
+      const surface = editor.surface;
+      if (!surface || editorPreviewActive(editor)) return { ok: false, code: "unsupported-target", changed: false,
+        revision: host.revision(), message: "Citation insertion requires a live working copy." };
+      const paragraph = session.listParagraphHandles().find((item) => item.ref === input.paragraphRef);
+      if (!paragraph) return staleTarget(host.revision());
+      return insertDocxCitation(host, surface, paragraph, input);
+    },
     writeEquation(input, compiled) {
       const surface = editor.surface;
       if (!surface) return { ok: false, code: "unsupported-target", changed: false,

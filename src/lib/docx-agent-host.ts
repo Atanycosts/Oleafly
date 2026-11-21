@@ -38,9 +38,19 @@ import { loadTemplateSource } from "@/lib/docx-template-client";
 import type { CompiledDocxEquation } from "@/lib/docx-equation-conversion";
 import type { DocxApplyResult, DocxSession, DocxTarget } from "@/lib/docx-session";
 import type { DocxActivity, DocxDocumentIdentity } from "@/lib/docx-task-activity";
+import type { DocxDownloadResult } from "@/lib/docx-download";
 import { useFilesStore } from "@/store/files";
 import { activeChatRun } from "@/components/ai/chat-run-registry";
 import { useAgentWorkspaceStore, type AgentExecutionOrigin, type AgentWorkspaceTarget } from "@/store/agent-workspace";
+
+interface DocxExportReceipt {
+  result: DocxDownloadResult;
+  filename: string;
+  sessionId: string;
+  sessionRevision: number;
+  byteLength: number;
+  document: DocxDocumentIdentity;
+}
 
 export interface DocxAgentRegistration {
   sessionId: string;
@@ -56,7 +66,7 @@ export interface DocxAgentRegistration {
   session: DocxSession;
   reveal?(request: Omit<DocxRevealRequest, "sessionId"> & { signal?: AbortSignal }): Promise<void> | void;
   prepareFonts?(): Promise<unknown>;
-  exportDocument?(): Promise<unknown>;
+  exportDocument?(): Promise<DocxExportReceipt>;
   readFormat?(query: DocxFormatReadQuery): Promise<DocxFormatReadResult>;
   save?(request: {
     expectedRevision: number;
@@ -151,6 +161,11 @@ function taskDocument(registration: RegisteredDocxSession): DocxDocumentIdentity
     sessionRevision,
     savedRevision,
   };
+}
+
+function exportWorkingCopy(registration: RegisteredDocxSession): Promise<DocxExportReceipt> {
+  if (!registration.exportDocument) throw new Error("Word export is unavailable for this working copy.");
+  return registration.exportDocument();
 }
 
 function liveDocument(registration: RegisteredDocxSession): DocxActivityDocument {
@@ -851,10 +866,14 @@ function compactTemplateCheck(result: DocxTemplateCheckResult): DocxTemplateChec
   return { template: result.template, check };
 }
 
+interface LocalEquationWriteContext extends DocxOperationContext {
+  isTargetVisible?(): boolean;
+}
+
 async function performEquationWrite(
   registration: RegisteredDocxSession,
   input: DocxEquationWriteRequest,
-  context?: DocxOperationContext,
+  context?: LocalEquationWriteContext,
   beforeCommit?: () => Promise<void>,
 ): Promise<DocxEquationWriteResult> {
   assertAttribution(context);
@@ -886,13 +905,17 @@ async function performEquationWrite(
   assertAttribution(context);
   await beforeCommit?.();
   const latest = currentRegistration(registration);
-  if (context?.signal?.aborted) throw new Error("The equation write was cancelled before mutation.");
+  if (context?.signal?.aborted || context?.isTargetVisible?.() === false) {
+    throw new Error("The equation write was cancelled before mutation.");
+  }
   const result = write(input, compiled);
   return { ...result, document: state(latest), warnings: compiled.warnings,
     ...(result.ok ? { sourceHash: compiled.sourceHash } : {}) };
 }
 
-export const DOCX_AGENT_HOST: DocxToolsHost = {
+export const DOCX_AGENT_HOST: Omit<DocxToolsHost, "writeEquation"> & {
+  writeEquation(input: DocxEquationWriteRequest, context?: LocalEquationWriteContext): Promise<DocxEquationWriteResult>;
+} = {
   workspaceContext: async () => getDocxWorkspaceContext(),
   revealWorkingCopy: async (input) => {
     const registration = registrationFor(input.sessionId);
@@ -906,11 +929,7 @@ export const DOCX_AGENT_HOST: DocxToolsHost = {
     if (!registration.prepareFonts) throw new Error("Word font preparation is unavailable for this working copy.");
     return registration.prepareFonts();
   },
-  exportDocument: async (sessionId) => {
-    const registration = registrationFor(sessionId);
-    if (!registration.exportDocument) throw new Error("Word export is unavailable for this working copy.");
-    return registration.exportDocument();
-  },
+  exportDocument: async (sessionId) => exportWorkingCopy(registrationFor(sessionId)),
   listDocuments: async () =>
     [...sessions.values()]
       .filter(
@@ -1392,13 +1411,14 @@ async function executeTaskDocxOperation(
     if (context.selectionWriteTarget?.sessionId !== registration.sessionId) context.selectionWriteTarget = null;
     return { operation, ok: true, document: docxTaskDocument(scope, registration.sessionId), result: context };
   }
-  if (operation === "reveal" || operation === "prepare_fonts" || operation === "export") {
-    let result: unknown;
-    if (operation === "reveal") result = await DOCX_AGENT_HOST.revealWorkingCopy!({
+  if (operation === "export") {
+    const { document, ...result } = await exportWorkingCopy(registration);
+    return { operation, ok: true, document, result };
+  }
+  if (operation === "reveal" || operation === "prepare_fonts") {
+    const result = operation === "reveal" ? await DOCX_AGENT_HOST.revealWorkingCopy!({
       sessionId: registration.sessionId, ...(args as DocxTaskRevealArgs),
-    });
-    else if (operation === "prepare_fonts") result = await DOCX_AGENT_HOST.prepareFonts!(registration.sessionId);
-    else result = await DOCX_AGENT_HOST.exportDocument!(registration.sessionId);
+    }) : await DOCX_AGENT_HOST.prepareFonts!(registration.sessionId);
     return { operation, ok: true, document: docxTaskDocument(scope, registration.sessionId), result };
   }
   if (operation === "read_format") {
@@ -1705,7 +1725,7 @@ export function createDocxAgentTools(
       input.paragraphRef,
     ),
     writeEquation: (input, context) => perform(input.sessionId, "write_equation",
-      () => DOCX_AGENT_HOST.writeEquation!(input, context), input.paragraphRef),
+      () => DOCX_AGENT_HOST.writeEquation(input, context), input.paragraphRef),
     saveDocument: (sessionId, revision, context) => perform(sessionId, "save",
       () => DOCX_AGENT_HOST.saveDocument!(sessionId, revision, context)),
     checkTemplate: (sessionId, template, context) => perform(sessionId, "check",

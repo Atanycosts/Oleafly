@@ -8,6 +8,7 @@ export interface MockAiServer {
   close: () => Promise<void>;
   setReply: (text: string) => void;
   setStreamDelay: (milliseconds: number) => void;
+  holdNextStream: () => () => void;
   setToolCall: (call: { name: string; args: Record<string, unknown>; then: string } | null) => void;
   setToolSequence: (calls: Array<{ name: string; args: SequenceArgs }>, then: string) => void;
   setResponder: (respond: (request: Record<string, unknown>) => ScriptedReply) => void;
@@ -19,6 +20,7 @@ export interface MockAiServer {
 export async function startMockAiServer(): Promise<MockAiServer> {
   let reply = "MOCKREPLY";
   let streamDelay = 0;
+  let nextStream: Promise<void> | undefined;
   let toolCall: { name: string; args: Record<string, unknown>; then: string } | null = null;
   let sequence: Array<{ name: string; args: SequenceArgs }> | null = null;
   let sequenceReply = "";
@@ -124,7 +126,10 @@ export async function startMockAiServer(): Promise<MockAiServer> {
             ...(usage ? { usage } : {}),
           });
 
+        const heldStream = nextStream;
+        nextStream = undefined;
         chunk({ role: "assistant" });
+        await heldStream;
         if (streamDelay > 0) {
           await new Promise((resolve) => setTimeout(resolve, streamDelay));
         }
@@ -191,6 +196,11 @@ export async function startMockAiServer(): Promise<MockAiServer> {
     },
     setStreamDelay: (milliseconds) => {
       streamDelay = milliseconds;
+    },
+    holdNextStream: () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      nextStream = promise;
+      return resolve;
     },
     setToolCall: (c) => {
       toolCall = c;

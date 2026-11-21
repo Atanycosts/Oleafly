@@ -27,6 +27,13 @@ vi.mock("@docx-editor.dev/react", () => {
   const editor = {
     snapshot: () => mocks.snapshot,
     query: mocks.query,
+    surface: {
+      session: { nodeIdOf: (paraId: string) => paraId === "retained-para" ? "retained-node" : null },
+      state: () => ({ selection: {
+        anchor: { paragraphId: "retained-node", offset: 0 },
+        head: { paragraphId: "retained-node", offset: 22 },
+      } }),
+    },
     scrollToAnchor: mocks.scrollToAnchor,
     highlightAnchor: mocks.highlightAnchor,
     on: (_event: string, listener: () => void) => {
@@ -73,7 +80,7 @@ it("publishes the real retained Word selection with its own revision and no writ
   act(() => mocks.listener?.());
   expect(current()).toMatchObject({ role: "original", revision: document.revision, selection: {
     revision: document.revision,
-    anchor: { kind: "object", id: "retained-para", label: "Selected retained text" },
+    anchor: { kind: "object", id: "retained-para", label: "Selected retained text", range: { from: 0, to: 22 } },
   } });
   expect(current().sessionId).toBeUndefined();
   expect(current().selection?.paragraphRef).toBeUndefined();
@@ -95,5 +102,5 @@ it("waits for the retained document to finish opening before publishing a select
   mocks.snapshot.isOpening = false;
   rendered.rerender(view());
   expect(useAgentWorkspaceStore.getState().views[document.projectId].selection?.anchor)
-    .toEqual({ kind: "object", id: "retained-para", label: "Selected retained text" });
+    .toEqual({ kind: "object", id: "retained-para", label: "Selected retained text", range: { from: 0, to: 22 } });
 });

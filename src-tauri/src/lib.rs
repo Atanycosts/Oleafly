@@ -993,6 +993,8 @@ pub fn run() {
             citation::fetch_isbn_bibtex,
             citation::fetch_pmid_bibtex,
             citation::crossref_search,
+            citation::crossref_search_journal_titles,
+            citation::crossref_work,
             arxiv_import::import_arxiv_eprint,
             bib_clean::clean_bibtex_library,
             stats::stats_p_value,

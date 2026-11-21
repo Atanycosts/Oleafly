@@ -307,4 +307,21 @@ describe("checkForUpdatesOnStartup", () => {
     checkForUpdatesOnStartup();
     expect(check).not.toHaveBeenCalled();
   });
+
+  it("keeps a packaged Workbench candidate on the tested build", async () => {
+    vi.stubEnv("VITE_LOCAL_WORKBENCH", "1");
+    vi.stubEnv("DEV", false);
+    vi.stubEnv("VITE_E2E_HOOKS", "0");
+    vi.resetModules();
+    try {
+      const candidate = await import("./updater");
+      candidate.checkForUpdatesOnStartup();
+      await expect(candidate.findUpdate()).rejects.toThrow();
+      expect(check).not.toHaveBeenCalled();
+      expect(WebviewWindow).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
 });

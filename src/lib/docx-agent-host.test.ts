@@ -427,6 +427,29 @@ describe("Word workspace context and execution feedback", () => {
     const context = await runTaskDocxOperation(scope, "session-1", "context", {});
     expect(context.result).toMatchObject({ writable: [{ sessionId: "session-1" }] });
   });
+
+  it("records the exported snapshot even if the working copy changes while choosing a destination", async () => {
+    const local = harness();
+    local.edit("p1", "Text included in the exported copy.");
+    const receipt = { result: { status: "saved" as const, path: "/chosen/paper.docx" },
+      filename: "paper.docx", sessionId: "session-1", sessionRevision: 1, byteLength: 4 };
+    const scope = { projectId: "app-project", workbenchProjectId: "paper-project" };
+    const document = { sessionId: "session-1", appProjectId: scope.projectId, workbenchProjectId: scope.workbenchProjectId,
+      sessionRevision: 1, baselineId: "baseline-1", sourceSha256: "a".repeat(64), savedRevision: 0 };
+    let finishExport!: (result: typeof receipt & { document: typeof document }) => void;
+    const exportDocument = vi.fn<NonNullable<DocxAgentRegistration["exportDocument"]>>(
+      () => new Promise((resolve) => { finishExport = resolve; }),
+    );
+    register(local.session, { exportDocument });
+
+    const pending = runTaskDocxOperation(scope, "session-1", "export", {});
+    expect(exportDocument).toHaveBeenCalledOnce();
+    local.edit("p1", "Later working copy text.");
+    updateDocxAgentSession("session-1", { baselineId: "baseline-2", sourceSha256: "b".repeat(64), savedRevision: 2 });
+    finishExport({ ...receipt, document });
+
+    await expect(pending).resolves.toEqual({ operation: "export", ok: true, document, result: receipt });
+  });
 });
 
 describe("active DOCX Agent host", () => {

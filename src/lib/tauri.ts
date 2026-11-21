@@ -1365,6 +1365,8 @@ export const statsConfidenceInterval = (
 export const literatureArxivLookup = (arxivId: string) =>
   invoke<string>("literature_arxiv_lookup", { arxivId });
 export const crossrefSearch = (query: string) => invoke<string>("crossref_search", { query });
+export const crossrefSearchJournalTitles = (title: string) => invoke<string>("crossref_search_journal_titles", { title });
+export const crossrefWork = (doi: string) => invoke<unknown>("crossref_work", { doi });
 export const literatureSearch = (
   source: string,
   query: string,

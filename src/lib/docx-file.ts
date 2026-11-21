@@ -11,12 +11,17 @@ export interface OpenedWordDocument {
 export interface WordOpenChoice { workbenchProjectId?: string; newCopy?: boolean }
 const opening = new Map<string, Promise<OpenedWordDocument>>();
 
+export class DocxWorkbenchConnectionError extends Error {}
+
 /** Share concurrent opens, while every later open reads the latest saved working copy. */
-export function openWordDocument(projectId: string, path: string, choice?: WordOpenChoice): Promise<OpenedWordDocument> {
-  const key = JSON.stringify([projectId, path, choice]);
+export function openWordDocument(projectId: string, path: string, choice?: WordOpenChoice, python?: string): Promise<OpenedWordDocument> {
+  const key = JSON.stringify([projectId, path, choice, python]);
   const pending = opening.get(key);
   if (pending) return pending;
-  const operation = connectJournalWorkbench()
+  const operation = connectJournalWorkbench(python)
+    .catch((cause) => {
+      throw new DocxWorkbenchConnectionError(cause instanceof Error ? cause.message : String(cause));
+    })
     .then(() => invoke<OpenedWordDocument>("journal_word_open", { projectId, path, ...choice }))
     .finally(() => opening.delete(key));
   opening.set(key, operation);

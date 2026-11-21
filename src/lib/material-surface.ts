@@ -2,6 +2,8 @@ import type { AnnotationTarget } from "@/lib/task-collaboration";
 
 export type MaterialKind = "docx" | "pdf" | "markdown" | "source" | "image" | "diagram" | "html";
 export interface MaterialRect { x: number; y: number; width: number; height: number }
+/** A half-open UTF-16 range in one paragraph's model text. */
+export interface DocxParagraphRange { from: number; to: number }
 /** Coordinates belong exclusively to the document revision that captured them. */
 export type MaterialAnchor =
   | { kind: "whole" }
@@ -10,7 +12,7 @@ export type MaterialAnchor =
   | { kind: "pdf"; pages: { page: number; rects: MaterialRect[] }[]; quote?: string; rotation: 0 | 90 | 180 | 270 }
   | { kind: "region"; rect: MaterialRect }
   | { kind: "html"; selector: string; quote: string }
-  | { kind: "object"; id: string; label?: string };
+  | { kind: "object"; id: string; label?: string; range?: DocxParagraphRange };
 
 export type MaterialContent = { text: string; mediaType?: string } | { bytes: Uint8Array | ArrayBuffer; mediaType?: string };
 export interface MaterialDocument {

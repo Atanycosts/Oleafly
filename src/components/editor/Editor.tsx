@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Group, Panel, Separator, type GroupImperativeHandle, type Layout } from "react-resizable-panels";
 import { registerEditorMutationOwner } from "@/lib/editor-mutation-lease";
@@ -171,11 +171,12 @@ function markdownModeFor(split: boolean, visual: boolean): "both" | "visual" | "
   return visual ? "visual" : "code";
 }
 
-export function EditorTabBar({ diffFocused }: { diffFocused: boolean }) {
+export function EditorTabBar({ diffFocused, trailing }: { diffFocused: boolean; trailing?: ReactNode }) {
   const { t } = useTranslation(["editor"]);
   return <div className="flex h-9 shrink-0 items-center border-b">
     <div className="flex shrink-0 items-center border-r border-border pl-2 pr-1"><SidebarCollapseToggle /></div>
     <EditorTabStrip diffFocused={diffFocused} />
+    {trailing}
     <div className="flex shrink-0 items-center gap-1 border-l border-border pl-1 pr-2">
       <CloseAssistantTabsButton />
       <Tooltip label={t(($) => $.editor.shell.editorSettings)} side="bottom">

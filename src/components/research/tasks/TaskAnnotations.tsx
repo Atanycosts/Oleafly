@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type Ref, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Bot, User } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
@@ -15,6 +15,8 @@ import {
 } from "@/lib/task-collaboration";
 
 interface AnnotationPanelOptions {
+  composerRef?: Ref<HTMLTextAreaElement>;
+  staticDraftTarget?: boolean;
   members?: GroupMember[];
   revision?: number;
   onOpenTarget?: (target: AnnotationTarget) => void;
@@ -108,7 +110,7 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
     return <Avatar person={{ id: author.id, name: member?.name ?? authorLabel(author) }} size="xs"
       fallbackIcon={author.kind === "user" ? <User /> : author.kind === "model" || author.kind === "system" ? <Bot /> : undefined} />;
   };
-  const anchorPrefix = task ? `task-${encodeURIComponent(task.id)}` : `object-${encodeURIComponent(projectId)}-${encodeURIComponent(objectKind)}-${encodeURIComponent(objectId)}`;
+  const anchorPrefix = task ? `task-${encodeURIComponent(task.id)}` : `object-${formId}`;
   const anchor = (kind: string, id: string) => `${anchorPrefix}-${kind}-${encodeURIComponent(id)}`;
   const reference = (kind: "annotation" | "handling" | "requirement", id: string) => {
     const present = kind === "annotation" ? context?.annotations.some((item) => item.id === id)
@@ -215,10 +217,11 @@ function TaskAnnotationPanel(props: Readonly<TaskAnnotationsProps>) {
     </details> : null}
     <form className="space-y-2 border-t pt-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <p className="text-xs font-medium">{t(($) => $.researchTools.tasks.annotations.target)}</p>
-      <TargetReference target={currentTarget} onOpen={onOpenTarget} describe={describeTarget} />
+      <TargetReference target={currentTarget} onOpen={reply && props.onOpenAnnotationSource
+        ? () => props.onOpenAnnotationSource?.(reply) : props.staticDraftTarget ? undefined : onOpenTarget} describe={describeTarget} />
       {reply ? <div className="flex flex-wrap items-center gap-2 text-xs"><span>{t(($) => $.researchTools.tasks.annotations.replyTo)}: {reference("annotation", reply.id)}</span><Button type="button" variant="ghost" size="xs" disabled={saving} onClick={() => { setReply(null); props.onReplyChange?.(null); }}>{t(($) => $.researchTools.tasks.annotations.cancelReply)}</Button></div> : null}
       <label htmlFor={`${formId}-body`} className="block text-xs">{t(($) => $.researchTools.tasks.annotations.body)}</label>
-      <Textarea id={`${formId}-body`} value={body} onChange={(event) => { setBody(event.target.value); setSaved(false); }} rows={3} maxLength={64000} disabled={saving} />
+      <Textarea ref={props.composerRef} id={`${formId}-body`} value={body} onChange={(event) => { setBody(event.target.value); setSaved(false); }} rows={3} maxLength={64000} disabled={saving} />
       {members.length > 0 ? <fieldset disabled={saving} className="space-y-1"><legend className="text-xs">{t(($) => $.researchTools.tasks.annotations.mentions)}</legend>
         <div className="flex flex-wrap gap-3">{members.map((member) => <label key={member.id} htmlFor={`${formId}-mention-${member.id}`} className="flex items-center gap-1.5 text-xs"><Checkbox id={`${formId}-mention-${member.id}`} checked={mentions.includes(member.id)} onCheckedChange={(checked) => setMentions((previous) => checked === true ? [...previous, member.id] : previous.filter((id) => id !== member.id))} /><span>{`@${member.name}`}</span></label>)}</div>
       </fieldset> : null}

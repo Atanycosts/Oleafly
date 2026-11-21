@@ -1,8 +1,12 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { BrowserPageAdapter, TauriPage } from "@srsholmes/tauri-playwright";
+import type { SemanticSelection } from "@docx-editor.dev/core/editor";
 import { strToU8, unzipSync, zipSync } from "fflate";
-import type { DocxDocumentRead, DocxWorkspaceContext } from "../../packages/ai-tools/src/tools";
+import type { DocxDocumentRead, DocxReadQuery, DocxWorkspaceContext } from "../../packages/ai-tools/src/tools";
+import { declaredDocxDoi, docxDoiUrl } from "../../src/lib/docx-citation-doi";
 import type { DocxActivityPage } from "../../src/lib/docx-task-activity";
 import type { RetainedMaterial } from "../../src/lib/material-annotations";
 import type { MaterialAnchor, MaterialReference } from "../../src/lib/material-surface";
@@ -31,6 +35,7 @@ type MaterialFixtures = {
   currentImage: MaterialFixture;
 };
 type DocxSessionState = DocxDocumentRead["document"];
+type DocxParagraph = DocxDocumentRead["paragraphs"][number];
 
 function decodeToolResult(content: string): Record<string, unknown> {
   const envelope = JSON.parse(content) as {
@@ -58,9 +63,9 @@ function findResult(results: Record<string, unknown>[], predicate: (value: Recor
   throw new Error(`Missing material task result: ${JSON.stringify(results)}`);
 }
 
-async function readDocx(page: Page): Promise<DocxDocumentRead> {
+async function readDocx(page: Page, query?: DocxReadQuery): Promise<DocxDocumentRead> {
   return page.evaluate<DocxDocumentRead>(
-    `window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m => m.DOCX_AGENT_HOST.readDocument())`,
+    `window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m => m.DOCX_AGENT_HOST.readDocument(${query ? scriptValue(query) : ""}))`,
   );
 }
 
@@ -94,7 +99,9 @@ async function probeHtmlFrame(page: Page) {
   })()`), { timeout: 30_000, intervals: [250, 500] }).toBeGreaterThan(0);
 }
 
-function syntheticDocx(): Uint8Array {
+function syntheticDocx(twoColumns = false): Uint8Array {
+  const columnBreak = twoColumns ? '<w:p><w:r><w:br w:type="column"/></w:r></w:p>' : "";
+  const columns = twoColumns ? '<w:cols w:num="2" w:space="720"/>' : "";
   return zipSync({
     "[Content_Types].xml": strToU8(
       '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>',
@@ -106,7 +113,7 @@ function syntheticDocx(): Uint8Array {
       '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
     ),
     "word/document.xml": strToU8(
-      '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>WORD-WORKING-SESSION</w:t></w:r></w:p><w:p><w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>Second paragraph remains in the same working copy.</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>',
+      `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"><w:body><w:p w14:paraId="00000001"><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>WORD-WORKING-SESSION</w:t></w:r></w:p>${columnBreak}<w:p w14:paraId="00000002"><w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>Second paragraph remains in the same working copy.</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/>${columns}</w:sectPr></w:body></w:document>`,
     ),
     "word/styles.xml": strToU8(
       '<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>',
@@ -863,6 +870,771 @@ test("source ranges and diagram objects retain their own material identity", asy
   expect(diagramRetained.snapshot.anchor).toEqual({ kind: "object", id: nodeId });
   expect(new TextDecoder().decode(new Uint8Array(diagramRetained.bytes))).toBe(diagram);
   await webviewScreenshot(page, testInfo.outputPath("diagram-object-feedback.png"));
+});
+
+type Manuscript = { path: string; sha256: string; paragraphs: [string, string, string] };
+type CitationTrial = { python: string; originalPath: string; exportPath: string; doi: string; titleQuery?: string };
+type CitationReimport = {
+  python: string;
+  exportPath: string;
+  doi: string;
+  citations: [{ paraId: string; instruction: string }, { paraId: string; instruction: string }];
+};
+
+const publishedManuscript = (path: string): Manuscript => ({
+  path,
+  sha256: "31b5cbc408c359dc31224b081505264bad689f4601eef3a05969668f85c9d47b",
+  paragraphs: ["0E8ABDCF", "4AD876D5", "3907DF96"],
+});
+
+function citationPackageEvidence(python: string, ...args: string[]) {
+  const result = spawnSync(python, ["-B", "e2e/tests/docx-real-package.py", ...args], {
+    encoding: "utf8", env: { ...process.env, PYTHONPATH: resolve("services/research-workbench/src") },
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`DOCX package check failed: ${(result.stdout || result.stderr).trim()}`);
+  return JSON.parse(result.stdout);
+}
+
+test("DOCX citation picker uses live Crossref and preserves one source across columns", async ({ tauriPage: page }, testInfo) => {
+  test.skip(process.env.OLEAFLY_DOCX_CITATION_ACCEPTANCE !== "1", "Requires an isolated desktop build with VITE_DOCX_CITATION_PREVIEW=1 and live Crossref.");
+  test.setTimeout(240_000);
+  const python = process.env.OLEAFLY_WORKBENCH_PYTHON;
+  if (!python) throw new Error("Set OLEAFLY_WORKBENCH_PYTHON for DOCX citation acceptance.");
+  const published = process.env.OLEAFLY_PUBLISHED_DOCX;
+  await exerciseDocxWorkingCopy(page, published ? publishedManuscript(published) : undefined, {
+    python,
+    originalPath: published || testInfo.outputPath("original.docx"),
+    exportPath: testInfo.outputPath("oleafly-export.docx"),
+    doi: published ? "10.1038/nature14539" : "10.1023/a:1010933404324",
+    titleQuery: published ? undefined : "Random Forests",
+  });
+});
+
+test("authorized Word manuscript survives desktop review and citation export", async ({ tauriPage: page }, testInfo) => {
+  const path = process.env.OLEAFLY_WORD_ORIGINAL_DOCX;
+  test.skip(!path, "Supply an authorized long two-column Word manuscript with native Word citations.");
+  test.setTimeout(300_000);
+  const python = process.env.OLEAFLY_WORKBENCH_PYTHON;
+  const doi = declaredDocxDoi(process.env.OLEAFLY_WORD_TRIAL_DOI ?? "");
+  const paragraphs = (process.env.OLEAFLY_WORD_TRIAL_PARAGRAPHS ?? "").trim().toUpperCase().split(/\s*,\s*/u);
+  if (!python || !doi || paragraphs.length !== 3 || new Set(paragraphs).size !== 3 ||
+    paragraphs.some(id => !/^[A-F0-9]{8}$/u.test(id))) {
+    throw new Error("Set the Workbench interpreter, trial DOI and three distinct paragraph IDs in left,edit,right order.");
+  }
+  const preflight = citationPackageEvidence(python, "--citation-input", path!, doi, paragraphs.join(","));
+  expect(preflight).toMatchObject({ ok: true, issues: [] });
+  await exerciseDocxWorkingCopy(page, { path: path!, sha256: preflight.sha256,
+    paragraphs: [paragraphs[0], paragraphs[1], paragraphs[2]] }, {
+    python, originalPath: path!, exportPath: testInfo.outputPath("oleafly-export.docx"), doi,
+  });
+});
+
+test("published DOCX review survives save and reopen on desktop", async ({ tauriPage: page }) => {
+  test.skip(process.env.OLEAFLY_DOCX_REVIEW_ACCEPTANCE !== "1", "Requires an isolated desktop runner and the published two-column DOCX.");
+  test.setTimeout(240_000);
+  const published = process.env.OLEAFLY_PUBLISHED_DOCX;
+  if (!published) throw new Error("Set OLEAFLY_PUBLISHED_DOCX to the original Zenodo 8227226 DOCX.");
+  await exerciseDocxWorkingCopy(page, publishedManuscript(published));
+});
+
+test("Word citation re-import remains editable on desktop", async ({ tauriPage: page }, testInfo) => {
+  const path = process.env.OLEAFLY_WORD_REIMPORT_DOCX;
+  test.skip(!path, "Supply the refreshed DOCX copy to re-import.");
+  test.setTimeout(240_000);
+  const python = process.env.OLEAFLY_WORKBENCH_PYTHON;
+  const doi = declaredDocxDoi(process.env.OLEAFLY_WORD_REIMPORT_DOI ?? "");
+  if (!python || !doi) throw new Error("Set OLEAFLY_WORKBENCH_PYTHON and OLEAFLY_WORD_REIMPORT_DOI.");
+  const targets: { ok: boolean; sha256: string; editParaId: string; citations: CitationReimport["citations"] } =
+    citationPackageEvidence(python, "--citation-reimport-targets", path!, doi);
+  expect(targets).toMatchObject({ ok: true, issues: [] });
+  expect(targets.citations).toHaveLength(2);
+  const [left, right] = targets.citations;
+  await exerciseDocxWorkingCopy(page, {
+    path: path!, sha256: targets.sha256,
+    paragraphs: [targets.editParaId, left.paraId, right.paraId],
+  }, undefined, { python, doi, exportPath: testInfo.outputPath("oleafly-reexport.docx"), citations: targets.citations });
+});
+
+async function exerciseDocxWorkingCopy(
+  page: Page,
+  manuscript: Manuscript | undefined,
+  citation?: CitationTrial,
+  reimport?: CitationReimport,
+) {
+  await expect.poll(() => page.evaluate<string>("document.visibilityState"), {
+    message: "Word desktop acceptance requires an unlocked desktop with the Oleafly window visible.",
+    timeout: 5_000,
+  }).toBe("visible");
+  const original = manuscript ? await readFile(manuscript.path) : syntheticDocx(true);
+  const originalSha = createHash("sha256").update(original).digest("hex");
+  if (manuscript) expect(originalSha).toBe(manuscript.sha256);
+  const originalBase64 = Buffer.from(original).toString("base64");
+  await createBlankProject(page, `DOCX ${reimport ? "re-import" : citation ? "citation" : "review"} ${Date.now()}`);
+  await page.evaluate("window.__oleaflyE2EImport('/src/store/settings.ts').then(m => m.useSettingsStore.getState().setUiLocalePreference('en'))");
+  const file = manuscript ? "manuscript.docx" : "two-column-citation.docx";
+  const projectId = await page.evaluate<string>(`document.querySelector('[data-e2e-project-id]').getAttribute('data-e2e-project-id')`);
+  await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m => m.saveFileBase64(${scriptValue(projectId)}, ${scriptValue(file)}, ${scriptValue(originalBase64)}))`);
+  await page.evaluate(`window.__oleaflyE2EImport('/src/store/files.ts').then(m => m.useFilesStore.getState().refreshTree())`);
+  const openFile = () => page.evaluate(`window.__oleaflyE2EImport('/src/store/files.ts').then(m => m.useFilesStore.getState().openFile(${scriptValue(file)}))`);
+  const workspace = '[data-testid="docx-workspace"]';
+  const surface = '[data-testid="docx-editor-surface"]';
+  const tools = '[data-testid="docx-context-tools"]';
+  const picker = `${tools}[role="dialog"][aria-label="Insert citation"]`;
+  const searchbox = `${picker} input[type="search"]`;
+  const notice = page.locator(`${picker} [role="status"]`);
+  const waitForSession = (sourceSha: string, previousSession?: string) => expect.poll(async () => {
+    const documents = await page.evaluate<DocxSessionState[]>(
+      "window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m => m.DOCX_AGENT_HOST.listDocuments())",
+    );
+    return documents.some(document => document.appProjectId === projectId &&
+      document.sourceSha256 === sourceSha && document.sessionId !== previousSession);
+  }, { timeout: 30_000 }).toBe(true);
+  const activateInside = (selector: string) => page.evaluate(`document.querySelector(${scriptValue(selector)}).click()`);
+  const activeInside = (selector: string) => page.evaluate<string | null>(`document.activeElement?.matches(${scriptValue(selector)})
+    ? document.activeElement.textContent : null`);
+  await openFile();
+  await expect(page.locator(surface)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("docx-font-state")).toHaveAttribute("data-resolving", "false", { timeout: 60_000 });
+  await expect(page.getByTestId("docx-font-state")).toHaveAttribute("data-measurer", "shaped");
+  await waitForSession(originalSha);
+  const opened = (await readDocx(page)).document;
+  expect(opened.sourceSha256).toBe(originalSha);
+  const layout = (pageIndex: string) => page.evaluate(`(() => {
+    const root = document.querySelector(${scriptValue(surface)});
+    const viewport = root.querySelector('.docx-editor__scroll-container');
+    const paper = root.querySelector(${scriptValue(`.docx-page[data-page-index="${pageIndex}"]`)});
+    return { paper: paper.getBoundingClientRect().toJSON(),
+      viewport: viewport.getBoundingClientRect().toJSON(), scrollTop: viewport.scrollTop, scrollLeft: viewport.scrollLeft };
+  })()`);
+  const targetIds = manuscript?.paragraphs ?? ["00000001", "00000002"];
+  const readTargets = async () => {
+    const matches = new Map<string, DocxParagraph>();
+    let result = await readDocx(page, { limit: 50 });
+    for (;;) {
+      for (const paragraph of result.paragraphs) {
+        const id = paragraph.paraId?.toUpperCase();
+        if (id && targetIds.includes(id)) matches.set(id, paragraph);
+      }
+      if (!result.nextQuery || matches.size === targetIds.length) break;
+      result = await readDocx(page, result.nextQuery);
+    }
+    expect(targetIds.filter(id => !matches.has(id)), "Missing manuscript paragraph IDs").toEqual([]);
+    return targetIds.map(id => matches.get(id)!);
+  };
+  const reveal = async (paragraphRef: string) => {
+    await page.evaluate(`(() => {
+      window.__docxNavigation = { status: 'pending' };
+      void window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(async m => {
+        const { document } = await m.DOCX_AGENT_HOST.readDocument({ limit: 1 });
+        await m.revealDocxWorkspaceTarget({ projectId: ${scriptValue(projectId)}, sessionId: document.sessionId, paragraphRef: ${scriptValue(paragraphRef)} });
+        window.__docxNavigation = { status: 'revealed' };
+      }).catch(error => { window.__docxNavigation = { status: 'failed', error: String(error) }; });
+      return true;
+    })()`);
+    await expect.poll(async () => {
+      const result = await page.evaluate<{ status: string; error?: string }>("window.__docxNavigation");
+      if (result.error) throw new Error(result.error);
+      return result.status;
+    }, { message: `Reveal Word paragraph ${paragraphRef}` }).toBe("revealed");
+  };
+  const revealPaintedParagraph = async (target: DocxParagraph) => {
+    if (!target.paraId) throw new Error(`No DOCX paragraph identity for ${target.paragraphRef}`);
+    await reveal(target.paragraphRef);
+    const { sessionId } = (await readDocx(page, { limit: 1 })).document;
+    const nodeId = await page.evaluate<string | null>(`window.__oleaflyE2EImport('/src/components/research/DocxWorkspaceDialog.tsx')
+      .then(m => m.e2eDocxParagraphNode(${scriptValue(sessionId)}, ${scriptValue(target.paraId)}))`);
+    if (!nodeId) throw new Error(`No painted paragraph for ${target.paraId}`);
+    return { nodeId, sessionId };
+  };
+  const modelSelection = (sessionId: string) => page.evaluate<SemanticSelection | null>(
+    `window.__oleaflyE2EImport('/src/components/research/DocxWorkspaceDialog.tsx').then(m => m.e2eDocxSelection(${scriptValue(sessionId)}))`,
+  );
+  const placeCaret = async (target: DocxParagraph) => {
+    const { nodeId, sessionId } = await revealPaintedParagraph(target);
+    const position = await page.evaluate<{ left: number; right: number; pageIndex: string }>(`(() => {
+      const fragment = Array.from(document.querySelectorAll(${scriptValue(`${surface} .docx-paragraph-fragment[data-fragment-index="0"]`)}))
+        .find(item => item.dataset.paragraphId === ${scriptValue(nodeId)});
+      const line = fragment?.querySelector('.docx-line');
+      if (!line) throw new Error('Fixture line is not painted');
+      line.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+      const rect = line.getBoundingClientRect();
+      const clientX = rect.left + 5, clientY = rect.top + Math.min(8, rect.height / 2);
+      const hit = document.elementFromPoint(clientX, clientY);
+      if (!hit || !line.contains(hit)) throw new Error('Fixture line is not under the pointer');
+      const options = { bubbles: true, cancelable: true, clientX, clientY, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+      hit.dispatchEvent(new PointerEvent('pointerdown', { ...options, buttons: 1 }));
+      hit.dispatchEvent(new PointerEvent('pointerup', { ...options, buttons: 0 }));
+      const paper = fragment.closest('.docx-page');
+      const box = fragment.getBoundingClientRect();
+      const paperLeft = paper.getBoundingClientRect().left;
+      return { left: box.left - paperLeft, right: box.right - paperLeft, pageIndex: paper.dataset.pageIndex };
+    })()`);
+    await page.keyboard.press("Home");
+    await expect.poll(() => page.evaluate(`(() => {
+      const selection = document.getSelection();
+      return document.activeElement?.matches(${scriptValue(`${surface} .docx-pages`)}) && selection?.isCollapsed
+        ? selection.anchorNode?.parentElement?.closest('.docx-paragraph-fragment')?.dataset.paragraphId ?? null
+        : null;
+    })()`)).toBe(nodeId);
+    const start = { paragraphId: nodeId, offset: 0 };
+    await expect.poll(() => modelSelection(sessionId)).toMatchObject({ anchor: start, head: start });
+    await expect.poll(async () => (await page.evaluate<DocxWorkspaceContext>(
+      "window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(host => host.getDocxWorkspaceContext())",
+    )).selectionWriteTarget?.paragraphRef).toBe(target.paragraphRef);
+    return { ...position, nodeId, sessionId };
+  };
+  const reviewManuscript = async () => {
+    const server = await startMockAiServer();
+    let releaseHeldStream: (() => void) | null = null;
+    const release = () => {
+      releaseHeldStream?.();
+      releaseHeldStream = null;
+    };
+    try {
+      expect(await page.evaluate(`window.__aiConnect?.("ollama", ${scriptValue(server.url)}, "llama3.2") ?? false`)).toBe(true);
+      const sessionId = opened.sessionId;
+      const [left, human, right] = await readTargets();
+      const reviewPrefix = "Suggested paragraph is complete.";
+      const humanPrefix = "LOCAL ";
+      for (const [target, prefix] of [[left, reviewPrefix], [human, humanPrefix], [right, " "]] as const) {
+        expect(target.atoms, `Expected plain text in ${target.paraId}`).toHaveLength(0);
+        expect(target.modelTextTruncated).not.toBe(true);
+        expect(target.text.length).toBeGreaterThan(prefix.length);
+        expect(target.editableRanges.some(({ start, end }) => start === 0 && end >= prefix.length),
+          `Expected an editable paragraph opening in ${target.paraId}`).toBe(true);
+      }
+      const reviewReply = reviewPrefix + left.text.slice(reviewPrefix.length);
+      const humanReply = humanPrefix + human.text.slice(humanPrefix.length);
+      const staleReply = "STALE review must not apply.";
+      const interruptedPrefix = "LOCALIZED";
+      const interruptedReply = interruptedPrefix + reviewReply.slice(interruptedPrefix.length);
+      const inlineSelector = '[data-testid="docx-inline-suggestion"]';
+      const inline = page.locator(inlineSelector);
+      const reviewEntry = page.locator('[data-testid="docx-inline-suggestion"] button').first();
+      const review = page.locator('[data-testid="docx-suggestion"]');
+      const reviewHeading = page.locator('[data-testid="docx-suggestion"] h3');
+      const documentTools = page.locator('[data-testid="docx-document-tools"]');
+      const accept = page.locator('[data-testid="docx-suggestion"] button').filter({ hasText: "Accept" }).first();
+      const replacePrefix = async (target: DocxParagraph, replacement: string) => {
+        const { nodeId, sessionId } = await placeCaret(target);
+        for (let index = 0; index < replacement.length; index++) {
+          await page.keyboard.press("Shift+ArrowRight");
+        }
+        await expect.poll(() => modelSelection(sessionId)).toMatchObject({
+          anchor: { paragraphId: nodeId, offset: 0 },
+          head: { paragraphId: nodeId, offset: replacement.length },
+        });
+        await page.evaluate(`document.activeElement.dispatchEvent(new InputEvent('beforeinput', {
+          inputType: 'insertText', data: ${scriptValue(replacement)}, bubbles: true, cancelable: true
+        }))`);
+      };
+      const paperState = () => page.evaluate(`(() => {
+        const root = document.querySelector(${scriptValue(surface)});
+        const viewport = root.querySelector('.docx-editor__scroll-container');
+        return {
+          pages: Array.from(root.querySelectorAll('.docx-page')).map(page => page.getBoundingClientRect().toJSON()),
+          viewport: viewport.getBoundingClientRect().toJSON(),
+          scrollTop: viewport.scrollTop,
+          scrollLeft: viewport.scrollLeft
+        };
+      })()`);
+      const beginSuggestion = async (paragraphRef: string, reply: string) => {
+        server.setReply(reply);
+        releaseHeldStream = server.holdNextStream();
+        const requests = server.requestCount();
+        await page.evaluate(`(() => {
+          window.__docxSuggestionStatus = { state: 'pending' };
+          const pending = window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m =>
+            m.DOCX_AGENT_HOST.suggestChange({
+              sessionId: ${scriptValue(sessionId)},
+              paragraphRef: ${scriptValue(paragraphRef)},
+              instruction: 'Improve this paragraph while preserving its meaning.'
+            })
+          );
+          pending.then(
+            value => { window.__docxSuggestionStatus = { state: 'fulfilled', value }; },
+            error => { window.__docxSuggestionStatus = { state: 'rejected', error: String(error) }; }
+          );
+        })()`);
+        await expect.poll(() => server.requestCount(), { timeout: 30_000 }).toBe(requests + 1);
+      };
+      const pendingStatus = () => page.evaluate<string | null>(
+        "window.__docxSuggestionStatus?.state ?? null",
+      );
+      const suggestionTitle = () => page.evaluate<string | null>(`(() => {
+        const button = document.querySelector('[data-testid="docx-inline-suggestion"] button');
+        return button?.getAttribute('title') ?? null;
+      })()`);
+
+      await reveal(left.paragraphRef);
+      await beginSuggestion(left.paragraphRef, reviewReply);
+      await expect.poll(suggestionTitle).toBe("Generating suggestion");
+      await expect(review).toBeHidden();
+
+      await replacePrefix(human, humanPrefix);
+      await expect.poll(async () => (await readTargets())[1].text).toBe(humanReply);
+      await expect.poll(suggestionTitle).toBe("Generating suggestion");
+      await expect(documentTools).toHaveAttribute("aria-expanded", "false");
+      await page.evaluate("new Promise(requestAnimationFrame)");
+      const paperBeforeReady = await paperState();
+      await page.evaluate("(() => { window.__docxReviewFocus = document.activeElement; })()");
+      release();
+      await expect.poll(suggestionTitle).toBe("Ready to review");
+      await expect.poll(pendingStatus).toBe("fulfilled");
+      await expect(review).toBeHidden();
+      expect(await page.evaluate<boolean>("document.activeElement === window.__docxReviewFocus")).toBe(true);
+      expect(await page.evaluate<boolean>(`(() => {
+        const tools = document.querySelector(${scriptValue(tools)});
+        return !tools || !tools.contains(document.activeElement);
+      })()`)).toBe(true);
+      expect(await paperState()).toEqual(paperBeforeReady);
+      expect((await readTargets()).map(({ text }) => text)).toEqual([left.text, humanReply, right.text]);
+
+      const viewportSize = () => page.evaluate<[number, number]>("[innerWidth, innerHeight]");
+      const launchSize = await viewportSize();
+      const resizeWindow = async (width: number, height: number) => {
+        await page.evaluate(`window.__oleaflyE2EImport('/src/lib/e2e-probe.ts').then(m => m.resizeCurrentWindow(${width}, ${height}))`);
+        await expect.poll(async () => {
+          const [actualWidth, actualHeight] = await viewportSize();
+          return Math.max(Math.abs(actualWidth - width), Math.abs(actualHeight - height));
+        }).toBeLessThanOrEqual(1);
+      };
+      try {
+        await resizeWindow(940, 620);
+        await reveal(left.paragraphRef);
+        await expect(reviewEntry).toBeVisible();
+        await page.evaluate("new Promise(requestAnimationFrame)");
+        const beforeReview = await paperState();
+        expect(await page.evaluate<boolean>(`(() => {
+          const viewport = document.querySelector(${scriptValue(`${surface} .docx-editor__scroll-container`)});
+          const entry = document.querySelector(${scriptValue(inlineSelector)});
+          if (!viewport || !entry) return false;
+          const view = viewport.getBoundingClientRect(), box = entry.getBoundingClientRect();
+          return box.left >= view.left - 1 && box.right <= view.right + 1 &&
+            box.top >= view.top - 1 && box.bottom <= view.bottom + 1;
+        })()`), "The inline review entry must stay inside the 940x620 document viewport").toBe(true);
+        await activateInside(`${inlineSelector} button`);
+        await expect(documentTools).toHaveAttribute("aria-expanded", "true");
+        await expect(reviewHeading).toContainText("Ready to review");
+        await expect(reviewHeading).toBeFocused();
+        await page.keyboard.press("Tab");
+        await expect(accept).toBeFocused();
+        expect(await paperState()).toEqual(beforeReview);
+        await page.keyboard.press("Escape");
+        await expect(documentTools).toBeFocused();
+        await expect(review).toBeHidden();
+        expect(await paperState()).toEqual(beforeReview);
+
+      } finally {
+        await resizeWindow(...launchSize);
+      }
+      const pages = page.locator(`${surface} .docx-pages`);
+      await placeCaret({ ...human, text: humanReply });
+      await expect(pages).toBeFocused();
+      const editingPosition = await modelSelection(sessionId);
+      const beforeShortcut = await paperState();
+      await page.keyboard.press("F6");
+      await expect(reviewHeading).toBeFocused();
+      expect(await paperState()).toEqual(beforeShortcut);
+      await page.keyboard.press("Tab");
+      await expect(accept).toBeFocused();
+      await page.evaluate("document.activeElement.click()");
+      await expect.poll(async () => (await readTargets())[0].text).toBe(reviewReply);
+      await expect(reviewHeading).toContainText("Applied to this working copy");
+      await expect(reviewHeading).toBeFocused();
+      const appliedPaper = await paperState();
+      await page.keyboard.press("Escape");
+      await expect(review).toBeHidden();
+      await expect(pages).toBeFocused();
+      expect(await modelSelection(sessionId)).toEqual(editingPosition);
+      expect(await paperState()).toEqual(appliedPaper);
+
+      const afterAccept = (await readTargets()).map(({ text }) => text);
+      expect(afterAccept).toEqual([reviewReply, humanReply, right.text]);
+      await clickText(page, '[data-testid="word-formatting-toolbar"]', "Undo (Mod+Z)");
+      await expect.poll(async () => (await readTargets()).map(({ text }) => text))
+        .toEqual([left.text, humanReply, right.text]);
+      await clickText(page, '[data-testid="word-formatting-toolbar"]', "Redo (Mod+Shift+Z)");
+      await expect.poll(async () => (await readTargets()).map(({ text }) => text)).toEqual(afterAccept);
+
+      const [currentLeft] = await readTargets();
+      await beginSuggestion(currentLeft.paragraphRef, staleReply);
+      await expect.poll(suggestionTitle).toBe("Generating suggestion");
+      await replacePrefix(currentLeft, interruptedPrefix);
+      await expect.poll(async () => (await readTargets())[0].text).toBe(interruptedReply);
+      release();
+      await expect.poll(pendingStatus).toBe("rejected");
+      await expect(inline).toHaveCount(0);
+      await activateInside('[data-testid="docx-document-tools"]');
+      await expect(documentTools).toHaveAttribute("aria-expanded", "true");
+      await expect(review).toContainText("Needs a fresh read");
+      expect(await page.evaluate<boolean>(`Array.from(document.querySelectorAll('[data-testid="docx-suggestion"] button'))
+        .some(button => button.textContent.trim() === 'Accept')`)).toBe(false);
+      await activateInside('[data-testid="docx-document-tools"]');
+      await expect(review).toBeHidden();
+      const settledTexts = (await readTargets()).map(({ text }) => text);
+      expect(settledTexts).toEqual([interruptedReply, humanReply, right.text]);
+      expect(settledTexts[0]).not.toContain(staleReply);
+
+      const [reviewTarget] = await readTargets();
+      await reveal(reviewTarget.paragraphRef);
+      await beginSuggestion(reviewTarget.paragraphRef, staleReply);
+      await expect(reviewEntry).toBeVisible();
+      release();
+      await expect.poll(suggestionTitle).toBe("Ready to review");
+      await expect.poll(pendingStatus).toBe("fulfilled");
+      await page.evaluate(`document.querySelector(${scriptValue(`${inlineSelector} button`)}).focus({ preventScroll: true })`);
+      await expect(reviewEntry).toBeFocused();
+      const beforeWithdrawal = await paperState();
+      const { document } = await readDocx(page, { limit: 1 });
+      const replacement = "BACKGROUND";
+      const changed = await page.evaluate(`window.__oleaflyE2EImport('/src/lib/docx-agent-host.ts').then(m =>
+        m.createDocxAgentTools().replace_docx_text_range.execute(${scriptValue({
+          session_id: sessionId, paragraph_ref: reviewTarget.paragraphRef, expected_revision: document.sessionRevision,
+          range: { start: 0, end: interruptedPrefix.length }, expected_text: interruptedPrefix, replacement,
+        })}))`);
+      expect(changed).toMatchObject({ ok: true, changed: true });
+      await expect(page.getByTestId("workspace-agent-operation")).toHaveAttribute("data-operation", "replace_range");
+      await expect(inline).toHaveCount(0);
+      await expect(documentTools).toBeFocused();
+      await expect(documentTools).toHaveAttribute("aria-expanded", "false");
+      expect(await paperState()).toEqual(beforeWithdrawal);
+      expect((await readTargets())[0].text).toBe(replacement + interruptedReply.slice(interruptedPrefix.length));
+      try {
+        await resizeWindow(940, 620);
+        const receipt = page.getByTestId("workspace-agent-operation");
+        await expect(receipt).toBeVisible();
+        expect(await page.evaluate<boolean>(`(() => {
+          const rect = document.querySelector('[data-testid="workspace-agent-operation"]').getBoundingClientRect();
+          const viewport = document.querySelector(${scriptValue(`${surface} .docx-editor__scroll-container`)}).getBoundingClientRect();
+          return rect.bottom <= viewport.top || rect.top >= viewport.bottom ||
+            rect.right <= viewport.left || rect.left >= viewport.right;
+        })()`)).toBe(true);
+        const followSelector = '[data-testid="workspace-agent-follow"]';
+        const follow = page.locator(followSelector);
+        await expect(follow).toBeVisible();
+        expect(await page.evaluate<boolean>(`(() => {
+          const button = document.querySelector(${scriptValue(followSelector)});
+          const { x, y, width, height } = button.getBoundingClientRect();
+          return button.contains(document.elementFromPoint(x + width / 2, y + height / 2));
+        })()`)).toBe(true);
+        await page.evaluate(`document.querySelector(${scriptValue(followSelector)}).focus({ preventScroll: true })`);
+        await expect(follow).toBeFocused();
+        await page.evaluate("document.activeElement.click()");
+        await expect(receipt).toHaveAttribute("data-follow-state", "following");
+        const narrowPaper = await paperState();
+        await page.evaluate(`document.querySelector(${scriptValue(followSelector)}).focus({ preventScroll: true })`);
+        await expect(follow).toBeFocused();
+        await page.evaluate("document.activeElement.click()");
+        await expect(receipt).toHaveAttribute("data-follow-state", "paused");
+        expect(await paperState()).toEqual(narrowPaper);
+      } finally {
+        await resizeWindow(...launchSize);
+      }
+      await clickText(page, '[data-testid="word-formatting-toolbar"]', "Undo (Mod+Z)");
+      await expect.poll(async () => (await readTargets()).map(({ text }) => text)).toEqual(settledTexts);
+      return settledTexts;
+    } finally {
+      release();
+      await server.close();
+    }
+  };
+  const saveAndReopen = async (expectedTexts: string[]) => {
+    await clickText(page, workspace, "Save version");
+    await expect(page.getByTestId("docx-save-state")).toContainText("All changes saved", { timeout: 60_000 });
+    const saved = (await readDocx(page)).document;
+    expect(saved.baselineId).not.toBe(opened.baselineId);
+    expect(saved.sourceSha256).not.toBe(originalSha);
+    await clickText(page, workspace, "Close");
+    await expect(page.locator(workspace)).not.toBeVisible();
+    await openFile();
+    await expect(page.locator(surface)).toBeVisible({ timeout: 60_000 });
+    await waitForSession(saved.sourceSha256, opened.sessionId);
+    const reopened = (await readDocx(page)).document;
+    expect(reopened.sessionId).not.toBe(opened.sessionId);
+    expect(reopened).toMatchObject({ baselineId: saved.baselineId, sourceSha256: saved.sourceSha256, dirty: false });
+    expect((await readTargets()).map(({ text }) => text)).toEqual(expectedTexts);
+  };
+  const assertOriginalUnchanged = async () => {
+    expect(await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m => m.readFileBase64(${scriptValue(projectId)}, ${scriptValue(file)}))`))
+      .toBe(originalBase64);
+    if (manuscript) expect(createHash("sha256").update(await readFile(manuscript.path)).digest("hex")).toBe(originalSha);
+  };
+  const openCitationSource = async (target: DocxParagraph, { start, end }: { start: number; end: number }) => {
+    const { sessionId } = (await readDocx(page, { limit: 1 })).document;
+    const nodeId = await page.evaluate<string | null>(`window.__oleaflyE2EImport('/src/components/research/DocxWorkspaceDialog.tsx')
+      .then(m => m.e2eDocxParagraphNode(${scriptValue(sessionId)}, ${scriptValue(target.paraId)}))`);
+    if (!nodeId) throw new Error(`No model paragraph for ${target.paraId}`);
+    const selector = `${surface} [data-field-atom="field"][data-start="${start}"][data-end="${end}"]`;
+    const findField = `Array.from(document.querySelectorAll(${scriptValue(selector)}))
+      .find(item => item.dataset.paragraphId === ${scriptValue(nodeId)})`;
+    if (!await page.evaluate<boolean>(`Boolean(${findField})`)) await reveal(target.paragraphRef);
+    await page.evaluate(`(() => {
+      const field = ${findField};
+      if (!field) throw new Error('The saved citation is not painted');
+      field.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+      const rect = field.getBoundingClientRect();
+      const clientX = rect.left + rect.width / 2, clientY = rect.top + rect.height / 2;
+      const hit = document.elementFromPoint(clientX, clientY);
+      if (!hit || !field.closest('.docx-line').contains(hit)) throw new Error('The saved citation is not under the pointer');
+      const options = { bubbles: true, cancelable: true, clientX, clientY, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+      hit.dispatchEvent(new PointerEvent('pointerdown', { ...options, buttons: 1 }));
+      hit.dispatchEvent(new PointerEvent('pointerup', { ...options, buttons: 0 }));
+      hit.dispatchEvent(new MouseEvent('click', { ...options, detail: 1 }));
+    })()`);
+    await expect(page.locator(`${tools} button`),
+      `Open citation ${target.paraId}:${start}-${end}`,
+    ).toContainText("View citation");
+    await clickText(page, tools, "View citation");
+    const sources = `${tools}[role="dialog"][aria-label="View citation"] li`;
+    await expect(page.locator(sources)).toHaveCount(1);
+    return sources;
+  };
+  const closeCitationSource = async () => {
+    await page.keyboard.press("Escape");
+    await expect(page.locator(tools)).toHaveCount(0);
+  };
+  const downloadCopy = async (path: string) => {
+    await page.evaluate(`window.__e2eSetNextSavePath(${scriptValue(path)})`);
+    await clickText(page, workspace, "Download DOCX copy");
+    await expect.poll(() => readFile(path).then(bytes => bytes.length).catch(() => 0)).toBeGreaterThan(0);
+  };
+
+  if (reimport && manuscript) {
+    const verifySources = async () => {
+      const [, ...citationTargets] = await readTargets();
+      for (const [index, target] of citationTargets.entries()) {
+        const { paraId, instruction } = reimport.citations[index];
+        expect(target.paraId?.toUpperCase()).toBe(paraId);
+        const fields = target.atoms.filter(atom => atom.kind === "field" &&
+          (atom.payload as { code?: string } | undefined)?.code?.trim() === instruction.trim());
+        expect(fields, `Expected one trial field in ${paraId}`).toHaveLength(1);
+        const sources = await openCitationSource(target, fields[0].modelRange);
+        await expect(page.locator(`${sources} a`)).toHaveAttribute("href", docxDoiUrl(reimport.doi));
+        await closeCitationSource();
+      }
+    };
+    const [body, ...citations] = await readTargets();
+    expect(body.atoms).toHaveLength(0);
+    expect(body.modelTextTruncated).not.toBe(true);
+    expect(body.editableRanges.some(({ start, end }) => start === 0 && end > 0)).toBe(true);
+    await verifySources();
+    await placeCaret(body);
+    const prefix = "LOCAL ";
+    await page.evaluate(`document.activeElement.dispatchEvent(new InputEvent('beforeinput', {
+      inputType: 'insertText', data: ${scriptValue(prefix)}, bubbles: true, cancelable: true
+    }))`);
+    const bodyText = async () => (await readTargets())[0].text;
+    const expected = prefix + body.text;
+    await expect.poll(bodyText).toBe(expected);
+    await clickText(page, '[data-testid="word-formatting-toolbar"]', "Undo (Mod+Z)");
+    await expect.poll(bodyText).toBe(body.text);
+    await clickText(page, '[data-testid="word-formatting-toolbar"]', "Redo (Mod+Shift+Z)");
+    await expect.poll(bodyText).toBe(expected);
+    await saveAndReopen([expected, ...citations.map(({ text }) => text)]);
+    await verifySources();
+    await downloadCopy(reimport.exportPath);
+    const evidence = citationPackageEvidence(reimport.python, "--citation-reimport", manuscript.path,
+      reimport.exportPath, reimport.doi, manuscript.paragraphs[0], prefix);
+    expect(evidence).toMatchObject({ ok: true, issues: [], doi: reimport.doi, sha256: { word: originalSha } });
+    const inventory: { paragraphs: { paraId?: string; text: string }[] } = citationPackageEvidence(reimport.python, reimport.exportPath);
+    const [exportedBody] = inventory.paragraphs.filter(({ paraId }) => paraId?.toUpperCase() === manuscript.paragraphs[0]);
+    expect(exportedBody?.text === expected, "The re-export must contain the edit at the original paragraph ID").toBe(true);
+    await assertOriginalUnchanged();
+    return;
+  }
+  const persistedReview = manuscript ? await reviewManuscript() : null;
+  if (!citation) {
+    await saveAndReopen(persistedReview!);
+    await assertOriginalUnchanged();
+    return;
+  }
+  const { doi, exportPath, originalPath, python } = citation;
+  if (!manuscript) await writeFile(originalPath, original);
+  const openPicker = async (target: DocxParagraph) => {
+    const position = await placeCaret(target);
+    const before = await layout(position.pageIndex);
+    await page.keyboard.press("Shift+F10");
+    await expect.poll(() => activeInside(`${tools} button`)).toContain("Insert citation");
+    await clickText(page, tools, "Insert citation");
+    await expect(page.locator(searchbox)).toBeFocused();
+    expect(await layout(position.pageIndex)).toEqual(before);
+    return position;
+  };
+  const pickCrossref = async (query: string) => {
+    await page.fill(searchbox, query);
+    await expect(page.locator(picker)).toBeVisible();
+    await activateInside(`${picker} button[aria-label="Search Crossref"]:not(:disabled)`);
+    const selectResult = () => page.evaluate<string | null>(`(() => {
+      const root = document.querySelector(${scriptValue(picker)});
+      const error = root?.querySelector('[role="alert"]');
+      if (error) throw new Error(error.textContent);
+      const matches = Array.from(root?.querySelectorAll('section[aria-label="Crossref"] button[aria-describedby]') ?? [])
+        .filter(button => document.getElementById(button.getAttribute('aria-describedby'))?.textContent
+          .split(' · ').at(-1)?.toLowerCase() === ${scriptValue(doi)});
+      if (matches.length > 1) throw new Error('Crossref returned more than one result for the trial DOI');
+      const [match] = matches;
+      if (!match) return null;
+      match.click();
+      return match.getAttribute('aria-label');
+    })()`);
+    let title: string | null = null;
+    await expect.poll(async () => Boolean(title = await selectResult()), { timeout: 35_000 }).toBe(true);
+    return title!;
+  };
+  const confirmCitation = async (expectedPlan: string) => {
+    await expect(notice).toContainText(expectedPlan);
+    await clickText(page, picker, "Insert citation");
+    await expect(page.locator(picker)).toHaveCount(0);
+  };
+  const readCitationTargets = async () => {
+    const paragraphs = await readTargets();
+    return [paragraphs[0], paragraphs[paragraphs.length - 1]];
+  };
+  const citationCounts = async () => (await readCitationTargets())
+    .map(({ atoms }) => atoms.filter(atom => atom.kind === "field").length);
+  const emitMenuHistory = (redo: boolean) => page.evaluate(
+    `window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {
+      event: ${scriptValue(redo ? "menu://redo" : "menu://undo")},
+      payload: null
+    })`,
+  );
+  const [leftTarget, rightTarget] = await readCitationTargets();
+  expect(await citationCounts()).toEqual([0, 0]);
+  const originalTargetTexts = (await readTargets()).map(({ text }) => text);
+  const bodyPrefix = "UNDO-CONTEXT ";
+  await placeCaret(leftTarget);
+  await page.evaluate(`document.activeElement.dispatchEvent(new InputEvent('beforeinput', {
+    inputType: 'insertText', data: ${scriptValue(bodyPrefix)}, bubbles: true, cancelable: true
+  }))`);
+  const editedTargetTexts = [bodyPrefix + originalTargetTexts[0], ...originalTargetTexts.slice(1)];
+  const targetTexts = async () => (await readTargets()).map(({ text }) => text);
+  await expect.poll(targetTexts).toEqual(editedTargetTexts);
+  const edited = (await readDocx(page)).document;
+  await openPicker(leftTarget);
+  const searchTerm = "history probe";
+  await page.keyboard.insertText(searchTerm);
+  await expect(page.locator(searchbox)).toHaveValue(searchTerm);
+  for (const redo of [false, true]) {
+    await emitMenuHistory(redo);
+    await expect(page.locator(searchbox)).toHaveValue(redo ? searchTerm : "");
+    await expect(page.locator(searchbox)).toBeFocused();
+    expect((await readDocx(page)).document).toMatchObject({
+      sessionId: edited.sessionId,
+      sessionRevision: edited.sessionRevision,
+      dirty: edited.dirty,
+    });
+    expect(await targetTexts()).toEqual(editedTargetTexts);
+  }
+  await page.keyboard.press("Escape");
+  await expect(page.locator(picker)).toHaveCount(0);
+  await expect.poll(() => page.evaluate<boolean>(
+    `document.activeElement?.matches(${scriptValue(`${surface} .docx-pages`)}) ?? false`,
+  )).toBe(true);
+  await emitMenuHistory(false);
+  await expect.poll(targetTexts).toEqual(originalTargetTexts);
+  const leftLayout = await openPicker(leftTarget);
+  const title = await pickCrossref(citation.titleQuery ?? doi);
+  await confirmCitation("Add document source");
+  await expect.poll(citationCounts).toEqual([1, 0]);
+  const right = await openPicker(rightTarget);
+  expect(right.pageIndex).toBe(leftLayout.pageIndex);
+  expect(leftLayout.right, "Left and right paragraph boxes must be in distinct columns").toBeLessThanOrEqual(right.left);
+  expect(await pickCrossref(docxDoiUrl(doi))).toBe(title);
+  await confirmCitation(`Reuse: ${title}`);
+  await expect.poll(citationCounts).toEqual([1, 1]);
+  for (const leftCount of [1, 0]) {
+    await clickText(page, '[data-testid="word-formatting-toolbar"]', "Undo (Mod+Z)");
+    await expect.poll(citationCounts).toEqual([leftCount, 0]);
+    await openPicker((await readCitationTargets())[1]);
+    await page.fill(searchbox, doi);
+    const localSources = page.locator(`${picker} section[aria-label="In this document"] button`);
+    await expect(localSources).toHaveCount(leftCount);
+    if (leftCount) await expect(localSources).toContainText(doi);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(picker)).toHaveCount(0);
+  }
+  for (const counts of [[1, 0], [1, 1]]) {
+    await clickText(page, '[data-testid="word-formatting-toolbar"]', "Redo (Mod+Shift+Z)");
+    await expect.poll(citationCounts).toEqual(counts);
+  }
+  const savedTargetTexts = (await readTargets()).map(({ text }) => text);
+  if (persistedReview) {
+    expect(savedTargetTexts[0]).toContain(persistedReview[0]);
+    expect(savedTargetTexts[1]).toBe(persistedReview[1]);
+    expect(savedTargetTexts[2]).toContain(persistedReview[2]);
+  }
+  await saveAndReopen(savedTargetTexts);
+  await expect.poll(citationCounts).toEqual([1, 1]);
+  for (const current of await readCitationTargets()) {
+    const [citationField] = current.atoms.filter(atom => atom.kind === "field");
+    const sources = await openCitationSource(current, citationField.modelRange);
+    await expect(page.locator(sources)).toContainText(title);
+    await closeCitationSource();
+  }
+  await downloadCopy(exportPath);
+  const evidence = citationPackageEvidence(python, "--citation-export", originalPath, exportPath, doi,
+    ...(manuscript ? [manuscript.paragraphs.join(",")] : []));
+  expect(evidence).toMatchObject({ ok: true, issues: [], doi, sha256: { original: originalSha } });
+  await assertOriginalUnchanged();
+}
+
+test("DOCX chart exports its linked workbook in the desktop workspace", async ({ tauriPage: page }, testInfo) => {
+  test.skip(!enabled, "Set OLEAFLY_MATERIAL_WORKSPACE=1 in an isolated native runner.");
+  test.skip(!process.env.OLEAFLY_WORKBENCH_PYTHON, "Requires the isolated Workbench Python environment.");
+  const source = await readFile("services/research-workbench/tests/fixtures/docx/native/s1-native-complex-objects/s1-native-complex-objects.docx");
+  const expected = unzipSync(source)["word/embeddings/Workbook1.xlsx"];
+  const file = "native-chart.docx";
+  await createBlankProject(page, `DOCX chart ${Date.now()}`);
+  const projectId = await page.evaluate<string>(`document.querySelector('[data-e2e-project-id]').getAttribute('data-e2e-project-id')`);
+  await page.evaluate(`window.__oleaflyE2EImport('/src/lib/tauri.ts').then(m => m.saveFileBase64(${scriptValue(projectId)}, ${scriptValue(file)}, ${scriptValue(source.toString("base64"))}))`);
+  await page.evaluate(`window.__oleaflyE2EImport('/src/store/files.ts').then(m => m.useFilesStore.getState().refreshTree())`);
+  await openRailTab(page, "Explorer");
+  await page.locator(`[role="treeitem"][data-path="${file}"]`).click();
+  const surface = '[data-testid="docx-editor-surface"]';
+  const chart = `${surface} [role="img"][aria-label="RFW-FX-EO-CHART-001"]`;
+  const tools = '[data-testid="docx-context-tools"]';
+  await expect(page.locator(chart)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("docx-font-state")).toHaveAttribute("data-resolving", "false");
+  await expect(page.locator(tools)).toHaveCount(0);
+  const view = () => page.evaluate(`(() => {
+    const chart = document.querySelector(${scriptValue(chart)});
+    const viewport = chart.closest('.docx-editor__scroll-container');
+    return { paper: chart.closest('.docx-page').getBoundingClientRect().toJSON(),
+      viewport: viewport.getBoundingClientRect().toJSON(), scrollTop: viewport.scrollTop, scrollLeft: viewport.scrollLeft };
+  })()`);
+  const before = await view();
+  const opened = (await readDocx(page)).document;
+  await page.evaluate(`(() => {
+    const rect = document.querySelector(${scriptValue(chart)}).getBoundingClientRect();
+    const clientX = rect.left + rect.width / 2, clientY = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(clientX, clientY);
+    const options = { bubbles: true, cancelable: true, clientX, clientY, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    hit.dispatchEvent(new PointerEvent('pointerdown', { ...options, buttons: 1 }));
+    hit.dispatchEvent(new PointerEvent('pointerup', { ...options, buttons: 0 }));
+    hit.dispatchEvent(new MouseEvent('click', { ...options, detail: 1 }));
+  })()`);
+  await expect(page.locator(`${tools} button`)).toContainText("Export embedded workbook");
+  await page.keyboard.press("Shift+F10");
+  await expect(page.locator(`${tools} button:focus`)).toContainText("Export embedded workbook");
+
+  const saveRequests = () => page.evaluate<number>("window.__e2eFileDialogState?.saveRequests ?? 0");
+  const requests = await saveRequests();
+  await page.evaluate("window.__e2eSetNextSavePath(null)");
+  await clickText(page, tools, "Export embedded workbook");
+  await expect.poll(saveRequests).toBe(requests + 1);
+  await expect(page.locator(`${tools} button:focus`)).toContainText("Export embedded workbook");
+  expect(await view()).toEqual(before);
+
+  const path = testInfo.outputPath("chart-workbook.xlsx");
+  await page.evaluate(`window.__e2eSetNextSavePath(${scriptValue(path)})`);
+  await clickText(page, tools, "Export embedded workbook");
+  await expect.poll(saveRequests).toBe(requests + 2);
+  await expect.poll(() => readFile(path).then(bytes => bytes.equals(Buffer.from(expected))).catch(() => false)).toBe(true);
+  await expect(page.locator(tools)).toHaveCount(0);
+  expect(await view()).toEqual(before);
+  expect((await readDocx(page)).document).toMatchObject({ sessionRevision: opened.sessionRevision, dirty: false });
 });
 
 test("DOCX Main keeps one session across Original, Compare, formatting and material feedback", async ({ tauriPage: page }, testInfo) => {

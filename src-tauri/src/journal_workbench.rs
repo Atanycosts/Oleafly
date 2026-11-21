@@ -10,7 +10,7 @@ use crate::proc::NoConsole;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use tauri::{Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -58,6 +58,20 @@ fn configured_python() -> Result<String, String> {
             .map_err(|error| format!("could not read Workbench runtime: {error}"))?,
     )
     .map_err(|error| format!("invalid Workbench runtime setting: {error}"))
+}
+
+fn reap_exited_session(current: &mut Option<Session>) -> Result<Option<ExitStatus>, String> {
+    let Some(session) = current.as_mut() else {
+        return Ok(None);
+    };
+    let status = session
+        .child
+        .try_wait()
+        .map_err(|error| error.to_string())?;
+    if status.is_some() {
+        *current = None;
+    }
+    Ok(status)
 }
 
 async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, String> {
@@ -213,6 +227,31 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workbench_reconnect_reaps_an_exited_child_but_keeps_a_running_one() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "read -r line"])
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut current = Some(Session {
+            child,
+            address: String::new(),
+            token: String::new(),
+            client: reqwest::Client::new(),
+            library_root: PathBuf::new(),
+        });
+        assert_eq!(reap_exited_session(&mut current).unwrap(), None);
+        let child = &mut current.as_mut().unwrap().child;
+        child.kill().await.unwrap();
+        let status = child.wait().await.unwrap();
+
+        assert_eq!(reap_exited_session(&mut current).unwrap(), Some(status));
+        assert!(current.is_none());
+    }
+
     #[test]
     fn native_http_contract_matches_workbench_contract() {
         let contract: Value = serde_json::from_str(include_str!(
@@ -305,6 +344,7 @@ pub async fn journal_workbench_connect(
     let python = python.map_or_else(configured_python, Ok)?;
     let library_root = crate::paths::oleafly_root()?.join("journal-library");
     let mut current = state.0.lock().await;
+    reap_exited_session(&mut current)?;
     if current.is_none() {
         std::fs::create_dir_all(&library_root).map_err(|error| error.to_string())?;
         let session = start(
@@ -332,17 +372,12 @@ pub async fn journal_workbench_request(
     payload: Option<Value>,
 ) -> Result<Value, String> {
     let mut current = state.0.lock().await;
-    let session = current.as_mut().ok_or("Connect Workbench first.")?;
-    if let Some(status) = session
-        .child
-        .try_wait()
-        .map_err(|error| error.to_string())?
-    {
-        *current = None;
+    if let Some(status) = reap_exited_session(&mut current)? {
         return Err(format!(
             "Workbench exited ({status}). Reconnect to continue."
         ));
     }
+    let session = current.as_ref().ok_or("Connect Workbench first.")?;
     let changed = payload.is_some();
     let result = request(session, &path, payload).await?;
     drop(current);
@@ -673,16 +708,7 @@ async fn reconcile_and_schedule(app: &tauri::AppHandle) -> Result<(), String> {
     }
     let workbench = app.state::<JournalWorkbenchState>();
     let mut current = workbench.0.lock().await;
-    if let Some(session) = current.as_mut() {
-        if session
-            .child
-            .try_wait()
-            .map_err(|e| e.to_string())?
-            .is_some()
-        {
-            *current = None;
-        }
-    }
+    reap_exited_session(&mut current)?;
     if current.is_none() {
         let python = configured_python()?;
         let root = crate::paths::oleafly_root()?.join("journal-library");

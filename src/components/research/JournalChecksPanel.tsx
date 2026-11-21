@@ -14,7 +14,6 @@ import { useResearchTasksStore } from "@/store/research-tasks";
 import { useSettingsStore, type RailTab } from "@/store/settings";
 import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import { getResearchWorkspace } from "@/lib/research-workspace";
-import { pickOpenPaths } from "@/lib/tauri";
 import type { AnnotationTarget } from "@/lib/task-collaboration";
 import {
   capturedJournalFile,
@@ -46,6 +45,7 @@ import { checkJournalTemplate, importJournalTemplate, startTemplateWorkingCopy }
 import { JournalAnnotations } from "./JournalAnnotations";
 import { JournalTemplatePanel } from "./JournalTemplatePanel";
 import { JournalObjectView } from "./JournalObjectView";
+import { WorkbenchConnectionForm } from "./WorkbenchConnectionForm";
 
 const selectClass = "h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-xs";
 const panelClass = "space-y-3 rounded-lg border border-sidebar-border p-3";
@@ -128,7 +128,6 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
   const text = t(($) => $.researchTools.journal, { returnObjects: true });
   const detailId = useId();
   const [connection, setConnection] = useState<JournalConnection | null>(null);
-  const [python, setPython] = useState("");
   const [snapshot, setSnapshot] = useState<JournalState>({
     projects: [],
     worlds: [],
@@ -252,7 +251,6 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
       .then(async ([connected, workspace]) => {
         if (!active) return;
         setConnection(connected);
-        setPython(connected.python);
         const opened = useDocxWorkspaceStore.getState().request;
         const openedHere = opened?.appProjectId === projectId ? opened : null;
         const initialProjectId = openedHere?.project.project_id ?? workspace.journalProjectId ?? null;
@@ -765,43 +763,12 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                 {error}
               </p>
             )}
-            <section className="space-y-3 rounded-xl border p-5">
-              <p className="font-medium">{text.connect}</p>
-              <p className="text-sm text-muted-foreground">{text.runtimeHelp}</p>
-              <Input
-                value={python}
-                onChange={(event) => setPython(event.target.value)}
-                aria-label={text.python}
-                placeholder={text.python}
-              />
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() =>
-                    void perform(async () => {
-                      const paths = await pickOpenPaths({ title: text.python });
-                      if (paths?.[0]) setPython(paths[0]);
-                    })
-                  }
-                >
-                  {text.browse}
-                </Button>
-                <Button
-                  disabled={busy || !python.trim()}
-                  onClick={() =>
-                    void perform(async (sequence) => {
-                      const connected = await connectJournalWorkbench(python.trim());
-                      setConnection(connected);
-                      const workspace = await getResearchWorkspace(projectId);
-                      await load(workspace.journalProjectId ?? null, undefined, sequence);
-                    })
-                  }
-                >
-                  {text.connect}
-                </Button>
-              </div>
-            </section>
+            <WorkbenchConnectionForm busy={busy} onConnect={(python) => void perform(async (sequence) => {
+              const connected = await connectJournalWorkbench(python);
+              setConnection(connected);
+              const workspace = await getResearchWorkspace(projectId);
+              await load(workspace.journalProjectId ?? null, undefined, sequence);
+            })} />
           </div>
         ) : (
           <div className="mx-auto max-w-5xl space-y-6 p-6">

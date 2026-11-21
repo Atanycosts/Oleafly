@@ -115,14 +115,24 @@ opens them as a tab in the central workspace. Switching to a source file,
 Journal checks or a PDF keeps the Word editing session and its unsaved changes
 in memory. The project file is a read-only source:
 **Save** creates a new Workbench working-copy baseline, while **Download DOCX**
-exports the bytes currently open in the editor. Oleafly reuses an existing
-working copy for the same path and source. It follows a rename by content hash;
+exports the captured working copy. Edits made while choosing where to save the
+copy stay in the editor; the export receipt identifies the captured revision.
+Oleafly reuses an existing working copy for the same path and source. It follows
+a rename by content hash;
 when an external replacement finds the old draft or an exact copy of the new
 content, it asks whether to continue an existing working copy or create one. A
 new source with no matching working copy imports directly. The file tree and
 Journal checks share this editor and its exact-font state. Legacy `.doc`
 normalization uses the configured LibreOffice installation; Strict OOXML
 `.docx` files must be resaved as Transitional OOXML.
+
+The working copy requires a connected Workbench. If a packaged app has no
+working connection, select the Python executable in an installed Workbench
+environment from the Word file tab. **Connect Workbench** continues opening
+that file. If you leave Files while it connects, return to the file tab and open
+the draft yourself. If Workbench has exited, opening the file again restarts it
+with the saved runtime. The same connection is available from Journal checks.
+The app does not install the runtime; see [Workbench setup](development.md#journal-workbench-service).
 
 The first manuscript import parses its retained bytes once. Reopening an
 unchanged mapped file uses verified project metadata and the current saved
@@ -141,17 +151,153 @@ or removing a font from Settings refreshes the same open Word session. Internal
 IDs, hashes, raw JSON, XML and developer diagnostics are absent from these
 product views. Coverage messages explain which content still needs review,
 such as an unknown text role or the visual layout of an embedded object.
-The equation panel inserts one LaTeX equation at the current paragraph position or
-replaces a selected native Word equation. It retains the equation source and explicit
-math macros inside the DOCX, and reports a stale association if the generated equation
-changes outside that source workflow. Insertion uses the collapsed caret, or the paragraph
+Single-click a native equation in the working copy to reveal **Edit LaTeX** beside it.
+Dragging from the equation into text or double-clicking it leaves selection to the editor.
+With the keyboard, put the caret next to an unambiguous equation or select the equation,
+then press **Shift+F10**. The panel edits only that equation, without resizing the page or opening
+Document tools. The action stays attached to the clicked equation even if the browser
+collapses the selection. Moving the caret with the keyboard, clicking elsewhere,
+or scrolling the equation out of view dismisses the action. Escape closes the
+action or its open panel.
+Reopening the same equation in the same working revision restores any unsent LaTeX
+source and macros. This draft is not part of the DOCX and does not carry over after
+the document changes or the working copy closes. Use **Document tools** to
+insert an equation or choose one from the current paragraph. Opening those tools
+after clicking a formula keeps that exact target. Returning to the text or
+changing the working revision ends that selection. These tools retain the
+equation source and explicit math macros inside the DOCX and report stale associations
+when the generated equation changes outside that workflow. Insertion uses the collapsed caret, or the paragraph
 end when no caret offset is available; display equations require an empty paragraph.
-Replacing imported or stale math requires adopting the supplied source. A changed document
-keeps the user's source draft and requires an explicit refresh before writing. The optional
-LaTeX preview includes the supplied macros and does not reproduce Word's page rendering.
+Replacing imported or stale math requires adopting the supplied source. In Document tools,
+a document edit disables replacement until you refresh the target. Refresh keeps the draft
+LaTeX and macros only when it can verify the same unchanged formula; it does not transfer
+them to a different target. If a formula selected on the page loses its selection, select
+it again before refreshing. The optional LaTeX preview includes the supplied macros and
+does not reproduce Word's page rendering.
+Closing the equation panel, scrolling its target out of view, returning to the
+manuscript from Document tools, or switching away from the working copy prevents
+a pending conversion from writing to the document. An edit elsewhere in the
+working copy also invalidates a pending replacement, even if its panel is still
+open. A retained draft can be
+submitted again after you confirm its target. Escape remains available while the
+source preview loads, during conversion, and after warnings. A late result does
+not take focus back from another control.
 The change is undoable and saving is a separate action. Conversion
 losses are reported; algorithm figures, arbitrary TeX projects and tracked equation
 replacement are outside this entry point.
+Selecting text alone does not open any tools. In the working copy or original, right-click
+within the selection, or press **Shift+F10**, for **Copy**. **Annotate selection** is
+available when the selection is in one paragraph. Across paragraphs, columns, or pages,
+right-click places the strip beside the clicked line; the shortcut uses the active end
+of the selection. Both keep the full text selection.
+If the selection or document changes, or the anchor line scrolls out of view
+before you use an action, the strip closes without copying or opening feedback.
+Tab and Shift+Tab move between the available actions. Leaving the strip closes
+it; Escape closes it and returns to the selection. In an open object panel, Tab
+cycles through its enabled controls until you close the panel or click outside.
+Scrolling the target out of view closes its tools. If they held keyboard focus,
+focus stays in the scrollable viewport without jumping back to the target.
+An offscreen target cannot open an object panel or hide feedback, even before
+the strip has finished closing.
+If a caret is shared by adjacent actionable objects, **Shift+F10** leaves it alone.
+Select or click the intended object to open its tools.
+Right-clicking a citation inside that text selection keeps the selection actions.
+Feedback opens over the Word workspace without narrowing the page. It keeps the captured
+words and document version; reopening the retained source locates the paragraph.
+Word keeps a separate draft for each selected range in each version, even when
+two selections in a paragraph contain the same words. Whole-document feedback has
+its own draft. Reopen a draft from the same selection, or switch
+between open drafts inside Material feedback, including earlier versions.
+Feedback from a different material does not cover the manuscript. You can start
+feedback on another material and return to the first draft while the project is open.
+Changing the selection, scrolling its anchor line out of view, or moving keyboard
+focus outside the editor while preparing a selection annotation cancels the open request.
+While whole-document feedback is preparing, continuing to use the editor or moving
+focus to another control cancels the open request without changing existing drafts.
+Leaving that view, opening Document tools or an object panel, or reopening existing
+feedback also cancels a pending open request. Revealing an action does not minimize
+feedback; opening the formula editor,
+citation panel, or image preview does, without clearing the feedback draft.
+Reopen feedback from its existing
+button; it takes the foreground without discarding any pending rewrite. Use
+**Annotate whole material** for document-level feedback.
+In the working copy or retained original, click an existing Word citation with a matching
+bibliography record, or a Zotero or CSL citation with embedded source details, and choose
+**View citation**. The lookup uses the document version in front.
+The list opens beside the citation; only clicking a source with a link opens the browser.
+If a source declares conflicting DOIs, the list shows its title without a link.
+Close the list with **Escape** or its close button to return to the citation.
+A cross-reference offers **Go to reference** if its Word
+bookmark exists. Both actions are available with **Shift+F10** at an unambiguous field.
+If a field spans several lines, the action stays with a visible part of that
+field when its first line scrolls out of view. Once the entire field is out of
+view, the strip and source panel close without opening a link or jumping to a bookmark.
+These read-only actions do not edit fields or refresh the bibliography. The opt-in
+[citation insertion preview](../e2e/README.md#word-citation-picker-preview) is separate
+and off by default. Insert from an ordinary body paragraph, outside fields that
+span multiple paragraphs, such as a generated bibliography. The preview does not
+offer insertion in protected documents or when Word's Track Changes is on.
+Search the current document's sources by title or exact DOI without contacting
+Crossref. Choose the source before inserting. Reusing it keeps the exact Word
+source tag, including localized letters, and leaves the bibliography record unchanged.
+Undo and redo in the search box affect the query, not the manuscript.
+Choose **Search Crossref**, or press **Enter** in the search box, to search
+journal articles by title or look up an exact DOI. Bare DOIs and DOI links both
+use the exact lookup. The picker separates document sources from Crossref results.
+Select a result to see whether it will
+reuse a named source or add a document source. It does not refresh the rendered bibliography.
+Conflicting records and metadata that
+does not fit Word's bibliography format cannot be confirmed; you can choose
+another source without changing the draft or moving the insertion point.
+When space is tight, scroll within the picker to reach the sources and confirmation.
+Scrolling the insertion point out of view cancels insertion and closes the picker
+without scrolling back. Changing the draft invalidates the open picker. Switching away discards
+any pending search result. **Close** or **Escape** returns focus to the insertion point. If
+focus has already moved elsewhere, the picker does not take it back.
+Click a supported inline or floating image in the working copy and choose **View image**
+to see the embedded picture. The action follows the visible picture, not its anchor
+paragraph. Click again to reopen the action, or drag the selected floating image
+to move it without reopening the action. **Shift+F10** focuses the action
+when the picture is selected or when the caret is at the start of an unambiguous
+picture in the text. If there's too little room beside the target, open context
+tools move to the edge of the editor without resizing the page. Escape or
+scrolling the target out of view closes them.
+This is a read-only view of the embedded picture, not the cropped page rendering.
+It does not open external images or infer captions or chart data.
+Select a chart with an explicitly linked, embedded Excel workbook to **Export embedded workbook**.
+The action is also available with **Shift+F10** on the selected chart. It saves the original
+workbook without editing the draft, reading external links, or treating chart caches as source data.
+If a compatibility drawing could refer to different objects, Oleafly does not offer workbook export.
+If you switch away or scroll the chart out of view before the save dialog returns, no workbook is written.
+A pending rewrite highlights its target and offers **Review suggestion** beside
+the paragraph without moving the page. When there is no room beside a visible
+paragraph, the compact action moves to the viewport edge. Open it to read the
+original and proposed text and stop, accept, or reject in **Document tools**.
+From the working text, press **F6** to open a pending review, even if its
+paragraph is offscreen. Open feedback gives way without losing its draft.
+Escape or rejecting the suggestion closes that review
+and returns to the original caret or selection without scrolling. This leaves
+the editor's normal Tab behavior unchanged.
+When a short action and the review entry overlap, the short action moves beside
+it or wraps without resizing the page. If both cannot fit, a focused review
+entry keeps focus and the short action closes. Otherwise, the review entry
+temporarily yields and returns when there is room or the short action closes.
+If the paragraph scrolls out of view, the inline entry closes without opening
+the comparison. The pending suggestion remains in Document tools even when a short
+action, an expanded object panel, feedback, or a different view hides the entry.
+If recording a task result fails, the error and retry stay in **Document tools**
+without moving the paper. Retrying records the same result without applying the edit again.
+When opened from their button or the inline review action, **Escape** closes
+Document tools and returns focus to their button. **Go to paragraph** returns to the pending target
+in the working copy. If you resume editing or move focus before it scrolls,
+the pending jump is canceled and the suggestion stays available. If a focused
+button inside the review panel disappears
+because the suggestion finishes or is withdrawn, focus moves to the review heading. Editing the
+target withdraws the suggestion. If focus is on the inline action when it
+disappears, it returns to the Document tools button without opening the panel
+or scrolling the page. Focus elsewhere stays where it is. Edits elsewhere,
+including changes applied by Agent, do not displace the pending review. Navigation
+highlights do not replace it either. Accept is available only in the working copy.
 Journal annotations use readable target names and open their retained source
 through the source viewer; saved feedback keeps its exact original reference.
 Source compile and export controls return when a source tab is
@@ -180,9 +326,13 @@ current paragraph identity without enumerating the manuscript. When the Agent
 requests context, the host resolves a write address against the live session and
 revision. Chat, desktop MCP and research tasks share
 the live document services for formatting, fonts, saving, checking and export.
-The left sidebar and central surface show actual operation receipts. Following
-the assigned flow can reveal its current Word target. Editing, scrolling or
-navigating pauses that movement, while execution continues. **Continue following**
+The left sidebar and central surface show actual operation receipts. In Word,
+the receipt shares the tab row. Focus mode keeps its space above the manuscript,
+without tabs. Receipts neither cover the editor viewport nor move it when the
+operation changes. Hover or Tab to a receipt with a title or error to see its details.
+Following the assigned flow can reveal its current Word
+target. Editing, scrolling or navigating pauses that movement, while execution
+continues. **Continue following**
 resumes at the latest reported target. Other flows update state without taking
 over the current navigation.
 

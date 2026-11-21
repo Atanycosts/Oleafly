@@ -2949,6 +2949,8 @@
     "stop": "停止",
     "accept": "接受",
     "reject": "拒绝",
+    "revealSuggestion": "回到目标段落",
+    "reviewSuggestion": "审阅建议",
     "phases": {
       "streaming": "正在生成建议",
       "reviewing": "等待审阅",
@@ -2982,8 +2984,38 @@
     "restore": "继续编辑 DOCX 工作副本",
     "minimize": "收起工作副本",
     "askAgent": "交给 Agent 继续",
+    "copySelectionRefused": "无法复制当前选区。",
+    "imageTools": {
+      "view": "查看大图",
+      "unavailable": "无法打开这张图片。"
+    },
+    "chartTools": {
+      "exportWorkbook": "导出内嵌工作簿",
+      "exportFailed": "无法保存内嵌工作簿。"
+    },
+    "fieldTools": {
+      "viewCitation": "查看引文",
+      "insertCitation": "插入引文",
+      "searchSources": "标题或 DOI",
+      "documentSources": "稿内来源",
+      "crossrefResults": "Crossref",
+      "reuseSource": "复用：{{title}}",
+      "addSource": "新增稿内来源",
+      "sourceUnavailable": "这条来源无法用于当前稿件。",
+      "searchCrossref": "搜索 Crossref",
+      "searching": "正在搜索 Crossref…",
+      "searchFailed": "Crossref 搜索失败。",
+      "noSources": "没有匹配的文献。",
+      "insertRefused": "无法在此处插入引文。",
+      "ambiguousSource": "稿内的来源记录或 DOI 信息存在冲突。",
+      "unsupportedSourceMetadata": "这条来源的文献信息不符合 Word 书目格式。",
+      "goToReference": "跳到引用目标",
+      "openFailed": "无法打开引文链接。"
+    },
     "equationTools": {
       "title": "公式",
+      "editSource": "编辑 LaTeX",
+      "contextChanged": "文档已更改。请重新打开公式再替换。",
       "target": "公式",
       "refresh": "刷新公式",
       "notReady": "打开文档后才能编辑公式。",
@@ -3023,6 +3055,7 @@
   "materialAnnotations": {
     "minimize": "收起批注",
     "expand": "展开材料批注",
+    "feedbackTarget": "批注对象",
     "title": "材料批注",
     "close": "关闭批注",
     "feedbackHelp": "反馈保存到当前精确版本。勾选“请求 AI 处理”将携带保留的来源创建并运行任务。",

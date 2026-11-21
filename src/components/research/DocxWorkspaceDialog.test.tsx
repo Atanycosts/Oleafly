@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { strToU8, zipSync } from "fflate";
 import { StrictMode } from "react";
 import type { JournalCheck, JournalProject, JournalState, JournalWorld } from "@/lib/journal-workbench";
@@ -19,6 +19,7 @@ import { useDocxWorkspaceStore } from "@/store/docx-workspace";
 import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import { useAgentWorkspaceStore } from "@/store/agent-workspace";
 import { useMaterialAnnotationsStore } from "@/store/material-annotations";
+import { useToastStore } from "@/store/toast";
 import { i18n } from "@/i18n";
 
 const mocks = vi.hoisted(() => ({
@@ -57,17 +58,40 @@ const mocks = vi.hoisted(() => ({
   updateAgentSession: vi.fn(),
   unregisterAgentSession: vi.fn(),
   editorMounts: [] as { document: Uint8Array; mode: "edit" | "view" | "suggesting"; colorMode?: string }[],
-  editorListeners: new Map<string, (value: unknown) => void>(),
+  editorListeners: new Map<string, Set<(value: unknown) => void>>(),
+  modelSelection: { anchor: { paragraphId: "first", offset: 0 }, head: { paragraphId: "first", offset: 13 } },
+  suggestionAnchorTop: 48,
+  viewportHeight: 400,
   editor: {
     save: () => mocks.editorSave(),
     exec: vi.fn(),
+    focus: vi.fn(),
     setFonts: vi.fn(),
     scrollToAnchor: vi.fn(),
     highlightAnchor: vi.fn(),
-    clearAnchorHighlight: vi.fn(),
+    setHighlights: vi.fn(),
+    clearHighlights: vi.fn(),
+    surface: {
+      session: {
+        nodeIdOf: (paraId: string) => paraId.replace(/^para-/, ""),
+        paraIdOf: (paragraphId: string) => `para-${paragraphId}`,
+        revision: (): number => mocks.createSession.mock.results.at(-1)?.value?.revision() ?? 0,
+      },
+      state: () => ({ selection: mocks.modelSelection }),
+      flushPendingInput: vi.fn(),
+      retainSelection: vi.fn(),
+      activeScope: () => ({ kind: "body" }),
+      drawingSelectionIntent: () => ({ kind: "none" }),
+      equations: { equationsInCaretParagraph: () => [] },
+    },
     on: vi.fn((event: string, listener: (value: unknown) => void) => {
-      mocks.editorListeners.set(event, listener);
-      return () => { mocks.editorListeners.delete(event); };
+      const listeners = mocks.editorListeners.get(event) ?? new Set();
+      listeners.add(listener);
+      mocks.editorListeners.set(event, listeners);
+      return () => {
+        listeners.delete(listener);
+        if (!listeners.size) mocks.editorListeners.delete(event);
+      };
     }),
     query: vi.fn(() => ""),
     measurement: { measurer: "fixed" as "fixed" | "shaped", resolving: false, producer: undefined as string | undefined },
@@ -90,7 +114,6 @@ vi.mock("@docx-editor.dev/react", async () => {
     useDocxEditor: () => mocks.editor,
     useFonts: (source: unknown) => source,
     useEditorState: (selector: (snapshot: ReturnType<typeof mocks.editor.snapshot>) => unknown) => selector(mocks.editor.snapshot()),
-    useScopedChromeAnchor: () => ({ ref: () => {}, style: { visibility: "hidden" } }),
     useEditorCommand: (slot: string) => ({ isEnabled: true, isActive: false,
       execute: () => mocks.editor.exec({ type: slot === "history.redo" ? "redo" : slot === "history.undo" ? "undo" : slot }),
     }),
@@ -113,8 +136,15 @@ vi.mock("@docx-editor.dev/react", async () => {
         return () => mocks.editorUnmounted();
       }, []);
       return <div data-testid="mock-docx-editor">{props.children}</div>;
-    }, Viewport: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-      Content: () => null, Loading: () => null, OpenFailure: () => null,
+    }, Viewport: ({ children }: { children: React.ReactNode }) => <div className="docx-editor__scroll-container"
+      ref={(node) => { if (node) node.getBoundingClientRect = () => new DOMRect(0, 0, 480, mocks.viewportHeight); }}>{children}</div>,
+      Content: () => <div className="docx-pages"><span className="docx-line">{"Selected text"}</span>
+        <div className="docx-paragraph-fragment" data-paragraph-id="first"
+          ref={(node) => { if (node) node.getBoundingClientRect = () => new DOMRect(48, mocks.suggestionAnchorTop, 180, 20); }} />
+        <div className="docx-paragraph-fragment" data-paragraph-id="second"
+          ref={(node) => { if (node) node.getBoundingClientRect = () => new DOMRect(48, 72, 180, 20); }} />
+      </div>,
+      Loading: () => null, OpenFailure: () => null,
       HeaderFooterChrome: () => null, NotesChrome: () => null },
   };
 });
@@ -310,40 +340,51 @@ function saveRequest(revision: number, expectedBaselineId = SOURCE.baseline_id):
   };
 }
 
-async function renderReady(harness: ReturnType<typeof sessionHarness>, onSaved = vi.fn(async () => {}), waitForSession = true, options: { recovery?: DocxRecoverySnapshot; project?: JournalProject; world?: JournalWorld | null } = {}) {
+async function renderReady(harness: ReturnType<typeof sessionHarness>, onSaved = vi.fn(async () => {}), waitForSession = true, options: { recovery?: DocxRecoverySnapshot; project?: JournalProject; world?: JournalWorld | null; feedbackVisible?: boolean } = {}) {
   mocks.createSession.mockReturnValue(harness.session);
+  if (options.recovery?.taskState) useDocxWorkspaceStore.getState().setToolsOpen(true);
   const onClose = vi.fn();
+  const onContextToolActivate = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const tree = (
+  const tree = (feedbackVisible = options.feedbackVisible ?? false) => (
     <QueryClientProvider client={client}>
     <DocxWorkspaceDialog
       appProjectId="app-project"
       project={options.project ?? PROJECT}
       recovery={options.recovery}
       world={options.world === undefined ? WORLD : options.world}
+      feedbackVisible={feedbackVisible}
+      onContextToolActivate={onContextToolActivate}
       onClose={onClose}
       onSaved={onSaved}
     />
     </QueryClientProvider>
   );
-  const view = render(tree);
+  const view = render(tree());
   if (waitForSession) await waitFor(() => expect(mocks.createSession).toHaveBeenCalled());
-  return { onClose, onSaved, rerender: () => view.rerender(tree), unmount: view.unmount };
+  return { onClose, onSaved, onContextToolActivate,
+    rerender: (feedbackVisible = options.feedbackVisible ?? false) => view.rerender(tree(feedbackVisible)), unmount: view.unmount };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("CSS", { escape: (value: string) => value });
+  mocks.suggestionAnchorTop = 48;
+  mocks.viewportHeight = 400;
   mocks.editorListeners.clear();
+  mocks.modelSelection = { anchor: { paragraphId: "first", offset: 0 }, head: { paragraphId: "first", offset: 13 } };
   mocks.editorMounts.length = 0;
   useWorkspaceSurfaceStore.setState({ active: "word" });
   useAgentWorkspaceStore.setState({ views: {}, operations: [], paused: false, navigation: null });
   useMaterialAnnotationsStore.getState().close();
+  useToastStore.getState().reset();
   mocks.findRenderer.mockResolvedValue(null);
   mocks.loadPdf.mockResolvedValue(Uint8Array.from([37, 80, 68, 70]));
   mocks.pdfSelection = null;
   mocks.editor.measurement = { measurer: "fixed", resolving: false, producer: undefined };
   useDocxWorkspaceStore.setState({ request: null, context: null, minimized: false, recoveryOpen: false,
-    savedVersion: 0, closeRequested: 0, closingBlocked: false });
+    savedVersion: 0, closeRequested: 0, closingBlocked: false, toolsOpen: false });
   mocks.settleActivity.mockResolvedValue({});
   mocks.bindTask.mockResolvedValue(undefined);
   mocks.retainFormat.mockResolvedValue(undefined);
@@ -388,6 +429,46 @@ beforeEach(() => {
   mocks.applySuggestion.mockReturnValue({ ok: true, revision: 1, changed: true });
 });
 
+afterEach(() => vi.unstubAllGlobals());
+
+function emitEditorEvent(event: string, value: unknown) {
+  for (const listener of [...(mocks.editorListeners.get(event) ?? [])]) listener(value);
+}
+
+function setModelSelection(paragraphId: string, anchorOffset = 0, headOffset = 13) {
+  mocks.modelSelection = {
+    anchor: { paragraphId, offset: anchorOffset },
+    head: { paragraphId, offset: headOffset },
+  };
+}
+
+function documentTools() {
+  return screen.getByRole("button", { name: new RegExp(`^${en.workspace.documentTools}`) });
+}
+
+function openDocumentTools() {
+  const button = documentTools();
+  if (button.getAttribute("aria-expanded") === "false") fireEvent.click(button);
+  return within(screen.getByRole("complementary", { name: en.workspace.documentTools }));
+}
+
+function openSelectionTools(surfaceTestId = "docx-editor-surface") {
+  const pages = screen.getByTestId(surfaceTestId).querySelector<HTMLElement>(".docx-pages")!;
+  const viewport = pages.parentElement!;
+  vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 480, 400));
+  const line = within(pages).getByText("Selected text");
+  vi.spyOn(line, "getBoundingClientRect").mockReturnValue(new DOMRect(48, 48, 120, 18));
+  const range = document.createRange();
+  range.selectNodeContents(line);
+  const readSelection = vi.spyOn(document, "getSelection").mockReturnValue({ rangeCount: 1, focusNode: line.firstChild, getRangeAt: () => range } as unknown as Selection);
+  try {
+    fireEvent.keyDown(pages, { shiftKey: true, key: "F10" });
+    return screen.getByRole("button", { name: enEditor.materials.annotateSelection });
+  } finally {
+    readSelection.mockRestore();
+  }
+}
+
 async function chooseMaterialView(label: string) {
   Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
   const display = screen.getByRole("combobox", { name: enEditor.materials.viewMode });
@@ -402,7 +483,7 @@ it("publishes the viewed revision and live selection separately from original re
   mocks.editor.editorSnapshot = { ...mocks.editor.editorSnapshot,
     selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } }, selectionCollapsed: false };
   mocks.editor.query.mockReturnValue("Selected text");
-  act(() => mocks.editorListeners.get("selectionChange")?.(mocks.editor.editorSnapshot));
+  act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
   const current = () => useAgentWorkspaceStore.getState().views["app-project"];
   expect(current()).toMatchObject({ role: "working", revision: "0", sessionRevision: 0, dirty: false,
     selection: { revision: "0", paraId: "para-first", quote: "Selected text" } });
@@ -439,7 +520,7 @@ it("handles repeated caret and selection changes without reading the full docume
   for (let index = 0; index < 20; index += 1) {
     mocks.editor.editorSnapshot = { ...mocks.editor.editorSnapshot,
       selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } }, selectionCollapsed: index % 2 === 0 };
-    act(() => mocks.editorListeners.get("selectionChange")?.(mocks.editor.editorSnapshot));
+    act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
   }
   // Editing publishes a new revision through the same path, without an eager paragraph scan.
   act(() => harness.edit("first", "New working text"));
@@ -589,6 +670,34 @@ it("returns actual font resolution and export outcomes through the registered bu
   await act(async () => { await expect(registration.exportDocument()).rejects.toThrow("disk full"); });
   expect(mocks.createSession).toHaveBeenCalledOnce();
   expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+});
+
+it("keeps the download bytes and receipt on the captured revision while edits continue", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  await renderReady(harness);
+  const registration = mocks.registerAgentSession.mock.calls[0][0];
+  const bytes = Uint8Array.from([80, 75, 5, 6]);
+  let finishExport!: (value: ArrayBuffer) => void;
+  let finishDownload!: (value: { status: "saved"; path: string }) => void;
+  mocks.editorSave.mockImplementationOnce(() => new Promise((resolve) => { finishExport = resolve; }));
+  mocks.downloadCopy.mockImplementationOnce(() => new Promise((resolve) => { finishDownload = resolve; }));
+
+  act(() => harness.edit("first", "Exported manuscript"));
+  const exporting = registration.exportDocument();
+  act(() => harness.edit("first", "Edit while serializing"));
+  finishExport(bytes.buffer);
+  await waitFor(() => expect(mocks.downloadCopy).toHaveBeenCalledExactlyOnceWith(bytes, SOURCE.filename));
+  act(() => harness.edit("first", "Edit while choosing a destination"));
+  finishDownload({ status: "saved", path: "/chosen/working.docx" });
+
+  await expect(exporting).resolves.toMatchObject({
+    result: { status: "saved", path: "/chosen/working.docx" },
+    sessionRevision: 1,
+    document: { sessionId: registration.sessionId, baselineId: SOURCE.baseline_id,
+      sessionRevision: 1, savedRevision: 0, sourceSha256: SOURCE.source_sha256 },
+  });
+  expect(harness.session.revision()).toBe(3);
+  expect(harness.session.listParagraphs()[0].text).toBe("Edit while choosing a destination");
 });
 
 it("reads exact live run fonts through the registered format contract", async () => {
@@ -1014,7 +1123,7 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
       .mockImplementationOnce(() => new Promise<DocxSource>((resolve) => { finishEarlier = resolve; }))
       .mockImplementationOnce(() => new Promise<DocxSource>((resolve) => { finishCurrent = resolve; }));
     render(<StrictMode><QueryClientProvider client={new QueryClient()}>
-      <DocxWorkspaceDialog appProjectId="app-project" project={PROJECT} world={WORLD} onClose={vi.fn()} onSaved={vi.fn()} />
+      <DocxWorkspaceDialog appProjectId="app-project" project={PROJECT} world={WORLD} feedbackVisible={false} onClose={vi.fn()} onSaved={vi.fn()} />
     </QueryClientProvider></StrictMode>);
     expect(mocks.loadSource).toHaveBeenCalledTimes(2);
     const current = { ...SOURCE, bytes: Uint8Array.from(SOURCE.bytes) };
@@ -1041,7 +1150,7 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
   it("honors a tab close requested before the Word surface has mounted", async () => {
     useDocxWorkspaceStore.getState().open({ appProjectId: "app-project", project: PROJECT, world: WORLD, onSaved: vi.fn() });
     useDocxWorkspaceStore.getState().requestClose();
-    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost /></QueryClientProvider>);
+    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost feedbackVisible={false} /></QueryClientProvider>);
     await waitFor(() => expect(useDocxWorkspaceStore.getState().request).toBeNull());
     expect(screen.queryByTestId("docx-workspace")).not.toBeInTheDocument();
   });
@@ -1049,7 +1158,7 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
   it("routes a normal open with existing unsaved work to recovery before loading the editor", async () => {
     mocks.listRecovery.mockResolvedValue({ snapshots: [recovery], failures: [] });
     useDocxWorkspaceStore.getState().open({ appProjectId: "app-project", project: PROJECT, world: WORLD, onSaved: vi.fn() });
-    render(<DocxWorkspaceHost />);
+    render(<DocxWorkspaceHost feedbackVisible={false} />);
     await waitFor(() => expect(useDocxWorkspaceStore.getState().recoveryOpen).toBe(true));
     expect(useDocxWorkspaceStore.getState().request).toBeNull();
     expect(mocks.loadSource).not.toHaveBeenCalled();
@@ -1064,7 +1173,7 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     const otherSaved = vi.fn(async () => {});
     const request = { appProjectId: "app-project", project: PROJECT, world: initialWorld, onSaved: previousSaved };
     useDocxWorkspaceStore.getState().open(request);
-    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost /></QueryClientProvider>);
+    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost feedbackVisible={false} /></QueryClientProvider>);
     await waitFor(() => expect(mocks.createSession).toHaveBeenCalledOnce());
     const editorNode = screen.getByTestId("mock-docx-editor");
     const document = mocks.editorDocument;
@@ -1106,7 +1215,7 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     const nextSaved = vi.fn(async () => {});
     const request = { appProjectId: "app-project", project: PROJECT, world: WORLD, onSaved: previousSaved };
     useDocxWorkspaceStore.getState().open(request);
-    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost /></QueryClientProvider>);
+    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost feedbackVisible={false} /></QueryClientProvider>);
     await waitFor(() => expect(mocks.createSession).toHaveBeenCalledOnce());
     act(() => harness.edit("first", "Pending save"));
     fireEvent.click(screen.getByRole("button", { name: text.save }));
@@ -1132,7 +1241,7 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
       onSaved: previousSaved,
     };
     useDocxWorkspaceStore.getState().open(request);
-    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost /></QueryClientProvider>);
+    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost feedbackVisible={false} /></QueryClientProvider>);
     await waitFor(() => expect(mocks.createSession).toHaveBeenCalledOnce());
     const editorNode = screen.getByTestId("mock-docx-editor");
     const document = mocks.editorDocument;
@@ -1259,21 +1368,336 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
       selectionCollapsed: false,
     };
     mocks.editor.query.mockReturnValue("Selected text");
-    act(() => mocks.editorListeners.get("selectionChange")?.(mocks.editor.editorSnapshot));
+    act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
 
-    fireEvent.click(screen.getByRole("button", { name: enEditor.materials.annotateSelection }));
+    expect(screen.queryByRole("button", { name: enEditor.materials.annotateSelection })).not.toBeInTheDocument();
+    fireEvent.click(openSelectionTools());
     await waitFor(() => expect(mocks.editorSave).toHaveBeenCalledOnce());
     act(() => harness.edit("first", "Changed while exporting"));
     await act(async () => { finishExport(new Uint8Array([80, 75, 3, 4]).buffer); });
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(enEditor.materials.captureChanged));
+    await waitFor(() => expect(useToastStore.getState().toasts[0]?.message).toBe(enEditor.materials.captureChanged));
     expect(useMaterialAnnotationsStore.getState().document).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: enEditor.materials.annotateSelection }));
+    const button = openSelectionTools();
+    mocks.editor.editorSnapshot = { ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-other" }, to: { paraId: "para-other" } } };
+    mocks.editor.query.mockReturnValue("Other text");
+    fireEvent.click(button);
     await waitFor(() => expect(useMaterialAnnotationsStore.getState().document?.title).toBe(SOURCE.filename));
     expect(useMaterialAnnotationsStore.getState().anchor).toEqual({
-      kind: "object", id: "para-first", label: "Selected text",
+      kind: "object", id: "para-first", label: "Selected text", range: { from: 0, to: 13 },
     });
     expect(mocks.editorSave).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["source", "original", "source and back", "document tools"])("does not open selection feedback after switching to %s", async (destination) => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    await renderReady(harness);
+    mocks.editor.editorSnapshot = {
+      ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } },
+      selectionCollapsed: false,
+    };
+    mocks.editor.query.mockReturnValue("Selected text");
+    const hash = await crypto.subtle.digest("SHA-256", Uint8Array.from([80, 75, 5, 6]));
+    let finishHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
+    try {
+      fireEvent.click(openSelectionTools());
+      await waitFor(() => expect(digest).toHaveBeenCalled());
+      if (destination === "original") await chooseMaterialView(enEditor.materials.docxOriginal);
+      else if (destination === "document tools") fireEvent.click(documentTools());
+      else act(() => useWorkspaceSurfaceStore.getState().showFiles());
+      if (destination === "source and back") act(() => useWorkspaceSurfaceStore.getState().showWord());
+      await act(async () => { finishHash(hash); });
+      expect(useMaterialAnnotationsStore.getState().document).toBeNull();
+      expect(useToastStore.getState().toasts).toEqual([]);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it("drops a delayed selection capture after the user selects another paragraph", async () => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    await renderReady(harness);
+    mocks.editor.editorSnapshot = {
+      ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } },
+      selectionCollapsed: false,
+    };
+    mocks.editor.query.mockReturnValue("Selected text");
+    const hash = await crypto.subtle.digest("SHA-256", Uint8Array.from([80, 75, 5, 6]));
+    let finishHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
+    try {
+      fireEvent.click(openSelectionTools());
+      await waitFor(() => expect(digest).toHaveBeenCalled());
+      mocks.editor.editorSnapshot = {
+        ...mocks.editor.editorSnapshot,
+        selection: { from: { paraId: "para-second" }, to: { paraId: "para-second" } },
+      };
+      setModelSelection("second", 0, 17);
+      mocks.editor.query.mockReturnValue("Another selection");
+      act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
+      await act(async () => { finishHash(hash); });
+      expect(useMaterialAnnotationsStore.getState().document).toBeNull();
+      expect(useToastStore.getState().toasts).toEqual([]);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it.each([
+    ["working", "stays visible"],
+    ["working", "leaves and returns"],
+    ["original", "leaves"],
+  ] as const)("guards a delayed %s selection capture when the line %s", async (surface, movement) => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    await renderReady(harness);
+    mocks.editor.editorSnapshot = {
+      ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } },
+      selectionCollapsed: false,
+    };
+    mocks.editor.query.mockReturnValue("Selected text");
+    const original = surface === "original";
+    if (original) await chooseMaterialView(enEditor.materials.docxOriginal);
+    const surfaceId = original ? "docx-original-surface" : "docx-editor-surface";
+    const line = within(screen.getByTestId(surfaceId)).getByText("Selected text");
+    const viewport = line.closest<HTMLElement>(".docx-editor__scroll-container");
+    if (!viewport) throw new Error("Expected the document viewport.");
+    const hash = await crypto.subtle.digest("SHA-256",
+      original ? new Uint8Array(SOURCE.bytes) : Uint8Array.from([80, 75, 5, 6]));
+    let finishHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
+    try {
+      fireEvent.click(openSelectionTools(surfaceId));
+      await waitFor(() => expect(digest).toHaveBeenCalledOnce());
+      const scroll = (top: number) => {
+        viewport.scrollTop = top;
+        vi.mocked(line.getBoundingClientRect).mockReturnValue(new DOMRect(48, 48 - top, 120, 18));
+        fireEvent.scroll(viewport);
+      };
+      scroll(movement === "stays visible" ? 20 : 180);
+      if (movement === "leaves and returns") scroll(0);
+      await act(async () => { finishHash(hash); });
+      const feedback = useMaterialAnnotationsStore.getState();
+      if (movement === "stays visible") {
+        expect(feedback.anchor).toMatchObject({ id: "para-first", range: { from: 0, to: 13 } });
+      } else {
+        expect(feedback.document).toBeNull();
+      }
+      expect(useToastStore.getState().toasts).toEqual([]);
+      expect(viewport.scrollTop).toBe(movement === "stays visible" ? 20 : movement === "leaves" ? 180 : 0);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it("drops a delayed selection capture after the selected range changes in the same paragraph", async () => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    await renderReady(harness);
+    mocks.editor.editorSnapshot = {
+      ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } },
+      selectionCollapsed: false,
+    };
+    mocks.editor.query.mockReturnValue("Selected text");
+    const hash = await crypto.subtle.digest("SHA-256", Uint8Array.from([80, 75, 5, 6]));
+    let finishHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
+    try {
+      fireEvent.click(openSelectionTools());
+      await waitFor(() => expect(digest).toHaveBeenCalled());
+      setModelSelection("first", 2, 8);
+      act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
+      await act(async () => { finishHash(hash); });
+      expect(useMaterialAnnotationsStore.getState().document).toBeNull();
+      expect(useToastStore.getState().toasts).toEqual([]);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it("drops a delayed selection capture after the selection moves away and back", async () => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    await renderReady(harness);
+    mocks.editor.editorSnapshot = {
+      ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } },
+      selectionCollapsed: false,
+    };
+    mocks.editor.query.mockReturnValue("Selected text");
+    const hash = await crypto.subtle.digest("SHA-256", Uint8Array.from([80, 75, 5, 6]));
+    let finishHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
+    try {
+      fireEvent.click(openSelectionTools());
+      await waitFor(() => expect(digest).toHaveBeenCalled());
+      setModelSelection("second", 0, 17);
+      act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
+      setModelSelection("first");
+      act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
+      await act(async () => { finishHash(hash); });
+      expect(useMaterialAnnotationsStore.getState().document).toBeNull();
+      expect(useToastStore.getState().toasts).toEqual([]);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it("drops a delayed original capture after its selection changes without an event", async () => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    await renderReady(harness);
+    mocks.editor.editorSnapshot = {
+      ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } },
+      selectionCollapsed: false,
+    };
+    mocks.editor.query.mockReturnValue("Selected text");
+    await chooseMaterialView(enEditor.materials.docxOriginal);
+    const hash = await crypto.subtle.digest("SHA-256", new Uint8Array(SOURCE.bytes));
+    let finishHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
+    try {
+      fireEvent.click(openSelectionTools("docx-original-surface"));
+      await waitFor(() => expect(digest).toHaveBeenCalled());
+      setModelSelection("second", 0, 17);
+      await act(async () => { finishHash(hash); });
+      expect(useMaterialAnnotationsStore.getState().document).toBeNull();
+      expect(useToastStore.getState().toasts).toEqual([]);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it("keeps the newest selection target when a delayed capture finishes after another annotation starts", async () => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    await renderReady(harness);
+    mocks.editor.editorSnapshot = {
+      ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } },
+      selectionCollapsed: false,
+    };
+    mocks.editor.query.mockReturnValue("Selected text");
+    const firstBytes = Uint8Array.from([80, 75, 5, 6]).buffer;
+    const secondBytes = Uint8Array.from([80, 75, 7, 8]).buffer;
+    mocks.editorSave.mockResolvedValueOnce(firstBytes).mockResolvedValueOnce(secondBytes);
+    const firstHash = await crypto.subtle.digest("SHA-256", firstBytes);
+    const secondHash = await crypto.subtle.digest("SHA-256", secondBytes);
+    let finishFirstHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest")
+      .mockReturnValueOnce(new Promise((resolve) => { finishFirstHash = resolve; }))
+      .mockReturnValueOnce(Promise.resolve(secondHash));
+    try {
+      fireEvent.click(openSelectionTools());
+      await waitFor(() => expect(digest).toHaveBeenCalledOnce());
+      mocks.editor.editorSnapshot = {
+        ...mocks.editor.editorSnapshot,
+        selection: { from: { paraId: "para-second" }, to: { paraId: "para-second" } },
+      };
+      setModelSelection("second", 0, 17);
+      mocks.editor.query.mockReturnValue("Second selection");
+      fireEvent.click(openSelectionTools());
+      await waitFor(() => expect(useMaterialAnnotationsStore.getState().anchor).toMatchObject({ kind: "object", id: "para-second" }));
+      const latest = useMaterialAnnotationsStore.getState();
+      await act(async () => { finishFirstHash(firstHash); });
+      expect(useMaterialAnnotationsStore.getState()).toBe(latest);
+      expect(useToastStore.getState().toasts).toEqual([]);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it.each(["working", "original"] as const)("drops a delayed %s selection capture after focus moves to another control", async (surface) => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    await renderReady(harness);
+    mocks.editor.editorSnapshot = {
+      ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } },
+      selectionCollapsed: false,
+    };
+    mocks.editor.query.mockReturnValue("Selected text");
+    if (surface === "original") await chooseMaterialView(enEditor.materials.docxOriginal);
+    const hash = await crypto.subtle.digest("SHA-256",
+      surface === "original" ? new Uint8Array(SOURCE.bytes) : Uint8Array.from([80, 75, 5, 6]));
+    let finishHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
+    try {
+      fireEvent.click(openSelectionTools(surface === "original" ? "docx-original-surface" : "docx-editor-surface"));
+      await waitFor(() => expect(digest).toHaveBeenCalled());
+      documentTools().focus();
+      act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
+      await act(async () => { finishHash(hash); });
+      expect(useMaterialAnnotationsStore.getState().document).toBeNull();
+      expect(documentTools()).toHaveFocus();
+      expect(useToastStore.getState().toasts).toEqual([]);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it.each(["working", "original"] as const)("leaves the paper in front after keyboard input during a delayed %s whole-material capture", async (surface) => {
+    await renderReady(sessionHarness([paragraph("first", "Selected text")]));
+    if (surface === "original") {
+      await chooseMaterialView(enEditor.materials.docxOriginal);
+      await waitFor(() => expect(screen.getByRole("combobox", { name: enEditor.materials.viewMode })).toHaveFocus());
+    }
+    const paper = screen.getByTestId(surface === "original" ? "docx-original-surface" : "docx-editor-surface");
+    const pages = paper.querySelector<HTMLElement>(".docx-pages");
+    if (!pages) throw new Error("Mock Word pages did not mount");
+    pages.tabIndex = 0;
+    pages.focus();
+    const hash = await crypto.subtle.digest("SHA-256",
+      surface === "original" ? SOURCE.bytes : Uint8Array.from([80, 75, 5, 6]));
+    let finishHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
+    try {
+      const annotate = screen.getByRole("button", { name: enEditor.materials.annotateWhole });
+      fireEvent.click(annotate);
+      await waitFor(() => expect(digest).toHaveBeenCalled());
+      expect(pages).toHaveFocus();
+      fireEvent.keyDown(pages, { key: "ArrowRight" });
+      await act(async () => { finishHash(hash); });
+      expect(useMaterialAnnotationsStore.getState().document).toBeNull();
+      expect(pages).toHaveFocus();
+      expect(annotate).toBeEnabled();
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it("keeps the previous feedback target when the user reopens it during a new capture", async () => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    const workspace = await renderReady(harness);
+    fireEvent.click(screen.getByRole("button", { name: enEditor.materials.annotateWhole }));
+    await waitFor(() => expect(useMaterialAnnotationsStore.getState().document).not.toBeNull());
+    const previousFeedback = useMaterialAnnotationsStore.getState();
+    workspace.rerender(true);
+    workspace.rerender(false);
+
+    act(() => harness.edit("first", "Selected text changed"));
+    mocks.editor.editorSnapshot = {
+      ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } },
+      selectionCollapsed: false,
+    };
+    mocks.editor.query.mockReturnValue("Selected text");
+    const bytes = Uint8Array.from([80, 75, 7, 8]).buffer;
+    mocks.editorSave.mockResolvedValueOnce(bytes);
+    const hash = await crypto.subtle.digest("SHA-256", bytes);
+    let finishHash!: (bytes: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
+    try {
+      fireEvent.click(openSelectionTools());
+      await waitFor(() => expect(digest).toHaveBeenCalled());
+      workspace.rerender(true);
+      await act(async () => { finishHash(hash); });
+      expect(useMaterialAnnotationsStore.getState()).toBe(previousFeedback);
+      expect(useToastStore.getState().toasts).toEqual([]);
+    } finally {
+      digest.mockRestore();
+    }
   });
 
   it("waits for an old background export and prevents its late write after an explicit save starts", async () => {
@@ -1941,11 +2365,245 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
     const controller = new AbortController();
     act(() => registration.onSuggestion({ target, proposed: "Partial suggestion", phase: "streaming", controller }));
-    expect(screen.getByTestId("docx-proposed")).toHaveTextContent("Partial suggestion");
+    const entry = screen.getByRole("button", { name: text.reviewSuggestion });
+    expect(entry).toBeVisible();
+    expect(screen.getByTestId("docx-proposed")).not.toBeVisible();
+    expect(screen.queryByRole("button", { name: text.stop })).not.toBeInTheDocument();
+    expect(documentTools()).toHaveAttribute("aria-expanded", "false");
     expect(harness.text("first")).toBe("Original paragraph");
+    fireEvent.click(entry);
+    expect(screen.getByRole("heading", { name: text.phases.streaming })).toHaveFocus();
+    expect(screen.getByTestId("docx-proposed")).toHaveTextContent("Partial suggestion");
+    expect(screen.getByRole("button", { name: text.stop })).toBeVisible();
     act(() => registration.onSuggestion({ target, proposed: "Suggested replacement", phase: "reviewing", controller }));
+    const heading = screen.getByRole("heading", { name: text.phases.reviewing });
+    expect(heading).toHaveFocus();
     expect(screen.getByRole("button", { name: text.accept })).toBeVisible();
+    fireEvent.keyDown(heading, { key: "Escape" });
+    expect(documentTools()).toHaveFocus();
+    expect(screen.getByRole("button", { name: text.reviewSuggestion })).toBeVisible();
     expect(mocks.applySuggestion).not.toHaveBeenCalled();
+  });
+
+  it("keeps keyboard review available when the focused Stop button is replaced", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
+    const controller = new AbortController();
+    act(() => registration.onSuggestion({ target, proposed: "Partial", phase: "streaming", controller }));
+    fireEvent.click(screen.getByRole("button", { name: text.reviewSuggestion }));
+    screen.getByRole("button", { name: text.stop }).focus();
+
+    act(() => registration.onSuggestion({ target, proposed: "Replacement", phase: "reviewing", controller }));
+    const heading = screen.getByRole("heading", { name: text.phases.reviewing });
+    expect(heading).toHaveFocus();
+    fireEvent.keyDown(heading, { key: "Tab" });
+    expect(screen.getByRole("button", { name: text.accept })).toHaveFocus();
+
+    act(() => harness.edit("first", "New target text"));
+    const withdrawn = screen.getByRole("heading", { name: text.phases.withdrawn });
+    expect(withdrawn).toHaveFocus();
+    expect(screen.queryByRole("button", { name: text.accept })).not.toBeInTheDocument();
+    fireEvent.keyDown(withdrawn, { key: "Escape" });
+    expect(documentTools()).toHaveFocus();
+  });
+
+  it("restores document tools focus when a focused ready-to-review entry is withdrawn", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
+    act(() => registration.onSuggestion({ target, proposed: "Suggested replacement", phase: "reviewing", controller: new AbortController() }));
+    const entry = screen.getByRole("button", { name: text.reviewSuggestion });
+    expect(entry).toHaveAttribute("title", text.phases.reviewing);
+    entry.focus();
+
+    act(() => harness.edit("first", "New target text"));
+    expect(entry).not.toBeInTheDocument();
+    expect(documentTools()).toHaveFocus();
+    expect(documentTools()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("leaves focus elsewhere when a ready-to-review entry is withdrawn", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
+    act(() => registration.onSuggestion({ target, proposed: "Suggested replacement", phase: "reviewing", controller: new AbortController() }));
+    const download = screen.getByRole("button", { name: text.download });
+    download.focus();
+
+    act(() => harness.edit("first", "New target text"));
+    expect(screen.queryByRole("button", { name: text.reviewSuggestion })).not.toBeInTheDocument();
+    expect(download).toHaveFocus();
+    expect(documentTools()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps a review pending while feedback owns the inline foreground", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    const view = await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
+    const controller = new AbortController();
+    act(() => registration.onSuggestion({ target, proposed: "Suggested replacement", phase: "reviewing", controller }));
+    expect(screen.getByTestId("docx-inline-suggestion")).toBeVisible();
+
+    act(() => useMaterialAnnotationsStore.getState().open({
+      projectId: "app-project", documentId: "feedback", title: "Feedback", path: "feedback.md", kind: "markdown",
+      revision: "feedback-revision", source: { text: "Feedback" },
+    }));
+    expect(screen.getByTestId("docx-inline-suggestion")).toBeVisible();
+    act(() => view.rerender(true));
+    expect(screen.queryByTestId("docx-inline-suggestion")).not.toBeInTheDocument();
+    expect(screen.getByTestId("docx-suggestion")).not.toBeVisible();
+
+    act(() => view.rerender(false));
+    expect(screen.getByTestId("docx-inline-suggestion")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: text.reviewSuggestion }));
+    fireEvent.click(screen.getByRole("button", { name: text.accept }));
+    expect(screen.getByRole("heading", { name: text.phases.applied })).toHaveFocus();
+    expect(mocks.applySuggestion).toHaveBeenCalledExactlyOnceWith(target, "Suggested replacement");
+  });
+
+  it("shows selection actions without minimizing feedback and dismisses them when feedback opens", async () => {
+    const harness = sessionHarness([paragraph("first", "Selected text")]);
+    const view = await renderReady(harness);
+    mocks.editor.editorSnapshot = { ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } }, selectionCollapsed: false };
+    mocks.editor.query.mockReturnValue("Selected text");
+    act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
+    expect(view.onContextToolActivate).not.toHaveBeenCalled();
+    expect(openSelectionTools()).toBeVisible();
+    expect(view.onContextToolActivate).not.toHaveBeenCalled();
+    expect(screen.getByTestId("docx-context-tools")).toBeVisible();
+
+    act(() => view.rerender(true));
+    expect(screen.queryByTestId("docx-context-tools")).not.toBeInTheDocument();
+
+    expect(openSelectionTools()).toBeVisible();
+    expect(view.onContextToolActivate).not.toHaveBeenCalled();
+    expect(harness.text("first")).toBe("Selected text");
+  });
+
+  it("keeps a suggestion offscreen until found explicitly and only accepts it in the working view", async () => {
+    const harness = sessionHarness([paragraph("first", "Original A"), paragraph("second", "Original B")]);
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
+    const controller = new AbortController();
+    act(() => registration.onSuggestion({ target, proposed: "Replacement A", phase: "reviewing", controller }));
+    const inline = screen.getByTestId("docx-inline-suggestion");
+    expect(inline).toBeVisible();
+    mocks.suggestionAnchorTop = 850;
+    fireEvent.scroll(screen.getByTestId("docx-editor-surface").querySelector(".docx-editor__scroll-container")!);
+    await waitFor(() => expect(inline).not.toBeVisible());
+    expect(documentTools()).toHaveAttribute("aria-expanded", "false");
+    expect(mocks.editor.scrollToAnchor).not.toHaveBeenCalled();
+
+    await chooseMaterialView(enEditor.materials.docxOriginal);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: enEditor.materials.viewMode })).toHaveFocus());
+    fireEvent.click(documentTools());
+    const tools = within(screen.getByRole("complementary", { name: en.workspace.documentTools }));
+    expect(tools.getByText("Replacement A")).toBeVisible();
+    expect(tools.queryByRole("button", { name: text.accept })).not.toBeInTheDocument();
+    expect(tools.getByRole("button", { name: text.reject })).toBeEnabled();
+    mocks.editor.scrollToAnchor.mockReturnValueOnce(false).mockImplementationOnce(() => {
+      expect(screen.getByTestId("docx-editor-surface")).toBeVisible();
+      expect(screen.getByTestId("docx-original-surface")).not.toBeVisible();
+      mocks.suggestionAnchorTop = 48;
+      return true;
+    });
+    fireEvent.click(tools.getByRole("button", { name: text.revealSuggestion }));
+    await waitFor(() => expect(mocks.editor.scrollToAnchor).toHaveBeenCalledExactlyOnceWith({ paraId: "para-first" }));
+    expect(tools.getByText("Replacement A")).toBeVisible();
+    fireEvent.click(tools.getByRole("button", { name: text.revealSuggestion }));
+    await waitFor(() => expect(documentTools()).toHaveAttribute("aria-expanded", "false"));
+    expect(mocks.editor.scrollToAnchor).toHaveBeenLastCalledWith({ paraId: "para-first" });
+
+    mocks.editor.editorSnapshot = { ...mocks.editor.editorSnapshot,
+      selection: { from: { paraId: "para-second" }, to: { paraId: "para-second" } }, selectionCollapsed: false };
+    act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
+    fireEvent.click(screen.getByRole("button", { name: text.reviewSuggestion }));
+    fireEvent.click(screen.getByRole("button", { name: text.accept }));
+    expect(mocks.applySuggestion).toHaveBeenCalledExactlyOnceWith(target, "Replacement A");
+  });
+
+  it("cancels a pending Go to paragraph when the user returns to the paper", async () => {
+    const harness = sessionHarness([paragraph("first", "Original A"), paragraph("second", "Original B")]);
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
+    act(() => registration.onSuggestion({ target, proposed: "Replacement A", phase: "reviewing", controller: new AbortController() }));
+    const tools = openDocumentTools();
+    const pages = screen.getByTestId("docx-editor-surface").querySelector<HTMLElement>(".docx-pages");
+    if (!pages) throw new Error("Mock Word pages did not mount");
+    pages.tabIndex = 0;
+
+    let nextFrame: FrameRequestCallback | undefined;
+    const frames = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrame = callback;
+      return 1;
+    });
+    try {
+      fireEvent.click(tools.getByRole("button", { name: text.revealSuggestion }));
+      if (!nextFrame) throw new Error("Go to paragraph did not request its measurement frame");
+      fireEvent.pointerDown(pages);
+      pages.focus();
+      await act(async () => nextFrame?.(0));
+
+      expect(mocks.editor.scrollToAnchor).not.toHaveBeenCalled();
+      expect(pages).toHaveFocus();
+      expect(tools.getByText("Replacement A")).toBeVisible();
+    } finally {
+      frames.mockRestore();
+    }
+  });
+
+  it("keeps review pending when the focused inline entry scrolls away before activation", async () => {
+    const harness = sessionHarness([paragraph("first", "Original paragraph")]);
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
+    act(() => registration.onSuggestion({ target, proposed: "Suggested replacement", phase: "reviewing", controller: new AbortController() }));
+    const inline = screen.getByTestId("docx-inline-suggestion");
+    const entry = within(inline).getByRole("button", { name: text.reviewSuggestion });
+    const viewport = screen.getByTestId("docx-editor-surface").querySelector<HTMLElement>(".docx-editor__scroll-container");
+    if (!viewport) throw new Error("The fixture has no viewport.");
+    expect(entry).toBeVisible();
+    entry.focus();
+    expect(entry).toHaveFocus();
+
+    viewport.scrollTop = 900;
+    mocks.suggestionAnchorTop = -850;
+    fireEvent.scroll(viewport);
+    fireEvent.click(entry, { detail: 0 });
+
+    expect(documentTools()).toHaveAttribute("aria-expanded", "false");
+    expect(documentTools()).toHaveFocus();
+    expect(viewport.scrollTop).toBe(900);
+    expect(mocks.editor.scrollToAnchor).not.toHaveBeenCalled();
+    await waitFor(() => expect(inline).not.toBeVisible());
+    fireEvent.click(documentTools());
+    expect(screen.getByRole("button", { name: text.accept })).toBeEnabled();
+    expect(harness.text("first")).toBe("Original paragraph");
+  });
+
+  it("uses a single compact review entry when the paragraph is visible in a short window", async () => {
+    const harness = sessionHarness([paragraph("first", "Original A")]);
+    mocks.viewportHeight = 170;
+    mocks.suggestionAnchorTop = 85;
+    await renderReady(harness);
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+    const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
+    act(() => registration.onSuggestion({ target, proposed: "Replacement A", phase: "reviewing", controller: new AbortController() }));
+    const inline = screen.getByTestId("docx-inline-suggestion");
+    expect(within(inline).getAllByRole("button")).toHaveLength(1);
+    expect(within(inline).getByRole("button", { name: text.reviewSuggestion })).toBeVisible();
+    expect(inline).not.toHaveTextContent("Replacement A");
+    expect(screen.queryByRole("button", { name: text.accept })).not.toBeInTheDocument();
+    expect(documentTools()).toHaveAttribute("aria-expanded", "false");
+    expect(mocks.editor.scrollToAnchor).not.toHaveBeenCalled();
   });
 
   it("withdraws the existing Agent's suggestion when its paragraph changes", async () => {
@@ -2010,7 +2668,7 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
     const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
     act(() => registration.onSuggestion({ target, proposed: "Suggested replacement", phase: "reviewing", controller: new AbortController() }));
-    fireEvent.click(screen.getByRole("button", { name: text.accept }));
+    fireEvent.click(openDocumentTools().getByRole("button", { name: text.accept }));
     expect(screen.getByTestId("docx-suggestion")).toHaveTextContent(text.phases.applied);
     act(() => harness.edit("first", "Original paragraph"));
     expect(screen.getByTestId("docx-suggestion")).toHaveTextContent(text.phases.withdrawn);
@@ -2117,11 +2775,41 @@ function applyTask(harness: ReturnType<typeof sessionHarness>) {
     return { ok: true, revision: harness.revision(), changed: true };
   });
   const activity = presentTask(harness);
-  fireEvent.click(screen.getAllByRole("button", { name: text.accept })[0]);
+  fireEvent.click(openDocumentTools().getByRole("button", { name: text.accept }));
   return activity;
 }
 
 describe("DOCX task receipts", () => {
+  it("refuses to save a newer revision after waiting for a recovery checkpoint", async () => {
+    const harness = sessionHarness([paragraph("first", "Original"), paragraph("second", "Independent paragraph")]);
+    let finishCheckpoint!: (bytes: ArrayBuffer) => void;
+    mocks.editorSave.mockReturnValueOnce(new Promise((resolve) => { finishCheckpoint = resolve; }));
+    await renderReady(harness);
+    applyTask(harness);
+    await waitFor(() => expect(mocks.editorSave).toHaveBeenCalledOnce());
+    const registration = mocks.registerAgentSession.mock.calls.at(-1)?.[0];
+
+    let save!: Promise<DocxSaveResult>;
+    act(() => { save = registration.save({ expectedRevision: 1 }); });
+    act(() => harness.edit("second", "New edit while the save is queued"));
+    mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 2 });
+
+    await act(async () => {
+      finishCheckpoint(Uint8Array.from([80, 75, 1, 2]).buffer);
+      await expect(save).rejects.toThrow("session changed before saving");
+    });
+    expect(mocks.prepareSave).not.toHaveBeenCalled();
+    expect(mocks.commitRecovery).not.toHaveBeenCalled();
+    expect(harness.text("second")).toBe("New edit while the save is queued");
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+
+    await act(async () => {
+      await expect(registration.save({ expectedRevision: 2 })).resolves.toMatchObject({ revision: 2 });
+    });
+    expect(mocks.commitRecovery).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved);
+  });
+
   it("retries a failed applied receipt without applying again", async () => {
     const harness = sessionHarness([paragraph("first", "Original")]);
     mocks.settleActivity.mockRejectedValueOnce(new Error("Receipt unavailable")).mockResolvedValue({});
@@ -2131,7 +2819,7 @@ describe("DOCX task receipts", () => {
     expect(mocks.runInlineCompletion).not.toHaveBeenCalled();
     expect(mocks.applySuggestion).toHaveBeenCalledOnce();
     expect(harness.text("first")).toBe("Task candidate");
-    fireEvent.click(screen.getByRole("button", { name: text.taskActivity.retry }));
+    fireEvent.click(openDocumentTools().getByRole("button", { name: text.taskActivity.retry }));
     await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledTimes(2));
     expect(mocks.settleActivity.mock.calls[1]).toEqual(mocks.settleActivity.mock.calls[0]);
     expect(mocks.settleActivity.mock.calls[0]).toEqual(["app-project", PROJECT.project_id, "proposal-1", expect.objectContaining({ sessionRevision: 1 }), { kind: "applied" }]);
@@ -2141,7 +2829,7 @@ describe("DOCX task receipts", () => {
     const harness = sessionHarness([paragraph("first", "Original")]);
     await renderReady(harness);
     presentTask(harness);
-    fireEvent.click(screen.getByRole("button", { name: text.reject }));
+    fireEvent.click(openDocumentTools().getByRole("button", { name: text.reject }));
     await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledWith("app-project", PROJECT.project_id, "proposal-1", expect.anything(), { kind: "rejected" }));
     mocks.settleActivity.mockClear();
     presentTask(harness);
@@ -2412,7 +3100,7 @@ it("clears a clean rejection checkpoint by its exact hash before closing", async
   presentTask(harness);
   let finishCleanup!: (cleared: boolean) => void;
   mocks.discardRecovery.mockReturnValueOnce(new Promise<boolean>((resolve) => { finishCleanup = resolve; }));
-  fireEvent.click(screen.getByRole("button", { name: text.reject }));
+  fireEvent.click(openDocumentTools().getByRole("button", { name: text.reject }));
   await waitFor(() => expect(mocks.discardRecovery).toHaveBeenCalledOnce());
   const stored = await mocks.saveRecovery.mock.results[0].value;
   expect(mocks.discardRecovery).toHaveBeenCalledWith(stored);
@@ -2501,13 +3189,13 @@ it("retains a clean rejection checkpoint until its failed receipt can be recorde
   mocks.settleActivity.mockRejectedValueOnce(new Error("Receipt offline"));
   const { onClose } = await renderReady(harness);
   presentTask(harness);
-  fireEvent.click(screen.getByRole("button", { name: text.reject }));
+  fireEvent.click(openDocumentTools().getByRole("button", { name: text.reject }));
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Receipt offline"));
   expect(mocks.saveRecovery).toHaveBeenCalledOnce();
   expect(mocks.discardRecovery).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
   expect(onClose).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: text.taskActivity.retry }));
+  fireEvent.click(openDocumentTools().getByRole("button", { name: text.taskActivity.retry }));
   await waitFor(() => expect(mocks.discardRecovery).toHaveBeenCalledOnce());
   expect(mocks.settleActivity.mock.calls[1]).toEqual(mocks.settleActivity.mock.calls[0]);
 });
@@ -2518,7 +3206,7 @@ it("does not clear recovery when the user edits while a clean rejection receipt 
   mocks.settleActivity.mockReturnValueOnce(new Promise<void>((resolve) => { finishReceipt = resolve; }));
   await renderReady(harness);
   presentTask(harness);
-  fireEvent.click(screen.getByRole("button", { name: text.reject }));
+  fireEvent.click(openDocumentTools().getByRole("button", { name: text.reject }));
   await waitFor(() => expect(mocks.settleActivity).toHaveBeenCalledOnce());
   act(() => harness.edit("first", "Later user edit"));
   await act(async () => finishReceipt());
@@ -2533,7 +3221,7 @@ it("does not clear recovery when the user edits while a clean rejection receipt 
 it("shows a recovery-list failure in the host and lets the user close without opening the editor", async () => {
   mocks.listRecovery.mockRejectedValueOnce(new Error("Recovery storage is unavailable"));
   useDocxWorkspaceStore.getState().open({ appProjectId: "app-project", project: PROJECT, world: WORLD, onSaved: vi.fn() });
-  render(<DocxWorkspaceHost />);
+  render(<DocxWorkspaceHost feedbackVisible={false} />);
   expect(await screen.findByRole("alert")).toHaveTextContent("Recovery storage is unavailable");
   expect(mocks.loadSource).not.toHaveBeenCalled();
   expect(mocks.createSession).not.toHaveBeenCalled();
@@ -2550,6 +3238,8 @@ it("annotates the opening version's exact bytes after saving a newer working bas
   fireEvent.click(screen.getByRole("button", { name: text.save }));
   await waitFor(() => expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.saved));
   await chooseMaterialView(enEditor.materials.docxOriginal);
+  const display = screen.getByRole("combobox", { name: enEditor.materials.viewMode });
+  await waitFor(() => expect(display).toHaveFocus());
   const exportsBefore = mocks.editorSave.mock.calls.length;
   fireEvent.click(screen.getByRole("button", { name: enEditor.materials.annotateWhole }));
   await waitFor(() => expect(useMaterialAnnotationsStore.getState().document).not.toBeNull());
@@ -2568,11 +3258,11 @@ it("binds a working-material request to the captured revision and rejects the bi
   mocks.editor.editorSnapshot = { ...mocks.editor.editorSnapshot,
     selection: { from: { paraId: "para-first" }, to: { paraId: "para-first" } }, selectionCollapsed: false };
   mocks.editor.query.mockReturnValue("Selected text");
-  act(() => mocks.editorListeners.get("selectionChange")?.(mocks.editor.editorSnapshot));
-  fireEvent.click(screen.getByRole("button", { name: enEditor.materials.annotateSelection }));
+  act(() => emitEditorEvent("selectionChange", mocks.editor.editorSnapshot));
+  fireEvent.click(openSelectionTools());
   await waitFor(() => expect(useMaterialAnnotationsStore.getState().options.beforeStartTask).toBeTypeOf("function"));
   const annotations = useMaterialAnnotationsStore.getState();
-  expect(annotations.anchor).toEqual({ kind: "object", id: "para-first", label: "Selected text" });
+  expect(annotations.anchor).toEqual({ kind: "object", id: "para-first", label: "Selected text", range: { from: 0, to: 13 } });
   expect(annotations.document?.source).toMatchObject({ bytes: new Uint8Array([80, 75, 5, 6]) });
   expect(mocks.bindTask).not.toHaveBeenCalled();
   const bind = annotations.options.beforeStartTask;
@@ -2768,10 +3458,12 @@ it("stops a streaming suggestion without applying it and allows the user to keep
   const controller = new AbortController();
   act(() => registration.onSuggestion({ target, proposed: "Partial replacement", phase: "streaming", controller }));
   expect(registration.canPresentSuggestion()).toBe(false);
-  fireEvent.click(screen.getByRole("button", { name: text.stop }));
+  fireEvent.click(openDocumentTools().getByRole("button", { name: text.stop }));
   expect(controller.signal.aborted).toBe(true);
   expect(screen.getByTestId("docx-suggestion")).toHaveTextContent(text.phases.withdrawn);
   expect(registration.canPresentSuggestion()).toBe(true);
+  act(() => registration.onSuggestion({ target, proposed: "Late result", phase: "reviewing", controller }));
+  expect(screen.queryByRole("button", { name: text.accept })).not.toBeInTheDocument();
   expect(mocks.applySuggestion).not.toHaveBeenCalled();
   act(() => harness.edit("first", "User's own edit"));
   fireEvent.click(screen.getByRole("button", { name: en.workspace.closeDocument }));
@@ -2789,7 +3481,7 @@ it("shows an apply refusal and withdraws the suggestion without changing the wor
   const target = harness.session.captureTarget(harness.session.listParagraphs()[0].handle);
   mocks.applySuggestion.mockReturnValueOnce({ ok: false, code: "stale-target", message: "Refresh this paragraph before applying", revision: 0, changed: false });
   act(() => registration.onSuggestion({ target, proposed: "Candidate", phase: "reviewing", controller: new AbortController() }));
-  fireEvent.click(screen.getByRole("button", { name: text.accept }));
+  fireEvent.click(openDocumentTools().getByRole("button", { name: text.accept }));
   expect(screen.getByRole("alert")).toHaveTextContent("Refresh this paragraph before applying");
   expect(screen.getByTestId("docx-suggestion")).toHaveTextContent(text.phases.withdrawn);
   expect(screen.queryByRole("button", { name: text.accept })).not.toBeInTheDocument();

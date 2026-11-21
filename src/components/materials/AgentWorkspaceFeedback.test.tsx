@@ -459,3 +459,108 @@ it("projects a wrapped task receipt consistently and keeps paused updates tied t
   fireEvent.click(screen.getAllByRole("button", { name: "Continue following" })[1]);
   expect(useAgentWorkspaceStore.getState().paused).toBe(false);
 });
+
+it("renders the inline mode as one result line with tooltip details and an icon-only follow control", async () => {
+  const store = useAgentWorkspaceStore.getState();
+  const origin = { kind: "task" as const, taskId: "task", generation: 5 };
+  const call = {
+    id: "inline",
+    projectId: "project",
+    sessionId: "word",
+    title: "Inline manuscript",
+    origin,
+    target: { projectId: "project", sessionId: "word", paragraphRef: "p1", sessionRevision: 3 },
+  };
+  store.beginFollow("project", origin);
+  store.report({
+    ...call,
+    operation: "save",
+    phase: "succeeded",
+    result: { baselineId: "saved-baseline", revision: 3, sourceSha256: "c".repeat(64) },
+  });
+  store.publishView({
+    projectId: "project",
+    documentId: "word",
+    title: "Inline manuscript",
+    kind: "docx",
+    role: "working",
+    revision: "3",
+    sessionId: "word",
+    sessionRevision: 3,
+    dirty: false,
+  });
+  render(<AgentWorkspaceFeedback inline />);
+
+  const feedback = screen.getByTestId("workspace-agent-operation");
+  expect(screen.queryByTestId("sidebar-agent-operation")).toBeNull();
+  expect(screen.getByText("Saving working copy · Saved manuscript version")).toBeVisible();
+  expect(screen.queryByText("Inline manuscript")).toBeNull();
+  expect(feedback).toHaveAttribute("data-operation", "save");
+  expect(feedback).toHaveAttribute("data-receipt-state", "saved");
+  expect(feedback).toHaveAttribute("data-baseline-id", "saved-baseline");
+  expect(feedback).toHaveAttribute("data-revision", "3");
+  expect(feedback).toHaveAttribute("data-source-sha256", "c".repeat(64));
+  expect(feedback).toHaveAttribute("data-origin-kind", "task");
+  expect(feedback).toHaveAttribute("data-flow-key", "task:task:5");
+  expect(feedback).toHaveAttribute("data-session-id", "word");
+  expect(feedback).toHaveAttribute("data-session-revision", "3");
+  expect(feedback).toHaveAttribute("data-follow-state", "following");
+
+  const follow = screen.getByTestId("workspace-agent-follow");
+  expect(follow).toHaveAttribute("data-agent-follow-control");
+  expect(follow).toHaveAccessibleName("Pause following");
+  expect(follow.textContent).toBe("");
+
+  act(() => store.report({
+    ...call,
+    operation: "check",
+    phase: "succeeded",
+    result: {
+      operation: "check",
+      result: { check: {
+        check_id: "inline-check", baseline_id: "saved-baseline", world_version_id: "inline-world", validity: "CURRENT",
+      } },
+    },
+  }));
+  expect(screen.getByText("Checking requirements · Current")).toBeVisible();
+  expect(feedback).toHaveAttribute("data-receipt-state", "current");
+  expect(feedback).toHaveAttribute("data-validity", "CURRENT");
+  expect(feedback).toHaveAttribute("data-check-id", "inline-check");
+  expect(feedback).toHaveAttribute("data-world-version-id", "inline-world");
+
+  const status = screen.getByRole("status");
+  expect(status).toHaveAttribute("tabindex", "0");
+  fireEvent.keyDown(document, { key: "Tab" });
+  act(() => status.focus());
+  expect(status).toHaveFocus();
+  const tooltip = await screen.findByRole("tooltip");
+  expect(tooltip).toHaveTextContent("Inline manuscript");
+  expect(status).toHaveAttribute("aria-describedby", tooltip.id);
+
+  act(() => store.report({
+    ...call,
+    operation: "format",
+    phase: "failed",
+    error: "Inline format error",
+  }));
+  expect(screen.getByText("Updating formatting · Needs attention")).toBeVisible();
+  expect(tooltip).toHaveTextContent("Inline format error");
+
+  fireEvent.click(follow);
+  expect(feedback).toHaveAttribute("data-follow-state", "paused");
+  expect(follow).toHaveAccessibleName("Continue following");
+});
+
+it("keeps an inline status out of the tab order when it has no extra details", () => {
+  useAgentWorkspaceStore.getState().report({
+    id: "plain-inline",
+    projectId: "project",
+    sessionId: "word",
+    origin: { kind: "external", flowId: "plain-inline" },
+    operation: "save",
+    phase: "succeeded",
+    result: { baselineId: "saved-baseline", revision: 3 },
+  });
+  render(<AgentWorkspaceFeedback inline />);
+  expect(screen.getByRole("status")).not.toHaveAttribute("tabindex");
+});

@@ -22,6 +22,7 @@ const registry: Record<string, () => Promise<unknown>> = !E2E_HOOKS ? {} : {
   "/src/lib/compile-checkpoint.ts": () => import("@/lib/compile-checkpoint"),
   "/src/lib/dictionary.ts": () => import("@/lib/dictionary"),
   "/src/lib/docx-agent-host.ts": () => import("@/lib/docx-agent-host"),
+  "/src/components/research/DocxWorkspaceDialog.tsx": () => import("@/components/research/DocxWorkspaceDialog"),
   "/src/store/agent-workspace.ts": () => import("@/store/agent-workspace"),
   "/src/lib/docx-format.ts": () => import("@/lib/docx-format"),
   "/src/lib/docx-template-client.ts": () => import("@/lib/docx-template-client"),

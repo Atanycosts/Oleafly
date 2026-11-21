@@ -43,11 +43,16 @@ atomic boundaries such as a simple field. Source records and explicit adoption p
 are application-owned in `src/lib/docx-equations.ts`, submitted with the math operation
 as package edits in the existing transaction. Apply this patch after OMML recognition.
 
-The supported subset is an explicit-width page/margin horizontal frame wider than
+The supported layout subset is an explicit-width page/margin horizontal frame wider than
 every section column with `none` or `notBeside` wrap. Each intersected column gets an
 existing exclusion zone. Adjacent text-relative frame groups stack in source order.
 Narrow, side-wrapped, auto-width and text-horizontal frames keep their existing
 multi-column behavior. This patch does not change LibreOffice's DOCX importer.
+
+[`focus-scroll.source.patch`](focus-scroll.source.patch) keeps the editor's scroll
+position when WebKit moves the editable surface despite `preventScroll`. It covers
+pointer focus and explicit editor focus. The [embedded image check](../../e2e/README.md#word-embedded-image-preview)
+exercises reselecting and dragging a floating picture after resizing the viewport.
 
 ## Rebuild
 
@@ -64,6 +69,7 @@ git apply /absolute/path/to/Oleafly/patches/docx-core/format-execution.source.pa
 git apply /absolute/path/to/Oleafly/patches/docx-core/raw-entry-reuse.source.patch
 git apply /absolute/path/to/Oleafly/patches/docx-core/omml-recognition.source.patch
 git apply /absolute/path/to/Oleafly/patches/docx-core/equation-source-editing.source.patch
+git apply /absolute/path/to/Oleafly/patches/docx-core/focus-scroll.source.patch
 ```
 
 In each checkout, empty only its generated `packages/core/dist` directory and run
@@ -139,3 +145,21 @@ layout APIs and native real-manuscript acceptance after rebuilding.
 
 Keep the source and installed patches together when upgrading. Remove both when
 an upstream version implements this behavior and passes the regressions.
+
+## React picture overlay
+
+[`image-overlay-click.source.patch`](image-overlay-click.source.patch) closes a
+floating picture's move preview without a transaction when the pointer is
+released with no displacement. The pinned React adapter uses the same upstream
+commit. Build its runtime in the unmodified and patched checkouts from
+`packages/react`:
+
+```bash
+node ../../node_modules/tsup/dist/cli-default.js --no-dts --out-dir dist-runtime
+```
+
+Check that the unmodified build matches `dist/index.js` and `dist/index.mjs`
+from `pnpm patch @docx-editor.dev/react@2.36.0`. Copy the rebuilt pair into the
+package edit directory, leaving types, styles and notices unchanged. Run
+`pnpm patch-commit`, verify a frozen install and rerun the
+[embedded image browser check](../../e2e/README.md#word-embedded-image-preview).

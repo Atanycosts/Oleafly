@@ -2983,6 +2983,8 @@
     "stop": "Stop",
     "accept": "Accept",
     "reject": "Reject",
+    "revealSuggestion": "Go to paragraph",
+    "reviewSuggestion": "Review suggestion",
     "phases": {
       "streaming": "Generating suggestion",
       "reviewing": "Ready to review",
@@ -3016,8 +3018,38 @@
     "restore": "Resume DOCX working copy",
     "minimize": "Minimize",
     "askAgent": "Continue with Agent",
+    "copySelectionRefused": "This selection couldn't be copied.",
+    "imageTools": {
+      "view": "View image",
+      "unavailable": "Couldn't open this image."
+    },
+    "chartTools": {
+      "exportWorkbook": "Export embedded workbook",
+      "exportFailed": "Couldn't save the embedded workbook."
+    },
+    "fieldTools": {
+      "viewCitation": "View citation",
+      "insertCitation": "Insert citation",
+      "searchSources": "Title or DOI",
+      "documentSources": "In this document",
+      "crossrefResults": "Crossref",
+      "reuseSource": "Reuse: {{title}}",
+      "addSource": "Add document source",
+      "sourceUnavailable": "This source can't be used in this document.",
+      "searchCrossref": "Search Crossref",
+      "searching": "Searching Crossref…",
+      "searchFailed": "Crossref search failed.",
+      "noSources": "No matching sources.",
+      "insertRefused": "Couldn't insert at this position.",
+      "ambiguousSource": "The draft has conflicting source records or DOI details.",
+      "unsupportedSourceMetadata": "This source's metadata doesn't fit Word's bibliography format.",
+      "goToReference": "Go to reference",
+      "openFailed": "Couldn't open the citation link."
+    },
     "equationTools": {
       "title": "Equations",
+      "editSource": "Edit LaTeX",
+      "contextChanged": "The document changed. Reopen the equation to replace it.",
       "target": "Equation",
       "refresh": "Refresh equation",
       "notReady": "Open a document to edit equations.",
@@ -3057,6 +3089,7 @@
   "materialAnnotations": {
     "minimize": "Minimize feedback",
     "expand": "Open material feedback",
+    "feedbackTarget": "Feedback target",
     "title": "Material feedback",
     "close": "Close feedback",
     "feedbackHelp": "Save feedback on this exact version. Check Request AI handling to create and run a task with the retained source.",

@@ -1,5 +1,6 @@
-import type { Editor, EditorSnapshot } from "@docx-editor.dev/core/contracts/editor";
-import { createMaterialDocument, type MaterialAnchor, type MaterialDocument } from "./material-surface";
+import type { EditorSnapshot } from "@docx-editor.dev/core/contracts/editor";
+import type { DocxEditorInstance } from "@docx-editor.dev/core/editor";
+import { createMaterialDocument, type DocxParagraphRange, type MaterialAnchor, type MaterialDocument } from "./material-surface";
 
 export const DOCX_MATERIAL_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
@@ -33,17 +34,31 @@ export interface CapturedDocxMaterial {
   sessionRevision: number;
 }
 
+type DocxSelectionEditor = Pick<DocxEditorInstance, "query" | "snapshot" | "surface">;
+
+function readParagraphRange(editor: DocxSelectionEditor, paraId: string): DocxParagraphRange | null {
+  const surface = editor.surface;
+  if (!surface) return null;
+  const { anchor, head } = surface.state().selection;
+  if (anchor.paragraphId !== head.paragraphId || surface.session.nodeIdOf(paraId) !== anchor.paragraphId) return null;
+  const from = Math.min(anchor.offset, head.offset);
+  const to = Math.max(anchor.offset, head.offset);
+  return from < to ? { from, to } : null;
+}
+
 export function readDocxMaterialSelection(
-  editor: Pick<Editor, "query" | "snapshot">,
+  editor: DocxSelectionEditor,
   snapshot: EditorSnapshot = editor.snapshot(),
 ): DocxMaterialSelection | null {
   if (snapshot.selectionCollapsed || !snapshot.selection) return null;
   const from = snapshot.selection.from;
   const to = snapshot.selection.to;
   if (!("paraId" in from) || !("paraId" in to) || from.paraId !== to.paraId) return null;
+  const range = readParagraphRange(editor, from.paraId);
+  if (!range) return null;
   const quote = editor.query({ type: "selectedText" });
   return {
-    anchor: { kind: "object", id: from.paraId, ...(quote ? { label: quote } : {}) },
+    anchor: { kind: "object", id: from.paraId, ...(quote ? { label: quote } : {}), range },
     quote,
   };
 }

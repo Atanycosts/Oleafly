@@ -11,7 +11,7 @@ function resultRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
-export function AgentWorkspaceFeedback({ compact = false }: { compact?: boolean }) {
+export function AgentWorkspaceFeedback({ compact = false, inline = false }: { compact?: boolean; inline?: boolean }) {
   const { t } = useTranslation("editor");
   const { t: tResearch } = useTranslation("researchTools");
   const projectId = useFilesStore((state) => state.projectId);
@@ -94,30 +94,63 @@ export function AgentWorkspaceFeedback({ compact = false }: { compact?: boolean 
     stateLabel = missing ? text.fontsMissing : resolving ? text.fontsResolving : resolved ? text.fontsReady : text.receiptAvailable;
     receiptState = missing ? "missing" : resolving ? "resolving" : resolved ? "ready" : "available";
   }
+  const activity = `${actions[operation.operation] ?? text.process} · ${stateLabel}`;
+  const statusIcon = operation.phase === "started"
+    ? <Spinner size="xs" />
+    : attention
+      ? <CircleAlert className="size-3.5 shrink-0 text-destructive" />
+      : <Check className="size-3.5 shrink-0 text-muted-foreground" />;
+  const testIdPrefix = inline ? "workspace-agent" : compact ? "sidebar-agent" : "workspace-agent";
+  const followLabel = matching ? paused ? text.resume : text.pause : text.follow;
+  const feedbackData = {
+    "data-operation": operation.operation,
+    "data-phase": operation.phase,
+    "data-receipt-state": receiptState,
+    "data-baseline-id": baselineId,
+    "data-revision": revision,
+    "data-validity": validity,
+    "data-source-sha256": sourceSha256,
+    "data-check-id": checkId,
+    "data-world-version-id": worldVersionId,
+    "data-origin-kind": operation.origin.kind,
+    "data-flow-key": agentExecutionFlowKey(operation.origin),
+    "data-session-id": operation.sessionId,
+    "data-session-revision": operation.target?.sessionRevision,
+    "data-follow-state": matching ? paused ? "paused" : "following" : "idle",
+  };
+  const followControl = (iconOnly: boolean) => <Button type="button" variant="ghost" size="xs"
+    className={iconOnly ? "size-6 shrink-0 p-0" : "shrink-0"} data-agent-follow-control
+    data-testid={`${testIdPrefix}-follow`} aria-label={followLabel} onClick={() => {
+      const store = useAgentWorkspaceStore.getState();
+      if (!matching) store.beginFollow(operation.projectId, operation.origin);
+      else if (paused) store.resume();
+      else store.pause();
+    }}>
+    {matching && !paused ? <Pause className="size-3.5" /> : <Navigation className="size-3.5" />}
+    {!iconOnly && (matching ? paused ? text.resume : !compact && text.following : text.follow)}
+  </Button>;
+  if (inline) {
+    const details = [label, activity, operation.error].filter(Boolean).join(" · ");
+    const hasDetails = Boolean(operation.error || task?.title || operation.title);
+    return <div className="flex h-full min-w-0 items-center gap-1 overflow-hidden text-xs"
+      data-testid={`${testIdPrefix}-operation`} {...feedbackData}>
+      <Tooltip label={details} className="min-w-0 flex-1">
+        <span role="status" aria-live="polite" tabIndex={hasDetails ? 0 : undefined}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm focus-visible:bg-accent/60">
+          {statusIcon}
+          <span className="truncate text-muted-foreground">{activity}</span>
+        </span>
+      </Tooltip>
+      <Tooltip label={followLabel} className="shrink-0">{followControl(true)}</Tooltip>
+    </div>;
+  }
   return <div className={`flex min-w-0 items-center gap-2 border-b px-3 py-2 text-xs ${compact ? "border-sidebar-border" : "bg-muted/20"}`}
-    data-testid={compact ? "sidebar-agent-operation" : "workspace-agent-operation"}
-    data-operation={operation.operation} data-phase={operation.phase} data-receipt-state={receiptState}
-    data-baseline-id={baselineId} data-revision={revision} data-validity={validity}
-    data-source-sha256={sourceSha256} data-check-id={checkId} data-world-version-id={worldVersionId}
-    data-origin-kind={operation.origin.kind} data-flow-key={agentExecutionFlowKey(operation.origin)}
-    data-session-id={operation.sessionId} data-session-revision={operation.target?.sessionRevision}
-    data-follow-state={matching ? paused ? "paused" : "following" : "idle"}>
-    {operation.phase === "started" ? <Spinner size="xs" /> : attention ? <CircleAlert className="size-3.5 shrink-0 text-destructive" /> : <Check className="size-3.5 shrink-0 text-muted-foreground" />}
+    data-testid={`${testIdPrefix}-operation`} {...feedbackData}>
+    {statusIcon}
     <div className="min-w-0 flex-1" role="status" aria-live="polite">
       <p className="truncate font-medium">{label}</p>
-      <p className="truncate text-muted-foreground"><Tooltip label={operation.error} suppressed={!operation.error}><span>{actions[operation.operation] ?? text.process} · {stateLabel}</span></Tooltip></p>
+      <p className="truncate text-muted-foreground"><Tooltip label={operation.error} suppressed={!operation.error}><span>{activity}</span></Tooltip></p>
     </div>
-    <Button type="button" variant="ghost" size="xs" className="shrink-0" data-agent-follow-control
-      data-testid={compact ? "sidebar-agent-follow" : "workspace-agent-follow"}
-      aria-label={matching ? paused ? text.resume : text.pause : text.follow}
-      onClick={() => {
-        const store = useAgentWorkspaceStore.getState();
-        if (!matching) store.beginFollow(operation.projectId, operation.origin);
-        else if (paused) store.resume();
-        else store.pause();
-      }}>
-      {matching && !paused ? <Pause className="size-3.5" /> : <Navigation className="size-3.5" />}
-      {matching ? paused ? text.resume : !compact && text.following : text.follow}
-    </Button>
+    {followControl(false)}
   </div>;
 }

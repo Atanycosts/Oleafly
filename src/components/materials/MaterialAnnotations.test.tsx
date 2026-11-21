@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MaterialAnnotations } from "./MaterialAnnotations";
+import { MaterialAnnotations as MaterialFeedbackPanel, type MaterialAnnotationsProps } from "./MaterialAnnotations";
 import { useMaterialAnnotationsStore } from "@/store/material-annotations";
 import { materialTarget, type MaterialDocument } from "@/lib/material-surface";
 import type { AnnotationTarget, TaskAnnotation, TaskAnnotationDraft } from "@/lib/task-collaboration";
@@ -18,6 +18,11 @@ vi.mock("@/store/research-tasks-flag", () => ({ researchTasksEnabled: api.enable
 vi.mock("@/store/research-tasks", () => ({ useResearchTasksStore: { getState: () => ({ projectId: api.projectId, tasks: api.tasks, bindProject: api.bindProject, refresh: api.refresh, startTask: api.start, receiveTask: api.receive, openTaskDetail: api.taskDetail }) } }));
 vi.mock("@/store/material-viewer", () => ({ useMaterialViewerStore: { getState: () => ({ open: api.open }) } }));
 const labels = en.tasks.annotations;
+function MaterialAnnotations(props: Pick<MaterialAnnotationsProps, "onOpenSnapshot" | "onOpenTarget" | "onMinimize">) {
+  const { document, anchor, options, close } = useMaterialAnnotationsStore();
+  return document && <MaterialFeedbackPanel key={[document.projectId, document.documentId, document.revision].join(":")}
+    document={document} anchor={anchor} options={options} current onClose={() => close()} {...props} />;
+}
 const document: MaterialDocument = { projectId: "paper", documentId: "material-a", path: "figure.svg", title: "Figure A", kind: "image", revision: "revision-new", source: { bytes: new Uint8Array([1, 2]) } };
 let saved: TaskAnnotation[];
 function annotation(draft: Partial<TaskAnnotation> = {}): TaskAnnotation {

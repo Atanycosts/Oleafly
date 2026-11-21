@@ -122,11 +122,33 @@ not fetch or require any sidecar.
 ## Journal Workbench service
 
 The optional Journal checks integration uses the Python service in
-[`services/research-workbench`](../services/research-workbench/README.md). Install
-[uv](https://docs.astral.sh/uv/) and run `pnpm workbench:setup` from this repository root.
+[`services/research-workbench`](../services/research-workbench/README.md). For development,
+install [uv](https://docs.astral.sh/uv/) and run `pnpm workbench:setup` from this repository root.
 This creates a Python 3.12 environment and installs the module with its development extras.
 `pnpm tauri dev` selects it automatically; `OLEAFLY_WORKBENCH_PYTHON` can select another
-installation. Packaged applications retain their existing Python selector and saved library.
+installation.
+
+### Connect a packaged macOS candidate to Workbench
+
+The candidate does not ship Workbench or a Workbench installer. Install
+[uv](https://docs.astral.sh/uv/), then run the following from the root of the source checkout
+matching the candidate's build commit. This installs only the Python runtime dependencies,
+without Node, pnpm, or any development extras:
+
+```bash
+runtime="$HOME/.local/share/oleafly-workbench"
+uv venv --python 3.12 "$runtime"
+uv pip install --python "$runtime/bin/python" ./services/research-workbench
+printf '%s\n' "$runtime/bin/python"
+```
+
+Use a new directory if you need to preserve an existing environment. In Oleafly's Workbench
+connection form, paste the printed path into the Python executable field and select **Connect**.
+Oleafly remembers the path after a successful connection. The dependency licence notes in the
+Workbench `pyproject.toml` cover local use; confirm distribution rights and third-party
+obligations before attaching Workbench to a release.
+
+### Service Development
 
 The Python module keeps its own `pyproject.toml`, tests and contracts. It does not join the
 Cargo or pnpm workspaces. Application data remains outside source control; the source merge
@@ -214,6 +236,10 @@ The font package is excluded from Vite's development dependency optimizer: its
 `import.meta.url` assets must resolve beside the installed package, rather than
 under `.vite/assets` where missing fonts can return the HTML fallback with status 200.
 The development regression verifies actual font bytes, not the response status alone.
+The shared Word document component supplies the installed HarfBuzz asset through
+Vite's `?url` import before creating an editor. This avoids the same misplaced
+relative URL when Vite prebundles the shaper. The browser working-copy test checks
+the WASM response type and that the editor switches to shaped text measurement.
 The editor's exact-font origin reuses native `system_fonts`/fontdb and the existing
 application font-pack caches. It supplies static standalone TTF/OTF bytes through
 FontResolver, requiring the requested family, weight and style. TTC, variable fonts
@@ -282,6 +308,9 @@ its original bytes. Its first subsequent edit withdraws recovered save attributi
 undo or matching text does not reacquire it. A structured, persisted refusal permits explicit
 discard without a Saved receipt; transport, hash and receipt errors retain the fixed request.
 While that request is unresolved, later edits stay in memory and do not replace its checkpoint.
+Before creating a fixed request, an Agent save checks its requested revision again
+after waiting for recovery and when capturing the document. If either sees a
+different revision, the save stops and the newer edit remains unsaved.
 The opt-in task-attribution recovery mode
 in the same runner exercises both acceptance-before-save death and a committed save
 whose response never reaches the frontend, plus a stale request's confirmed refusal and discard.
@@ -492,9 +521,11 @@ job and the Rust job before downloading their reports.
 
 The browser-harness and native desktop E2E jobs share the
 [`workbench-runtime` action](../.github/actions/workbench-runtime/action.yml).
-It installs Python 3.12 and the Workbench environment at
-`services/research-workbench/.venv`, then passes its absolute interpreter path
-to the packaged application. It installs LibreOffice for each runner platform
+It installs Python 3.12 and installs Workbench as a package, not as an editable
+checkout, in `services/research-workbench/.venv`. It then passes that absolute
+interpreter path to the packaged application. Spec 126 launches the selected
+interpreter in isolated mode, without a checkout path in `PYTHONPATH`. The action
+installs LibreOffice for each runner platform
 and passes the executable path for DOCX save/check/PDF scenarios. Browser
 harness checks use synthetic documents, real Workbench HTTP and the production
 React editor with scripted Tauri commands. The native jobs run those business

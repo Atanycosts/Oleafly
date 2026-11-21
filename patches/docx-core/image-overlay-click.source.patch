@@ -1,0 +1,17 @@
+--- a/packages/react/src/editor/images/ImageSelectionOverlay.tsx
++++ b/packages/react/src/editor/images/ImageSelectionOverlay.tsx
+@@ -503,6 +503,14 @@
+           event.clientY - (pointerStartRef.current?.y ?? event.clientY),
+           coordinates.paintScale
+         );
++        if (
++          current.session.mode === 'move' &&
++          deltaX === 0 &&
++          deltaY + current.accumulatedScrollPt === 0
++        ) {
++          clearPreview();
++          return;
++        }
+         const finalized = finalizeImageOverlayInteraction({
+           session: current.session,
+           deltaXPt: deltaX,

@@ -16,6 +16,16 @@ pub async fn crossref_search(query: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn crossref_search_journal_titles(title: String) -> Result<String, String> {
+    oleafly_research::citation::crossref_search_journal_titles(&title).await
+}
+
+#[tauri::command]
+pub async fn crossref_work(doi: String) -> Result<serde_json::Value, String> {
+    oleafly_research::citation::crossref_work(&doi).await
+}
+
+#[tauri::command]
 pub async fn fetch_isbn_bibtex(isbn: String) -> Result<String, String> {
     oleafly_research::citation::fetch_isbn_bibtex(&isbn).await
 }

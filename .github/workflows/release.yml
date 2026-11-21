@@ -371,6 +371,8 @@ jobs:
         id: tauri
         uses: tauri-apps/tauri-action@v1
         env:
+          VITE_E2E_HOOKS: '0'
+          VITE_DOCX_CITATION_PREVIEW: '0'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Signs the updater artifacts and generates `latest.json`. Set these
           # repo secrets (see docs/updates.md); without them the build still
