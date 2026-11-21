@@ -1649,7 +1649,7 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     pages.tabIndex = 0;
     pages.focus();
     const hash = await crypto.subtle.digest("SHA-256",
-      surface === "original" ? SOURCE.bytes : Uint8Array.from([80, 75, 5, 6]));
+      surface === "original" ? new Uint8Array(SOURCE.bytes) : Uint8Array.from([80, 75, 5, 6]));
     let finishHash!: (bytes: ArrayBuffer) => void;
     const digest = vi.spyOn(crypto.subtle, "digest").mockReturnValueOnce(new Promise((resolve) => { finishHash = resolve; }));
     try {
