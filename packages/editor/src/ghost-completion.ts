@@ -218,7 +218,9 @@ function computeGhost(
   const before = boundedCompletionContext(view.state, pos);
   if (!before || /\s$/u.test(before)) return null;
 
-  if (completionStatus(view.state) === "active") return popupGhost(view, before, pos);
+  // CodeMirror can show a selectable option while other sources are pending.
+  // A separate preview query would invalidate the visible option's request.
+  if (completionStatus(view.state) !== null) return popupGhost(view, before, pos);
 
   if (!isCompletionTextLexicallyTriggered(before, syntax)) return null;
 
@@ -227,9 +229,9 @@ function computeGhost(
 
 export function acceptGhostCompletion(view: EditorView): boolean {
   // CodeMirror's built-in completion keymap accepts with Enter, not Tab. Route
-  // Tab through its command explicitly when the popup is active; inserting the
+  // Tab through its command explicitly when a popup option is ready; inserting the
   // ghost text ourselves would bypass guarded applies and snippet expansion.
-  if (completionStatus(view.state) === "active" && acceptCompletion(view)) return true;
+  if (acceptCompletion(view)) return true;
   const ghost = view.state.field(ghostField, false);
   if (!ghost || ghost.pos !== view.state.selection.main.head) return false;
   view.dispatch({
@@ -245,11 +247,11 @@ export function acceptGhostCompletion(view: EditorView): boolean {
 export function clearGhostCompletion(view: EditorView): boolean {
   const ghost = view.state.field(ghostField, false);
   if (!ghost) return false;
-  const popupOpen = completionStatus(view.state) === "active";
+  const completionInProgress = completionStatus(view.state) !== null;
   view.dispatch({
     effects: [setGhost.of(null), setDismissed.of(ghost.pos)],
   });
-  return !popupOpen;
+  return !completionInProgress;
 }
 
 const ghostTheme = EditorView.baseTheme({
@@ -274,12 +276,9 @@ export function ghostCompletion(
       }
 
       update(update: ViewUpdate) {
-        const previousStatus = completionStatus(update.startState);
-        const nextStatus = completionStatus(update.state);
         const popupChanged =
-          previousStatus !== nextStatus ||
-          (nextStatus === "active" &&
-            selectedCompletion(update.startState) !== selectedCompletion(update.state));
+          completionStatus(update.startState) !== completionStatus(update.state) ||
+          selectedCompletion(update.startState) !== selectedCompletion(update.state);
         if (update.docChanged || update.selectionSet || popupChanged) {
           this.schedule();
         }

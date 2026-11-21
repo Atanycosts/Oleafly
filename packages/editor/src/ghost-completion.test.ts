@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
   autocompletion,
   completionStatus,
   moveCompletionSelection,
+  selectedCompletion,
   startCompletion,
   type CompletionSource,
 } from "@codemirror/autocomplete";
@@ -15,7 +16,11 @@ import {
   ghostCompletion,
   pendingGhostCompletion,
 } from "./ghost-completion";
+import { bibtexCompletions } from "./bibtex-completions";
 import { latexCompletions } from "./latex";
+import { stubRangeGeometry } from "./test-geometry";
+
+stubRangeGeometry();
 
 function sourceOf(
   labels: Array<string | { label: string; boost?: number; apply?: unknown }>,
@@ -253,6 +258,76 @@ describe("ghost completion suggestions", () => {
 });
 
 describe("accepting and dismissing", () => {
+  it.each([
+    {
+      doc: "\\bibliographystyle{pla}",
+      cursorOffset: 1,
+      source: latexCompletions,
+      syntax: "latex",
+      label: "plain",
+      ghost: "in",
+      key: "Enter",
+      inserted: "\\bibliographystyle{plain}",
+      selection: "",
+    },
+    {
+      doc: "@art",
+      cursorOffset: 0,
+      source: bibtexCompletions,
+      syntax: "bibtex",
+      label: "@article",
+      ghost: null,
+      key: "Tab",
+      inserted: [
+        "@article{key,",
+        "  author = {author},",
+        "  title = {title},",
+        "  journal = {journal},",
+        "  year = {year},",
+        "}",
+      ].join("\n"),
+      selection: "key",
+    },
+  ] as const)("$key accepts $label after the ghost preview refreshes during a pending query", async ({
+    doc, cursorOffset, source, syntax, label, ghost, key, inserted, selection,
+  }) => {
+    const preview = new Compartment();
+    const pending = () => new Promise<null>(() => {});
+    const view = new EditorView({
+      state: EditorState.create({
+        doc,
+        selection: { anchor: doc.length - cursorOffset },
+        extensions: [
+          preview.of([]),
+          autocompletion({
+            override: [source, pending],
+            interactionDelay: 0,
+          }),
+        ],
+      }),
+      parent: document.body,
+    });
+
+    try {
+      expect(startCompletion(view)).toBe(true);
+      await vi.waitFor(() => expect(selectedCompletion(view.state)?.label).toBe(label));
+      expect(completionStatus(view.state)).toBe("pending");
+
+      view.dispatch({ effects: preview.reconfigure(ghostCompletion([source], syntax)) });
+      await settle();
+      expect(pendingGhostCompletion(view)).toBe(ghost);
+
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      view.contentDOM.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(view.state.doc.toString()).toBe(inserted);
+      const { from, to } = view.state.selection.main;
+      expect(view.state.sliceDoc(from, to)).toBe(selection);
+    } finally {
+      view.destroy();
+    }
+  });
+
   it("routes a Tab keydown through the editor keymap", async () => {
     const view = mount("\\alp", [sourceOf(["\\alpha"])]);
     caretToEnd(view);

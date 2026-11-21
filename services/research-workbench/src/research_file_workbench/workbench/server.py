@@ -10,6 +10,8 @@ import ipaddress
 import secrets
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
+from typing import cast
 
 from research_file_workbench.common.hashing import sha256_bytes, sha256_text
 from research_file_workbench.workbench.http_boundary import (
@@ -48,6 +50,12 @@ class WorkbenchHttpServer(ThreadingHTTPServer):
         super().__init__(address, WorkbenchRequestHandler)
         self.service = service
         self.session_token = secrets.token_urlsafe(32)
+
+    def server_bind(self) -> None:
+        """Bind the numeric loopback address without HTTPServer's reverse DNS lookup."""
+        TCPServer.server_bind(self)
+        host, self.server_port = self.server_address[:2]
+        self.server_name = cast(str, host)
 
 
 def serve(root: Path, *, host: str = "127.0.0.1", port: int = 8765) -> None:
