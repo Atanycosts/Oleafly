@@ -20,7 +20,7 @@ frontend() {
   pnpm lint
   pnpm i18n:types:check
   pnpm i18n:validate --locale zh-Hans
-  NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}" pnpm build
+  pnpm build
   pnpm exec vitest run --maxWorkers=1
 }
 

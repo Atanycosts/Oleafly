@@ -14,7 +14,7 @@
     "gen:conversion-matrix": "node scripts/generate-conversion-matrix.mjs",
     "docx:notices": "node scripts/sync-docx-notices.mjs",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && node scripts/build-frontend.mjs",
     "check:performance": "node scripts/check-performance-budget.mjs",
     "dictionaries:catalog": "node scripts/dictionaries/build-catalog.mjs",
     "dictionaries:test": "node --test scripts/dictionaries/build-catalog.node-tests.mjs",

@@ -1,3 +1,4 @@
+import workerSrc from "./pdf.worker?worker&url";
 import { dropNativeDecompression } from "./worker-decompression";
 
 type PdfWorkerModule = {
@@ -15,6 +16,8 @@ export function installPdfWorkerModule(workerModule: PdfWorkerModule) {
 export async function installMainThreadPdfWorker() {
   await import("./polyfills");
   dropNativeDecompression(globalThis, globalThis.navigator?.userAgent ?? "");
-  const workerModule = await import("pdfjs-dist/build/pdf.worker.min.mjs");
+  const workerModule = import.meta.env.PROD
+    ? await import(/* @vite-ignore */ workerSrc)
+    : await import("pdfjs-dist/build/pdf.worker.min.mjs");
   installPdfWorkerModule(workerModule);
 }
