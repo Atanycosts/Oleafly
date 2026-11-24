@@ -204,6 +204,48 @@ describe("openSpreadsheet Excel reads", () => {
       truncation: [],
     });
   });
+
+  it("reports an empty worksheet without inventing a used range", async () => {
+    const reader = await openSpreadsheet(
+      "blank.xlsx",
+      workbookBytes([{ name: "Blank", sheet: XLSX.utils.aoa_to_sheet([]) }]),
+    );
+
+    expect(reader.listSheets()).toEqual([
+      { position: 1, name: "Blank", bounds: null },
+    ]);
+    expect(reader.readHeader()).toMatchObject({
+      requested: { startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
+      available: null,
+      returned: null,
+      outOfBounds: true,
+      truncation: [],
+      cells: [],
+    });
+  });
+
+  it("returns no rows for a range that does not intersect the used range", async () => {
+    const reader = await openSpreadsheet(
+      "book.xlsx",
+      workbookBytes([
+        {
+          name: "Results",
+          sheet: { B2: { t: "s", v: "Name" }, "!ref": "B2:B2" },
+        },
+      ]),
+    );
+
+    expect(
+      reader.readRange({ startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 }),
+    ).toMatchObject({
+      requested: { startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 },
+      available: null,
+      returned: null,
+      outOfBounds: true,
+      truncation: [],
+      rows: [],
+    });
+  });
 });
 
 describe("openSpreadsheet delimited reads", () => {
@@ -474,6 +516,19 @@ describe("openSpreadsheet limits", () => {
     ]);
   });
 
+  it("keeps a surrogate pair intact when it straddles the cell text limit", async () => {
+    const prefix = "x".repeat(MAX_SPREADSHEET_CELL_UTF16_UNITS - 1);
+    const reader = await openSpreadsheet("emoji.csv", textBytes(`${prefix}\u{1f600}tail`));
+
+    const result = reader.readRange({
+      startRow: 1,
+      endRow: 1,
+      startColumn: 1,
+      endColumn: 1,
+    });
+    expect(result.rows[0]?.cells[0]).toEqual({ text: prefix, truncated: true });
+  });
+
   it("rejects an oversized source before parsing it", async () => {
     await expect(
       openSpreadsheet("huge.csv", new Uint8Array(MAX_SPREADSHEET_SOURCE_BYTES + 1)),
@@ -488,5 +543,20 @@ describe("openSpreadsheet limits", () => {
     expect(() =>
       reader.readRange({ startRow: 2, endRow: 1, startColumn: 1, endColumn: 2 }),
     ).toThrowError(expect.objectContaining({ code: "invalid_range" }));
+  });
+
+  it.each([
+    [{ startRow: 0, endRow: 1, startColumn: 1, endColumn: 1 }, "startRow"],
+    [{ startRow: 1, endRow: 1.5, startColumn: 1, endColumn: 1 }, "endRow"],
+    [{ startRow: 1, endRow: 1, startColumn: 1, endColumn: -1 }, "endColumn"],
+  ] as const)("rejects a non-positive or fractional range coordinate: %j", async (range, field) => {
+    const reader = await openSpreadsheet("data.csv", textBytes("a,b\n"));
+
+    expect(() => reader.readRange(range)).toThrowError(
+      expect.objectContaining({
+        code: "invalid_range",
+        message: `${field} must be a positive integer.`,
+      }),
+    );
   });
 });

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   writeProjectBytes: vi.fn(),
   refreshTree: vi.fn(),
   notifyProjectFilesChanged: vi.fn(),
+  storeProjectId: "paper",
 }));
 
 vi.mock("@/lib/tauri", () => ({
@@ -18,7 +19,9 @@ vi.mock("@/lib/cross-window", () => ({
   notifyProjectFilesChanged: mocks.notifyProjectFilesChanged,
 }));
 vi.mock("@/store/files", () => ({
-  useFilesStore: { getState: () => ({ projectId: "paper", refreshTree: mocks.refreshTree }) },
+  useFilesStore: {
+    getState: () => ({ projectId: mocks.storeProjectId, refreshTree: mocks.refreshTree }),
+  },
 }));
 vi.mock("xlsx", async (importOriginal) => {
   const actual = await importOriginal<typeof import("xlsx")>();
@@ -48,6 +51,7 @@ function csvBase64(text: string): string {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.storeProjectId = "paper";
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -292,6 +296,19 @@ describe("planLinkedTable", () => {
       source: { format: "json", path: "data/grid.json", shape: "rows" },
     });
   });
+
+  it("defaults a JSON table without an explicit shape to the records reader", () => {
+    const json: TableFile = {
+      rows: [["a"], ["1"]],
+      format: "json",
+      text: '[{"a":"1"}]',
+    };
+    expect(planLinkedTable(json, "records.json", [], "main.typ")).toEqual({
+      dataPath: "data/records.json",
+      content: '[{"a":"1"}]',
+      source: { format: "json", path: "data/records.json", shape: "records" },
+    });
+  });
 });
 
 describe("linked tables", () => {
@@ -311,5 +328,34 @@ describe("linked tables", () => {
     expect(mocks.writeProjectBytes).toHaveBeenCalledWith("paper", "data/é.csv", btoa("\u00c3\u00a9\n"));
     expect(mocks.refreshTree).toHaveBeenCalled();
     expect(mocks.notifyProjectFilesChanged).toHaveBeenCalledWith("paper", ["data/é.csv"]);
+  });
+
+  it("does not refresh another project's file tree after a background write", async () => {
+    mocks.storeProjectId = "other";
+
+    await writeLinkedTableData("paper", {
+      dataPath: "data/x.csv",
+      content: "x\n",
+      source: { format: "csv", path: "data/x.csv" },
+    });
+
+    expect(mocks.writeProjectBytes).toHaveBeenCalledWith("paper", "data/x.csv", btoa("x\n"));
+    expect(mocks.refreshTree).not.toHaveBeenCalled();
+    expect(mocks.notifyProjectFilesChanged).not.toHaveBeenCalled();
+  });
+
+  it("still announces the write when the tree refresh fails", async () => {
+    mocks.refreshTree.mockRejectedValueOnce(new Error("tree busy"));
+
+    await expect(
+      writeLinkedTableData("paper", {
+        dataPath: "data/x.csv",
+        content: "x\n",
+        source: { format: "csv", path: "data/x.csv" },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(mocks.refreshTree).toHaveBeenCalled();
+    expect(mocks.notifyProjectFilesChanged).toHaveBeenCalledWith("paper", ["data/x.csv"]);
   });
 });
