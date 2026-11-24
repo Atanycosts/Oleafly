@@ -384,3 +384,123 @@ it("labels table-band and generic undetermined checks as limits rather than pass
   expect(await screen.findByText(en.docx.findingReview.limitations.tableBands)).toBeInTheDocument();
   expect(screen.getByText(en.docx.findingReview.limitations.cannotDetermine)).toBeInTheDocument();
 });
+
+it("explains retained values in their displayed units and hides unsupported structures", async () => {
+  const groups = [group({
+    id: "values",
+    category: "other",
+    action: "custom.value",
+    counts: counts(14),
+  })];
+  api.details.mockResolvedValue({
+    findings: [
+      finding({
+        case_id: "line",
+        property_path: "paragraph.lineSpacing.value",
+        observed: 480,
+        expected: 300,
+        line_spacing_rule: { observed: "auto", expected: "exact" },
+      }),
+      finding({ case_id: "boolean", property_path: "custom.boolean", observed: true, expected: false }),
+      finding({ case_id: "twips", property_path: "custom.indentTwips", observed: 720, expected: 360 }),
+      finding({ case_id: "percent", property_path: "custom.scalePercent", observed: 80, expected: 100 }),
+      finding({ case_id: "list", property_path: "paragraph.listItem.ilvl", observed: 0, expected: 2 }),
+      finding({ case_id: "rule", property_path: "paragraph.lineSpacing.rule", observed: "auto", expected: "unexpected" }),
+      finding({ case_id: "vertical", property_path: "run.verticalAlign", observed: "superscript", expected: "unexpected" }),
+      finding({ case_id: "break", property_path: "section.breakType", observed: "oddPage", expected: "unexpected" }),
+      finding({ case_id: "direction", property_path: "cell.textDirection", observed: "btLr", expected: "unexpected" }),
+      finding({ case_id: "empty-array", property_path: "custom.sequence", observed: [], expected: [] }),
+      finding({
+        case_id: "tabs",
+        property_path: "paragraph.tabStops.stops",
+        observed: [null, { positionPt: 72, alignment: "center" }, { alignment: "left" }],
+        expected: [{ positionPt: 144 }],
+      }),
+      finding({ case_id: "literals", property_path: "custom.sequence", observed: ["left", "double"], expected: [] }),
+      finding({
+        case_id: "underline",
+        property_path: "run.underline",
+        observed: { variant: "wavy" },
+        expected: { variant: "double" },
+      }),
+      finding({
+        case_id: "object",
+        property_path: "custom.object",
+        observed: { alignment: "center", count: 2, nested: { ignored: true }, unknown: 3 },
+        expected: { unknownToken: "hidden" },
+      }),
+    ],
+    total: 14,
+    next_offset: null,
+  });
+  render(<DocxFindingBrowser checkId="check-values" groups={groups} />);
+  fireEvent.click(screen.getByTestId("docx-finding-group-values"));
+  fireEvent.click(await screen.findByTestId("docx-finding-location-loc-one"));
+
+  const articles = await screen.findAllByRole("article");
+  expect(articles).toHaveLength(14);
+  expect(articles[0]).toHaveTextContent("Manuscript: 2× line spacing");
+  expect(articles[0]).toHaveTextContent("Template: Exactly 300 pt");
+  expect(articles[1]).toHaveTextContent("Manuscript: Yes");
+  expect(articles[1]).toHaveTextContent("Template: No");
+  expect(articles[2]).toHaveTextContent("Manuscript: 720 twips");
+  expect(articles[3]).toHaveTextContent("Template: 100%");
+  expect(articles[4]).toHaveTextContent("Manuscript: Level 1");
+  expect(articles[5]).toHaveTextContent("Manuscript: Automatic");
+  expect(articles[5]).toHaveTextContent("Template: unexpected");
+  expect(articles[6]).toHaveTextContent("Manuscript: Superscript");
+  expect(articles[7]).toHaveTextContent("Manuscript: Odd page");
+  expect(articles[8]).toHaveTextContent("Manuscript: Bottom to top");
+  expect(articles[9]).toHaveTextContent("Multiple format settings");
+  expect(articles[10]).toHaveTextContent("Manuscript: Multiple format settings、Centered at 72 pt、Multiple format settings");
+  expect(articles[10]).toHaveTextContent("Template: This value cannot be shown at 144 pt");
+  expect(articles[11]).toHaveTextContent("Manuscript: Left aligned、Double line");
+  expect(articles[12]).toHaveTextContent("Manuscript: Wavy");
+  expect(articles[13]).toHaveTextContent("Manuscript: Alignment：Centered；Count：2");
+  expect(articles[13]).toHaveTextContent("Template: Multiple format settings");
+  expect(screen.queryByText(/hidden|unknownToken|nested/)).not.toBeInTheDocument();
+});
+
+it("labels table, equation and figure context and pages exact checks by location", async () => {
+  const groups = [
+    group({ id: "table", category: "table", action: "row.height", table_area: "exception" }),
+    group({ id: "formula", category: "formula", action: "run.fontSizePt", object_number: 3 }),
+    group({ id: "figure", category: "figure", action: "run.fontSizePt", object_number: 4 }),
+    group({ id: "figure-caption", category: "figure_caption", action: "paragraph.alignment", object_number: 5 }),
+    group({ id: "table-caption", category: "table_caption", action: "paragraph.alignment", object_number: 2 }),
+  ];
+  api.locations.mockResolvedValue({
+    locations: [
+      location({ id: "row-column", row: 2, column: 3 }),
+      location({ id: "row", row: 4 }),
+      location({ id: "column", column: 5 }),
+    ],
+    total: 3,
+    next_offset: null,
+  });
+  api.details
+    .mockResolvedValueOnce({ findings: [finding()], total: 2, next_offset: 20 })
+    .mockResolvedValueOnce({ findings: [], total: 2, next_offset: null });
+  render(<DocxFindingBrowser checkId="check-context" groups={groups} />);
+
+  expect(screen.getByText(en.docx.findingReview.tableUnspecified)).toBeInTheDocument();
+  expect(screen.getByText(en.docx.findingReview.tableException)).toBeInTheDocument();
+  expect(screen.getByText("Equation 3")).toBeInTheDocument();
+  expect(screen.getByText("Figure 4")).toBeInTheDocument();
+  expect(screen.getByText("Figure 5")).toBeInTheDocument();
+  expect(screen.getByText("Table 2")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId("docx-finding-group-table"));
+  await screen.findByTestId("docx-finding-location-row-column");
+  expect(screen.getByText("Row 2, column 3")).toBeInTheDocument();
+  expect(screen.getByText("Row 4")).toBeInTheDocument();
+  expect(screen.getByText("Column 5")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId("docx-finding-location-row-column"));
+  await screen.findByRole("article");
+  fireEvent.click(within(screen.getByTestId("docx-finding-details")).getByRole("button", {
+    name: en.docx.findingReview.next,
+  }));
+  expect(await screen.findByText(en.docx.findingReview.noDetails)).toBeInTheDocument();
+  expect(api.details).toHaveBeenLastCalledWith("check-context", "table", "row-column", "observed_difference", 20);
+});

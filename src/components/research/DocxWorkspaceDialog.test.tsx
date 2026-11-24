@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { strToU8, zipSync } from "fflate";
 import { StrictMode } from "react";
-import type { JournalCheck, JournalProject, JournalState, JournalWorld } from "@/lib/journal-workbench";
+import { JournalWorkbenchError, type JournalCheck, type JournalProject, type JournalState, type JournalWorld } from "@/lib/journal-workbench";
 import type { DocxParagraph, DocxSession, DocxTarget } from "@/lib/docx-session";
 import type { EditorSnapshot } from "@docx-editor.dev/core/contracts/editor";
 import type { DocxSave, DocxSource } from "@/lib/docx-workbench";
@@ -51,6 +51,7 @@ const mocks = vi.hoisted(() => ({
   fontShaping: undefined as { maxFontBytes: number } | undefined,
   runInlineCompletion: vi.fn(),
   createSession: vi.fn(),
+  getConfig: vi.fn(),
   journalRequest: vi.fn(),
   editorSave: vi.fn(),
   downloadCopy: vi.fn(),
@@ -176,7 +177,14 @@ vi.mock("@/lib/docx-recovery", () => ({
   docxContentSha256: mocks.contentHash,
   listDocxRecovery: mocks.listRecovery,
 }));
-vi.mock("@/lib/journal-workbench", () => ({ journalRequest: mocks.journalRequest }));
+vi.mock("@/lib/journal-workbench", async (original) => ({
+  JournalWorkbenchError: (await original<typeof import("@/lib/journal-workbench")>()).JournalWorkbenchError,
+  journalRequest: mocks.journalRequest,
+}));
+vi.mock("@/lib/tauri", async (original) => ({
+  ...await original<typeof import("@/lib/tauri")>(),
+  getConfig: mocks.getConfig,
+}));
 vi.mock("@/lib/docx-render", () => ({ findDocxRenderer: mocks.findRenderer, ensureDocxRender: mocks.renderFonts, loadDocxPdf: mocks.loadPdf }));
 vi.mock("@/components/pdf/PdfViewer", async () => {
   const { forwardRef, useImperativeHandle } = await import("react");
@@ -372,6 +380,9 @@ beforeEach(() => {
   mocks.retainFormat.mockResolvedValue(undefined);
   mocks.ensureFonts.mockResolvedValue(undefined);
   mocks.validateFormatCandidate.mockResolvedValue({ status: "accepted", issues: [] });
+  mocks.getConfig.mockReset().mockResolvedValue({
+    ai_provider: "openai", ai_model: "gpt-4o", ai_keys: { openai: "test-key" },
+  });
   mocks.listRecovery.mockResolvedValue({ snapshots: [], failures: [] });
   mocks.editor.editorSnapshot = {
     isLoading: false,
@@ -499,6 +510,29 @@ it("refuses adoption when the original changes after the review was restored", a
   await waitFor(() => expect(screen.getByTestId("docx-format-candidate")).toHaveAttribute("data-phase", "conflict"));
   expect(mocks.adoptFormatCandidate).not.toHaveBeenCalled();
 });
+
+it.each(["baseline_conflict", "binding_conflict", "candidate_review_conflict"])(
+  "keeps the retained review after %s and restores the original editing session",
+  async (code) => {
+    const { record, review } = retainedCandidateFixture();
+    const harness = sessionHarness([paragraph("first", "Original")]);
+    await renderReady(harness);
+    const adopt = await screen.findByTestId("docx-adopt-format-candidate");
+    const registration = mocks.registerAgentSession.mock.calls[0][0];
+    mocks.unregisterAgentSession.mockReturnValueOnce(registration);
+    mocks.adoptFormatCandidate.mockRejectedValueOnce(new JournalWorkbenchError({ code, error: "Retained review changed" }));
+
+    fireEvent.click(adopt);
+    await waitFor(() => expect(screen.getByTestId("docx-format-candidate")).toHaveAttribute("data-phase", "conflict"));
+    expect(mocks.adoptFormatCandidate).toHaveBeenCalledExactlyOnceWith(SOURCE, record);
+    expect(mocks.editor.setEditingMode.mock.calls).toEqual([["viewing"], ["editing"]]);
+    expect(mocks.registerAgentSession).toHaveBeenLastCalledWith(registration);
+    expect(screen.queryByTestId("docx-adopt-format-candidate")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: text.formatCandidate.download }));
+    expect(mocks.downloadCopy).toHaveBeenCalledExactlyOnceWith(review.bytes, SOURCE.filename);
+    expect(harness.text("first")).toBe("Original");
+  },
+);
 
 async function chooseMaterialView(label: string) {
   Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
@@ -2811,6 +2845,42 @@ const TEMPLATE_WORLD: JournalWorld = { ...WORLD, template: {
   source_id: "template-original", normalized_source_id: "template-normalized", snapshot_source_id: "template-format",
   original_sha256: "1".repeat(64), source_sha256: "2".repeat(64), provenance: null,
 } };
+
+it("cancels a running candidate without saving a review or losing the edited Word copy", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  mocks.journalRequest.mockResolvedValue({ projects: [PROJECT], worlds: [] });
+  const draftBytes = Uint8Array.from([80, 75, 5, 6]);
+  mocks.editorSave.mockResolvedValue(draftBytes.buffer);
+  mocks.prepareFormatCandidate.mockImplementationOnce(({ signal }: { signal: AbortSignal }) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  );
+  await renderReady(harness, undefined, true, { world: TEMPLATE_WORLD });
+  const begin = screen.getByTestId("docx-start-format-candidate");
+  await waitFor(() => expect(begin).toBeEnabled());
+  act(() => harness.edit("first", "Edited Word copy"));
+  fireEvent.click(begin);
+  await waitFor(() => expect(mocks.prepareFormatCandidate).toHaveBeenCalledOnce());
+  const request = mocks.prepareFormatCandidate.mock.calls[0][0];
+  expect(request).toMatchObject({
+    worldVersionId: WORLD_VERSION,
+    execution: expect.any(Object),
+    captured: { baseline_id: INITIAL_BASELINE, bytes: draftBytes },
+  });
+
+  const registration = mocks.registerAgentSession.mock.calls[0][0];
+  await expect(registration.prepareFormatCandidate({})).rejects.toThrow(text.formatCandidate.running);
+  fireEvent.click(screen.getByRole("button", { name: text.formatCandidate.stop }));
+  await waitFor(() => expect(screen.queryByTestId("docx-format-candidate")).not.toBeInTheDocument());
+
+  expect(request.signal.aborted).toBe(true);
+  expect(begin).toBeEnabled();
+  expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+  expect(harness.text("first")).toBe("Edited Word copy");
+  expect(mocks.saveCandidateReview).not.toHaveBeenCalled();
+  expect(mocks.commitRecovery).not.toHaveBeenCalled();
+});
 
 describe("Word template refresh", () => {
   const refreshedWorld = { ...TEMPLATE_WORLD, version_id: "world-refreshed", version_ordinal: 2 };

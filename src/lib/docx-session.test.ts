@@ -1669,6 +1669,54 @@ describe("DOCX paragraph adapter over the real core", () => {
     }
   });
 
+  it("rejects overlapping font ranges atomically but applies adjacent ranges in one revision", () => {
+    const fixture = editorSession(syntheticDocx(["AlphaBeta"]));
+    try {
+      const { handle } = fixture.session.listParagraphs()[0];
+      const before = fixture.save();
+      const first = { target: handle, range: { start: 0, end: 5 }, font: { bold: true } };
+      const second = { target: handle, range: { start: 4, end: 9 }, font: { italic: true } };
+
+      expect(fixture.session.formatBatch?.([first, second], 0)).toMatchObject({
+        ok: false, code: "invalid-format", message: expect.stringContaining("must not overlap"), changed: false,
+      });
+      expect(fixture.treeBatches).toHaveLength(0);
+      expect(fixture.save()).toEqual(before);
+
+      expect(fixture.session.formatBatch?.([first, { ...second, range: { start: 5, end: 9 } }], 0))
+        .toEqual({ ok: true, revision: 1, changed: true });
+      expect(fixture.treeBatches).toHaveLength(1);
+      expect(fixture.session.listParagraphs()[0].text).toBe("AlphaBeta");
+      const xml = new TextDecoder().decode(unzipSync(fixture.save())["word/document.xml"]);
+      expect(xml).toContain("<w:rPr><w:b/></w:rPr><w:t>Alpha</w:t>");
+      expect(xml).toContain("<w:rPr><w:i/></w:rPr><w:t>Beta</w:t>");
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
+  it.each([
+    { range: { start: 0.5, end: 4 }, font: { bold: true } },
+    { range: { start: 0, end: 4.5 }, font: { bold: true } },
+    { range: { start: -1, end: 4 }, font: { bold: true } },
+    { range: { start: 4, end: 4 }, font: { bold: true } },
+    { range: { start: 0, end: 7 }, font: { bold: true } },
+    { range: { start: 0, end: 4 }, font: { bold: true }, paragraph: { keepNext: true } },
+    { range: { start: 0, end: 4 } },
+  ])("rejects an invalid or non-font-only range: %j", (format) => {
+    const fixture = editorSession(syntheticDocx(["Target"]));
+    try {
+      const { handle } = fixture.session.listParagraphs()[0];
+      expect(fixture.session.formatBatch?.([{ target: handle, ...format }], 0)).toMatchObject({
+        ok: false, code: "invalid-format", message: expect.stringContaining("may only accompany font formatting"),
+        revision: 0, changed: false,
+      });
+      expect(fixture.treeBatches).toHaveLength(0);
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
   it("rejects a batch range that splits a surrogate pair before committing an earlier item", () => {
     const fixture = editorSession(syntheticDocx([
       "First paragraph.",

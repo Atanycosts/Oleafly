@@ -237,6 +237,21 @@ it("keeps the sidebar busy state while another surface is shown and releases it 
   state.resolve({ worlds: [], projects: [] });
 });
 
+it("does not read Journal state when the rail closes before startup finishes", async () => {
+  const connected = deferred<{ python: string; libraryRoot: string }>();
+  api.connect.mockReturnValueOnce(connected.promise);
+  const view = render(<JournalWorkspaceHarness />);
+  await screen.findByTestId("journal-checks-panel");
+
+  view.unmount();
+  await act(async () => {
+    connected.resolve({ python: "/python", libraryRoot: "/retained/library" });
+  });
+
+  expect(api.request).not.toHaveBeenCalled();
+  expect(useWorkspaceSurfaceStore.getState().journalBusy).toBe(false);
+});
+
 it("retries the bundled Journal runtime without asking for a Python path", async () => {
   api.connect.mockRejectedValueOnce(new Error("Journal runtime is unavailable"));
   render(<JournalWorkspaceHarness />);
@@ -471,6 +486,35 @@ it("derives the template name and an internal journal ID when importing a Word t
       language: "en",
     },
   ));
+});
+
+it("imports a template without touching an open Word working copy", async () => {
+  const templateWorld: JournalWorld = { ...world, template: {
+    source_id: "original-template", normalized_source_id: "normalized-template", snapshot_source_id: "template-facts",
+    source_sha256: "a".repeat(64), original_sha256: "b".repeat(64), provenance: null,
+  } };
+  api.workspace.mockResolvedValue({ journalProjectId: null });
+  api.templateImport.mockResolvedValueOnce(templateWorld);
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/state") return { worlds: [templateWorld], projects: [] };
+    if (url.pathname === "/api/world") return templateWorld;
+    return originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await sidebar().findByRole("button", { name: text.importTemplate }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText(text.files), {
+    target: { files: [new File(["template"], "journal-template.docx")] },
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.importTemplate }));
+
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue(templateWorld.version_id));
+  expect(screen.getByTestId("journal-template-facts")).toHaveTextContent(text.template.title);
+  expect(useDocxWorkspaceStore.getState().request).toBeNull();
+  expect(api.invoke).not.toHaveBeenCalled();
 });
 
 it("starts from a selected template without a manuscript, links the new draft and opens its managed editor", async () => {
@@ -975,6 +1019,158 @@ it("refreshes the selected manuscript after a working copy save without another 
   });
   await waitFor(() => expect(stateReads()).toBe(2));
   expect(api.request).toHaveBeenCalledWith("/api/world?version_id=world-current");
+});
+
+it("keeps a newer manuscript open when an earlier sidebar refresh finishes late", async () => {
+  const refreshed = deferred<JournalState>();
+  const secondWorld: JournalWorld = {
+    ...world,
+    version_id: "second-world",
+    journal_id: "second-journal",
+    journal_name: "Second journal",
+  };
+  const secondCheck = {
+    ...checked(secondWorld.version_id, "second-check"),
+    project_id: "second-manuscript",
+    baseline_id: "second-baseline",
+    world: secondWorld,
+    summary: { compliant: 0, violation: 2, observed_match: 0, observed_difference: 0, cannot_determine: 0, not_checked: 0 },
+  };
+  const second: JournalProject = {
+    project_id: "second-manuscript",
+    name: "Second manuscript",
+    baseline_id: "second-baseline",
+    binding: { binding_id: "second-binding", baseline_id: "second-baseline", world_version_id: secondWorld.version_id },
+    latest_check: secondCheck,
+  };
+  let openedSecond = false;
+  let stateReads = 0;
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/state") {
+      stateReads += 1;
+      if (stateReads === 2) return refreshed.promise;
+      if (openedSecond) return { worlds: [world, secondWorld], projects: [second] };
+    }
+    if (url.pathname === "/api/world" && url.searchParams.get("version_id") === secondWorld.version_id) return secondWorld;
+    if (url.pathname === "/api/history" && url.searchParams.get("project_id") === second.project_id) return { checks: [secondCheck] };
+    return originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue("world-current"));
+
+  fireEvent.click(sidebar().getByRole("button", { name: text.refresh }));
+  await waitFor(() => expect(stateReads).toBe(2));
+  openedSecond = true;
+  act(() => {
+    useDocxWorkspaceStore.getState().open({
+      appProjectId: "paper",
+      project: second,
+      world: secondWorld,
+      onSaved: async () => {},
+    });
+  });
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue(secondWorld.version_id));
+
+  await act(async () => {
+    refreshed.resolve({
+      worlds: [world, secondWorld],
+      projects: [{
+        ...second,
+        project_id: "first-candidate",
+        name: "Stale template candidate",
+        binding: null,
+        latest_check: checked(world.version_id, "stale-refresh-check"),
+      }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue(second.project_id);
+  expect(screen.getByTestId("journal-world-select")).toHaveValue(secondWorld.version_id);
+  expect(screen.getByRole("heading", { name: secondWorld.journal_name })).toBeInTheDocument();
+  expect(api.references).not.toContainEqual(expect.objectContaining({ objectId: "stale-refresh-check" }));
+});
+
+it("reloads the selected manuscript when a working copy from another app project saves", async () => {
+  const otherWorld: JournalWorld = {
+    ...world,
+    version_id: "other-world",
+    journal_id: "other-journal",
+    journal_name: "Other journal",
+  };
+  const other: JournalProject = {
+    project_id: "other-manuscript",
+    name: "Other manuscript",
+    baseline_id: "other-baseline",
+    binding: { binding_id: "other-binding", baseline_id: "other-baseline", world_version_id: otherWorld.version_id },
+    latest_check: null,
+  };
+  render(<JournalWorkspaceHarness />);
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue("world-current"));
+  const stateReads = api.request.mock.calls.filter(([path]) => path === "/api/state").length;
+
+  act(() => {
+    useDocxWorkspaceStore.getState().open({
+      appProjectId: "other-project",
+      project: other,
+      world: otherWorld,
+      onSaved: async () => {},
+    });
+  });
+  act(() => useDocxWorkspaceStore.getState().saved());
+
+  await waitFor(() => expect(api.request.mock.calls.filter(([path]) => path === "/api/state")).toHaveLength(stateReads + 1));
+  expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue("manuscript");
+  expect(screen.getByTestId("journal-world-select")).toHaveValue("world-current");
+  expect(api.request).not.toHaveBeenCalledWith(`/api/world?version_id=${otherWorld.version_id}`);
+  expect(api.request).not.toHaveBeenCalledWith(`/api/history?project_id=${other.project_id}`);
+});
+
+it("binds an unbound manuscript without asserting a previous binding", async () => {
+  const unbound: JournalProject = {
+    project_id: "manuscript",
+    name: "Retained manuscript",
+    baseline_id: "baseline",
+    binding: null,
+    latest_check: null,
+  };
+  const bound: JournalProject = {
+    ...unbound,
+    binding: { binding_id: "new-binding", baseline_id: "baseline", world_version_id: world.version_id },
+  };
+  let isBound = false;
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (path === "/api/bind") {
+      isBound = true;
+      return {};
+    }
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/state") return { worlds: [world], projects: [isBound ? bound : unbound] };
+    if (url.pathname === "/api/world") return world;
+    if (url.pathname === "/api/history") return { checks: [] };
+    return originalRequest(path, payload);
+  });
+  render(<JournalWorkspaceHarness />);
+  const manuscript = await sidebar().findByRole("combobox", { name: text.manuscript });
+  await waitFor(() => expect(manuscript).toHaveValue("manuscript"));
+  expect(manuscript).toBeEnabled();
+  fireEvent.change(screen.getByTestId("journal-world-select"), { target: { value: world.version_id } });
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue(world.version_id));
+  const bind = await screen.findByRole("button", { name: text.bind });
+  fireEvent.click(bind);
+
+  await waitFor(() => expect(api.request).toHaveBeenCalledWith("/api/bind", {
+    project_id: "manuscript",
+    world_version_id: world.version_id,
+    expected_binding_id: null,
+  }));
+  await waitFor(() => expect(sidebar().getByRole("button", { name: text.runCheck })).toBeEnabled());
+  expect(screen.getByText(text.bound)).toBeInTheDocument();
 });
 
 it("keeps a pending journal world choice when the current working copy saves", async () => {
@@ -1507,6 +1703,109 @@ it("shows the check for the prepared template version and synchronizes an open W
   expect(sidebar().getByText(`${text.current} · ${Object.values(result.summary).reduce((sum, count) => sum + count, 0)}`)).toBeInTheDocument();
 });
 
+it("attaches a refreshed template version to an open draft with no journal context", async () => {
+  const { templateWorld, draft } = templateWithoutManuscript();
+  const preparedWorld = { ...templateWorld, version_id: "world-refreshed", version_ordinal: templateWorld.version_ordinal + 1 };
+  const initial = { ...draft, binding: null };
+  const result = {
+    ...checked(preparedWorld.version_id, "refreshed-check"),
+    project_id: draft.project_id,
+    baseline_id: draft.baseline_id,
+  };
+  let retained: JournalProject = initial;
+  api.workspace.mockResolvedValue({ journalProjectId: draft.project_id });
+  api.templateCheck.mockImplementationOnce(async () => {
+    retained = {
+      ...initial,
+      latest_check: result,
+      binding: { binding_id: "refreshed-binding", baseline_id: draft.baseline_id, world_version_id: preparedWorld.version_id },
+    };
+    return result;
+  });
+  api.request.mockImplementation(async (path: string) => {
+    if (path === "/api/state") return { worlds: [templateWorld, preparedWorld], projects: [retained] };
+    if (path === "/api/template-prepare") return { world: preparedWorld, binding: null, refreshed: true };
+    if (path === `/api/world?version_id=${templateWorld.version_id}`) return templateWorld;
+    if (path === `/api/world?version_id=${preparedWorld.version_id}`) return preparedWorld;
+    if (path === `/api/history?project_id=${draft.project_id}`) return { checks: retained.latest_check ? [result] : [] };
+    throw new Error(`Unexpected request ${path}`);
+  });
+  useDocxWorkspaceStore.getState().open({ appProjectId: "paper", project: initial, world: null, onSaved: async () => {} });
+  render(<JournalWorkspaceHarness />);
+  const run = await sidebar().findByRole("button", { name: text.runCheck });
+  const worldSelect = await screen.findByTestId("journal-world-select");
+  await waitFor(() => expect(worldSelect).toBeEnabled());
+  fireEvent.change(worldSelect, { target: { value: templateWorld.version_id } });
+  await waitFor(() => expect(worldSelect).toHaveValue(templateWorld.version_id));
+  await waitFor(() => expect(run).toBeEnabled());
+  fireEvent.click(run);
+
+  await waitFor(() => expect(useDocxWorkspaceStore.getState().context?.world).toEqual(preparedWorld));
+  expect(screen.getByTestId("journal-world-select")).toHaveValue(preparedWorld.version_id);
+  expect(sidebar().getByText(`${text.current} · ${Object.values(result.summary).reduce((sum, count) => sum + count, 0)}`)).toBeInTheDocument();
+});
+
+it("discards a prepared template check that finishes after another manuscript opens", async () => {
+  const { templateWorld, draft } = templateWithoutManuscript();
+  const preparedWorld = { ...templateWorld, version_id: "world-refreshed", version_ordinal: templateWorld.version_ordinal + 1 };
+  const result = {
+    ...checked(preparedWorld.version_id, "late-prepared-check"),
+    project_id: draft.project_id,
+    baseline_id: draft.baseline_id,
+  };
+  const secondWorld: JournalWorld = {
+    ...world,
+    version_id: "second-world",
+    journal_id: "second-journal",
+    journal_name: "Second journal",
+  };
+  const second: JournalProject = {
+    project_id: "second-manuscript",
+    name: "Second manuscript",
+    baseline_id: "second-baseline",
+    binding: { binding_id: "second-binding", baseline_id: "second-baseline", world_version_id: secondWorld.version_id },
+    latest_check: null,
+  };
+  const pendingCheck = deferred<JournalCheck>();
+  let openedSecond = false;
+  api.templateCheck.mockReturnValueOnce(pendingCheck.promise);
+  api.workspace.mockResolvedValue({ journalProjectId: draft.project_id });
+  api.request.mockImplementation(async (path: string) => {
+    if (path === "/api/state") {
+      return openedSecond
+        ? { worlds: [templateWorld, preparedWorld, secondWorld], projects: [second] }
+        : { worlds: [templateWorld, preparedWorld], projects: [draft] };
+    }
+    if (path === "/api/template-prepare") return { world: preparedWorld, binding: draft.binding, refreshed: true };
+    if (path === `/api/world?version_id=${templateWorld.version_id}`) return templateWorld;
+    if (path === `/api/world?version_id=${preparedWorld.version_id}`) return preparedWorld;
+    if (path === `/api/world?version_id=${secondWorld.version_id}`) return secondWorld;
+    if (path === `/api/history?project_id=${draft.project_id}` || path === `/api/history?project_id=${second.project_id}`) return { checks: [] };
+    throw new Error(`Unexpected request ${path}`);
+  });
+  render(<JournalWorkspaceHarness />);
+  const run = await sidebar().findByRole("button", { name: text.runCheck });
+  await waitFor(() => expect(run).toBeEnabled());
+  fireEvent.click(run);
+  await waitFor(() => expect(api.templateCheck).toHaveBeenCalledWith({ ...draft, binding: draft.binding }, preparedWorld.version_id));
+  const savedBefore = useDocxWorkspaceStore.getState().savedVersion;
+
+  openedSecond = true;
+  act(() => {
+    useDocxWorkspaceStore.getState().open({ appProjectId: "paper", project: second, world: secondWorld, onSaved: async () => {} });
+  });
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue(secondWorld.version_id));
+  await act(async () => {
+    pendingCheck.resolve(result);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue(second.project_id);
+  expect(screen.getByTestId("journal-world-select")).toHaveValue(secondWorld.version_id);
+  expect(useDocxWorkspaceStore.getState().savedVersion).toBe(savedBefore);
+  expect(api.references).not.toContainEqual(expect.objectContaining({ objectId: result.check_id }));
+});
+
 it("shows a retained PDF source page and anchors its discussion to the selected fragment", async () => {
   const parent = { ...fragment, fragment_id: "guide-heading", kind: "pdf_heading", text: "Author requirements" };
   const pdf: JournalFragment = { ...fragment, kind: "pdf_block", parent_fragment_id: parent.fragment_id,
@@ -1901,6 +2200,43 @@ it("follows a working-copy context change to its retained Journal version", asyn
   expect(api.request).toHaveBeenCalledWith("/api/world?version_id=world-old");
 });
 
+it("reports a failed world load after a working-copy context change", async () => {
+  render(<JournalWorkspaceHarness />);
+  await screen.findByRole("button", { name: text.runCheck });
+  act(() => {
+    useDocxWorkspaceStore.getState().open({
+      appProjectId: "paper",
+      project: {
+        project_id: "manuscript",
+        name: "Retained manuscript",
+        baseline_id: "baseline",
+        binding: { binding_id: "binding", baseline_id: "baseline", world_version_id: "world-current" },
+        latest_check: checked("world-current", "check-current"),
+      },
+      world,
+      onSaved: async () => {},
+    });
+  });
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue("world-current"));
+
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (path === "/api/world?version_id=world-old") throw new Error("Retained journal version is unavailable");
+    return originalRequest(path, payload);
+  });
+  act(() => {
+    useDocxWorkspaceStore.getState().updateContext({
+      world: { ...world, version_id: "world-old", version_ordinal: 1 },
+      onSaved: async () => {},
+    });
+  });
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Retained journal version is unavailable");
+  await waitFor(() => expect(screen.getByTestId("journal-checks-panel")).toHaveAttribute("aria-busy", "false"));
+  expect(screen.getByTestId("journal-world-select")).toHaveValue("world-current");
+});
+
 it("keeps the Journal rail usable when file-tree synchronization cannot load state", async () => {
   const second: JournalProject = {
     project_id: "second-manuscript",
@@ -1934,6 +2270,37 @@ it("keeps the Journal rail usable when file-tree synchronization cannot load sta
   expect(await screen.findByRole("alert")).toHaveTextContent("Journal state is temporarily unavailable");
   await waitFor(() => expect(screen.getByTestId("journal-checks-panel")).toHaveAttribute("aria-busy", "false"));
   expect(stateReads).toBe(2);
+});
+
+it("shows retained template coverage gaps before the first manuscript check", async () => {
+  const gap = {
+    code: "template_unknown_role",
+    message: "internal template_unknown_role",
+    property: null,
+    locator: null,
+  };
+  const gapWorld = { ...world, coverage_gaps: [gap] };
+  const project: JournalProject = {
+    project_id: "manuscript",
+    name: "Retained manuscript",
+    baseline_id: "baseline",
+    binding: { binding_id: "binding", baseline_id: "baseline", world_version_id: gapWorld.version_id },
+    latest_check: null,
+  };
+  const originalRequest = api.request.getMockImplementation();
+  if (!originalRequest) throw new Error("Expected the journal request fixture");
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/state") return { worlds: [gapWorld], projects: [project] };
+    if (url.pathname === "/api/world") return gapWorld;
+    if (url.pathname === "/api/history") return { checks: [] };
+    return originalRequest(path, payload);
+  });
+
+  render(<JournalWorkspaceHarness />);
+  expect(await screen.findByRole("heading", { name: text.coverage })).toBeInTheDocument();
+  expect(screen.getByText(/Some template content has no clear role/)).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: text.results })).not.toBeInTheDocument();
 });
 
 it("uses a readable snapshot fallback for unfamiliar rule properties and template roles", async () => {

@@ -160,6 +160,43 @@ describe("write_file", () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "paper.docx",
+    "./papers/Paper.DOCX",
+    "papers/paper.docx ",
+    "papers/paper.docx/",
+  ])("refuses to rewrite the Word source %j as text", async (path) => {
+    const { host } = makeHost();
+    const confirm = vi.fn<ConfirmFn>(async () => true);
+    const tools = createOleaflyTools(host, { confirm });
+
+    for (const [name, args] of [
+      ["write_file", { content: "plain text" }],
+      ["replace_in_file", { find: "old", replace: "new" }],
+    ] as const) {
+      expect(await tools[name].execute({ path, ...args })).toEqual({
+        error: expect.stringContaining("Word working copy"),
+      });
+    }
+
+    expect(host.readFileContent).not.toHaveBeenCalled();
+    expect(host.prepareExternalMutation).not.toHaveBeenCalled();
+    expect(host.writeFileContent).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("allows a text file inside a directory whose name ends in .docx", async () => {
+    const { host, files } = makeHost();
+
+    expect(
+      await createOleaflyTools(host).write_file.execute({
+        path: "paper.docx/notes.tex",
+        content: "body",
+      }),
+    ).toEqual({ success: true, path: "paper.docx/notes.tex", bytes: 4 });
+    expect(files.get("paper.docx/notes.tex")).toBe("body");
+  });
+
   it("writes against the prepared generation when no approval is needed", async () => {
     const { host, files } = makeHost();
     const result = await createOleaflyTools(host).write_file.execute({ path: "a.tex", content: "hello" });
@@ -454,6 +491,67 @@ describe("file structure changes during approval", () => {
     expect(host.deleteFile).not.toHaveBeenCalled();
     expect(host.setMainDoc).not.toHaveBeenCalled();
     expect(host.prepareExternalMutation).not.toHaveBeenCalled();
+  });
+});
+
+describe("Word sources through generic file management", () => {
+  const WORD_SOURCE_REFUSED =
+    "Open the Word working copy to edit a DOCX. To add a Word file to the project, import it or export it to a new filename instead of writing it through a generic file tool.";
+
+  it("asks for generic confirmation, then propagates the backend's managed-source refusal to rename", async () => {
+    const confirm = vi.fn<ConfirmFn>(async () => true);
+    const { host } = makeHost(
+      {},
+      {
+        renameFile: vi.fn(async () => {
+          throw new Error(WORD_SOURCE_REFUSED);
+        }),
+      },
+    );
+
+    expect(
+      await createOleaflyTools(host, { confirm }).rename_file.execute({
+        from: "drafts/paper.docx",
+        to: "archive/paper.docx",
+      }),
+    ).toEqual({ error: `Error: ${WORD_SOURCE_REFUSED}` });
+    expect(confirm).toHaveBeenCalledWith({
+      tool: "rename_file",
+      summary: "Rename drafts/paper.docx → archive/paper.docx",
+      path: "drafts/paper.docx",
+    });
+    expect(host.renameFile).toHaveBeenCalledWith(
+      "proj",
+      "drafts/paper.docx",
+      "archive/paper.docx",
+      1,
+    );
+    expect(host.applyExternalRename).not.toHaveBeenCalled();
+  });
+
+  it("asks for generic confirmation, then propagates the backend's managed-source refusal to delete", async () => {
+    const confirm = vi.fn<ConfirmFn>(async () => true);
+    const { host } = makeHost(
+      {},
+      {
+        deleteFile: vi.fn(async () => {
+          throw new Error(WORD_SOURCE_REFUSED);
+        }),
+      },
+    );
+
+    expect(
+      await createOleaflyTools(host, { confirm }).delete_file.execute({
+        path: "archive/paper.docx",
+      }),
+    ).toEqual({ error: `Error: ${WORD_SOURCE_REFUSED}` });
+    expect(confirm).toHaveBeenCalledWith({
+      tool: "delete_file",
+      summary: "Delete archive/paper.docx",
+      path: "archive/paper.docx",
+    });
+    expect(host.deleteFile).toHaveBeenCalledWith("proj", "archive/paper.docx", 1);
+    expect(host.applyExternalDelete).not.toHaveBeenCalled();
   });
 });
 

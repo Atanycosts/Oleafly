@@ -73,6 +73,7 @@ const mocks = vi.hoisted(() => ({
   buildWorkspaceContext: vi.fn(),
   retrieveProjectChunks: vi.fn(),
   readFileContent: vi.fn(),
+  wordTools: {} as ToolSet,
   mcpAgentToolsList: vi.fn(),
   mcpAgentToolAuthorize: vi.fn(),
   mcpAgentToolCall: vi.fn(),
@@ -266,6 +267,7 @@ vi.mock("@oleafly/registry", () => ({
         id: "test-tools",
         mode: "chat",
         create: ({ confirm }: { confirm: (request: unknown) => Promise<boolean> }) => ({
+          ...mocks.wordTools,
           read_file: {
             execute: async () => ({ content: "" }),
           },
@@ -698,6 +700,7 @@ beforeEach(() => {
   mocks.buildWorkspaceContext.mockReset().mockResolvedValue("");
   mocks.retrieveProjectChunks.mockReset().mockResolvedValue([]);
   mocks.readFileContent.mockReset().mockResolvedValue("");
+  mocks.wordTools = {};
   mocks.mcpAgentToolsList.mockReset().mockResolvedValue([
     {
       name: "Papers",
@@ -2243,6 +2246,39 @@ describe("ChatCore agent turns", () => {
     expect(inventoryLine).toContain("run_command");
 
     await act(async () => finishRun(0, "Ready"));
+  });
+
+  it("only gives Word guidance for the tools available to the run", async () => {
+    mocks.wordTools = {
+      create_docx_format_candidate: {},
+      read_docx_saved_content: {},
+      read_docx_template_styles: {},
+    };
+    const rendered = await renderChat();
+    submit(rendered, "Format the draft with this template");
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+
+    const firstRun = mocks.runs[0].options;
+    expect(firstRun.system).toContain("use the selected template or the project's existing binding");
+    expect(firstRun.system).toContain("retryable_with_same_params=false is not a candidate");
+    expect(firstRun.system).toContain("For a Word version's saved comments or revision projections");
+    expect(firstRun.system).toContain("use read_docx_template_styles for the relevant role");
+    await act(async () => finishRun(0, "Ready"));
+    await waitFor(() => expect(activeChatRun()).toBeNull());
+
+    act(() => useAiToolSettingsStore.setState({
+      enabledByName: { create_docx_format_candidate: false, read_docx_saved_content: false },
+    }));
+    submit(rendered, "Check the heading style");
+    await waitFor(() => expect(mocks.runs).toHaveLength(2));
+
+    const secondRun = mocks.runs[1].options;
+    expect(secondRun.tools).not.toHaveProperty("create_docx_format_candidate");
+    expect(secondRun.tools).not.toHaveProperty("read_docx_saved_content");
+    expect(secondRun.system).not.toContain("create_docx_format_candidate");
+    expect(secondRun.system).not.toContain("read_docx_saved_content");
+    expect(secondRun.system).toContain("use read_docx_template_styles for the relevant role");
+    await act(async () => finishRun(1, "Checked"));
   });
 
   it("uses the refreshed MCP catalog for the run being sent", async () => {
@@ -5189,6 +5225,46 @@ describe("ChatCore streaming details", () => {
   function liveReply() {
     return useChatsStore.getState().liveOrSaved("chat-1")?.at(-1);
   }
+
+  it("keeps Word refusals distinct from completed reads in the saved tool history", async () => {
+    const rendered = await renderChat();
+    submit(rendered, "Check the Word draft");
+    await waitFor(() => expect(mocks.runs).toHaveLength(1));
+    const { handlers } = mocks.runs[0].options;
+    const cases = [
+      {
+        name: "create_docx_format_candidate",
+        output: { ok: false, message: "Select a template", retryable_with_same_params: false },
+        message: "Select a template",
+        status: "error",
+      },
+      {
+        name: "write_file",
+        output: { error: "Open the Word working copy to edit a DOCX" },
+        message: "Open the Word working copy to edit a DOCX",
+        status: "error",
+      },
+      {
+        name: "read_docx_saved_content",
+        output: { ok: true, content: "Saved abstract" },
+        message: "Saved abstract",
+        status: "done",
+      },
+    ];
+
+    await act(async () => {
+      for (const { name, output } of cases) {
+        await handlers.onToolCall({ id: name, name, args: {} });
+        handlers.onToolResult({ id: name, output });
+      }
+      finishRun(0, "I could read the saved draft but did not change it.");
+    });
+    await waitFor(() => expect(activeChatRun()).toBeNull());
+
+    expect(savedReply()?.toolCalls).toEqual(cases.map(({ name, message, status }) =>
+      expect.objectContaining({ name, status, output: expect.stringContaining(message) }),
+    ));
+  });
 
   function installManualFrames() {
     const callbacks: FrameRequestCallback[] = [];

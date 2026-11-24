@@ -1,4 +1,4 @@
-import { strToU8, zipSync } from "fflate";
+import { strToU8, unzipSync, zipSync } from "fflate";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { bytesToBase64 } from "@/lib/base64";
 import type { DocxSource } from "@/lib/docx-workbench";
@@ -549,6 +549,59 @@ describe("pure-format candidate bytes", () => {
       expect.objectContaining({ code: "image_changed", part: "/word/media/image2.png" }),
     ]));
   });
+
+  it("rejects a truncated archive and unreadable changed XML", async () => {
+    await expect(validateDocxFormatCandidateBytes(SOURCE, SOURCE.slice(0, 20))).resolves.toMatchObject({
+      status: "rejected", changedParts: [], issues: [{ code: "invalid_docx" }],
+    });
+
+    for (const invalidXml of [strToU8(`<w:styles xmlns:w="${W}">`), Uint8Array.of(0xff)]) {
+      const entries = unzipSync(SOURCE);
+      entries["word/styles.xml"] = invalidXml;
+      await expect(validateDocxFormatCandidateBytes(SOURCE, zipSync(entries))).resolves.toMatchObject({
+        status: "rejected", changedParts: ["/word/styles.xml"],
+        issues: [{ code: "xml_unreadable", part: "/word/styles.xml" }],
+      });
+    }
+  });
+
+  it("protects media and other package parts even when body XML is identical", async () => {
+    const entries = unzipSync(SOURCE);
+    entries["word/embeddings/oleObject1.bin"] = Uint8Array.of(1);
+    const before = zipSync(entries);
+    delete entries["word/media/image1.png"];
+    delete entries["word/styles.xml"];
+    entries["word/embeddings/oleObject1.bin"] = Uint8Array.of(2);
+    entries["word/styles-backup.xml"] = strToU8(STYLES);
+
+    const result = await validateDocxFormatCandidateBytes(before, zipSync(entries));
+    expect(result).toMatchObject({ status: "rejected", changedParts: ["/word/embeddings/oleObject1.bin"] });
+    expect(result.issues).toHaveLength(5);
+    expect(result.issues.map(({ code, part }) => [code, part])).toEqual(expect.arrayContaining([
+      ["package_entry_removed", "/word/styles.xml"],
+      ["package_entry_removed", "/word/media/image1.png"],
+      ["image_changed", "/word/media/image1.png"],
+      ["package_entry_added", "/word/styles-backup.xml"],
+      ["binary_part_changed", "/word/embeddings/oleObject1.bin"],
+    ]));
+  });
+
+  it.each([
+    ["header1.xml", "hdr", ""],
+    ["footer1.xml", "ftr", ""],
+    ["footnotes.xml", "footnotes", "footnote"],
+  ])("keeps formatting outside the manuscript body read-only (%s)", async (part, root, wrapper) => {
+    const story = (size: number) => {
+      const paragraph = `<w:p><w:r><w:rPr><w:sz w:val="${size}"/></w:rPr><w:t>Retained story</w:t></w:r></w:p>`;
+      return `<w:${root} xmlns:w="${W}">${wrapper ? `<w:${wrapper} w:id="1">${paragraph}</w:${wrapper}>` : paragraph}</w:${root}>`;
+    };
+    await expect(validateDocxFormatCandidateBytes(
+      packageBytes({ parts: { [`word/${part}`]: story(24) } }),
+      packageBytes({ parts: { [`word/${part}`]: story(22) } }),
+    )).resolves.toMatchObject({ status: "rejected", issues: [
+      { code: "content_structure_changed", part: `/word/${part}` },
+    ] });
+  });
 });
 
 describe("independent candidate copy", () => {
@@ -580,6 +633,18 @@ describe("independent candidate copy", () => {
     await expect(createDocxFormatCandidateCopy("Format candidate", captured))
       .rejects.toThrow("did not create an isolated format candidate");
     expect(transport.loadSource).not.toHaveBeenCalled();
+  });
+
+  it("rejects the imported copy if Workbench did not retain the frozen bytes", async () => {
+    const captured = await source();
+    const created = project();
+    transport.journalRequest.mockResolvedValue(created);
+    transport.loadSource.mockResolvedValue(retainedSource(
+      created.project_id, created.baseline_id, FORMAT_ONLY, await digest(FORMAT_ONLY),
+    ));
+
+    await expect(createDocxFormatCandidateCopy("Format candidate", captured))
+      .rejects.toThrow("did not retain the frozen start bytes");
   });
 
   it("saves each round into the same project with compare-and-swap and exact readback", async () => {
@@ -630,6 +695,19 @@ describe("independent candidate copy", () => {
     await saveDocxFormatCandidateCopy(current, captured, candidate);
 
     expect(transport.journalRequest.mock.calls[0]?.[1]).toEqual(transport.journalRequest.mock.calls[1]?.[1]);
+  });
+
+  it("does not report a saved round when readback omits the requested edit", async () => {
+    const captured = await source();
+    const current = project();
+    transport.journalRequest.mockResolvedValue({ status: "APPLIED", result_baseline_id: "round-2" });
+    transport.loadSource.mockResolvedValue(retainedSource(
+      current.project_id, "round-2", SOURCE, await digest(SOURCE),
+    ));
+
+    await expect(saveDocxFormatCandidateCopy(current, captured, FORMAT_ONLY))
+      .rejects.toThrow("did not retain the exact saved bytes");
+    expect(transport.loadSource).toHaveBeenCalledExactlyOnceWith(current.project_id, "round-2");
   });
 
   it("rejects text, formula and media changes before Workbench receives a round", async () => {

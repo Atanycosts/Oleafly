@@ -5,6 +5,7 @@ import type { DocxFindingGroup } from "@/lib/docx-finding-review";
 import type { DocxTablePaginationChange } from "@/lib/docx-table-pagination";
 import type { DocxSource } from "@/lib/docx-workbench";
 import type { JournalProject, JournalWorld } from "@/lib/journal-workbench";
+import type { ReadyDocxFormatCandidate } from "@/lib/docx-format-candidate-plan";
 import type {
   CandidateJournalCheck,
   DocxFormatSnapshotReference,
@@ -55,6 +56,7 @@ vi.mock("@/lib/journal-workbench", async (importOriginal) => ({
 }));
 
 import { DOCX_CANDIDATE_WRITE_PROPERTIES } from "./docx-format-candidate-plan";
+import { runDocxFormatCandidateAgent } from "./docx-format-candidate-agent";
 import { prepareDocxFormatCandidate } from "./docx-format-candidate-flow";
 
 const SOURCE_SHA = "1".repeat(64);
@@ -295,6 +297,254 @@ it("saves and rechecks pagination-only writes without inventing comparison findi
   }]);
 });
 
+it("reports applied writes by semantic role and property with confirmed and unconfirmed locations", async () => {
+  const objects: DocxFormatSnapshotV1["objects"] = [
+    {
+      object_id: "title", kind: "paragraph", part: "/word/document.xml", path: [0],
+      role: "document_title", role_basis: [], text: "Title",
+      properties: { paragraph: { outlineLevel: 0 } }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "heading", kind: "paragraph", part: "/word/document.xml", path: [1],
+      role: "heading", role_basis: [], text: "Heading",
+      properties: { paragraph: { outlineLevel: 1 } }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "heading-unknown-level", kind: "paragraph", part: "/word/document.xml", path: [2],
+      role: "heading", role_basis: [], text: "Heading without a numeric outline",
+      properties: { paragraph: { outlineLevel: "2" } }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "heading-deep", kind: "paragraph", part: "/word/document.xml", path: [3],
+      role: "heading", role_basis: [], text: "Deep heading",
+      properties: { paragraph: { outlineLevel: 10 } }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "body", kind: "paragraph", part: "/word/document.xml", path: [4],
+      role: "body", role_basis: [], text: "Body",
+      properties: { paragraph: {} }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "references", kind: "paragraph", part: "/word/document.xml", path: [5],
+      role: "reference", role_basis: [], text: "Reference",
+      properties: { paragraph: {} }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "table-caption", kind: "paragraph", part: "/word/document.xml", path: [6],
+      role: "caption", role_basis: [], text: "Table 1. Results",
+      properties: { paragraph: {} }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "figure-caption", kind: "paragraph", part: "/word/document.xml", path: [7],
+      role: "caption", role_basis: [], text: "Figure 1. Flow",
+      properties: { paragraph: {} }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "caption-no-text", kind: "paragraph", part: "/word/document.xml", path: [8],
+      role: "caption", role_basis: [],
+      properties: { paragraph: {} }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "other", kind: "paragraph", part: "/word/document.xml", path: [9],
+      role: "unknown", role_basis: [], text: "Other",
+      properties: { paragraph: {} }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "run-owner", kind: "paragraph", part: "/word/document.xml", path: [10],
+      role: "body", role_basis: [], text: "Hello",
+      properties: { paragraph: {} }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "run-format", kind: "run", part: "/word/document.xml", path: [10, 0],
+      role: "body", role_basis: [], text: "Hello", properties: {}, declared: {},
+      evidence: { paragraph_object_id: "run-owner" },
+    },
+    {
+      object_id: "unverified", kind: "paragraph", part: "/word/document.xml", path: [11],
+      role: "body", role_basis: [], text: "Unverified",
+      properties: { paragraph: {} }, declared: {}, evidence: {},
+    },
+    {
+      object_id: "duplicate", kind: "paragraph", part: "/word/document.xml", path: [12],
+      role: "body", role_basis: [], text: "Duplicate",
+      properties: { paragraph: {} }, declared: {}, evidence: {},
+    },
+  ];
+  const candidate = (
+    candidateId: string,
+    objectId: string,
+    role: string,
+    propertyPath: string,
+    observed: unknown,
+    expected: unknown,
+    templateObjectIds: string[] = [],
+  ): ReadyDocxFormatCandidate => ({
+    candidateId,
+    scope: "paragraph",
+    location: {
+      objectId,
+      part: "/word/document.xml",
+      path: [],
+      role,
+      paragraphRef: `p-${candidateId}`,
+    },
+    changes: [{
+      findingCaseId: `case-${candidateId}`,
+      propertyPath,
+      observed,
+      expected,
+      templateObjectIds,
+      templateObjectCount: templateObjectIds.length,
+      templateRoleBasis: [],
+    }],
+    status: "ready",
+    operation: {} as ReadyDocxFormatCandidate["operation"],
+  });
+  const readyCandidates = [
+    candidate("title", "title", "document_title", "paragraph.spacing.after", "6 pt", "12 pt", ["template-1", "template-2"]),
+    candidate("heading", "heading", "heading", "paragraph.indent.left", "0 pt", "12 pt"),
+    candidate("heading-unknown-level", "heading-unknown-level", "heading", "paragraph.spacing.before", "0 pt", "6 pt"),
+    candidate("heading-deep", "heading-deep", "heading", "run.fontFamily", "Arial", "Calibri"),
+    candidate("body", "body", "body", "paragraph.alignment", "left", "center"),
+    candidate("references", "references", "reference", "run.bold", false, true),
+    candidate("table-caption", "table-caption", "caption", "run.italic", false, true),
+    candidate("figure-caption", "figure-caption", "caption", "run.fontSizePt", 10, 12),
+    candidate("caption-no-text", "caption-no-text", "caption", "run.fontFamily", "Arial", "Calibri"),
+    candidate("other", "other", "unknown", "run.fontFamily", "Arial", "Calibri", ["template-unmapped"]),
+    candidate("run-format", "run-format", "body", "run.fontFamily", "Arial", "Calibri"),
+    candidate("missing", "missing", "body", "run.fontFamily", "Arial", "Calibri"),
+    candidate("unverified", "unverified", "body", "run.fontFamily", "Arial", "Calibri"),
+    candidate("duplicate-first", "duplicate", "body", "run.fontFamily", "Arial", "Calibri"),
+    candidate("duplicate-second", "duplicate", "body", "run.fontFamily", "rewritten", "Calibri", ["template-1", "template-2"]),
+    candidate("skipped", "body", "body", "run.fontFamily", "Arial", "Calibri"),
+  ];
+  const appliedIds = readyCandidates.slice(0, -1).map(({ candidateId }) => candidateId);
+  const initialSnapshot = { ...snapshot, objects };
+  const savedBytes = Uint8Array.from([7, 8, 9]);
+  const savedSha = "7".repeat(64);
+  const savedProject = { ...candidateProject, baseline_id: "saved-baseline" };
+  const savedSnapshot = { ...initialSnapshot, source_sha256: savedSha };
+  const initialFacts = { ...facts, snapshot: initialSnapshot } as DocxFormatFacts;
+  const savedFacts = { ...facts, snapshot: savedSnapshot } as DocxFormatFacts;
+  const initialCheck = { ...candidateCheck("review-initial", 1), table_header_templates: [{ column_count: 1, rows: [] }] };
+  const finalCheck = {
+    ...candidateCheck("review-final", 0),
+    baseline_id: savedProject.baseline_id,
+    source_sha256: savedSha,
+    snapshot_artifact_version_id: "saved-snapshot",
+  };
+  const savedReference = {
+    ...snapshotReference,
+    baseline_id: savedProject.baseline_id,
+    source_sha256: savedSha,
+    snapshot_artifact_version_id: "saved-snapshot",
+  };
+  const pagination: DocxTablePaginationChange = {
+    rowId: "row", tableNumber: 1, row: 1, flag: "tblHeader", property: "row.isHeader",
+  };
+  const finding = (entry: ReadyDocxFormatCandidate) => ({
+    case_id: entry.changes[0].findingCaseId,
+    object_id: entry.location.objectId,
+    kind: "paragraph",
+    role: entry.location.role,
+    part: entry.location.part,
+    path: [],
+    property_path: entry.changes[0].propertyPath,
+    observed: entry.changes[0].observed,
+    expected: entry.changes[0].expected,
+    expected_value_count: 1,
+    template_object_ids: [...entry.changes[0].templateObjectIds],
+    verdict: "observed_difference",
+  });
+  const verifiable = readyCandidates.filter(({ candidateId }) => !["missing", "unverified", "skipped"].includes(candidateId));
+  api.planPagination.mockReturnValue([pagination]);
+  api.openFacts.mockResolvedValueOnce(initialFacts).mockResolvedValueOnce(savedFacts);
+  api.record.mockResolvedValueOnce(snapshotReference).mockResolvedValueOnce(savedReference);
+  api.check.mockResolvedValueOnce(initialCheck).mockResolvedValueOnce(finalCheck);
+  api.apply.mockResolvedValue({
+    candidateBytes: savedBytes,
+    appliedCandidateIds: appliedIds,
+    appliedTablePagination: [],
+    plan: { readyCandidates },
+  });
+  api.saveCandidate.mockResolvedValue(savedProject);
+  api.journalRequest.mockImplementation(async (_path: string, request: {
+    operation: string;
+    target: { check_id: string };
+  }) => {
+    const check = request.target.check_id === initialCheck.check_id ? initialCheck : finalCheck;
+    const identity = {
+      check_id: check.check_id,
+      baseline_id: check.baseline_id,
+      source_sha256: check.source_sha256,
+    };
+    if (request.operation === "candidate_findings") {
+      return {
+        ...identity,
+        findings: readyCandidates.map(finding),
+        template_locations: { "template-1": "Body text" },
+        next_offset: null,
+      };
+    }
+    if (request.operation === "finding_verification") {
+      return {
+        ...identity,
+        findings: verifiable.map((entry) => ({
+          object_id: entry.location.objectId,
+          property_path: entry.changes[0].propertyPath,
+          observed: entry.changes[0].expected,
+          verdict: "observed_match",
+        })),
+      };
+    }
+    if (request.operation === "finding_groups") return { ...identity, groups };
+    throw new Error(`Unexpected DOCX query: ${request.operation}`);
+  });
+
+  const result = await prepareDocxFormatCandidate({
+    captured, name: "Review", onPrepared: vi.fn(),
+    execution: "chat-tool", signal: new AbortController().signal,
+  });
+
+  expect(api.apply).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    findings: expect.any(Array),
+    tablePagination: [pagination],
+  }), expect.any(AbortSignal));
+  expect(result.changes).toHaveLength(appliedIds.length - 3);
+  expect(result.unconfirmedChanges.map(({ id }) => id).sort()).toEqual(["case-missing", "case-unverified"]);
+  const byId = new Map(result.changes.map((item) => [item.id, item]));
+  expect(byId.get("case-title")).toMatchObject({
+    before: "6 pt",
+    group: { category: "title", action: "paragraph_spacing" },
+    templateLocation: "Body text / template-2",
+    templateObjectId: "template-1",
+  });
+  expect(byId.get("case-heading")).toMatchObject({
+    group: { category: "heading", action: "indent", heading_level: 2 },
+  });
+  expect(byId.get("case-heading-unknown-level")).toMatchObject({
+    group: { category: "heading", action: "paragraph_spacing" },
+  });
+  expect(byId.get("case-heading-unknown-level")?.group).not.toHaveProperty("heading_level");
+  expect(byId.get("case-heading-deep")?.group).not.toHaveProperty("heading_level");
+  expect(byId.get("case-body")?.group).toEqual({ category: "body", action: "alignment" });
+  expect(byId.get("case-references")?.group).toEqual({ category: "references", action: "emphasis" });
+  expect(byId.get("case-table-caption")?.group).toEqual({ category: "table_caption", action: "emphasis" });
+  expect(byId.get("case-figure-caption")?.group).toEqual({ category: "figure_caption", action: "size" });
+  expect(byId.get("case-caption-no-text")?.group).toEqual({ category: "figure_caption", action: "font" });
+  expect(byId.get("case-other")).toMatchObject({
+    group: { category: "other", action: "font" },
+    templateLocation: "template-unmapped",
+  });
+  expect(byId.get("case-run-format")?.group).toEqual({ category: "body", action: "font" });
+  expect(byId.get("case-duplicate-second")).toMatchObject({
+    before: "Arial",
+    expected: "Calibri",
+    group: { category: "body", action: "font" },
+  });
+  expect(result.unresolvedGroupCount).toBe(0);
+});
+
 it.each([null, "Provider failed after inspection"])("finalizes an inspection-only run without writes (error: %s)", async (error) => {
   const check = candidateCheck("check-inspect-only", 2);
   api.check.mockResolvedValue(check);
@@ -328,6 +578,40 @@ it.each([null, "Provider failed after inspection"])("finalizes an inspection-onl
   }
   expect(api.apply).not.toHaveBeenCalled();
   expect(api.saveCandidate).not.toHaveBeenCalled();
+});
+
+it("limits the candidate agent to its own tools and applies a repeated request only once", async () => {
+  const result = { candidateBaselineId: "checked-candidate" };
+  const apply = vi.fn(async () => result);
+  const signal = new AbortController().signal;
+  api.agent.mockImplementation(async (request, { onToolRequest }: {
+    onToolRequest: (call: AgentToolRequest) => Promise<AgentToolOutput>;
+  }) => {
+    expect(request.tools.map(({ name }: { name: string }) => name)).toEqual([
+      "inspect_template_format", "apply_template_format",
+    ]);
+    await expect(onToolRequest({ id: "write", name: "write_file", arguments: "{}" }))
+      .rejects.toThrow("only exposes the Word formatting candidate tools");
+    const replies = await Promise.all(["first", "retry"].map((id) =>
+      onToolRequest({ id, name: "apply_template_format", arguments: "{}" }),
+    ));
+    expect(replies).toEqual([{ output: JSON.stringify(result) }, { output: JSON.stringify(result) }]);
+    return { error: "Provider disconnected after the checked candidate was saved", stopped_at_cap: false };
+  });
+
+  await expect(runDocxFormatCandidateAgent({ journal: world.journal_name, inspect: vi.fn(), apply, signal }))
+    .resolves.toEqual(result);
+  expect(apply).toHaveBeenCalledOnce();
+});
+
+it("reports a candidate agent reaching its limit without applying changes", async () => {
+  const apply = vi.fn();
+  api.agent.mockResolvedValueOnce({ error: null, stopped_at_cap: true });
+
+  await expect(runDocxFormatCandidateAgent({
+    journal: world.journal_name, inspect: vi.fn(), apply, signal: new AbortController().signal,
+  })).rejects.toThrow("did not submit a formatting candidate");
+  expect(apply).not.toHaveBeenCalled();
 });
 
 it.each([

@@ -340,3 +340,56 @@ it("keeps adopt, reformat, export, download, stop, and close controls distinct",
   fireEvent.click(screen.getByRole("button", { name: en.docx.formatCandidate.close }));
   expect(idle.onClose).toHaveBeenCalledOnce();
 });
+
+it("keeps unnamed table areas, heading context, and compound values understandable", () => {
+  renderCandidate({
+    phase: "ready",
+    review: review({
+      refreshed: true,
+      changes: [
+        change({
+          id: "unspecified-table",
+          paraId: undefined,
+          location: undefined,
+          row: undefined,
+          before: { alignment: "left", count: 2 },
+          expected: { alignment: "center", count: 3 },
+          property: "row.isHeader",
+          group: { category: "table", action: "page_flow", table_area: "exception" },
+        }),
+        change({
+          id: "custom-heading",
+          role: "custom_role",
+          paraId: undefined,
+          location: undefined,
+          before: null,
+          expected: "ready",
+          property: "custom.property",
+          group: { category: "body", action: "custom.action", heading_level: 2 },
+        }),
+      ],
+    }),
+  });
+
+  expect(screen.getByText(en.docx.formatCandidate.templateRefreshed)).toBeInTheDocument();
+  expect(screen.getByText(en.docx.findingReview.tableUnspecified)).toBeInTheDocument();
+  expect(screen.getByTestId("docx-format-candidate-table-unspecified-exception")).toBeInTheDocument();
+  expect(screen.getByText(en.docx.findingReview.tableException)).toBeInTheDocument();
+  expect(screen.getByText("custom role")).toBeInTheDocument();
+  expect(screen.getByText("Heading 2")).toBeInTheDocument();
+
+  const pageFlow = screen.getByText(en.docx.findingReview.actions.page_flow).closest("button") as HTMLElement;
+  expect(pageFlow).toHaveTextContent("Changes: 1");
+  expect(screen.queryByText(/alignment|count/)).not.toBeInTheDocument();
+  fireEvent.click(pageFlow);
+  expect(screen.getByText('{"alignment":"left","count":2}')).toBeInTheDocument();
+  expect(screen.getByText('{"alignment":"center","count":3}')).toBeInTheDocument();
+  fireEvent.click(pageFlow);
+  expect(screen.queryByText('{"alignment":"left","count":2}')).not.toBeInTheDocument();
+
+  const custom = screen.getByText("Custom action").closest("button") as HTMLElement;
+  fireEvent.click(custom);
+  expect(screen.getByText("Custom property")).toBeInTheDocument();
+  expect(screen.getAllByText("—")).toHaveLength(2);
+  expect(screen.getAllByText("ready")).toHaveLength(2);
+});

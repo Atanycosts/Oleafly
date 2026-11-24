@@ -101,4 +101,66 @@ describe("DOCX finding identity across formatting writes", () => {
       location: original,
     }, after.index)).toBe(false);
   });
+
+  it("keeps paragraph-relative identity when the parser generates the paraId", async () => {
+    const before = await locations(docx(
+      "<w:p><w:r><w:t>Untracked</w:t></w:r></w:p>",
+    ));
+    const after = await locations(docx(
+      "<w:p><w:pPr><w:spacing w:after=\"120\"/></w:pPr><w:r><w:t>Untracked</w:t></w:r></w:p>",
+    ));
+    const beforeParagraph = before.snapshot.objects.find(
+      (object) => object.kind === "paragraph",
+    );
+    const afterParagraph = after.snapshot.objects.find(
+      (object) => object.kind === "paragraph",
+    );
+    if (!beforeParagraph || !afterParagraph) {
+      throw new Error("Expected one paragraph in each snapshot.");
+    }
+    const beforeLocation = before.index.byObjectId.get(beforeParagraph.object_id);
+    const afterLocation = after.index.byObjectId.get(afterParagraph.object_id);
+
+    expect(beforeLocation?.paraId).toBeDefined();
+    expect(afterLocation?.paraId).toBe(beforeLocation?.paraId);
+    expect(sameDocxFormatSemanticObject(beforeLocation, afterLocation)).toBe(true);
+  });
+
+  it("does not attach a run finding across paragraphs or with a missing target", async () => {
+    const document = await locations(docx(
+      '<w:p><w:r><w:t>Alpha</w:t></w:r></w:p><w:p><w:r><w:t>Beta</w:t></w:r></w:p>',
+    ));
+    const runs = document.snapshot.objects.filter((object) => object.kind === "run");
+    const paragraph = document.snapshot.objects.find((object) => object.kind === "paragraph");
+    const [alpha, beta] = runs.map((run) => document.index.byObjectId.get(run.object_id));
+    if (!alpha || !beta || !paragraph) throw new Error("Expected two located runs and a paragraph.");
+
+    expect(sameDocxFormatSemanticObject(alpha, beta)).toBe(false);
+    expect(sameDocxFormatSemanticObject(undefined, beta)).toBe(false);
+    expect(sameDocxFormatSemanticObject({ ...alpha, part: "/word/header1.xml" }, beta)).toBe(false);
+    expect(sameDocxFormatSemanticObject(
+      document.index.byObjectId.get(paragraph.object_id),
+      beta,
+    )).toBe(false);
+  });
+
+  it("keeps an empty formatting run at its paragraph boundary", async () => {
+    const before = await locations(docx(
+      "<w:p><w:r><w:rPr><w:b/></w:rPr></w:r><w:r><w:t>Alpha</w:t></w:r></w:p>",
+    ));
+    const after = await locations(docx(
+      "<w:p><w:pPr><w:keepNext/></w:pPr><w:r><w:rPr><w:b/></w:rPr></w:r><w:r><w:t>Alpha</w:t></w:r></w:p>",
+    ));
+    const emptyRun = (snapshot: typeof before.snapshot) => snapshot.objects.find(
+      (object) => object.kind === "run" && !object.text,
+    );
+    const sourceRun = emptyRun(before.snapshot);
+    const savedRun = emptyRun(after.snapshot);
+    if (!sourceRun || !savedRun) throw new Error("Expected the empty formatting runs.");
+
+    expect(sameDocxFormatSemanticObject(
+      before.index.byObjectId.get(sourceRun.object_id),
+      after.index.byObjectId.get(savedRun.object_id),
+    )).toBe(true);
+  });
 });
