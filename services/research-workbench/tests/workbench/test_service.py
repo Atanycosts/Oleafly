@@ -78,10 +78,11 @@ def test_initial_manuscript_import_parses_once_and_preserves_retained_evidence(
 def test_candidate_role_is_persisted_and_kept_out_of_ordinary_discovery(tmp_path):
     service = WorkbenchService.create(tmp_path / "library")
     manuscript = service.import_manuscript("Manuscript", "manuscript.docx", template_bytes())
+    candidate_bytes = template_bytes(sections=((12240, 15840, 1440, 1),))
     candidate = service.import_manuscript(
         "Format candidate",
         "manuscript.docx",
-        template_bytes(),
+        candidate_bytes,
         role="format_candidate",
     )
 
@@ -100,7 +101,7 @@ def test_candidate_role_is_persisted_and_kept_out_of_ordinary_discovery(tmp_path
     assert detail["project"]["role"] == "format_candidate"
     source = service.manuscript_source(str(candidate["project_id"]), str(candidate["baseline_id"]))
     assert source["project_id"] == candidate["project_id"]
-    assert base64.b64decode(source["content_base64"]) == template_bytes()
+    assert base64.b64decode(source["content_base64"]) == candidate_bytes
 
 
 def test_legacy_candidate_relations_hide_pending_and_adopted_projects(tmp_path):

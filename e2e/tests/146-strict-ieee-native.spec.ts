@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { TauriPage } from "@srsholmes/tauri-playwright";
-import { strFromU8, unzipSync } from "fflate";
+import { unzipSync } from "fflate";
 import type { DocxDocumentRead, DocxNodeAddress } from "../../packages/ai-tools/src/tools";
 import type {
   JournalBinding,
@@ -13,14 +13,16 @@ import type {
 import type { ResearchWorkspace } from "../../src/lib/research-workspace";
 import { expect, test } from "../fixtures";
 import { createBlankProject, openRailTab } from "../helpers";
+import {
+  STRICT_WORD_NAMESPACE,
+  TRANSITIONAL_WORD_NAMESPACE,
+  strictIeeePackageFacts,
+} from "../helpers/strict-ieee-package";
 import { journalRequest, runJournalCheck } from "../helpers/word-manuscript-live";
 import { scriptValue } from "../script-value";
 import { webviewScreenshot } from "../webview-screenshot";
 
 const enabled = process.env.OLEAFLY_STRICT_IEEE_NATIVE === "1";
-const strictWordNamespace = "http://purl.oclc.org/ooxml/wordprocessingml/main";
-const transitionalWordNamespace =
-  "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const a4ZipEntry = "Word-Letter-A4/conference-template-a4.docx";
 const letterZipEntry = "Word-Letter-A4/conference-template-letter.docx";
@@ -38,27 +40,6 @@ const fixturePaths = {
 
 const digest = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
-
-function readPackagePart(parts: Record<string, Uint8Array>, name: string) {
-  const part = parts[name];
-  if (!part) throw new Error(`DOCX package is missing ${name}.`);
-  return strFromU8(part);
-}
-
-function packageFacts(bytes: Uint8Array) {
-  const parts = unzipSync(bytes);
-  const documentXml = readPackagePart(parts, "word/document.xml");
-  const contentTypes = readPackagePart(parts, "[Content_Types].xml");
-  const strict = documentXml.includes(strictWordNamespace);
-  const transitional = documentXml.includes(transitionalWordNamespace);
-  return {
-    strict,
-    namespace: strict ? strictWordNamespace : transitional ? transitionalWordNamespace : null,
-    mainContentType: contentTypes.includes(
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
-    ),
-  };
-}
 
 interface JournalManuscript {
   baseline: {
@@ -277,16 +258,16 @@ test("Strict IEEE OOXML opens through the file tree and refreshes Word without r
     expect(letterBytes, `${letterZipEntry} must exist in the untouched IEEE template zip.`).toBeTruthy();
     expect(digest(a4Bytes)).toBe(digest(a4FromZip!));
 
-    const a4Facts = packageFacts(a4Bytes);
-    const letterFacts = packageFacts(letterBytes!);
+    const a4Facts = strictIeeePackageFacts(a4Bytes);
+    const letterFacts = strictIeeePackageFacts(letterBytes!);
     expect(a4Facts, "The A4 IEEE template must be Strict OOXML.").toMatchObject({
       strict: true,
-      namespace: strictWordNamespace,
+      namespace: STRICT_WORD_NAMESPACE,
       mainContentType: true,
     });
     expect(letterFacts, "The Letter IEEE template must be Strict OOXML.").toMatchObject({
       strict: true,
-      namespace: strictWordNamespace,
+      namespace: STRICT_WORD_NAMESPACE,
       mainContentType: true,
     });
     report.fixtures = {
@@ -525,7 +506,7 @@ test("Strict IEEE OOXML opens through the file tree and refreshes Word without r
     expect(manuscriptNode).toMatchObject({
       source_sha256: baseline.source_sha256,
       total: 1,
-      nodes: [{ node_address: address, namespace_uri: transitionalWordNamespace }],
+      nodes: [{ node_address: address, namespace_uri: TRANSITIONAL_WORD_NAMESPACE }],
     });
     expect(a4Node).toEqual(manuscriptNode);
     stages.push({
