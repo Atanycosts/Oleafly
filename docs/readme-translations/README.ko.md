@@ -12,12 +12,14 @@
 
 [![열린 이슈](https://img.shields.io/github/issues/Oleafly/Oleafly?label=issues&color=22c55e)](https://github.com/Oleafly/Oleafly/issues) [![다운로드](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FOleafly%2FOleafly%2Fbadges%2F.github%2Fbadges%2Fdownloads.json)](https://github.com/Oleafly/Oleafly/releases) [![CI](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml/badge.svg)](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml) [![SonarQube 품질 게이트](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Oleafly_Oleafly) [![코드 커버리지](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=coverage)](https://sonarcloud.io/component_measures?id=Oleafly_Oleafly&metric=coverage) [![개발 상태: 엄청나게 활발함](https://img.shields.io/badge/status-ultra_active-22c55e)](https://github.com/Oleafly/Oleafly/pulse) [![마지막 커밋](https://img.shields.io/github/last-commit/Oleafly/Oleafly?label=last%20commit&color=22c55e)](https://github.com/Oleafly/Oleafly/commits/main) [![라이선스: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-22c55e.svg)](../../LICENSE) [![Discord](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2Fkt9bcCjgkP%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&suffix=%20members&label=&color=5865F2&logo=discord&logoColor=white&cacheSeconds=600)](https://oleafly.com/discord) [![스타](https://img.shields.io/github/stars/Oleafly/Oleafly?style=social)](https://github.com/Oleafly/Oleafly)
 
-**연구를 위한 실시간 협업 LaTeX, Typst 및 Markdown 편집기.**
+**직접 글을 쓰고 AI 연구팀을 이끌 수 있는 오픈 소스 연구 작업 공간.**
 
-Oleafly는 LaTeX, Typst 및 Markdown으로 연구 논문과 학위 논문을 쓰기 위한 강력한 편집기입니다. 프로젝트의 소스, PDF, 인용, 그림, 검사 및 Git 이력이 모두 한곳에 있습니다. 공동 저자와 실시간으로 함께 쓰고, 여러 컴퓨터에서 프로젝트를 동기화하고, Claude Code, Codex 또는 원하는 어떤 모델이든 프로젝트로 불러오세요.
+Oleafly는 원고 편집, 참고문헌 관리, 컴파일, PDF 검토를 한곳에 모읍니다. 이 브랜치는 LaTeX, Typst, Markdown 편집기를 기반으로, 직접 글을 쓰거나 AI 팀에 연구 목표를 맡길 수 있도록 개발하고 있습니다. 조정 에이전트가 일을 나누면 무엇이 왜 바뀌었는지 검토하고, 팀의 방향을 조정하거나 직접 이어서 작업하며, 어떤 결과를 채택할지 결정할 수 있습니다.
+
+이 페이지의 다운로드 링크는 원본 Oleafly 프로젝트의 릴리스를 가리킵니다. 이 브랜치의 방향, 현재 기능, 검증 상태는 [문서 목차](../README.md)에서 확인할 수 있습니다.
 
 <p>
-  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>무료로 다운로드</strong></a>
+  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>원본 프로젝트 릴리스 다운로드</strong></a>
 · <a href="https://oleafly.com/docs/">가이드 읽기</a> · <a href="https://github.com/Oleafly/oleafly-server">서버 운영하기</a> · <a href="../development.md">소스에서 빌드하기</a>
 </p>
 

@@ -12,12 +12,14 @@
 
 [![开放议题](https://img.shields.io/github/issues/Oleafly/Oleafly?label=issues&color=22c55e)](https://github.com/Oleafly/Oleafly/issues) [![下载量](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FOleafly%2FOleafly%2Fbadges%2F.github%2Fbadges%2Fdownloads.json)](https://github.com/Oleafly/Oleafly/releases) [![CI](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml/badge.svg)](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml) [![SonarQube 质量门禁](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Oleafly_Oleafly) [![代码覆盖率](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=coverage)](https://sonarcloud.io/component_measures?id=Oleafly_Oleafly&metric=coverage) [![开发状态：超活跃](https://img.shields.io/badge/status-ultra_active-22c55e)](https://github.com/Oleafly/Oleafly/pulse) [![最近提交日期](https://img.shields.io/github/last-commit/Oleafly/Oleafly?label=last%20commit&color=22c55e)](https://github.com/Oleafly/Oleafly/commits/main) [![许可证：AGPL v3](https://img.shields.io/badge/License-AGPL_v3-22c55e.svg)](../../LICENSE) [![Discord](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2Fkt9bcCjgkP%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&suffix=%20members&label=&color=5865F2&logo=discord&logoColor=white&cacheSeconds=600)](https://oleafly.com/discord) [![Stars](https://img.shields.io/github/stars/Oleafly/Oleafly?style=social)](https://github.com/Oleafly/Oleafly)
 
-**面向科研的 LaTeX、Typst 和 Markdown 实时协作编辑器。**
+**一个既能自己写作，也能带领 AI 科研团队的开源工作台。**
 
-Oleafly 是一款功能强大的编辑器，用于以 LaTeX、Typst 和 Markdown 撰写研究论文和学位论文。一个项目的源文件、PDF、引文、图形、检查和 Git 历史都集中在一处。与合作者实时写作，让项目在多台电脑之间保持同步，并把 Claude Code、Codex 或你喜欢的任何模型带进项目。
+Oleafly 把稿件编辑、文献、编译和 PDF 审阅放在同一个工作台。本分支在 LaTeX、Typst 和 Markdown 编辑器的基础上继续开发：你可以自己写，也可以把研究目标交给 AI 团队。协调 Agent 负责分工；你可以检查改了什么、依据是什么，随时调整方向或接手，并决定是否采用成果。
+
+本页的下载链接指向上游 Oleafly 发布版。本分支的产品方向、当前能力和验收状态见[文档索引](../README.md)。
 
 <p>
-  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>免费下载</strong></a>
+  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>下载上游发布版</strong></a>
 · <a href="https://oleafly.com/docs/">阅读指南</a> · <a href="https://github.com/Oleafly/oleafly-server">运行服务器</a> · <a href="../development.md">从源代码构建</a>
 </p>
 

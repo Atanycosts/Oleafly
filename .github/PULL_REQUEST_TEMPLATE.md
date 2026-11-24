@@ -24,5 +24,6 @@ Closes #
 
 - [ ] The change is focused (no unrelated refactors)
 - [ ] Added/updated tests for backend logic (paths, git, parsing, …)
-- [ ] Updated docs / `CHANGELOG.md` if user-facing
+- [ ] If user-facing behavior changed, updated its owning doc (see `docs/README.md`) in this PR and `CHANGELOG.md` as applicable
+- [ ] If product positioning, install links, or released capabilities changed, updated the root README and its translations together
 - [ ] No secrets, tokens, or personal paths in the diff
