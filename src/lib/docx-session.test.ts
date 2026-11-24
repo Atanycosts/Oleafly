@@ -22,7 +22,9 @@ import {
   type DocxTarget,
 } from "./docx-session";
 import {
+  findNoteById,
   openHeadlessDocument,
+  resolveNotesPart,
   storyParagraphs,
   writeOoxmlPackage,
   type OoxmlParagraphNode,
@@ -34,6 +36,9 @@ import type {
   TreeDocxSessionView,
 } from "@docx-editor.dev/core/editor";
 import { openDocxFormatFacts } from "./docx-format";
+import { createDocxAgentTools, registerDocxAgentSession, unregisterDocxAgentSession } from "./docx-agent-host";
+import { handleDocxRendererRequest, type DocxRendererRequest } from "./docx-task-activity";
+import { useFilesStore } from "@/store/files";
 
 const WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math";
@@ -43,6 +48,9 @@ const PICTURE_NS = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 const VML_NS = "urn:schemas-microsoft-com:vml";
 const OFFICE_NS = "urn:schemas-microsoft-com:office:office";
 const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+const WPG_NS = "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup";
+const WPS_NS = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
 
 function syntheticDocx(paragraphs: readonly string[], styles?: string): Uint8Array {
   const body = paragraphs
@@ -89,6 +97,32 @@ function withFootnote(bytes: Uint8Array): Uint8Array {
       '<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/></Types>',
     ),
   );
+  return zipSync(parts);
+}
+
+function referenceDocx(pointComment = "Point comment."): Uint8Array {
+  const box = (id: number, text: string) =>
+    `<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="20000" cy="20000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr><wps:txbx id="${id}"><w:txbxContent><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp>`;
+  const group = `<w:drawing><wp:inline><wp:extent cx="1000000" cy="1000000"/><wp:docPr id="1" name="Group"/><a:graphic><a:graphicData uri="${WPG_NS}"><wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="100000" cy="100000"/><a:chOff x="0" y="0"/><a:chExt cx="100000" cy="100000"/></a:xfrm></wpg:grpSpPr>${box(2, "Group textbox 1")}${box(3, "Group textbox 2")}</wpg:wgp></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+  const drawing = `<mc:AlternateContent xmlns:mc="${MC_NS}" xmlns:newGroup="urn:unsupported" xmlns:wpg="${WPG_NS}" xmlns:wps="${WPS_NS}"><mc:Choice Requires="newGroup">${group.replaceAll("Group textbox", "Unsupported textbox")}</mc:Choice><mc:Choice Requires="g wps" xmlns:g="${WPG_NS}">${group}</mc:Choice><mc:Fallback>${group.replaceAll("Group textbox", "Fallback textbox")}</mc:Fallback></mc:AlternateContent>`;
+  const parts = unzipSync(withFootnote(syntheticDocx([
+    `<w:p><w:r><w:t>A😀</w:t></w:r><w:commentRangeStart w:id="1"/><w:r><w:t>Range</w:t><w:footnoteReference w:id="1"/></w:r><w:r>${drawing}</w:r><w:r><w:t>After</w:t></w:r></w:p>`,
+    '<w:p><w:r><w:t>Second</w:t></w:r><w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/><w:commentReference w:id="2"/><w:endnoteReference w:id="1"/><w:footnoteReference w:id="99"/><w:t>Tail</w:t></w:r></w:p>',
+  ])));
+  const decoder = new TextDecoder();
+  const stories = {
+    comments: `<w:comment w:id="1" w:author="Reviewer"><w:p><w:r><w:t>Range comment.</w:t></w:r></w:p></w:comment><w:comment w:id="2" w:author="Reviewer"><w:p><w:r><w:t>${pointComment}</w:t></w:r></w:p></w:comment>`,
+    endnotes: '<w:endnote w:id="1"><w:p><w:r><w:t>Endnote text.</w:t></w:r></w:p></w:endnote>',
+  };
+  for (const [story, content] of Object.entries(stories)) {
+    parts[`word/${story}.xml`] = strToU8(`<w:${story} xmlns:w="${WORD_NS}">${content}</w:${story}>`);
+    parts["word/_rels/document.xml.rels"] = strToU8(decoder.decode(parts["word/_rels/document.xml.rels"]).replace(
+      "</Relationships>", `<Relationship Id="${story}" Type="${REL_NS}/${story}" Target="${story}.xml"/></Relationships>`,
+    ));
+    parts["[Content_Types].xml"] = strToU8(decoder.decode(parts["[Content_Types].xml"]).replace(
+      "</Types>", `<Override PartName="/word/${story}.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.${story}+xml"/></Types>`,
+    ));
+  }
   return zipSync(parts);
 }
 
@@ -185,6 +219,141 @@ function editorSession(
     save: () => writeOoxmlPackage(tree.currentPackage()),
   };
 }
+
+type ReadRoute = DocxRendererRequest["arguments"];
+type ReadResult = {
+  paragraphs: { paragraphRef: string; modelText: string; displayText: string; atoms: {
+    kind: string; payload?: unknown; payloadJson?: string; payloadOffset?: number;
+    reference?: { start: { offset: number; read: ReadRoute }; end?: { offset: number; read: ReadRoute } };
+  }[] }[];
+  next_query: ReadRoute | null;
+};
+
+function registeredReferenceSession(bytes: Uint8Array) {
+  const fixture = editorSession(bytes);
+  const projectId = "docx-reference-fixture";
+  const previousProject = useFilesStore.getState().projectId;
+  useFilesStore.setState({ projectId });
+  registerDocxAgentSession({
+    sessionId: "reference-session", appProjectId: projectId, workbenchProjectId: "paper", title: "References",
+    filename: "references.docx", baselineId: "saved-paper", savedRevision: 0, sourceSha256: "a".repeat(64),
+    session: fixture.session,
+  });
+  return {
+    ...fixture,
+    read: (query: ReadRoute = {}) => createDocxAgentTools().read_docx_document.execute(query) as Promise<ReadResult>,
+    readTask: (arguments_: ReadRoute) => handleDocxRendererRequest({
+      token: "test", projectId, workbenchProjectId: "paper", operation: "read", arguments: arguments_,
+    }) as ReadResult,
+    cleanup() {
+      unregisterDocxAgentSession("reference-session");
+      fixture.session.dispose();
+      useFilesStore.setState({ projectId: previousProject });
+    },
+  };
+}
+
+describe("Agent DOCX live references", () => {
+  it("projects a single shared compatibility branch with both grouped boxes, distinct notes, and exact point/range anchors", async () => {
+    const fixture = registeredReferenceSession(referenceDocx());
+    try {
+      const read = await fixture.read();
+      const [first, second] = read.paragraphs;
+      expect(first.modelText).toBe("A😀Range\uFFFC\uFFFCAfter");
+      expect(first.displayText).toBe(first.modelText);
+      expect(second.modelText).toBe("Second\uFFFC\uFFFCTail");
+      expect(second.displayText).toBe(second.modelText);
+      expect(first.atoms).toMatchObject([
+        { kind: "comment", editable: false, modelRange: { start: 3, end: 3 },
+          reference: { kind: "range", part: "/word/document.xml", start: { offset: 3 }, end: { paragraphRef: second.paragraphRef, offset: 6 } },
+          payload: { id: "1", text: "Range comment.", bodyPart: "/word/comments.xml" } },
+        { kind: "note", editable: false, modelRange: { start: 8, end: 9 }, payload: { kind: "footnote", id: 1, paragraphs: ["Footnote text."] } },
+        { kind: "drawing", editable: false, modelRange: { start: 9, end: 10 },
+          payload: { textboxes: [{ paragraphs: ["Group textbox 1"] }, { paragraphs: ["Group textbox 2"] }] } },
+      ]);
+      expect(second.atoms).toMatchObject([
+        { kind: "comment", modelRange: { start: 6, end: 6 }, reference: { kind: "point", start: { offset: 6 } },
+          payload: { id: "2", text: "Point comment." } },
+        { kind: "note", payload: { kind: "endnote", id: 1, paragraphs: ["Endnote text."] } },
+        { kind: "note", readable: false, complete: false, payload: { kind: "footnote", id: 99, reason: expect.any(String) } },
+      ]);
+      expect(JSON.stringify(read)).not.toMatch(/(?:Fallback|Unsupported) textbox/);
+      for (const [location, expected] of [
+        [first.atoms[0].reference!.start, first], [first.atoms[0].reference!.end!, second],
+        [first.atoms[1].reference!.start, first], [first.atoms[2].reference!.start, first],
+        [second.atoms[0].reference!.start, second],
+      ] as const) {
+        expect(location.read).toMatchObject({ session_id: "reference-session", expected_revision: 0, read_version: expect.any(String) });
+        expect((await fixture.read(location.read)).paragraphs.map(({ modelText }) => modelText)).toEqual([expected.modelText]);
+        expect(fixture.readTask(location.read).paragraphs.map(({ paragraphRef }) => paragraphRef)).toEqual([expected.paragraphRef]);
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("rejects old locations after a footnote-only change and after the reference moves", async () => {
+    const fixture = registeredReferenceSession(referenceDocx());
+    try {
+      const initial = await fixture.read();
+      const foot = fixture.tree.partFor({ kind: "notesPart", noteKind: "footnote" })!;
+      const note = storyParagraphs(findNoteById(foot.root, 1)!)[0];
+      const before = fixture.tree.part();
+      expect(resolveNotesPart(fixture.tree.currentPackage(), "footnote")).toBe(foot);
+      expect(fixture.tree.applyTreeOps([
+        { op: "insertText", paragraphId: note.id, offset: 0, text: "Updated " },
+      ], undefined, undefined, { kind: "notesPart", noteKind: "footnote" })).toMatchObject({ committed: true });
+      expect(fixture.tree.part()).toBe(before);
+      const originalRoute = initial.paragraphs[0].atoms[1].reference!.start.read;
+      expect(await fixture.read(originalRoute)).toMatchObject({ error: expect.stringMatching(/stale|changed/) });
+      expect(() => fixture.readTask(originalRoute)).toThrow(/stale|changed/);
+      const updated = await fixture.read();
+      const footnote = updated.paragraphs[0].atoms[1];
+      expect(footnote.payload).toMatchObject({ paragraphs: ["Updated Footnote text."] });
+      expect(footnote.reference!.start.read.read_version).not.toBe(originalRoute.read_version);
+
+      expect(fixture.tree.applyTreeOps([
+        { op: "insertText", paragraphId: fixture.tree.paragraphIds()[0], offset: 0, text: "Moved " },
+      ])).toMatchObject({ committed: true });
+      expect(await fixture.read(footnote.reference!.start.read)).toMatchObject({ error: expect.stringMatching(/stale|changed/) });
+      expect((await fixture.read()).paragraphs[0].atoms[1].reference!.start.offset).toBe(14);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("continues a long comment at its exact paragraph and refuses it after a package-only change", async () => {
+    const text = "审阅😀".repeat(4000);
+    const fixture = registeredReferenceSession(referenceDocx(text));
+    try {
+      const second = (await fixture.read({ offset: 1 })).paragraphs[0];
+      let page = await fixture.read(second.atoms[0].reference!.start.read);
+      const firstContinuation = page.next_query!;
+      let assembled = "";
+      for (let index = 0; ; index++) {
+        expect(JSON.stringify(page).length).toBeLessThanOrEqual(10_000);
+        expect(page.paragraphs[0].paragraphRef).toBe(second.paragraphRef);
+        const fragment = page.paragraphs[0].atoms.find((atom) => atom.kind === "comment");
+        if (!fragment) break;
+        expect(fragment.payloadOffset).toBe(assembled.length);
+        assembled += fragment.payloadJson;
+        if (!page.next_query) break;
+        expect(index).toBeLessThan(30);
+        expect(page.next_query).toMatchObject({ paragraph_ref: second.paragraphRef, read_version: firstContinuation.read_version });
+        page = fixture.readTask(page.next_query);
+      }
+      expect(JSON.parse(assembled)).toMatchObject({ text });
+
+      const revision = fixture.session.revision();
+      expect(fixture.tree.ensureHyperlinkRelationship("https://example.invalid/package-only")).toBeTruthy();
+      expect(fixture.session.revision()).toBe(revision);
+      expect(await fixture.read(firstContinuation)).toMatchObject({ error: expect.stringContaining("package has changed") });
+      expect(() => fixture.readTask(firstContinuation)).toThrow("package has changed");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
 
 function one(host: AutomationHost, operation: AutomationBatchRequest["operations"][number]) {
   const response = host.execute({ operations: [operation] });

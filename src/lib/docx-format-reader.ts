@@ -1,4 +1,4 @@
-import { DOCX_READ_MAX_CHARS, type DocxFormatReadQuery, type DocxFormatReadResult } from "@oleafly/ai-tools";
+import { DOCX_READ_MAX_CHARS, type DocxFormatReadQuery, type DocxFormatReadResult, type DocxNodeAddress } from "@oleafly/ai-tools";
 import type { DocxParagraph, DocxSession } from "./docx-session";
 import { openDocxFormatFacts } from "./docx-format";
 import type { DocxFormatFacts, DocxFormatObject, DocxFormatStyleDefinition } from "./docx-format-types";
@@ -15,7 +15,7 @@ type VersionedReadResult = DocxFormatReadResult & { nextQuery: VersionedReadQuer
 
 const withinPath = (path: readonly number[], prefix?: readonly number[]) =>
   !prefix || prefix.every((value, index) => path[index] === value);
-const locatorKey = (part: string, path: readonly number[]) => `${part}#${path.join(".")}`;
+const paragraphKey = (part: string, paraId: string) => `${part}\0${paraId}`;
 // The Agent packs JSON by serialized character count, including escaped text.
 // Leave room for identity, selectors and continuation metadata around each record.
 const jsonSize = (value: unknown) => JSON.stringify(value).length;
@@ -30,24 +30,31 @@ function textSlice(text: string, offset: number, limit: number) {
   return { text: text.slice(start, end), offset: start, nextOffset: end < text.length ? end : null };
 }
 
-/** Reuses exported facts and live paragraph addresses within one session revision. */
+/** Reuses exported facts and live paragraph addresses for the current package version. */
 export function createDocxFormatReader({ session, exportBytes, document, openFacts = openDocxFormatFacts }: ReaderOptions) {
   let cache: {
     revision: number;
+    readVersion?: string;
     promise: Promise<DocxFormatFacts>;
     live?: {
       paragraphs: readonly DocxParagraph[];
       factParagraphs: DocxFormatObject[];
-      liveByLocator: Map<string, DocxParagraph>;
+      liveByIdentity: Map<string, DocxParagraph>;
       liveIndexByRef: Map<string, number>;
       objectById: Map<string, DocxFormatObject>;
+      objects: DocxFormatObject[];
     };
   } | undefined;
-  const assertRevision = (revision: number) => {
-    if (session.revision() !== revision) throw new Error("The DOCX session changed while its formatting was read. Read it again.");
+  const assertCurrent = (revision: number, readVersion: string | undefined) => {
+    if (session.revision() !== revision || session.readVersion?.() !== readVersion)
+      throw new Error("The DOCX session changed while its formatting was read. Read it again.");
   };
   return async (query: DocxFormatReadQuery = {}): Promise<VersionedReadResult> => {
+    const kind = query.kind ?? "objects";
+    if (kind === "nodes" && query.path !== undefined) throw new Error("A legacy path cannot locate a DOCX node. Re-read the part and use node_address.");
+    if (kind !== "nodes" && query.nodeAddress !== undefined) throw new Error("node_address is only accepted for DOCX node reads.");
     const atRevision = session.revision();
+    const readVersion = session.readVersion?.();
     const expectedRevision = query.expectedRevision;
     if (expectedRevision !== undefined && (!Number.isInteger(expectedRevision) || expectedRevision < 0))
       throw new Error("DOCX expectedRevision must be a nonnegative integer.");
@@ -61,29 +68,29 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("DOCX read limit must be an integer from 1 to 50.");
     if (!Number.isInteger(textOffset) || textOffset < 0) throw new Error("DOCX textOffset must be a nonnegative UTF-16 offset.");
     if (!Number.isInteger(textLimit) || textLimit < 1 || textLimit > 16000) throw new Error("DOCX textLimit must be an integer from 1 to 16000.");
-    if (!cache || cache.revision !== atRevision) {
+    const identity = document();
+    if (!cache || cache.revision !== atRevision || cache.readVersion !== readVersion) {
       const pending = (async () => {
         const bytes = await exportBytes();
-        assertRevision(atRevision);
+        assertCurrent(atRevision, readVersion);
         if (!bytes) throw new Error("The DOCX editor did not export its live content.");
         const facts = await openFacts(new Uint8Array(bytes));
-        assertRevision(atRevision);
+        assertCurrent(atRevision, readVersion);
         return facts;
       })();
-      cache = { revision: atRevision, promise: pending };
+      cache = { revision: atRevision, readVersion, promise: pending };
       void pending.catch(() => { if (cache?.promise === pending) cache = undefined; });
     }
     const currentCache = cache;
     const facts = await currentCache.promise;
-    assertRevision(atRevision);
-    const identity = document();
+    assertCurrent(atRevision, readVersion);
     const state = { ...identity, sessionRevision: atRevision, dirty: atRevision !== identity.savedRevision };
     const bound = { document: state, sourceSha256: facts.snapshot.source_sha256, revision: atRevision };
-    const kind = query.kind ?? "objects";
     const continuationQuery = (nextOffset: number): VersionedReadQuery => ({
       kind,
       ...(query.part !== undefined ? { part: query.part } : {}),
       ...(query.path !== undefined ? { path: query.path } : {}),
+      ...(query.nodeAddress !== undefined ? { node_address: query.nodeAddress } : {}),
       ...(query.paragraphRef !== undefined ? { paragraph_ref: query.paragraphRef } : {}),
       ...(query.objectKind !== undefined ? { object_kind: query.objectKind } : {}),
       ...(query.objectId !== undefined ? { object_id: query.objectId } : {}),
@@ -103,6 +110,11 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
       limit,
       expected_revision: atRevision,
     });
+    const exactNodeRead = (node_address: DocxNodeAddress) => ({
+      kind: "nodes", node_address, offset: 0, limit: 1, expected_revision: atRevision,
+    });
+    const declarationRead = ({ node_address }: DocxFormatObject | DocxFormatStyleDefinition) =>
+      node_address ? { read: exactNodeRead(node_address) } : {};
     const boundedRecord = <T extends Record<string, unknown>>(record: T, read: Record<string, unknown>): T | Record<string, unknown> => {
       if (jsonSize(record) <= RECORD_CHARS) return record;
       const serialized = JSON.stringify(record);
@@ -137,10 +149,10 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
       (query.text === undefined || ("name" in object ? `${object.style_id} ${object.name ?? ""}` : object.text ?? "").includes(query.text));
     if (kind === "nodes") {
       // Package selectors do not need live paragraph handles.
-      const selected = facts.query({ kind: "nodes", part: query.part, path: query.path, namespace_uri: query.namespaceUri,
+      const selected = facts.query({ kind: "nodes", part: query.part, node_address: query.nodeAddress, namespace_uri: query.namespaceUri,
         local_name: query.localName, attribute: query.attribute && { namespace_uri: query.attribute.namespaceUri, local_name: query.attribute.localName, value: query.attribute.value }, offset, limit });
       if (selected.kind !== "nodes") throw new Error("The format reader did not return nodes.");
-      const projected = selected.nodes.map(({ node, ...locator }) => {
+      const projected = selected.nodes.map(({ node, ...locator }, index) => {
         const { children, ...properties } = node;
         const textValues = Array.isArray(children) ? children.filter((child) => child && typeof child === "object" && !Array.isArray(child) && child.kind === "textValue") : [];
         const shallow = { ...properties, ...(textValues.length ? { textValues } : {}) };
@@ -149,9 +161,9 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
           let length = Math.min(textLimit, 4000);
           let slice = textSlice(serialized, textOffset, length);
           while (jsonSize(slice.text) > FRAGMENT_CHARS && length > 1) { length = Math.max(1, Math.floor(length / 2)); slice = textSlice(serialized, textOffset, length); }
+          const route = locator.node_address ? exactNodeRead(locator.node_address) : continuationQuery(offset + index);
           return { ...locator, nodeJson: slice.text, nodeJsonOffset: slice.offset, nodeJsonLength: serialized.length,
-            nodeJsonContinuation: slice.nextOffset === null ? null : { kind: "nodes", part: locator.part, path: locator.path,
-              offset: 0, limit: 1, text_offset: slice.nextOffset, text_limit: textLimit, expected_revision: atRevision },
+            nodeJsonContinuation: slice.nextOffset === null ? null : { ...route, limit: 1, text_offset: slice.nextOffset, text_limit: textLimit },
             childCount: Array.isArray(children) ? children.length : 0, childrenOmitted: true, addressing: "export_evidence_only" };
         }
         return { ...locator, node: shallow, childCount: Array.isArray(children) ? children.length : 0,
@@ -169,7 +181,7 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
     if (kind === "styles") {
       const candidates = (facts.snapshot.style_definitions ?? []).filter((style) => matchesFacts(style) && !query.paragraphRef).map((style) => boundedRecord({ ...style,
         declared: jsonSize(style.declared ?? {}) > 2000 ? { omitted: true,
-          read: { kind: "nodes", part: style.part, path: style.path, offset: 0, limit: 1, expected_revision: atRevision } } : style.declared,
+          ...declarationRead(style) } : style.declared,
         source: { part: style.part, path: style.path, objectId: style.object_id, addressing: "export_evidence_only" } },
       { kind: "styles", object_id: style.object_id }));
       const selected = page(candidates, offset, candidates.length, offset, (values, nextOffset) => ({
@@ -183,25 +195,20 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
     if (!currentCache.live) {
       const paragraphs = session.listParagraphs();
       const factParagraphs = facts.snapshot.objects.filter((object) => object.kind === "paragraph");
-      const factParagraphsByPart = new Map<string, DocxFormatObject[]>();
-      for (const object of factParagraphs) {
-        const entries = factParagraphsByPart.get(object.part) ?? [];
-        entries.push(object);
-        factParagraphsByPart.set(object.part, entries);
-      }
-      const liveByLocator = new Map(paragraphs.flatMap((paragraph) => {
+      const liveByIdentity = new Map(paragraphs.flatMap((paragraph) => {
+        if (!paragraph.paraId) return [];
         const locator = session.paragraphLocator?.(paragraph.handle);
         if (!locator) return [];
-        const object = locator.paragraphIndex === undefined ? undefined :
-          factParagraphsByPart.get(locator.part)?.[locator.paragraphIndex];
-        return [[locatorKey(locator.part, object?.path ?? locator.path), paragraph] as const];
+        return [[paragraphKey(locator.part, paragraph.paraId), paragraph] as const];
       }));
-      assertRevision(atRevision);
-      currentCache.live = { paragraphs, factParagraphs, liveByLocator,
+      const objectById = new Map(facts.snapshot.objects.map((object) => [object.object_id, object]));
+      for (const object of facts.embeddedGaps) objectById.set(object.object_id, object);
+      assertCurrent(atRevision, readVersion);
+      currentCache.live = { paragraphs, factParagraphs, liveByIdentity,
         liveIndexByRef: new Map(paragraphs.map((paragraph, index) => [paragraph.handle.ref, index])),
-        objectById: new Map(facts.snapshot.objects.map((object) => [object.object_id, object])) };
+        objectById, objects: [...objectById.values()] };
     }
-    const { paragraphs, factParagraphs, liveByLocator, liveIndexByRef, objectById } = currentCache.live;
+    const { paragraphs, factParagraphs, liveByIdentity, liveIndexByRef, objectById, objects } = currentCache.live;
     const ownerParagraph = (object: DocxFormatObject) => {
       if (object.kind === "paragraph") return object;
       const id = object.evidence.paragraph_object_id;
@@ -211,7 +218,9 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
     };
     const liveParagraph = (object: DocxFormatObject) => {
       const owner = ownerParagraph(object);
-      return owner ? liveByLocator.get(locatorKey(owner.part, owner.path)) : undefined;
+      if (!owner) return;
+      const paraId = facts.addressableParagraphIds.get(owner.object_id);
+      return paraId ? liveByIdentity.get(paragraphKey(owner.part, paraId)) : undefined;
     };
     const selectedParagraph = query.paragraphRef ? paragraphs.find((paragraph) => paragraph.handle.ref === query.paragraphRef) : undefined;
     if (query.paragraphRef && !selectedParagraph) throw new Error("The DOCX paragraph is no longer present.");
@@ -223,10 +232,10 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
     const linkedObject = (object: DocxFormatObject) => {
       const live = liveParagraph(object);
       const declared = jsonSize(object.declared) <= 2000 ? object.declared : {
-        omitted: true, reason: "Declaration exceeds the live read window; read shallow source nodes.",
-        read: { kind: "nodes", part: object.part, path: object.path, offset: 0, limit: 1, expected_revision: atRevision },
+        omitted: true, reason: "Declaration exceeds the live read window.", ...declarationRead(object),
       };
       return { ...object, declared, ...(live ? { paragraphRef: live.handle.ref } : {}),
+        ...("read_gap" in object && object.node_address ? { readSource: exactNodeRead(object.node_address) } : {}),
         ...(object.text && object.text.length > textLimit ? { text: textSlice(object.text, 0, textLimit).text,
           textTruncated: true, textLength: object.text.length,
           readText: { kind: "paragraphs", object_id: ownerParagraph(object)?.object_id, text_offset: 0, text_limit: textLimit, limit: 1,
@@ -251,7 +260,7 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
         if (jsonSize({ ...linked, text: "" }) > FRAGMENT_CHARS) {
           return boundedRecord({ ...linked, text, textOffset: 0, textLength: text.length, textTruncated: false,
             contentCoverage, ...(contentRead ? { contentRead } : {}),
-            declared: { omitted: true, read: { kind: "nodes", part: object.part, path: object.path, limit: 1, expected_revision: atRevision } },
+            declared: { omitted: true, ...declarationRead(object) },
             ...(modelText !== undefined ? { modelText, modelTextOffset: 0, modelTextLength: text.length,
               offsets: { unit: "utf16", interval: "half_open", projection: "model", origin: "complete_paragraph", revision: atRevision } } : {}),
             textContinuation: null, textProjection: modelText !== undefined ? "model" : "export_text", modelTextAddressable: modelText !== undefined,
@@ -260,8 +269,7 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
         }
         let length = textLimit;
         let slice = textSlice(text, textOffset, length);
-        const project = () => ({ ...linked, declared: { omitted: true,
-          read: { kind: "nodes", part: object.part, path: object.path, limit: 1, expected_revision: atRevision } },
+        const project = () => ({ ...linked, declared: { omitted: true, ...declarationRead(object) },
           text: slice.text, textOffset: slice.offset, textLength: text.length,
           contentCoverage, ...(contentRead ? { contentRead } : {}),
           textTruncated: slice.offset > 0 || slice.nextOffset !== null,
@@ -291,8 +299,11 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
       const directoryItems = directory.map((object) => ({ objectId: object.object_id, kind: object.kind, role: object.role,
         part: object.part, path: object.path, text: object.text?.slice(0, 160),
         read: { kind: "objects", object_id: object.object_id, offset: 0, limit, expected_revision: atRevision } }));
-      const countBy = (field: "kind" | "part") => Object.fromEntries([...new Set(facts.snapshot.objects.map((object) => object[field]))]
-        .map((value) => [value, facts.snapshot.objects.filter((object) => object[field] === value).length]));
+      const countBy = (field: "kind" | "part") => {
+        const counts = new Map<string, number>();
+        for (const object of objects) counts.set(object[field], (counts.get(object[field]) ?? 0) + 1);
+        return Object.fromEntries(counts);
+      };
       const byPart = new Map<string, { total: number; live: number; exportOnly: number; table: number; tableLive: number; unknown: number }>();
       const exportOnlyByPart = new Map<string, number>();
       const byRole: Record<string, number> = {};
@@ -324,7 +335,7 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
         byRole[paragraph.role] = (byRole[paragraph.role] ?? 0) + 1;
       }
       const exportOnly = factParagraphs.filter((paragraph) => !liveParagraph(paragraph));
-      const counts = { objects: facts.snapshot.objects.length, paragraphs: facts.snapshot.objects.filter((object) => object.kind === "paragraph").length,
+      const counts = { objects: objects.length, paragraphs: factParagraphs.length,
         liveParagraphs: paragraphs.length, styles: facts.snapshot.style_definitions?.length ?? 0, parts: facts.snapshot.parts.length,
         byKind: countBy("kind"), byPart: countBy("part") };
       const countUnits = { unsupported_node: "xml_node",
@@ -340,6 +351,12 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
           ...(gap.code === "structural_only" ? { unit: "xml_node", semanticReading: "read_docx_document" } : {}),
           exampleObjectIds: gap.object_ids.slice(0, 5),
           read: { kind: "objects", object_id: gap.object_ids[0], offset: 0, limit, expected_revision: atRevision } })),
+          ...(["alt_chunk", "ole"] as const).flatMap((kind) => {
+            const unread = facts.embeddedGaps.filter((object) => object.kind === kind);
+            return unread.length === 0 ? [] : [{ code: unread[0].read_gap.code, detail: unread[0].read_gap.detail,
+              count: unread.length, unit: "object", exampleObjectIds: unread.slice(0, 5).map((object) => object.object_id),
+              read: { kind: "objects", object_kind: kind, offset: 0, limit, expected_revision: atRevision } }];
+          }),
           ...(exportOnly.length ? [{ code: "live_handle_coverage", detail: "Exported stories without a live paragraphRef are readable; their raw paths are not write addresses.",
             count: exportOnly.length, byPart: Object.fromEntries([...exportOnlyByPart].sort(([left], [right]) => left.localeCompare(right))),
             exampleObjectIds: exportOnly.slice(0, 5).map((paragraph) => paragraph.object_id),
@@ -358,14 +375,14 @@ export function createDocxFormatReader({ session, exportBytes, document, openFac
       const selected = page(directoryItems, offset, directoryItems.length, offset, render);
       return render(selected.values, selected.nextOffset);
     }
-    const candidates = facts.snapshot.objects.filter(matches)
+    const candidates = objects.filter(matches)
       .map((object) => boundedRecord(linkedObject(object), { kind: "objects", object_id: object.object_id }));
     const direct = selectedParagraph && session.readParagraphFormatting?.(selectedParagraph.handle);
     const directRead = direct && { ...direct, text: textSlice(direct.text, 0, 1000).text,
       ...(direct.text.length > 1000 ? { textTruncated: true, textLength: direct.text.length,
         readText: { kind: "paragraphs", paragraph_ref: direct.paragraphRef, text_offset: 0, limit: 1,
           expected_revision: atRevision } } : {}) };
-    assertRevision(atRevision);
+    assertCurrent(atRevision, readVersion);
     const render = (objects: typeof candidates, nextOffset: number | null) => ({
       ...bound, ...(directRead ? { paragraph: directRead } : {}), objects, total: candidates.length, nextOffset,
       nextQuery: nextOffset === null ? null : continuationQuery(nextOffset),

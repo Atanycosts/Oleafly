@@ -1,6 +1,7 @@
 """End-to-end journal-world workflow over application-owned temporary storage."""
 
 import base64
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,88 @@ def test_initial_manuscript_import_parses_once_and_preserves_retained_evidence(
     )
     display = load_json_object(service.project_root(project["project_id"]) / "display.json")
     assert display == {"name": "用户稿件", "filename": "original-name.docx"}
+
+
+def test_candidate_role_is_persisted_and_kept_out_of_ordinary_discovery(tmp_path):
+    service = WorkbenchService.create(tmp_path / "library")
+    manuscript = service.import_manuscript("Manuscript", "manuscript.docx", template_bytes())
+    candidate = service.import_manuscript(
+        "Format candidate",
+        "manuscript.docx",
+        template_bytes(),
+        role="format_candidate",
+    )
+
+    assert service.project(candidate["project_id"])["role"] == "format_candidate"
+    display = load_json_object(service.project_root(candidate["project_id"]) / "display.json")
+    assert display == {
+        "name": "Format candidate",
+        "filename": "manuscript.docx",
+        "role": "format_candidate",
+    }
+    assert [project["project_id"] for project in service.state()["projects"]] == [
+        manuscript["project_id"]
+    ]
+
+    detail = service.manuscript(str(candidate["project_id"]), None)
+    assert detail["project"]["role"] == "format_candidate"
+    source = service.manuscript_source(str(candidate["project_id"]), str(candidate["baseline_id"]))
+    assert source["project_id"] == candidate["project_id"]
+    assert base64.b64decode(source["content_base64"]) == template_bytes()
+
+
+def test_legacy_candidate_relations_hide_pending_and_adopted_projects(tmp_path):
+    service = WorkbenchService.create(tmp_path / "library")
+    target = service.import_manuscript("Target", "target.docx", template_bytes())
+    candidate = service.import_manuscript("Legacy candidate", "candidate.docx", template_bytes())
+    target_store = project_service.open_project(service.project_root(str(target["project_id"])))
+    candidate_id = str(candidate["project_id"])
+
+    target_store.save_template_candidate_review(
+        {"candidate_check_id": "candidate-check-legacy", "candidate_project_id": candidate_id},
+        None,
+    )
+    assert service.project(candidate_id)["role"] == "format_candidate"
+    assert [project["project_id"] for project in service.state()["projects"]] == [
+        target["project_id"]
+    ]
+
+    with sqlite3.connect(target_store.database_path) as connection:
+        connection.execute("DELETE FROM template_candidate_review")
+        connection.execute(
+            "INSERT INTO template_candidate_adoption VALUES (?,?,?,?)",
+            (
+                "candidate-adoption-legacy",
+                "request-digest",
+                '{"candidate_project_id":"' + candidate_id + '"}',
+                "{}",
+            ),
+        )
+    assert service.project(candidate_id)["role"] == "format_candidate"
+    assert [project["project_id"] for project in service.state()["projects"]] == [
+        target["project_id"]
+    ]
+
+
+def test_unlinked_legacy_candidate_stays_visible_without_inferred_role(tmp_path):
+    """An earlier copy with no stored role or review relation cannot be classified safely."""
+    service = WorkbenchService.create(tmp_path / "library")
+    manuscript = service.import_manuscript("Manuscript", "manuscript.docx", template_bytes())
+    unlinked = service.import_manuscript(
+        "Format candidate",
+        "format-candidate.docx",
+        template_bytes(),
+    )
+
+    display = load_json_object(service.project_root(str(unlinked["project_id"])) / "display.json")
+    assert display == {"name": "Format candidate", "filename": "format-candidate.docx"}
+    assert service.project(str(unlinked["project_id"]))["role"] == "manuscript"
+    discovered = service.state()["projects"]
+    assert {project["project_id"] for project in discovered} == {
+        manuscript["project_id"],
+        unlinked["project_id"],
+    }
+    assert {project["role"] for project in discovered} == {"manuscript"}
 
 
 @pytest.mark.parametrize("content", [b"not a DOCX package", docx_bytes("<w:p>")])
@@ -340,3 +423,28 @@ def test_latest_check_follows_commit_order_when_clock_moves_backward(tmp_path, m
     ]
     assert service.project(project["project_id"])["latest_check"]["check_id"] == second["check_id"]
     assert service.state()["projects"][0]["latest_check"]["check_id"] == second["check_id"]
+
+
+def test_damaged_world_source_keeps_discovery_and_history_available(tmp_path: Path) -> None:
+    service = WorkbenchService.create(tmp_path / "library")
+    world = service.import_world(
+        "journal-test",
+        "Test",
+        [SourceInput("guide.txt", "guide_text", b"All manuscript pages must use A4 paper.")],
+    )
+    project = service.import_manuscript("Manuscript", "source.docx", template_bytes())
+    service.bind(project["project_id"], world["version_id"], None)
+    check = service.run_check(project["project_id"])
+    with sqlite3.connect(service.store.database_path) as connection:
+        connection.execute("UPDATE source SET content=?", (b"damaged source",))
+
+    metadata = service.world_metadata(world["version_id"])
+    discovered = service.state()
+    history = service.history(project["project_id"])
+
+    assert metadata["version_id"] == world["version_id"]
+    assert discovered["projects"][0]["latest_check"]["check_id"] == check["check_id"]
+    assert discovered["projects"][0]["latest_check"]["world"]["version_id"] == world["version_id"]
+    assert history["checks"][0]["check_id"] == check["check_id"]
+    with pytest.raises(ValueError, match="immutable identity"):
+        service.check_record(check["check_id"])

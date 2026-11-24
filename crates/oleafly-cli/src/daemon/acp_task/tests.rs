@@ -595,7 +595,6 @@ async fn annotation_receipts_distinguish_cancel_before_and_after_the_daemon_prom
         assert_eq!(receipt.prepared_generation, Some(setup.generation));
         assert_eq!(receipt.delivered_generation.is_some(), !before_prompt);
         assert_eq!(receipt.annotation_id, annotation.id);
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
         state.shutdown().await;
     }
 }

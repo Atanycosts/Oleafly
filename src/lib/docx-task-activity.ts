@@ -8,11 +8,11 @@ import {
   settleTaskDocxOperation,
 } from "@/lib/docx-agent-host";
 import {
+  docxFormatQuery,
   docxImageForTool,
   docxReadForTool,
   type DocxFormatBatchItem,
   type DocxFormatMutation,
-  type DocxFormatReadQuery,
   type DocxImageReadRequest,
   type DocxObjectFormatMutation,
 } from "@oleafly/ai-tools";
@@ -59,7 +59,7 @@ export interface DocxRendererRequest {
   arguments: {
     session_id?: string; paragraph_ref?: string; object_ref?: string; target_id?: string;
     expected_revision?: number; text?: string; offset?: number; limit?: number; text_offset?: number; text_limit?: number;
-    atom_offset?: number; payload_offset?: number;
+    atom_offset?: number; payload_offset?: number; read_version?: string;
     range?: { start: number; end: number }; expected_text?: string; replacement?: string; activity?: DocxActivity;
     query?: Record<string, unknown>; format?: DocxFormatMutation; object_format?: DocxObjectFormatMutation; template?: string;
     operations?: DocxFormatBatchItem[];
@@ -87,37 +87,6 @@ export async function settleDocxTaskActivity(projectId: string, workbenchProject
   return result;
 }
 
-function formatReadQuery(value: Record<string, unknown> | undefined): DocxFormatReadQuery {
-  const query = value ?? {};
-  const attribute = query.attribute && typeof query.attribute === "object"
-    ? query.attribute as Record<string, unknown> : {};
-  return {
-    ...(["overview", "paragraphs", "styles", "objects", "nodes"].includes(String(query.kind))
-      ? { kind: query.kind as DocxFormatReadQuery["kind"] } : {}),
-    ...(typeof query.expected_revision === "number" ? { expectedRevision: query.expected_revision } : {}),
-    ...(typeof query.object_kind === "string" ? { objectKind: query.object_kind } : {}),
-    ...(typeof query.role === "string" ? { role: query.role } : {}),
-    ...(typeof query.style_id === "string" ? { styleId: query.style_id } : {}),
-    ...(typeof query.object_id === "string" ? { objectId: query.object_id } : {}),
-    ...(typeof query.text === "string" ? { text: query.text } : {}),
-    ...(typeof query.text_offset === "number" ? { textOffset: query.text_offset } : {}),
-    ...(typeof query.text_limit === "number" ? { textLimit: query.text_limit } : {}),
-    ...(typeof query.paragraph_ref === "string" ? { paragraphRef: query.paragraph_ref } : {}),
-    ...(typeof query.part === "string" ? { part: query.part } : {}),
-    ...(Array.isArray(query.path)
-      ? { path: query.path.filter((item): item is number => Number.isInteger(item)) } : {}),
-    ...(typeof query.namespace_uri === "string" ? { namespaceUri: query.namespace_uri } : {}),
-    ...(typeof query.local_name === "string" ? { localName: query.local_name } : {}),
-    ...(typeof attribute.local_name === "string" ? { attribute: {
-      localName: attribute.local_name,
-      ...(typeof attribute.namespace_uri === "string" ? { namespaceUri: attribute.namespace_uri } : {}),
-      ...(typeof attribute.value === "string" ? { value: attribute.value } : {}),
-    } } : {}),
-    ...(typeof query.offset === "number" ? { offset: query.offset } : {}),
-    ...(typeof query.limit === "number" ? { limit: query.limit } : {}),
-  };
-}
-
 export function handleDocxRendererRequest(request: DocxRendererRequest, beforeCommit?: () => Promise<void>): unknown {
   const scope = { projectId: request.projectId, workbenchProjectId: request.workbenchProjectId,
     ...(request.operationId ? { operationId: request.operationId } : {}),
@@ -137,6 +106,8 @@ export function handleDocxRendererRequest(request: DocxRendererRequest, beforeCo
       const page = readTaskDocxDocumentPage(
         scope, input.session_id, {
           ...(input.session_id ? { sessionId: input.session_id } : {}),
+          ...(input.paragraph_ref ? { paragraphRef: input.paragraph_ref } : {}),
+          ...(input.read_version ? { readVersion: input.read_version } : {}),
           offset: input.offset ?? 0,
           limit: input.limit ?? 20,
           ...(input.expected_revision == null ? {} : { expectedRevision: input.expected_revision }),
@@ -186,7 +157,7 @@ export function handleDocxRendererRequest(request: DocxRendererRequest, beforeCo
       notifyDocxTaskActivity();
       return { presented: true };
     case "read_format": return runTaskDocxOperation(scope, input.session_id, "read_format", {
-      query: formatReadQuery(input.query),
+      query: docxFormatQuery(input.query),
     });
     case "replace_range":
       if (!input.paragraph_ref || input.expected_revision === undefined || !input.range ||

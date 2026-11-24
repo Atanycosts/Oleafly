@@ -2,8 +2,10 @@
 
 from research_file_workbench.common.json_io import JsonObject
 
-FORMAT_SNAPSHOT_METHOD_VERSION = "docx-core-format-snapshot-1.2.0"
+FORMAT_SNAPSHOT_METHOD_VERSION = "docx-core-format-snapshot-1.3.0"
 LEGACY_FORMAT_SNAPSHOT_METHOD_VERSION = "docx-core-format-snapshot-1.0.0"
+RECAPTUREABLE_SNAPSHOT_METHODS = {"docx-core-format-snapshot-1.2.0"}
+HISTORICAL_ALL_DECLARED_STYLE_METHODS = RECAPTUREABLE_SNAPSHOT_METHODS
 
 
 def format_snapshot_method(snapshot: JsonObject) -> str:
@@ -12,6 +14,7 @@ def format_snapshot_method(snapshot: JsonObject) -> str:
     if not isinstance(method, str) or method not in {
         LEGACY_FORMAT_SNAPSHOT_METHOD_VERSION,
         "docx-core-format-snapshot-1.1.0",
+        *HISTORICAL_ALL_DECLARED_STYLE_METHODS,
         FORMAT_SNAPSHOT_METHOD_VERSION,
     }:
         raise ValueError("Unsupported core format snapshot method")

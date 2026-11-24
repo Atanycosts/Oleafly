@@ -16,8 +16,31 @@ pub const WRAP_UP_LIMIT: Duration = Duration::from_secs(5 * 60);
 pub const WRAP_UP_STEPS: u32 = 20;
 pub const HARD_STOP_AFTER: Duration = Duration::from_secs(7 * 60);
 pub const SPEND_CHECK_EVERY: Duration = Duration::from_secs(30);
+/// Acceptance runners set this to `1`. Budget usage stays visible, but time,
+/// cost and run counts no longer stop the task automatically.
+pub const ACCEPTANCE_DISABLE_BUDGET_STOP_ENV: &str =
+    "OLEAFLY_ACCEPTANCE_DISABLE_RESEARCH_BUDGET_STOP";
 
 pub type SpendProbe = Arc<dyn Fn() -> Option<f64> + Send + Sync>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BudgetStopPolicy {
+    Enforced,
+    Disabled,
+}
+
+impl BudgetStopPolicy {
+    pub fn from_environment() -> Self {
+        match std::env::var(ACCEPTANCE_DISABLE_BUDGET_STOP_ENV).as_deref() {
+            Ok("1") => Self::Disabled,
+            _ => Self::Enforced,
+        }
+    }
+
+    pub fn enforced(self) -> bool {
+        self == Self::Enforced
+    }
+}
 
 struct ClockState {
     banked: Duration,
@@ -29,14 +52,26 @@ struct ClockState {
 
 pub struct BudgetClock {
     budget: TaskBudget,
+    stop: BudgetStopPolicy,
     state: Mutex<ClockState>,
     spend: SpendProbe,
     now: Box<dyn Fn() -> Instant + Send + Sync>,
 }
 
 impl BudgetClock {
-    pub fn new(budget: TaskBudget, active_ms_at_start: u64, spend: SpendProbe) -> Self {
-        Self::with_clock(budget, active_ms_at_start, spend, Box::new(Instant::now))
+    pub fn new(
+        budget: TaskBudget,
+        active_ms_at_start: u64,
+        spend: SpendProbe,
+        stop: BudgetStopPolicy,
+    ) -> Self {
+        Self::with_clock(
+            budget,
+            active_ms_at_start,
+            spend,
+            Box::new(Instant::now),
+            stop,
+        )
     }
 
     pub fn with_clock(
@@ -44,10 +79,12 @@ impl BudgetClock {
         active_ms_at_start: u64,
         spend: SpendProbe,
         now: Box<dyn Fn() -> Instant + Send + Sync>,
+        stop: BudgetStopPolicy,
     ) -> Self {
         let started = now();
         Self {
             budget,
+            stop,
             state: Mutex::new(ClockState {
                 banked: Duration::from_millis(active_ms_at_start),
                 running_since: Some(started),
@@ -116,6 +153,9 @@ impl BudgetClock {
     }
 
     pub fn exhausted(&self) -> Option<BudgetKind> {
+        if !self.stop.enforced() {
+            return None;
+        }
         if let Some(cap) = self.budget.usd_cap {
             if self.spend().is_some_and(|spend| spend >= cap) {
                 return Some(BudgetKind::Cost);
@@ -126,6 +166,10 @@ impl BudgetClock {
 
     pub fn budget(&self) -> &TaskBudget {
         &self.budget
+    }
+
+    pub fn enforces_stop(&self) -> bool {
+        self.stop.enforced()
     }
 
     pub fn last_spend(&self) -> Option<f64> {
@@ -184,6 +228,14 @@ mod tests {
     }
 
     fn clock(budget: TaskBudget, spend: Option<f64>) -> (Arc<ManualTime>, BudgetClock) {
+        clock_with_policy(budget, spend, BudgetStopPolicy::Enforced)
+    }
+
+    fn clock_with_policy(
+        budget: TaskBudget,
+        spend: Option<f64>,
+        stop: BudgetStopPolicy,
+    ) -> (Arc<ManualTime>, BudgetClock) {
         let time = Arc::new(ManualTime(Mutex::new(Instant::now())));
         let source = time.clone();
         let clock = BudgetClock::with_clock(
@@ -191,6 +243,7 @@ mod tests {
             0,
             Arc::new(move || spend),
             Box::new(move || *lock(&source.0)),
+            stop,
         );
         (time, clock)
     }
@@ -242,5 +295,21 @@ mod tests {
         assert_eq!(clock.exhausted(), None);
         time.advance(Duration::from_secs(60));
         assert_eq!(clock.exhausted(), Some(BudgetKind::Time));
+    }
+
+    #[test]
+    fn acceptance_mode_keeps_accounting_but_never_stops_on_budget() {
+        let budget = TaskBudget {
+            wall_clock_minutes: 5,
+            usd_cap: Some(2.0),
+            ..TaskBudget::default()
+        };
+        let (time, clock) = clock_with_policy(budget, Some(2.0), BudgetStopPolicy::Disabled);
+        time.advance(Duration::from_secs(10 * 60));
+
+        assert_eq!(clock.exhausted(), None);
+        assert_eq!(clock.remaining(), Duration::ZERO);
+        assert_eq!(clock.active_ms(), 10 * 60 * 1000);
+        assert!(!clock.enforces_stop());
     }
 }

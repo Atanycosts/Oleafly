@@ -8,6 +8,10 @@ import re
 from typing import NamedTuple, cast
 
 from research_file_workbench.common.json_io import JsonObject
+from research_file_workbench.docx.format_snapshot import (
+    FORMAT_SNAPSHOT_METHOD_VERSION,
+    HISTORICAL_ALL_DECLARED_STYLE_METHODS,
+)
 
 type _PropertyPath = tuple[str, ...]
 type _ContextKey = tuple[str, ...]
@@ -60,7 +64,11 @@ _INTERNAL_LEAF_NAMES = {
 _TABLE_KINDS = {"table", "tr", "tc"}
 _KIND_PAIRED = {"section", *_TABLE_KINDS}
 _REGION_ROLES = {"front_matter", "body", "references", "appendix"}
-_TABLE_CONTEXT_METHODS = {"docx-core-format-snapshot-1.1.0", "docx-core-format-snapshot-1.2.0"}
+_TABLE_CONTEXT_METHODS = {
+    "docx-core-format-snapshot-1.1.0",
+    *HISTORICAL_ALL_DECLARED_STYLE_METHODS,
+    FORMAT_SNAPSHOT_METHOD_VERSION,
+}
 _TABLE_BAND_SIZE_UNSUPPORTED = "table_band_size_unsupported"
 _TABLE_BAND_SIZE_REASON = "Table row or column band sizes other than one are not supported"
 _FIGURE_CAPTION = re.compile(r"^\s*(?:figure|fig\.?|图)\s*[\d一二三四五六七八九十IVXLCDM]", re.I)
@@ -859,6 +867,12 @@ def _finding(
         result["region"] = obj["region"]
     if "table_context" in obj:
         result["table_context"] = obj["table_context"]
+    node_address = obj.get("node_address")
+    if isinstance(node_address, dict):
+        result["node_address"] = {
+            **node_address,
+            "path": list(cast(list[object], node_address.get("path", []))),
+        }
     return result
 
 

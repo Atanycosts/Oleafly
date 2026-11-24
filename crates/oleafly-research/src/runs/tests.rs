@@ -1000,3 +1000,25 @@ async fn a_fresh_start_does_not_count_the_runs_before_it() {
     let record = manager.start(after).await.unwrap();
     assert_eq!(record.run_id, "r002");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn acceptance_mode_starts_runs_past_the_task_run_limit() {
+    let fixture = fixture();
+    let manager = RunManager::with_budget_stop(
+        fixture.root.clone(),
+        tokio::runtime::Handle::current(),
+        crate::budget::BudgetStopPolicy::Disabled,
+    );
+    let executor = Controlled::new(false, vec!["r001", "r002"]);
+    executor.release.add_permits(2);
+    manager.register_executor(Arc::new(executor));
+
+    let mut first = controlled_request(&fixture, "first");
+    first.task.brief.budget.max_runs = Some(1);
+    manager.start(first).await.unwrap();
+    let mut second = controlled_request(&fixture, "second");
+    second.task.brief.budget.max_runs = Some(1);
+    let record = manager.start(second).await.unwrap();
+
+    assert_eq!(record.run_id, "r002");
+}

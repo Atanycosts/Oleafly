@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_std::fs::{Dir, OpenOptions};
+use oleafly_core::word_source;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -88,6 +89,12 @@ fn apply_review_with_fault(
     let selected = selected_changes(&result.changed_files, selected_paths)?;
     if selected.is_empty() {
         return Err("Select at least one changed file to apply.".into());
+    }
+    if let Some(change) = selected
+        .iter()
+        .find(|change| word_source::is_docx_target(&project_root.join(&change.path)))
+    {
+        return Err(format!("{}: {}", change.path, word_source::WRITE_REFUSED));
     }
     refuse_links(isolation, &selected)?;
     validate_real_directory(project_root, "project")?;
@@ -1058,6 +1065,52 @@ mod tests {
             "{kept}"
         );
         assert_eq!(fs::read_to_string(folder.join("main.tex")).unwrap(), "base");
+    }
+
+    #[test]
+    fn docx_task_result_must_be_kept_outside_generic_review_apply() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let execution = temp.path().join("execution");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&execution).unwrap();
+        fs::write(project.join("main.tex"), "original package").unwrap();
+        fs::write(execution.join("main.tex"), "updated package").unwrap();
+        let mut task = task(&project, &execution, "original package", "updated package");
+        let path = "Author.DoCx";
+        fs::rename(project.join("main.tex"), project.join(path)).unwrap();
+        fs::rename(execution.join("main.tex"), execution.join(path)).unwrap();
+        task.result.as_mut().unwrap().changed_files[0].path = path.into();
+        let isolation = task.isolation.as_mut().unwrap();
+        isolation.allowed_paths[0] = path.into();
+        isolation.baseline[0].path = path.into();
+        let store = TaskStore::new(temp.path().join("store")).unwrap();
+
+        let error = apply_review(&store, &task, &project, &[path.into()]).unwrap_err();
+        assert!(error.contains(word_source::WRITE_REFUSED));
+        assert_eq!(fs::read(project.join(path)).unwrap(), b"original package");
+        assert!(!has_recovery_journal(&store, &task).unwrap());
+
+        let change = &mut task.result.as_mut().unwrap().changed_files[0];
+        change.kind = TaskFileChangeKind::Deleted;
+        change.after_sha256 = None;
+        change.after_size = None;
+        let error = apply_review(&store, &task, &project, &[path.into()]).unwrap_err();
+        assert!(error.contains(word_source::WRITE_REFUSED));
+        assert_eq!(fs::read(project.join(path)).unwrap(), b"original package");
+        assert!(!has_recovery_journal(&store, &task).unwrap());
+
+        let copy = "Candidate.docx";
+        fs::rename(execution.join(path), execution.join(copy)).unwrap();
+        let change = &mut task.result.as_mut().unwrap().changed_files[0];
+        change.path = copy.into();
+        change.kind = TaskFileChangeKind::Added;
+        change.before_sha256 = None;
+        change.before_size = None;
+        let error = apply_review(&store, &task, &project, &[copy.into()]).unwrap_err();
+        assert!(error.contains(word_source::WRITE_REFUSED));
+        assert!(!project.join(copy).exists());
+        assert_eq!(fs::read(execution.join(copy)).unwrap(), b"updated package");
     }
 
     #[test]

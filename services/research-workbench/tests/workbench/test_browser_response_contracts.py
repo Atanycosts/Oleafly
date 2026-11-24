@@ -105,6 +105,12 @@ def test_browser_validates_live_response_shapes_and_rejects_inconsistent_records
         "/api/projects",
         {"name": "待核对论文", "filename": "稿件.docx", **upload(source)},
     )
+    assert project["role"] == "manuscript"
+    capture(
+        "project_detail",
+        "GET",
+        "/api/project?" + urlencode({"project_id": project["project_id"]}),
+    )
     font_binding = capture(
         "font_binding",
         "POST",

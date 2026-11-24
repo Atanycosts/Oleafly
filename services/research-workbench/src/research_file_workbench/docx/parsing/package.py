@@ -14,9 +14,15 @@ from research_file_workbench.docx.models import (
     DocxUnsupportedRecord,
     PartStatus,
 )
+from research_file_workbench.docx.parsing.markup_compatibility import (
+    MARKUP_COMPATIBILITY_NAMESPACE,
+    MISSING_BRANCH_CODE,
+    MISSING_BRANCH_DETAIL,
+    missing_branch_paths,
+    parse_docx_xml,
+)
 from research_file_workbench.docx.xml_support import (
     DRAWING_MAIN_NAMESPACE,
-    MARKUP_COMPATIBILITY_NAMESPACE,
     MATH_NAMESPACE,
     OFFICE_RELATIONSHIP_NAMESPACE,
     WORD_NAMESPACE,
@@ -98,9 +104,18 @@ def inventory_parts(
         status: PartStatus = "registered"
         if is_xml:
             try:
-                xml_roots[name] = ElementTree.fromstring(payload)
+                root = parse_docx_xml(payload)
+                xml_roots[name] = root
                 xml_payloads[name] = payload
                 status = "parsed"
+                if region_for_part(name) is not None or name in {
+                    "word/styles.xml",
+                    "word/numbering.xml",
+                }:
+                    issues.extend(
+                        f"{MISSING_BRANCH_CODE}:{name}#{'.'.join(map(str, path))}"
+                        for path in missing_branch_paths(root)
+                    )
             except ElementTree.ParseError as exc:
                 status = "failed"
                 issues.append(f"failed:{name}:{exc}")
@@ -244,7 +259,7 @@ def read_unsupported_records(
             imagedata = next(
                 (
                     child
-                    for child in element.iter()
+                    for child in iter_selected(element)
                     if child.tag == f"{{{_VML_NAMESPACE}}}imagedata"
                 ),
                 None,
@@ -271,7 +286,21 @@ def read_unsupported_records(
                 )
             )
     for issue in issues:
-        if issue.startswith("unresolved-relationship:"):
+        if issue.startswith(f"{MISSING_BRANCH_CODE}:"):
+            _, source_location = issue.split(":", 1)
+            records.append(
+                DocxUnsupportedRecord(
+                    source_location=source_location,
+                    kind="alternate_content_no_supported_branch",
+                    relationship_id=None,
+                    failure_reason=MISSING_BRANCH_DETAIL,
+                    related_part=None,
+                    parse_status="unsupported",
+                    available_page_evidence=(),
+                    limitations=(),
+                )
+            )
+        elif issue.startswith("unresolved-relationship:"):
             _, source_part, relationship_id, target = issue.split(":", 3)
             records.append(
                 DocxUnsupportedRecord(

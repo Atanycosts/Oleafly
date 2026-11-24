@@ -19,6 +19,7 @@ from research_file_workbench.journals.models import CHECKER_VERSION, validate_wo
 from research_file_workbench.journals.store_records import (
     BindingConflictError,
     WorldStoreError,
+    check_metadata_record,
     check_record,
     current_binding,
     require_text,
@@ -117,6 +118,13 @@ def get_check(connection: sqlite3.Connection, check_id: str) -> JsonObject:
     return check_record(connection, required_row(connection, "check_record", "check_id", check_id))
 
 
+def get_check_metadata(connection: sqlite3.Connection, check_id: str) -> JsonObject:
+    """Return a retained check without requiring its world source bytes."""
+    return check_metadata_record(
+        connection, required_row(connection, "check_record", "check_id", check_id)
+    )
+
+
 def list_checks(
     connection: sqlite3.Connection,
     project_id: str | None = None,
@@ -137,6 +145,28 @@ def list_checks(
         arguments,
     )
     return [check_record(connection, row) for row in rows]
+
+
+def list_check_metadata(
+    connection: sqlite3.Connection,
+    project_id: str | None = None,
+    *,
+    binding_id: str | None = None,
+) -> list[JsonObject]:
+    """List historical checks without requiring retained world source bytes."""
+    filters: list[str] = []
+    arguments: list[str] = []
+    for name, value in (("project_id", project_id), ("binding_id", binding_id)):
+        if value is not None:
+            filters.append(f"{name}=?")
+            arguments.append(value)
+    rows = connection.execute(
+        "SELECT * FROM check_record"
+        + (" WHERE " + " AND ".join(filters) if filters else "")
+        + " ORDER BY rowid",
+        arguments,
+    )
+    return [check_metadata_record(connection, row) for row in rows]
 
 
 def record_disposition(
@@ -186,6 +216,19 @@ def record_disposition(
 def list_dispositions(connection: sqlite3.Connection, check_id: str) -> list[JsonObject]:
     """List chronological operator dispositions for one retained check."""
     check_record(connection, required_row(connection, "check_record", "check_id", check_id))
+    return [
+        verified_payload(row)
+        for row in connection.execute(
+            "SELECT * FROM disposition WHERE check_id=? ORDER BY rowid", (check_id,)
+        )
+    ]
+
+
+def list_dispositions_metadata(connection: sqlite3.Connection, check_id: str) -> list[JsonObject]:
+    """List dispositions without requiring the check's world source bytes."""
+    check_metadata_record(
+        connection, required_row(connection, "check_record", "check_id", check_id)
+    )
     return [
         verified_payload(row)
         for row in connection.execute(

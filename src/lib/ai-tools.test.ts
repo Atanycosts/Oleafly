@@ -8,8 +8,8 @@ const mocks = vi.hoisted(() => ({
     readFileContent: vi.fn(),
     writeFileContent: vi.fn(),
     createFile: vi.fn(),
-    deleteFile: vi.fn(),
-    renameFile: vi.fn(),
+    agentDeleteFile: vi.fn(),
+    agentRenameFile: vi.fn(),
     projectMutationGeneration: vi.fn(),
     setMainDocCmd: vi.fn(),
     listFiles: vi.fn(),
@@ -90,7 +90,7 @@ describe("ai-tools: destructive edits require approval (U1)", () => {
     const tools = createOleaflyTools({ confirm });
     const res = await tools.delete_file.execute({ path: "sections/old.tex" });
     expect(confirm).toHaveBeenCalledOnce();
-    expect(mocks.api.deleteFile).not.toHaveBeenCalled();
+    expect(mocks.api.agentDeleteFile).not.toHaveBeenCalled();
     expect(res).toMatchObject({ declined: true, tool: "delete_file" });
   });
 
@@ -98,8 +98,22 @@ describe("ai-tools: destructive edits require approval (U1)", () => {
     const confirm = vi.fn().mockResolvedValue(true);
     const tools = createOleaflyTools({ confirm });
     const res = await tools.delete_file.execute({ path: "old.tex" });
-    expect(mocks.api.deleteFile).toHaveBeenCalledWith("proj", "old.tex", 0);
+    expect(mocks.api.agentDeleteFile).toHaveBeenCalledWith("proj", "old.tex", 0);
     expect(res).toMatchObject({ success: true, path: "old.tex" });
+  });
+
+  it("delete_file and rename_file surface the native Word boundary refusal", async () => {
+    const refusal = "Use the Word working copy instead.";
+    mocks.api.agentDeleteFile.mockRejectedValue(refusal);
+    mocks.api.agentRenameFile.mockRejectedValue(refusal);
+    const tools = createOleaflyTools();
+
+    await expect(tools.delete_file.execute({ path: "Author.docx" })).resolves.toEqual({
+      error: refusal,
+    });
+    await expect(
+      tools.rename_file.execute({ from: "Author.docx", to: "Author.tex" }),
+    ).resolves.toEqual({ error: refusal });
   });
 
   it("write_file is gated the same way", async () => {

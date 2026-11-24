@@ -161,6 +161,238 @@ def test_snapshot_identity_changes_with_format_method_version(
     assert by_method[previous_method]["stale_reasons"] == ["reader_version_changed"]
 
 
+def test_format_snapshot_read_selects_the_check_reader_method(store: ProjectStore) -> None:
+    content = b"method-selected format source"
+    baseline_id = _baseline_id(_apply(store, content, request_id="format-method-reader"))
+    historical = _snapshot(content)
+    historical["method_version"] = "docx-core-format-snapshot-1.2.0"
+    historical["objects"] = [{"object_id": "historical"}]
+    store.save_format_snapshot(baseline_id, historical)
+
+    current = _snapshot(content)
+    current["objects"] = [{"object_id": "current"}]
+    store.save_format_snapshot(baseline_id, current)
+
+    assert store.get_format_snapshot(
+        baseline_id,
+        method_version="docx-core-format-snapshot-1.2.0",
+    )["objects"] == [{"object_id": "historical"}]
+    assert store.get_format_snapshot(
+        baseline_id,
+        method_version=format_records.FORMAT_SNAPSHOT_METHOD_VERSION,
+    )["objects"] == [{"object_id": "current"}]
+    with pytest.raises(ValueError, match="Capture a core format snapshot"):
+        store.get_format_snapshot(
+            baseline_id,
+            method_version="docx-core-format-snapshot-1.1.0",
+        )
+
+
+def test_format_snapshot_receipt_and_reference_read_use_the_same_artifact(
+    store: ProjectStore,
+) -> None:
+    content = b"exact receipt format source"
+    baseline_id = _baseline_id(_apply(store, content, request_id="format-receipt"))
+    snapshot = _snapshot(content)
+    saved = store.save_format_snapshot(baseline_id, snapshot)
+    artifact = cast(str, saved["snapshot_artifact_version_id"])
+    reference = format_records.FormatSnapshotReference(
+        baseline_id=baseline_id,
+        source_sha256=sha256_bytes(content),
+        snapshot_artifact_version_id=artifact,
+        method_version=format_records.FORMAT_SNAPSHOT_METHOD_VERSION,
+    )
+
+    assert saved["snapshot_id"] == "docx-format-" + sha256_bytes(
+        (
+            f"{format_records.FORMAT_SNAPSHOT_METHOD_VERSION}\0"
+            f"{artifact.removeprefix('artifact-version-')}"
+        ).encode()
+    )
+    assert saved["method_version"] == format_records.FORMAT_SNAPSHOT_METHOD_VERSION
+    assert store.find_format_snapshot_reference(baseline_id) == reference
+    assert store.read_format_snapshot_artifact(reference) == encode_json_object(snapshot).encode()
+    assert store.get_format_snapshot(baseline_id, reference=reference) == snapshot
+
+
+def test_exact_reference_selects_an_older_registration_but_legacy_read_stays_latest(
+    store: ProjectStore,
+) -> None:
+    content = b"older exact format source"
+    baseline_id = _baseline_id(_apply(store, content, request_id="format-older"))
+    older = _snapshot(content)
+    older["objects"] = [{"object_id": "older"}]
+    older_saved = store.save_format_snapshot(baseline_id, older)
+    newer = _snapshot(content)
+    newer["objects"] = [{"object_id": "newer"}]
+    newer_saved = store.save_format_snapshot(baseline_id, newer)
+    older_reference = format_records.FormatSnapshotReference(
+        baseline_id=baseline_id,
+        source_sha256=sha256_bytes(content),
+        snapshot_artifact_version_id=cast(str, older_saved["snapshot_artifact_version_id"]),
+        method_version=format_records.FORMAT_SNAPSHOT_METHOD_VERSION,
+    )
+
+    assert (
+        store.get_format_snapshot(
+            baseline_id,
+            method_version=format_records.FORMAT_SNAPSHOT_METHOD_VERSION,
+        )
+        == newer
+    )
+    assert store.get_format_snapshot(baseline_id, reference=older_reference) == older
+    assert store.find_format_snapshot_reference(
+        baseline_id,
+        method_version=format_records.FORMAT_SNAPSHOT_METHOD_VERSION,
+    ) == format_records.FormatSnapshotReference(
+        baseline_id=baseline_id,
+        source_sha256=sha256_bytes(content),
+        snapshot_artifact_version_id=cast(str, newer_saved["snapshot_artifact_version_id"]),
+        method_version=format_records.FORMAT_SNAPSHOT_METHOD_VERSION,
+    )
+
+
+def test_snapshot_reference_requires_evidence_bound_to_the_requested_baseline(
+    store: ProjectStore,
+) -> None:
+    content = b"same source in two exact baselines"
+    first = _baseline_id(_apply(store, content, request_id="format-bound-first"))
+    second = _baseline_id(
+        _apply(
+            store,
+            content,
+            request_id="format-bound-second",
+            expected_baseline_id=first,
+        )
+    )
+    saved = store.save_format_snapshot(first, _snapshot(content))
+    reference = format_records.FormatSnapshotReference(
+        baseline_id=first,
+        source_sha256=sha256_bytes(content),
+        snapshot_artifact_version_id=cast(str, saved["snapshot_artifact_version_id"]),
+        method_version=format_records.FORMAT_SNAPSHOT_METHOD_VERSION,
+    )
+
+    assert store.find_format_snapshot_reference(second) is None
+    with pytest.raises(ValueError, match="not registered for this baseline"):
+        store.get_format_snapshot(second, reference=reference)
+    with pytest.raises(ValueError, match="not registered for this baseline"):
+        store.get_format_snapshot(
+            first,
+            reference=format_records.FormatSnapshotReference(
+                baseline_id=first,
+                source_sha256="0" * 64,
+                snapshot_artifact_version_id=reference["snapshot_artifact_version_id"],
+                method_version=reference["method_version"],
+            ),
+        )
+    with pytest.raises(ValueError, match="not registered for this baseline"):
+        store.read_format_snapshot_artifact(
+            format_records.FormatSnapshotReference(
+                baseline_id=second,
+                source_sha256=reference["source_sha256"],
+                snapshot_artifact_version_id=reference["snapshot_artifact_version_id"],
+                method_version=reference["method_version"],
+            )
+        )
+
+
+def test_find_snapshot_reference_does_not_read_the_artifact_blob(
+    store: ProjectStore,
+) -> None:
+    content = b"reference lookup avoids large blob"
+    baseline_id = _baseline_id(_apply(store, content, request_id="format-no-blob"))
+    saved = store.save_format_snapshot(baseline_id, _snapshot(content))
+    artifact = cast(str, saved["snapshot_artifact_version_id"])
+    reference = store.find_format_snapshot_reference(baseline_id)
+    assert reference is not None
+
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE artifact SET content=? WHERE version_id=?",
+            (b"corrupt snapshot bytes", artifact),
+        )
+
+    assert store.find_format_snapshot_reference(baseline_id) == reference
+    with pytest.raises(ProjectStoreError, match="immutable version"):
+        store.read_format_snapshot_artifact(reference)
+
+
+def test_copy_snapshot_registers_verified_bytes_for_a_matching_target_baseline(
+    store: ProjectStore, tmp_path: Path
+) -> None:
+    content = b"shared exact candidate source"
+    source_baseline = _baseline_id(_apply(store, content, request_id="format-copy-source"))
+    snapshot = _snapshot(content)
+    store.save_format_snapshot(source_baseline, snapshot)
+    source_reference = store.find_format_snapshot_reference(source_baseline)
+    assert source_reference is not None
+    artifact_bytes = store.read_format_snapshot_artifact(source_reference)
+
+    target_author = tmp_path / "target-author"
+    target_author.mkdir()
+    target_database = tmp_path / "target-application" / "project.sqlite3"
+    target_database.parent.mkdir()
+    target = ProjectStore.create(
+        target_database,
+        project_id=PROJECT_ID,
+        author_workspace_root=target_author.resolve().as_posix(),
+    )
+    target_baseline = _baseline_id(_apply(target, content, request_id="format-copy-target"))
+    copied = target.copy_format_snapshot(
+        target_baseline,
+        source_reference,
+        artifact_bytes,
+    )
+
+    assert copied == {
+        "baseline_id": target_baseline,
+        "source_sha256": sha256_bytes(content),
+        "snapshot_artifact_version_id": source_reference["snapshot_artifact_version_id"],
+        "method_version": format_records.FORMAT_SNAPSHOT_METHOD_VERSION,
+    }
+    assert target.find_format_snapshot_reference(target_baseline) == copied
+    assert target.read_format_snapshot_artifact(copied) == artifact_bytes
+    assert target.get_format_snapshot(target_baseline, reference=copied) == snapshot
+    assert target.copy_format_snapshot(target_baseline, source_reference, artifact_bytes) == copied
+
+
+def test_copy_snapshot_refuses_a_target_baseline_with_different_source_bytes(
+    store: ProjectStore,
+) -> None:
+    source_content = b"copy source bytes"
+    source_baseline = _baseline_id(_apply(store, source_content, request_id="format-copy-a"))
+    store.save_format_snapshot(source_baseline, _snapshot(source_content))
+    reference = store.find_format_snapshot_reference(source_baseline)
+    assert reference is not None
+    artifact_bytes = store.read_format_snapshot_artifact(reference)
+    target_baseline = _baseline_id(
+        _apply(
+            store,
+            b"different target bytes",
+            request_id="format-copy-b",
+            expected_baseline_id=source_baseline,
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not match the target baseline"):
+        store.copy_format_snapshot(target_baseline, reference, artifact_bytes)
+
+
+def test_copy_snapshot_refuses_bytes_that_do_not_match_the_reference(
+    store: ProjectStore,
+) -> None:
+    content = b"copy digest mismatch source"
+    baseline_id = _baseline_id(_apply(store, content, request_id="format-copy-digest"))
+    store.save_format_snapshot(baseline_id, _snapshot(content))
+    reference = store.find_format_snapshot_reference(baseline_id)
+    assert reference is not None
+    artifact_bytes = store.read_format_snapshot_artifact(reference)
+
+    with pytest.raises(ProjectStoreError, match="do not match the referenced artifact"):
+        store.copy_format_snapshot(baseline_id, reference, artifact_bytes + b"\n")
+
+
 def test_pre_versioned_snapshot_keeps_legacy_method_and_remains_readable(
     store: ProjectStore,
 ) -> None:

@@ -41,6 +41,10 @@ they are present, so a fork or a pre-setup build is never blocked.
    The workflow generates `KEYCHAIN_PASSWORD` itself. Notarization is required
    for Developer ID builds and happens automatically once these are set.
 
+   The embedded Workbench engine uses the same `APPLE_SIGNING_IDENTITY` for its
+   bundled Python framework. Local builds without an identity seal that framework
+   ad hoc; Developer ID builds seal it before Tauri signs the outer application.
+
 ## Windows (Azure Trusted Signing)
 
 Azure Trusted Signing (~$10/month) replaces buying and storing an EV/OV

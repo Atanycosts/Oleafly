@@ -6,6 +6,7 @@ from typing import Literal
 from xml.etree import ElementTree
 
 from research_file_workbench.docx.models import DocxTable, DocxTableCell
+from research_file_workbench.docx.parsing.revision_text import RevisionText
 from research_file_workbench.docx.xml_support import (
     WORD_NAMESPACE,
     integer_attribute,
@@ -21,6 +22,7 @@ from research_file_workbench.docx.xml_support import (
 
 def read_tables(
     xml_roots: dict[str, ElementTree.Element],
+    revision_text_by_part: dict[str, RevisionText],
 ) -> tuple[tuple[DocxTable, ...], list[str]]:
     """Read source table grids and selected cell text without rendered geometry."""
     tables: list[DocxTable] = []
@@ -28,6 +30,7 @@ def read_tables(
     for part_path, root in xml_roots.items():
         if region_for_part(part_path) is None:
             continue
+        revision_text = revision_text_by_part[part_path]
         for table_index, table in enumerate(
             (element for element in iter_selected(root) if tag_local_name(element.tag) == "tbl"),
             start=1,
@@ -109,6 +112,7 @@ def read_tables(
                                 == "restart"
                                 else "continue"
                             )
+                    text = text_from_element(cell)
                     cells.append(
                         DocxTableCell(
                             row_index=row_index,
@@ -117,9 +121,10 @@ def read_tables(
                                 f"{part_path}#table[{table_index}]/row[{row_index + 1}]"
                                 f"/cell[{cell_index + 1}]"
                             ),
-                            text=text_from_element(cell),
+                            text=text,
                             grid_span=grid_span,
                             vertical_merge=vertical_merge,
+                            accepted_projection=revision_text.project(cell, text),
                         )
                     )
                 rows.append(tuple(cells))

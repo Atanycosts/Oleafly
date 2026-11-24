@@ -58,12 +58,18 @@ const KNOWN_TOOLS: &[&str] = &[
     "prepare_docx_fonts",
     "export_docx_document",
     "list_docx_documents",
+    "list_docx_templates",
     "read_docx_document",
     "read_docx_image",
     "read_docx_format",
+    "read_docx_template_check",
+    "read_docx_candidate_review",
+    "read_docx_saved_content",
+    "read_docx_template_styles",
     "apply_docx_format",
     "apply_docx_format_batch",
     "import_docx_template_styles",
+    "create_docx_format_candidate",
     "save_docx_document",
     "check_docx_template",
     "capture_docx_target",
@@ -701,6 +707,22 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(KNOWN_TOOLS.contains(&"desktop_apps"));
         assert!(!KNOWN_TOOLS.contains(&"computer_use"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn docx_template_and_review_rules_are_known() {
+        let root = temp_root("docx-review");
+        let warnings = write_raw(
+            &root,
+            "[proj]\nlist_docx_templates = \"deny\"\nread_docx_template_check = \"allow\"\nread_docx_candidate_review = \"allow\"\nread_docx_saved_content = \"allow\"\nread_docx_template_styles = \"deny\"\n",
+        )
+        .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            decision_for(&root, "proj", "list_docx_templates"),
+            Some(ToolDecision::Deny)
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

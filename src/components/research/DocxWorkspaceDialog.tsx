@@ -1,22 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { clampEffort, effortChoicesFor, type EffortLevel } from "@oleafly/ai-core";
 import { useDocxEditor, useEditorState, useFonts, useScopedChromeAnchor } from "@docx-editor.dev/react";
 import type { DocxEditorInstance, FontMeasurementState } from "@docx-editor.dev/core/editor";
 import type { EditorSnapshot } from "@docx-editor.dev/core/contracts/editor";
 import type { DocxFormatReadQuery, DocxFormatReadResult, DocxSaveResult, DocxTemplateCheckResult } from "@oleafly/ai-tools";
-import { Check, Download, PanelRight, Save, Square, Undo2, X } from "lucide-react";
+import { Check, Download, PanelRight, Save, Sparkles, Square, Undo2, X } from "lucide-react";
 import "@docx-editor.dev/core/styles/editor.css";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { base64ToBytes } from "@/lib/base64";
 import { downloadDocxCopy } from "@/lib/docx-download";
+import { wordOriginalSha256 } from "@/lib/docx-file";
+import { adoptDocxFormatCandidate, validateDocxFormatCandidateBytes } from "@/lib/docx-format-candidate";
+import { loadCandidateReviewView, readCandidateReview, retainedReviewItems, saveCandidateReview, type DocxCandidateReviewRecord } from "@/lib/docx-format-candidate-review";
 import { createDocxFormatReader } from "@/lib/docx-format-reader";
 import { createDocxFontResolver, type DocxFontStatus } from "@/lib/docx-fonts";
 import { ensureDocxFonts } from "@/lib/docx-prepare-fonts";
 import { createDocxSession, type DocxSession, type DocxTarget } from "@/lib/docx-session";
 import {
+  describeDocxFormatTemplate,
   registerDocxAgentSession,
   unregisterDocxAgentSession,
   updateDocxAgentSession,
@@ -42,16 +47,17 @@ import {
   type DocxRecoverySaveOperation,
 } from "@/lib/docx-recovery";
 import { loadDocxSource, prepareDocxSave, type DocxSave, type DocxSource } from "@/lib/docx-workbench";
-import { journalRequest, type JournalCheck, type JournalProject, type JournalState, type JournalWorld } from "@/lib/journal-workbench";
-import { checkJournalTemplate, retainDocxFormat } from "@/lib/docx-template-client";
+import { journalRequest, JournalWorkbenchError, type JournalCheck, type JournalProject, type JournalState, type JournalWorld } from "@/lib/journal-workbench";
+import { checkJournalTemplate, journalTemplates, prepareJournalTemplate, retainDocxFormat, type PreparedJournalTemplate } from "@/lib/docx-template-client";
 import { registerProjectLeaveGuard } from "@/lib/project-leave-guards";
 import { registerEditorMutationOwner } from "@/lib/editor-mutation-lease";
 import { useDocxWorkspaceStore, type DocxWorkspaceRequest } from "@/store/docx-workspace";
-import { handoffToAssistant } from "@/features/assistant-handoff";
+import { ensureAiProviderOrOpenSettings, handoffToAssistant } from "@/features/assistant-handoff";
 import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import { useAgentWorkspaceStore, type AgentWorkspaceSelection } from "@/store/agent-workspace";
 import { bindDocxTask, settleDocxTaskActivity, type DocxActivity, type DocxDocumentIdentity, type DocxProposalOutcome } from "@/lib/docx-task-activity";
 import { DocxActivitySource, DocxTaskActivity } from "./DocxTaskActivity";
+import { DocxFormatCandidatePanel, type FormatCandidateState } from "./DocxFormatCandidatePanel";
 import { DocxRenderPanel, type DocxRenderPreview } from "./DocxRenderPanel";
 import { MaterialPdfView } from "@/components/materials/MaterialPdfView";
 import { MaterialViewContext } from "@/components/materials/MaterialViewContext";
@@ -71,6 +77,7 @@ import {
 } from "@/lib/docx-material";
 import { registerDocxHistory } from "@/lib/docx-history";
 import { openMaterialAnnotations } from "@/store/material-annotations";
+import { getConfig } from "@/lib/tauri";
 
 const fontShaping = Object.freeze({ maxFontBytes: 64 * 1024 * 1024 });
 const RECOVERY_DEBOUNCE_MS = 1500;
@@ -79,6 +86,7 @@ interface Props {
   appProjectId: string;
   project: JournalProject;
   world: JournalWorld | null;
+  sourcePath?: string;
   recovery?: DocxRecoverySnapshot;
   onClose(): void;
   onSaved(): Promise<void>;
@@ -169,6 +177,19 @@ function ReadOnlySelectionBridge({ onSelection }: { onSelection(editor: DocxEdit
   return null;
 }
 
+function CandidateAnchor({ target }: { target: { paraId: string } | null }) {
+  const editor = useDocxEditor();
+  const ready = useEditorState((snapshot) => !snapshot.isLoading && !snapshot.isOpening && snapshot.page.total > 0);
+  useEffect(() => {
+    if (!editor || !ready || !target) return;
+    const frame = requestAnimationFrame(() => {
+      if (editor.scrollToAnchor({ paraId: target.paraId })) editor.highlightAnchor({ paraId: target.paraId });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editor, ready, target]);
+  return null;
+}
+
 const findSuggestionAnchor = (viewport: HTMLElement) => viewport.querySelector<HTMLElement>(".oleafly-docx-target");
 
 function SuggestionOverlay({ suggestion, accept, stop }: { suggestion: Suggestion | null; accept(): void; stop(): void }) {
@@ -186,7 +207,7 @@ function SuggestionOverlay({ suggestion, accept, stop }: { suggestion: Suggestio
 }
 
 /** A working copy of a retained baseline; the original author path is never opened for writing. */
-export default function DocxWorkspaceDialog({ appProjectId, project, world, recovery, onClose, onSaved }: Props) {
+export default function DocxWorkspaceDialog({ appProjectId, project, world, sourcePath, recovery, onClose, onSaved }: Props) {
   const onSavedRef = useRef(onSaved);
   onSavedRef.current = onSaved;
   const { t, i18n } = useTranslation("researchTools");
@@ -194,6 +215,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const text = t(($) => $.researchTools.docx, { returnObjects: true });
   const [source, setSource] = useState<DocxSource | null>(null);
   const initialSourceRef = useRef<DocxSource | null>(null);
+  const savedBytes = useRef<Uint8Array | null>(null);
   const [materialView, setMaterialView] = useState<DocxMaterialView>("working");
   const [originalKept, setOriginalKept] = useState(false);
   const [stackForeground, setStackForeground] = useState<MaterialVersionSide>("current");
@@ -212,6 +234,22 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const [baselineId, setBaselineId] = useState(recovery?.baseBaselineId ?? project.baseline_id);
   const [error, setError] = useState<string | null>(null);
   const [toolsOpen, setToolsOpen] = useState(!!recovery?.taskState);
+  const [formatCandidate, setFormatCandidate] = useState<FormatCandidateState | null>(null);
+  const [reviewLoaded, setReviewLoaded] = useState(false);
+  const pendingCandidate = useRef<{
+    checkId: string;
+    basis?: Pick<DocxDocumentIdentity, "sessionId" | "sessionRevision" | "baselineId" | "sourceSha256"> | null;
+  } | null>(null);
+  const [showCandidate, setShowCandidate] = useState(false);
+  const [candidateTarget, setCandidateTarget] = useState<{ paraId: string } | null>(null);
+  const [adopting, setAdopting] = useState(false);
+  const candidateRun = useRef<AbortController | null>(null);
+  const [templateState, setTemplateState] = useState<JournalState | null>(null);
+  const journalSavedVersion = useDocxWorkspaceStore((state) => state.savedVersion);
+  const candidateCommand = useRef<{
+    getTemplates: NonNullable<DocxAgentRegistration["getFormatCandidateTemplates"]>;
+    prepare: NonNullable<DocxAgentRegistration["prepareFormatCandidate"]>;
+  } | null>(null);
   const [preview, setPreview] = useState<DocxRenderPreview | null>(null);
   const [showPdf, setShowPdf] = useState(false);
   const closeRequested = useDocxWorkspaceStore((state) => state.closeRequested);
@@ -270,7 +308,9 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   const formatDocumentRef = useRef({ sessionId: "", filename: "", baselineId: "", savedRevision: 0 });
   const recoveryQueueRef = useRef<Promise<void>>(Promise.resolve());
   const recoveryEpoch = useRef(0);
-  const [sessionId] = useState(() => `docx:${crypto.randomUUID()}`);
+  const [sessionId, setSessionId] = useState(() => `docx:${crypto.randomUUID()}`);
+  const openingSessionId = useRef(sessionId);
+  const registeredSession = useRef<string | null>(null);
   const stopRef = useRef<AbortController | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const alive = useRef(true);
@@ -318,10 +358,39 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       baselineId, sourceSha256: source.source_sha256, sessionRevision: sessionRef.current?.revision() ?? revision, savedRevision };
   };
   const dirty = revision !== savedRevision;
-  const recoveryConflict = !!recovery && project.baseline_id !== recovery.baseBaselineId;
+  const retainedProject = templateState?.projects.find((item) => item.project_id === project.project_id) ?? project;
+  const boundTemplateId = retainedProject.binding?.world_version_id;
+  const catalog = templateState ? journalTemplates(templateState) : [];
+  const selectedTemplate = catalog.find((item) => item.version_id === world?.version_id);
+  const boundTemplate = catalog.find((item) => item.version_id === boundTemplateId);
+  const activeTemplate = selectedTemplate ?? boundTemplate;
+  const activeTemplateLabel = activeTemplate
+    ? `${activeTemplate.journal_name} · v${activeTemplate.version_ordinal}${activeTemplate.template_preparation.state === "unsupported" ? ` · ${text.formatCandidate.templateUnavailable}` : ""}`
+    : null;
+  const activeTemplateWorldId = world?.template ? world.version_id : undefined;
+  useEffect(() => {
+    if (!world?.template && !project.binding) return;
+    let active = true;
+    void journalRequest<JournalState>("/api/state").then((state) => {
+      if (!active) return;
+      setTemplateState(state);
+      const latest = state.projects.find((item) => item.project_id === project.project_id)?.latest_check;
+      if (latest?.baseline_id === baselineId && latest.world_version_id === world?.version_id) setCheck(latest);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [baselineId, project.binding, project.project_id, journalSavedVersion, world]);
+  useEffect(() => {
+    setFormatCandidate((candidate) => {
+      if (candidate?.phase !== "ready") return candidate;
+      const { adoption, review } = candidate;
+      return sessionId === adoption.sessionId && revision === adoption.revision && baselineId === adoption.captured.baseline_id
+        ? candidate : { phase: "conflict", review };
+    });
+  }, [baselineId, revision, sessionId]);
+  const recoveryConflict = !!recovery && baselineId === recovery.baseBaselineId && project.baseline_id !== recovery.baseBaselineId;
   const streaming = suggestion?.phase === "streaming";
   const saveRefused = !!pendingCheckpoint.current && refusedSave === `${pendingCheckpoint.current.recoveryKey}:${pendingCheckpoint.current.contentSha256}`;
-  const closeBlocked = saving || checking || (pendingReceipts > 0 && !fixedSavePending.current);
+  const closeBlocked = saving || adopting || checking || (pendingReceipts > 0 && !fixedSavePending.current);
   const recordMaterialSelection = useCallback((surface: "working" | "original", selection: DocxMaterialSelection | null) => {
     if (surface === "working") setWorkingMaterialSelection(selection);
     else setOriginalMaterialSelection(selection);
@@ -361,11 +430,11 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   }, [closeBlocked]);
 
   useEffect(() => {
-    const unfinished = dirty || streaming || suggestion?.phase === "reviewing" || !!pendingSave || saving || checking || pendingReceipts > 0;
+    const unfinished = dirty || streaming || suggestion?.phase === "reviewing" || !!pendingSave || saving || adopting || checking || pendingReceipts > 0;
     const stopLeave = registerProjectLeaveGuard(async (leave) => {
       if (leave.projectId !== appProjectId) return true;
       if (!unfinished) { onClose(); return true; }
-      if (!saving && !checking) {
+      if (!saving && !adopting && !checking) {
         useWorkspaceSurfaceStore.getState().showWord();
         setClosePrompt(true);
       }
@@ -387,7 +456,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       stopOwner();
       window.removeEventListener("beforeunload", beforeUnload);
     };
-  }, [appProjectId, dirty, streaming, pendingSave, saving, checking, text.closeHelp, onClose, pendingReceipts, suggestion?.phase]);
+  }, [appProjectId, dirty, streaming, pendingSave, saving, adopting, checking, text.closeHelp, onClose, pendingReceipts, suggestion?.phase]);
 
   const flushReceipts = useCallback(async () => {
     if (receiptWriting.current || fixedSavePending.current) return;
@@ -451,25 +520,56 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
     alive.current = true;
     const snapshot = initialRecovery.current;
     void loadDocxSource(initialProject.current.project_id, snapshot?.baseBaselineId ?? initialProject.current.baseline_id)
-      .then((value) => {
+      .then(async (value) => {
         if (!active) return;
         if (snapshot && (snapshot.appProjectId !== appProjectId || snapshot.workbenchProjectId !== value.project_id || snapshot.baseBaselineId !== value.baseline_id || snapshot.sourceSha256 !== value.source_sha256)) {
           throw new Error(sourceMismatchMessage.current);
         }
         initialSourceRef.current = value;
-        if (alive.current) setSource(snapshot ? { ...value, bytes: snapshot.bytes } : value);
+        savedBytes.current = value.bytes;
+        const opened = snapshot ? { ...value, bytes: snapshot.bytes } : value;
+        setSource(opened);
+        const retained = await readCandidateReview(value.project_id);
+        if (!active || !retained.review) return;
+        const record = retained.review;
+        pendingCandidate.current = { checkId: record.candidate_check_id };
+        const [review, originalHash] = await Promise.all([
+          loadCandidateReviewView(record, value.filename),
+          wordOriginalSha256(appProjectId, value.project_id, sourcePath).catch(() => undefined),
+        ]);
+        if (!active) return;
+        const sameBasis = retained.status === "ready" && originalHash === record.original_source_sha256 &&
+          value.baseline_id === record.target_baseline_id && value.source_sha256 === record.target_source_sha256 &&
+          (snapshot?.contentSha256 ?? value.source_sha256) === record.input_source_sha256;
+        const validation = sameBasis && await validateDocxFormatCandidateBytes(opened.bytes, review.bytes);
+        if (!active) return;
+        const rejected = validation && validation.status === "rejected";
+        const matches = sameBasis && !rejected &&
+          savedBytes.current === value.bytes && (sessionRef.current?.revision() ?? 0) === 0;
+        pendingCandidate.current = { checkId: record.candidate_check_id, basis: matches ? {
+          sessionId: openingSessionId.current, sessionRevision: 0, baselineId: value.baseline_id, sourceSha256: value.source_sha256,
+        } : null };
+        if (!matches) setFormatCandidate({ phase: "conflict", review,
+          reason: rejected ? validation.issues.map(({ detail }) => detail).join(" ") : undefined });
+        else if (!review.changes.length && !review.unconfirmedChanges.length) setFormatCandidate({ phase: "unchanged", review });
+        else setFormatCandidate({ phase: "ready", review, adoption: {
+          captured: opened, sessionId: openingSessionId.current, revision: 0, record,
+        } });
       })
-      .catch((cause) => { if (active) setError(String(cause)); });
+      .catch((cause) => { if (active) setError(String(cause)); })
+      .finally(() => { if (active) setReviewLoaded(true); });
     return () => {
       active = false;
       alive.current = false;
+      candidateRun.current?.abort();
       stopRef.current?.abort();
       unsubscribeRef.current?.();
-      unregisterDocxAgentSession(sessionId);
+      if (registeredSession.current) unregisterDocxAgentSession(registeredSession.current);
+      registeredSession.current = null;
       sessionRef.current?.dispose();
       useAgentWorkspaceStore.getState().clearView(appProjectId, `docx:${initialProject.current.project_id}`);
     };
-  }, [appProjectId, sessionId]);
+  }, [appProjectId, sourcePath]);
 
   const taskStateAtExport = useCallback((): DocxRecoveryTaskState => ({
     document: { ...identityRef.current() },
@@ -514,33 +614,44 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   checkpointCurrent.current = checkpoint;
 
   useEffect(() => {
-    if (!source || !dirty || saving || checking || discarding || pendingSave || resuming) return;
+    if (!source || !dirty || saving || adopting || checking || discarding || pendingSave || resuming) return;
     const scheduledRevision = revision;
     const timer = window.setTimeout(() => {
       if (sessionRef.current?.revision() !== scheduledRevision) return;
       void checkpoint().catch((cause) => { if (alive.current) setError(String(cause)); });
     }, RECOVERY_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [checking, checkpoint, dirty, discarding, pendingSave, resuming, revision, saving, source]);
+  }, [adopting, checking, checkpoint, dirty, discarding, pendingSave, resuming, revision, saving, source]);
 
   const ready = useCallback((editor: DocxEditorInstance) => {
     editorInstance.current = editor;
     setEditorReady(true);
     unsubscribeRef.current?.();
-    unregisterDocxAgentSession(sessionId);
+    if (registeredSession.current) unregisterDocxAgentSession(registeredSession.current);
     sessionRef.current?.dispose();
     const session = createDocxSession(editor);
     sessionRef.current = session;
+    const identity = identityRef.current();
     registerDocxAgentSession({
       sessionId,
       appProjectId,
       workbenchProjectId: initialProject.current.project_id,
       title: initialProject.current.name,
       filename: source?.filename ?? initialProject.current.name,
-      baselineId: initialRecovery.current?.baseBaselineId ?? initialProject.current.baseline_id,
-      savedRevision: initialRecovery.current ? -1 : 0,
-      sourceSha256: identityRef.current().sourceSha256,
+      baselineId: identity.baselineId,
+      savedRevision: identity.savedRevision,
+      sourceSha256: identity.sourceSha256,
       session,
+      getFormatCandidateTemplates: () => candidateCommand.current!.getTemplates(),
+      getFormatCandidateBasis: () => {
+        const pending = pendingCandidate.current;
+        if (pending?.basis === undefined) return undefined;
+        const { basis } = pending;
+        const current = identityRef.current();
+        return { check_id: pending.checkId, matches: !!basis && current.sessionId === basis.sessionId &&
+          current.sessionRevision === basis.sessionRevision && current.baselineId === basis.baselineId && current.sourceSha256 === basis.sourceSha256 };
+      },
+      prepareFormatCandidate: (request) => candidateCommand.current!.prepare(request),
       prepareFonts: () => livePrepareFontsRef.current(),
       exportDocument: () => liveExportRef.current(),
       reveal: async ({ paragraphRef, paraId, expectedRevision, signal }) => {
@@ -557,6 +668,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
           setMaterialView("working");
           setStackForeground("current");
           setShowPdf(false);
+          setShowCandidate(false);
           useWorkspaceSurfaceStore.getState().showWord();
         });
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
@@ -627,7 +739,8 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         if (alive.current) updateSuggestion({ target, proposed, phase: "applied" });
       },
     });
-    const snapshot = initialRecovery.current;
+    registeredSession.current = sessionId;
+    const snapshot = recoveredBytes.current ? initialRecovery.current : undefined;
     if (snapshot?.taskState) {
       const initialRevision = session.revision();
       const resumeDocument = { ...identityRef.current() };
@@ -835,6 +948,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         return;
       }
       const sourceSha256 = result.sourceSha256;
+      savedBytes.current = committedBytes;
       setBaselineId(result.baselineId);
       setSource({ ...source, baseline_id: result.baselineId, source_sha256: sourceSha256 });
       setSavedRevision(result.revision);
@@ -929,7 +1043,9 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       const current = state.projects.find((item) => item.project_id === source.project_id);
       if (!current || current.baseline_id !== baselineId) throw new Error(text.newBaseline);
       if (world.template) {
-        const result = await checkJournalTemplate(current, world.version_id);
+        const prepared = await prepareJournalTemplate(source.project_id, baselineId, world.version_id);
+        showRefreshedTemplate(prepared, world.version_id);
+        const result = await checkJournalTemplate({ ...current, binding: prepared.binding }, prepared.world.version_id);
         if (alive.current) { setCheck(result); useDocxWorkspaceStore.getState().saved(); await onSavedRef.current(); useWorkspaceSurfaceStore.getState().openJournal(); }
         return;
       }
@@ -955,13 +1071,226 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       const editor = editorRef.current;
       const session = sessionRef.current;
       if (!editor || !session || !source) throw new Error(text.notReady);
-      const exporting = editor.save();
       const sessionRevision = session.revision();
-      const bytes = await exporting;
+      const bytes = sessionRevision === savedRevision ? savedBytes.current : await editor.save();
       if (!bytes) throw new Error(text.notReady);
       const result = await downloadDocxCopy(new Uint8Array(bytes), source.filename);
       return { result, filename: source.filename, sessionId, sessionRevision, byteLength: bytes.byteLength };
     } catch (cause) { setError(String(cause)); throw cause; }
+  }
+
+  function syncWordTemplate(next: JournalWorld) {
+    const store = useDocxWorkspaceStore.getState();
+    if (store.request?.appProjectId === appProjectId && store.request.project.project_id === project.project_id && store.context) {
+      store.updateContext({ ...store.context, world: next });
+    }
+    store.saved();
+  }
+
+  function showRefreshedTemplate(prepared: PreparedJournalTemplate, selectedId: string | undefined) {
+    if (!alive.current || !prepared.refreshed) return;
+    const store = useDocxWorkspaceStore.getState();
+    if (store.request?.appProjectId === appProjectId && store.request.project.project_id === project.project_id &&
+        store.context && store.context.world?.version_id === selectedId) {
+      store.updateContext({ ...store.context, world: prepared.world });
+    }
+    store.saved();
+  }
+
+  async function refreshTemplate() {
+    if (checking || busySave.current) return;
+    setChecking(true);
+    setError(null);
+    try {
+      const prepared = await prepareJournalTemplate(project.project_id, baselineId, activeTemplateWorldId);
+      showRefreshedTemplate(prepared, activeTemplateWorldId);
+    } catch (cause) {
+      if (alive.current) setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (alive.current) setChecking(false);
+    }
+  }
+
+  async function startFormatCandidate({ chat, signal, worldVersionId }: { chat: boolean; signal?: AbortSignal; worldVersionId?: string }) {
+    const editor = editorRef.current;
+    const session = sessionRef.current;
+    if (!source || !editor || !session || !taskReady || !reviewLoaded || busySave.current) throw new Error(text.notReady);
+    if (candidateRun.current) throw new Error(text.formatCandidate.running);
+    signal?.throwIfAborted();
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
+    candidateRun.current = controller;
+    try {
+      if (chat) useDocxWorkspaceStore.getState().restore();
+      setShowCandidate(false);
+      setShowPdf(false);
+      controller.signal.throwIfAborted();
+      setError(null);
+      setFormatCandidate({ phase: "running" });
+      const identity = identityRef.current();
+      const expectedCheckId = pendingCandidate.current?.checkId ?? null;
+      const [bytes, originalHash] = await Promise.all([
+        identity.sessionRevision === identity.savedRevision ? savedBytes.current : recoveredBytes.current ?? editor.save(),
+        wordOriginalSha256(appProjectId, source.project_id, sourcePath),
+      ]);
+      if (!bytes) throw new Error(text.notReady);
+      const captured: DocxSource = { ...source, baseline_id: identity.baselineId, source_sha256: identity.sourceSha256, bytes: new Uint8Array(bytes) };
+      let execution: { effort?: EffortLevel } | "chat-tool" = "chat-tool";
+      if (!chat) {
+        const config = await getConfig();
+        const metadata = config.ai_provider_models?.[config.ai_provider]?.find((item) => item.id === config.ai_model)?.metadata;
+        execution = { effort: clampEffort("medium", effortChoicesFor(config.ai_provider, config.ai_model, metadata)) ?? undefined };
+      }
+      const { prepareDocxFormatCandidate } = await import("@/lib/docx-format-candidate-flow");
+      const selectedId = worldVersionId ?? activeTemplateWorldId;
+      const result = await prepareDocxFormatCandidate({ captured, worldVersionId: selectedId,
+        onPrepared: (prepared) => { if (!controller.signal.aborted) showRefreshedTemplate(prepared, selectedId); }, execution, signal: controller.signal,
+        name: `${project.name} · ${text.formatCandidate.title}` });
+      controller.signal.throwIfAborted();
+      const check = result.candidateCheck;
+      const record: DocxCandidateReviewRecord = {
+        candidate_project_id: check.project_id,
+        input_baseline_id: result.inputBaselineId,
+        input_source_sha256: result.inputSourceSha256,
+        candidate_baseline_id: check.baseline_id,
+        candidate_source_sha256: check.source_sha256,
+        candidate_binding_id: check.binding_id,
+        candidate_check_id: check.check_id,
+        world_version_id: check.world_version_id,
+        snapshot_artifact_version_id: check.snapshot_artifact_version_id,
+        snapshot_method_version: check.reader_version,
+        target_baseline_id: captured.baseline_id,
+        target_source_sha256: captured.source_sha256,
+        target_binding_id: result.binding?.binding_id ?? null,
+        original_source_sha256: originalHash,
+        confirmed_items: retainedReviewItems(result.changes),
+        unconfirmed_items: retainedReviewItems(result.unconfirmedChanges),
+      };
+      const retained = await saveCandidateReview(captured.project_id, expectedCheckId, record);
+      pendingCandidate.current = { checkId: check.check_id, basis: identity };
+      const current = alive.current ? identityRef.current() : null;
+      const matches = retained.status === "ready" && current?.sessionId === identity.sessionId &&
+        current.baselineId === identity.baselineId && current.sessionRevision === identity.sessionRevision;
+      const unchanged = !result.changes.length && !result.unconfirmedChanges.length;
+      if (alive.current) {
+        const { bytes: nextBytes, world: nextWorld, refreshed, changes, unconfirmedChanges, findingReview } = result;
+        const review = { filename: captured.filename, bytes: nextBytes, world: nextWorld, refreshed, changes, unconfirmedChanges, findingReview };
+        if (!matches) setFormatCandidate({ phase: "conflict", review });
+        else if (unchanged) setFormatCandidate({ phase: "unchanged", review });
+        else setFormatCandidate({ phase: "ready", review, adoption: {
+          captured, sessionId: identity.sessionId, revision: identity.sessionRevision, record,
+        } });
+      }
+      return { ...(matches ? { ok: true as const, status: unchanged ? "unchanged" as const : "pending_review" as const }
+        : { ok: false as const, status: "conflict" as const, message: "The saved candidate no longer matches the working copy or its binding. Nothing was applied; read the retained review." }),
+        candidateCheckId: check.check_id, changes: result.changes.length, unresolvedGroups: result.unresolvedGroupCount,
+        unconfirmedChanges: result.unconfirmedChanges.length, refreshed: result.refreshed,
+        template: { versionId: result.world.version_id, journal: result.world.journal_name, version: result.world.version_ordinal,
+          status: "ready" as const, analyzerVersion: result.world.analyzer_version ?? null } };
+    } catch (cause) {
+      if (alive.current) {
+        setFormatCandidate(controller.signal.aborted ? null : { phase: "failed", error: cause instanceof Error ? cause.message : String(cause) });
+      }
+      throw cause;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+      candidateRun.current = null;
+    }
+  }
+  candidateCommand.current = {
+    getTemplates: () => ({ selected: selectedTemplate ? describeDocxFormatTemplate(selectedTemplate) : null,
+      bound: boundTemplate ? describeDocxFormatTemplate(boundTemplate) : null }),
+    prepare: ({ signal, worldVersionId }) => startFormatCandidate({ chat: true, signal, worldVersionId }),
+  };
+
+  async function startFormatFromButton(worldVersionId?: string) {
+    if (await ensureAiProviderOrOpenSettings()) await startFormatCandidate({ chat: false, worldVersionId });
+  }
+
+  async function adoptFormatCandidate() {
+    const editor = editorInstance.current;
+    if (formatCandidate?.phase !== "ready" || !editor || busySave.current || checking || pendingSave || pendingReceipts || recoveryConflict) return;
+    const { review, adoption: { captured, sessionId: capturedSessionId, revision: capturedRevision, record } } = formatCandidate;
+    const current = identityRef.current();
+    if (current.sessionId !== capturedSessionId || current.sessionRevision !== capturedRevision || current.baselineId !== captured.baseline_id) {
+      setFormatCandidate({ phase: "conflict", review });
+      return;
+    }
+    const previousMode = editor.getEditingMode();
+    const lock = editor.setEditingMode("viewing");
+    if (!lock.ok) { setError(lock.reason ?? text.notReady); return; }
+    const registration = unregisterDocxAgentSession(sessionId);
+    registeredSession.current = null;
+    busySave.current = true;
+    recoveryEpoch.current += 1;
+    setAdopting(true);
+    setError(null);
+    let adopted = false;
+    try {
+      await recoveryQueueRef.current;
+      const originalHash = await wordOriginalSha256(appProjectId, captured.project_id, sourcePath).catch(() => undefined);
+      if (identityRef.current().sessionRevision !== capturedRevision || originalHash !== record.original_source_sha256) {
+        setFormatCandidate({ phase: "conflict", review });
+        return;
+      }
+      const oldRecovery = await readDocxRecovery({ appProjectId, workbenchProjectId: captured.project_id,
+        baseBaselineId: captured.baseline_id, sourceSha256: captured.source_sha256 });
+      const { source: next } = await adoptDocxFormatCandidate(captured, record);
+      adopted = true;
+      pendingCandidate.current = null;
+      unsubscribeRef.current?.();
+      sessionRef.current?.dispose();
+      sessionRef.current = null;
+      editorInstance.current = null;
+      savedBytes.current = next.bytes;
+      flushSync(() => {
+        setShowCandidate(false);
+        setShowPdf(false);
+        changeMaterialView("working");
+        setEditorReady(false);
+        setTaskReady(false);
+        setSource(next);
+        setBaselineId(next.baseline_id);
+        setRevision(0);
+        setSavedRevision(0);
+        setCheck(null);
+        updateSuggestion(null);
+        recoveredBytes.current = undefined;
+        setSessionId(`docx:${crypto.randomUUID()}`);
+        setFormatCandidate({ phase: "adopted", review });
+        syncWordTemplate(review.world);
+      });
+      if (oldRecovery) await discardDocxRecovery(oldRecovery);
+      await onSavedRef.current();
+    } catch (cause) {
+      if (cause instanceof JournalWorkbenchError && ["baseline_conflict", "binding_conflict", "candidate_review_conflict"].includes(cause.detail.code)) setFormatCandidate({ phase: "conflict", review });
+      else setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (!adopted) {
+        editor.setEditingMode(previousMode);
+        if (registration) {
+          registerDocxAgentSession(registration);
+          registeredSession.current = registration.sessionId;
+        }
+      }
+      busySave.current = false;
+      setAdopting(false);
+    }
+  }
+
+  function jumpToCandidate(paraId: string) {
+    setShowPdf(false);
+    if (formatCandidate?.phase !== "adopted") {
+      setCandidateTarget({ paraId });
+      setShowCandidate(true);
+      return;
+    }
+    flushSync(() => { changeMaterialView("working"); });
+    requestAnimationFrame(() => {
+      const editor = editorInstance.current;
+      if (editor?.scrollToAnchor({ paraId })) editor.highlightAnchor({ paraId });
+    });
   }
 
   function close() {
@@ -1038,7 +1367,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
   }, [appProjectId, pdfDocumentId]);
   useEffect(() => {
     if (!source || activeSurface !== "word") return;
-    if (showPdf) { useAgentWorkspaceStore.getState().clearView(appProjectId, `docx:${project.project_id}`); return; }
+    if (showPdf || showCandidate) { useAgentWorkspaceStore.getState().clearView(appProjectId, `docx:${project.project_id}`); return; }
     const initial = initialSourceRef.current;
     const viewRevision = originalInFront ? initial?.source_sha256 : String(revision);
     if (!viewRevision) return;
@@ -1050,7 +1379,7 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
       selection: selection?.revision === viewRevision ? selection : null,
     });
   }, [activeSurface, appProjectId, dirty, originalInFront, originalViewSelection, project.project_id, revision,
-    sessionId, showPdf, source, workingViewSelection]);
+    sessionId, showCandidate, showPdf, source, workingViewSelection]);
 
   return <>
       <section
@@ -1058,16 +1387,22 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
         className="flex h-full min-h-0 min-w-0 flex-col gap-2 p-3"
         aria-label={text.title}
         data-testid="docx-workspace"
-        data-docx-history={originalInFront || showPdf ? "readonly" : "working"}
+        data-docx-history={originalInFront || showPdf || showCandidate ? "readonly" : "working"}
       >
         <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
           <h2 className="mr-auto truncate text-sm font-semibold">{project.name}</h2>
           <span role="status" data-testid="docx-save-state" className={dirty ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}>
             {dirty ? text.unsaved : text.saved}
           </span>
-          <Button size="sm" variant="outline" onClick={() => {
+          {activeTemplate && <span className={activeTemplate.template_preparation.state === "ready" ? "text-muted-foreground" : "text-amber-700 dark:text-amber-400"} data-testid="docx-template-status" data-status={activeTemplate.template_preparation.state}>
+            {activeTemplateLabel}
+          </span>}
+          {activeTemplate?.template_preparation.state === "pending_refresh" && <Button variant="ghost" size="sm" disabled={saving || adopting || checking || formatCandidate?.phase === "running"} onClick={() => void refreshTemplate()}>{text.formatCandidate.refreshTemplate}</Button>}
+          {world?.template || boundTemplate ? <Button size="sm" variant="outline" data-testid="docx-start-format-candidate" disabled={!editorReady || !taskReady || !reviewLoaded || saving || adopting || checking || formatCandidate?.phase === "running"} onClick={() => void startFormatFromButton().catch(() => {})}>
+            <Sparkles className="size-3.5" />{text.formatCandidate.start}
+          </Button> : <Button size="sm" variant="outline" onClick={() => {
             handoffToAssistant(t(($) => $.researchTools.workspace.reviewDocumentPrompt, { name: project.name }), { autoSend: false });
-          }}>{text.askAgent}</Button>
+          }}>{text.askAgent}</Button>}
           <DocxMaterialTools
             view={materialView}
             onViewChange={changeMaterialView}
@@ -1076,26 +1411,26 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
             onAnnotateWhole={() => annotateDocxMaterial(false)}
             onAnnotateSelection={() => annotateDocxMaterial(true)}
           />
-          <Button size="sm" variant="outline" disabled={!source || saving || checking || recoveryConflict || resuming || !taskReady || saveRefused || (!dirty && !pendingSave)} onClick={() => void save()}>
+          <Button size="sm" variant="outline" disabled={!source || saving || adopting || checking || recoveryConflict || resuming || !taskReady || saveRefused || (!dirty && !pendingSave)} onClick={() => void save()}>
             {saving ? <Spinner size="sm" className="mr-1" /> : <Save className="mr-1 size-3.5" />}
             {pendingSave ? text.retrySave : text.save}
           </Button>
-          <Button size="sm" variant="outline" disabled={!source || saving} onClick={() => void download().catch(() => {})}><Download className="mr-1 size-3.5" />{text.download}</Button>
-          <Button size="sm" variant="outline" disabled={!world || !source || dirty || saving || checking || recoveryConflict || !!pendingSave} onClick={() => void checkSaved()}>
+          <Button size="sm" variant="outline" disabled={!editorReady || saving || adopting} onClick={() => void download().catch(() => {})}><Download className="mr-1 size-3.5" />{text.download}</Button>
+          <Button size="sm" variant="outline" disabled={!world || !source || dirty || saving || adopting || checking || recoveryConflict || !!pendingSave} onClick={() => void checkSaved()}>
             {checking ? <Spinner size="sm" className="mr-1" /> : <Check className="mr-1 size-3.5" />}{text.check}
           </Button>
           {check && <span data-testid="docx-check-validity">{text.checked}: {t(($) => check.validity === "CURRENT" && !dirty && check.baseline_id === baselineId && check.world_version_id === world?.version_id ? $.researchTools.journal.current : $.researchTools.journal.stale)}</span>}
           <Button size="sm" variant="outline" aria-pressed={showPdf} disabled={!source} onClick={() => setShowPdf((value) => !value)}>{showPdf ? t(($) => $.researchTools.workspace.backToDocument) : text.render.open}</Button>
           <Button size="sm" variant="ghost" onClick={() => useWorkspaceSurfaceStore.getState().openJournal()}>{t(($) => $.researchTools.journal.title)}</Button>
-          <Button size="sm" variant="ghost" aria-expanded={toolsOpen} onClick={() => setToolsOpen((value) => !value)}><PanelRight className="mr-1 size-3.5" />{t(($) => $.researchTools.workspace.documentTools)}</Button>
+          {!formatCandidate && <Button size="sm" variant="ghost" aria-expanded={toolsOpen} onClick={() => setToolsOpen((value) => !value)}><PanelRight className="mr-1 size-3.5" />{t(($) => $.researchTools.workspace.documentTools)}</Button>}
           <Button size="icon" variant="ghost" className="size-7" aria-label={t(($) => $.researchTools.workspace.closeDocument)} disabled={closeBlocked} onClick={close}><X className="size-3.5" /></Button>
         </div>
         {source && <div className="text-xs text-muted-foreground" data-testid="docx-font-state" data-measurer={fontMeasurement.measurer} data-resolving={fontMeasurement.resolving}>{fontMeasurement.resolving ? t(($) => $.researchTools.workspace.preparingFonts) : fontStatus.missing.length > 0 ? <button type="button" className="text-amber-700 underline dark:text-amber-400" onClick={() => setToolsOpen(true)}>{t(($) => $.researchTools.workspace.missingFonts)}</button> : null}</div>}
         {recovery && <p className="text-xs text-muted-foreground">{t(($) => $.researchTools.docx.recovery.restored, { time: new Date(recovery.updatedAt).toLocaleString(), revision: recovery.revision })}</p>}
         {recoveryConflict && <p role="alert" className="rounded border border-amber-500/40 p-2 text-xs">{text.recovery.conflict}</p>}
         {error && <p role="alert" className="break-words rounded border border-destructive/30 p-2 text-xs text-destructive">{error}</p>}
-        <div className={`grid min-h-0 flex-1 gap-3 ${toolsOpen ? "grid-cols-[minmax(0,1fr)_16rem] max-lg:grid-cols-[minmax(0,1fr)_13rem]" : "grid-cols-1"}`}>
-          <div hidden={showPdf} className={showPdf ? "hidden min-h-0" : "flex min-h-0 flex-col"}>
+        <div className={`grid min-h-0 flex-1 gap-3 ${formatCandidate ? "grid-cols-[minmax(0,1fr)_minmax(12rem,28%)]" : toolsOpen ? "grid-cols-[minmax(0,1fr)_16rem] max-lg:grid-cols-[minmax(0,1fr)_13rem]" : "grid-cols-1"}`}>
+          <div hidden={showPdf || showCandidate} className={showPdf || showCandidate ? "hidden min-h-0" : "flex min-h-0 flex-col"}>
             <div ref={setToolbarTarget} className="shrink-0 border-b bg-background" data-testid="docx-formatting-tools" />
             <WordSurface
               view={materialView}
@@ -1105,14 +1440,15 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
               onForegroundChange={setStackForeground}
               originalLabel={tEditor(($) => $.editor.materials.docxOriginal)}
               workingLabel={tEditor(($) => $.editor.materials.docxWorking)}
-              working={<div className="h-full min-h-0 overflow-hidden rounded border bg-muted/20" data-testid="docx-editor-surface">
+              working={<div inert={adopting} className="h-full min-h-0 overflow-hidden rounded border bg-muted/20" data-testid="docx-editor-surface">
               {source ? <WordDocument
+                key={sessionId}
                 ref={editorRef} document={source.bytes} fonts={fonts} fontShaping={fontShaping} mode="edit" locale={editorLocale.current}
                 title={source.filename} author="Oleafly User"
                 colorMode="system"
                 className="h-full"
                 onFontError={(cause) => setError(`${text.fontError}: ${cause.message}`)}
-              ><WordToolbarPortal target={toolbarTarget} disabled={originalInFront || showPdf} labels={{
+              ><WordToolbarPortal target={toolbarTarget} disabled={originalInFront || showPdf || adopting} labels={{
                 toolbar: tEditor(($) => $.editor.wordTools.toolbar),
                 undo: tEditor(($) => $.editor.toolbar.undo, { shortcut: "Mod+Z" }),
                 redo: tEditor(($) => $.editor.toolbar.redo, { shortcut: "Mod+Shift+Z" }),
@@ -1134,13 +1470,30 @@ export default function DocxWorkspaceDialog({ appProjectId, project, world, reco
             </div> : null}
             />
           </div>
+          {showCandidate && !showPdf && formatCandidate && "review" in formatCandidate && <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded border" data-testid="docx-format-candidate-preview" data-docx-history="readonly">
+            <div className="flex shrink-0 items-center justify-between border-b px-2 py-1.5 text-xs">
+              <span>{text.formatCandidate.title}</span>
+              <Button size="sm" variant="ghost" onClick={() => setShowCandidate(false)}>{t(($) => $.researchTools.workspace.backToDocument)}</Button>
+            </div>
+            <WordDocument document={formatCandidate.review.bytes} mode="view" fonts={fonts} fontShaping={fontShaping} locale={editorLocale.current} title={text.formatCandidate.title} className="flex-1">
+              <CandidateAnchor target={candidateTarget} />
+            </WordDocument>
+          </section>}
           {showPdf && <section className="flex min-h-0 flex-col overflow-hidden rounded border" data-testid="docx-render-preview" data-docx-history="readonly">
             <p className="shrink-0 border-b p-2 text-xs text-muted-foreground">{preview?.stale ? text.render.stale : text.render.current}</p>
             <div className="min-h-0 flex-1">
               {preview?.error ? <p role="alert" className="p-4 text-sm text-destructive">{preview.error}</p> : pdfDocument && preview?.bytes ? <MaterialViewContext key={pdfDocument.documentId} document={pdfDocument} active={activeSurface === "word"} materialRole="result"><MaterialPdfView document={pdfDocument} bytes={preview.bytes} /></MaterialViewContext> : <p role="status" className="p-4 text-sm">{text.render.loading}</p>}
             </div>
           </section>}
-          <aside hidden={!toolsOpen} className="min-h-0 space-y-3 overflow-y-auto" aria-label={t(($) => $.researchTools.workspace.documentTools)} data-docx-history="field">
+          {formatCandidate && <DocxFormatCandidatePanel state={formatCandidate} adopting={adopting} onJump={jumpToCandidate}
+            adoptDisabled={!editorReady || !taskReady || saving || checking || !!pendingSave || pendingReceipts > 0 || recoveryConflict}
+            onAdopt={() => void adoptFormatCandidate()} onStop={() => candidateRun.current?.abort()} onClose={() => { setShowCandidate(false); setFormatCandidate(null); }}
+            onReformat={() => { if ("review" in formatCandidate) void startFormatFromButton(formatCandidate.review.world.version_id).catch(() => {}); }}
+            onDownload={() => {
+              if ("review" in formatCandidate) void downloadDocxCopy(formatCandidate.review.bytes, formatCandidate.review.filename)
+                .catch((cause) => setError(String(cause)));
+            }} />}
+          <aside hidden={!toolsOpen || !!formatCandidate} className="min-h-0 space-y-3 overflow-y-auto" aria-label={t(($) => $.researchTools.workspace.documentTools)} data-docx-history="field">
             <DocxFontsPanel world={world} status={fontStatus} ready={editorReady} onRefresh={async () => { await refreshFonts(); }} />
             {sessionRef.current && <DocxEquationPanel
               active={toolsOpen && !originalInFront && !showPdf}

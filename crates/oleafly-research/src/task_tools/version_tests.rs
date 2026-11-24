@@ -7,6 +7,27 @@ fn files(root: &Path) -> TaskFiles {
 }
 
 #[test]
+fn docx_is_refused_by_generic_task_writes_even_with_the_correct_hash() {
+    let root = tempfile::tempdir().unwrap();
+    let files = files(root.path());
+    let name = "analysis/Author.DoCx";
+    let original = b"PK\x03\x04\xff original bytes";
+    files.write_bytes(name, original, 64).unwrap();
+    let hash = crate::observations::content_hash(original);
+    assert_eq!(
+        files.write(name, "replacement").unwrap_err(),
+        word_source::WRITE_REFUSED
+    );
+    assert_eq!(
+        files
+            .write_if_unchanged(name, "replacement", Some(&hash))
+            .unwrap_err(),
+        word_source::WRITE_REFUSED
+    );
+    assert_eq!(files.read_bytes(name, 64).unwrap(), original);
+}
+
+#[test]
 fn a_stale_read_version_cannot_overwrite_a_later_external_edit() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("main.tex"), "version zero").unwrap();

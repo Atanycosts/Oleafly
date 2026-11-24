@@ -51,6 +51,22 @@ continuation, and the known indexed objects absent from this response. Objects d
 earlier pages are not silently marked as read again. Receiving a metadata reference to an image,
 formula or embedded object does not establish visual or semantic understanding.
 
+On a retained manuscript, `journal_read` with `operation: content` and a `complex_object`
+selection returns the object, its original XML address, related parts and what remains unread.
+Use the returned `node_address` unchanged with `operation: format` and `format_operation: nodes`
+against the same `baseline_id`. A different source digest is refused even if the XML path still
+exists. Objects outside the selected compatibility branch remain raw package evidence, not part
+of the selected reading. See the [content query contract](../contracts/s1/read-query.json).
+
+For retained Word text, use `text` with `text_projection` for the accepted-revisions view.
+`source_text`, when present, is the original selected-branch text and can contain deletions.
+An unavailable projection supplies a reason instead of presenting uncertain content as the
+working text. This view does not accept revisions in the file or regenerate fields or layout.
+Query `reference` objects for comment anchors: range and point anchors can carry the matched
+comment body, author, and saved date. A missing or non-unique body is reported as partial.
+Older saved responses keep their original meaning and may have mixed revision text in `text`.
+Field details and limits are in the [content query contract](../contracts/s1/read-query.json).
+
 ## Query a physical page
 
 `--page-number 1` requires that the run already contains independent reviewed mappings and a

@@ -1,21 +1,20 @@
-use std::io::{Cursor, Read};
 use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
 
-use serde::Serialize;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+
+use super::{request, Session};
 
 const CFB_SIGNATURE: &[u8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1";
 const CONVERSION_TIMEOUT: Duration = Duration::from_secs(120);
-const DOCX_CONTENT_TYPE: &str =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
-const STRICT_DOCX_CONTENT_TYPE: &str = "application/vnd.ms-word.document.main+xml";
-const WORD_NAMESPACE: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const CONVERSION_METHOD: &str = "libreoffice --headless --convert-to docx:Office Open XML Text";
+const DOCX_NORMALIZE_ENDPOINT: &str = "/api/docx-normalize";
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TemplateConversion {
     pub engine: String,
     pub version: String,
@@ -26,99 +25,146 @@ pub struct TemplateConversion {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NormalizedTemplate {
-    pub original_path: Option<String>,
     pub original_name: String,
     pub original_sha256: String,
     pub original_bytes: Vec<u8>,
     pub docx_bytes: Vec<u8>,
     pub docx_sha256: String,
     pub conversion: Option<TemplateConversion>,
+    pub converted_from_legacy: bool,
 }
 
-#[cfg(test)]
-pub async fn normalize_template(
-    source_path: &Path,
-    libreoffice_executable: Option<&Path>,
-    temporary_root: &Path,
-) -> Result<NormalizedTemplate, String> {
-    let source_path = source_path.to_path_buf();
-    let executable = libreoffice_executable.map(Path::to_path_buf);
-    let temporary_root = temporary_root.to_path_buf();
-    tauri::async_runtime::spawn_blocking(move || {
-        let name = source_path
-            .file_name()
-            .ok_or("Choose a Word template file.")?
-            .to_string_lossy()
-            .into_owned();
-        let bytes = std::fs::read(&source_path)
-            .map_err(|error| format!("Could not read the Word template: {error}"))?;
-        normalize(
-            name,
-            Some(source_path.to_string_lossy().into_owned()),
-            bytes,
-            executable.as_deref(),
-            &temporary_root,
-        )
-    })
-    .await
-    .map_err(|error| error.to_string())?
+impl NormalizedTemplate {
+    /// Managed projects receive strict source bytes and normalize them themselves.
+    /// Legacy `.doc` files are the exception: LibreOffice converts them first.
+    pub fn project_upload_bytes(&self) -> &[u8] {
+        if self.converted_from_legacy {
+            &self.docx_bytes
+        } else {
+            &self.original_bytes
+        }
+    }
 }
 
 pub async fn normalize_template_bytes(
+    session: &Session,
     original_name: &str,
     original_bytes: Vec<u8>,
     libreoffice_executable: Option<&Path>,
     temporary_root: &Path,
 ) -> Result<NormalizedTemplate, String> {
-    let name = original_name.to_owned();
-    let executable = libreoffice_executable.map(Path::to_path_buf);
-    let temporary_root = temporary_root.to_path_buf();
-    tauri::async_runtime::spawn_blocking(move || {
-        normalize(
-            name,
-            None,
-            original_bytes,
-            executable.as_deref(),
-            &temporary_root,
-        )
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-fn normalize(
-    original_name: String,
-    original_path: Option<String>,
-    original_bytes: Vec<u8>,
-    executable: Option<&Path>,
-    temporary_root: &Path,
-) -> Result<NormalizedTemplate, String> {
     let original_sha256 = sha256(&original_bytes);
-    let (docx_bytes, conversion) = if original_bytes.starts_with(CFB_SIGNATURE) {
-        let executable = executable
+    let converted_from_legacy = original_bytes.starts_with(CFB_SIGNATURE);
+    let (normalizer_input, legacy_version) = if converted_from_legacy {
+        let executable = libreoffice_executable
             .ok_or("Choose a LibreOffice executable to import this legacy Word (.doc) template.")?;
-        let (bytes, version) = convert_legacy(&original_bytes, executable, temporary_root)?;
-        let conversion = TemplateConversion {
+        let bytes = original_bytes.clone();
+        let executable = executable.to_path_buf();
+        let temporary_root = temporary_root.to_path_buf();
+        let (converted, version) = tauri::async_runtime::spawn_blocking(move || {
+            convert_legacy(&bytes, &executable, &temporary_root)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        (converted, Some(version))
+    } else {
+        (original_bytes.clone(), None)
+    };
+    let normalized = normalize_docx(session, &normalizer_input).await?;
+    let conversion = normalized.provenance.or_else(|| {
+        legacy_version.map(|version| TemplateConversion {
             engine: "LibreOffice".into(),
             version,
             method: CONVERSION_METHOD.into(),
-            converted_sha256: sha256(&bytes),
-        };
-        (bytes, Some(conversion))
-    } else if original_bytes.starts_with(b"PK\x03\x04") {
-        validate_docx(&original_bytes)?;
-        (original_bytes.clone(), None)
-    } else {
-        return Err("This template is not a legacy Word (.doc) or Word DOCX file.".into());
-    };
+            converted_sha256: normalized.source_sha256.clone(),
+        })
+    });
     Ok(NormalizedTemplate {
-        original_path,
-        original_name,
+        original_name: original_name.to_owned(),
         original_sha256,
         original_bytes,
-        docx_sha256: sha256(&docx_bytes),
-        docx_bytes,
+        docx_sha256: normalized.source_sha256,
+        docx_bytes: normalized.bytes,
         conversion,
+        converted_from_legacy,
+    })
+}
+
+#[derive(Deserialize)]
+struct NormalizerResponse {
+    original_sha256: String,
+    source_sha256: String,
+    provenance: Option<TemplateConversion>,
+}
+
+#[derive(Debug)]
+struct NormalizedDocx {
+    bytes: Vec<u8>,
+    source_sha256: String,
+    provenance: Option<TemplateConversion>,
+}
+
+async fn normalize_docx(session: &Session, bytes: &[u8]) -> Result<NormalizedDocx, String> {
+    let response = request(
+        session,
+        DOCX_NORMALIZE_ENDPOINT,
+        Some(json!({"content_base64": STANDARD.encode(bytes)})),
+    )
+    .await?;
+    validate_normalizer_response(bytes, response)
+}
+
+fn validate_normalizer_response(
+    input_bytes: &[u8],
+    response: Value,
+) -> Result<NormalizedDocx, String> {
+    let fields = response
+        .as_object()
+        .ok_or("Workbench returned an invalid DOCX normalization response.")?;
+    let content = fields
+        .get("content_base64")
+        .cloned()
+        .ok_or("Workbench did not return the normalized DOCX content.")?;
+    if !fields.contains_key("provenance") {
+        return Err("Workbench did not return DOCX normalization provenance.".into());
+    }
+    let response: NormalizerResponse = serde_json::from_value(response)
+        .map_err(|_| "Workbench returned an invalid DOCX normalization response.".to_string())?;
+    let input_sha256 = sha256(input_bytes);
+    if response.original_sha256 != input_sha256 {
+        return Err("Workbench normalized different bytes than the selected Word file.".into());
+    }
+    let content_is_null = content.is_null();
+    let bytes = match content {
+        Value::Null => input_bytes.to_vec(),
+        Value::String(encoded) => STANDARD
+            .decode(&encoded)
+            .map_err(|_| "Workbench returned invalid normalized DOCX bytes.".to_string())?,
+        _ => return Err("Workbench returned invalid normalized DOCX content.".into()),
+    };
+    let source_sha256 = sha256(&bytes);
+    if response.source_sha256 != source_sha256 {
+        return Err("Workbench normalized DOCX identity does not match its bytes.".into());
+    }
+    let changed = source_sha256 != input_sha256;
+    if changed == content_is_null {
+        return Err("Workbench returned inconsistent normalized DOCX content.".into());
+    }
+    if let Some(provenance) = &response.provenance {
+        if provenance.engine.trim().is_empty()
+            || provenance.version.trim().is_empty()
+            || provenance.method.trim().is_empty()
+            || provenance.converted_sha256 != source_sha256
+        {
+            return Err("Workbench returned invalid DOCX normalization provenance.".into());
+        }
+    } else if changed {
+        return Err("Workbench changed the DOCX without conversion provenance.".into());
+    }
+    Ok(NormalizedDocx {
+        bytes,
+        source_sha256,
+        provenance: response.provenance,
     })
 }
 
@@ -190,8 +236,6 @@ fn convert_legacy(
     }
     let docx_bytes = std::fs::read(output.join("template.docx"))
         .map_err(|_| "LibreOffice did not produce the expected DOCX template.")?;
-    validate_docx(&docx_bytes)
-        .map_err(|error| format!("LibreOffice produced an unreadable DOCX template: {error}"))?;
     Ok((docx_bytes, version))
 }
 
@@ -211,47 +255,6 @@ fn invoke(command: Command, operation: &str) -> Result<Output, String> {
     })
 }
 
-fn validate_docx(bytes: &[u8]) -> Result<(), String> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|_| "The Word template is not a readable DOCX package.")?;
-    let content_types = read_part(&mut archive, "[Content_Types].xml")?;
-    let types = roxmltree::Document::parse(&content_types)
-        .map_err(|_| "The DOCX template has unreadable content types.")?;
-    let content_type = types.descendants().find_map(|node| {
-        (node.tag_name().name() == "Override"
-            && node.attribute("PartName") == Some("/word/document.xml"))
-        .then(|| node.attribute("ContentType"))
-        .flatten()
-    });
-    if content_type == Some(STRICT_DOCX_CONTENT_TYPE) {
-        return Err(
-            "Strict OOXML Word documents are not supported. Resave the template as a transitional DOCX file before importing it."
-                .into(),
-        );
-    }
-    if content_type != Some(DOCX_CONTENT_TYPE) {
-        return Err("The template package does not contain a Word DOCX document.".into());
-    }
-    let main = read_part(&mut archive, "word/document.xml")?;
-    let document = roxmltree::Document::parse(&main)
-        .map_err(|_| "The DOCX template has unreadable document XML.")?;
-    let root = document.root_element();
-    if root.tag_name().name() != "document" || root.tag_name().namespace() != Some(WORD_NAMESPACE) {
-        return Err("The template package does not contain a Word DOCX document.".into());
-    }
-    Ok(())
-}
-
-fn read_part(archive: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<String, String> {
-    let mut part = archive
-        .by_name(name)
-        .map_err(|_| format!("The DOCX template is missing {name}."))?;
-    let mut xml = String::new();
-    part.read_to_string(&mut xml)
-        .map_err(|_| format!("Could not read {name} in the DOCX template."))?;
-    Ok(xml)
-}
-
 fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -259,21 +262,20 @@ fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use serde_json::json;
+    use std::io::{Cursor, Write};
     use std::path::PathBuf;
 
-    fn docx_with(content_type: &str, word_namespace: &str) -> Vec<u8> {
+    fn docx() -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for (name, content) in [
             (
                 "[Content_Types].xml",
-                format!(
-                    "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/word/document.xml\" ContentType=\"{content_type}\"/></Types>"
-                ),
+                "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>",
             ),
             (
                 "word/document.xml",
-                format!("<w:document xmlns:w=\"{word_namespace}\"><w:body/></w:document>"),
+                "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body/></w:document>",
             ),
         ] {
             writer
@@ -284,92 +286,143 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
 
-    fn docx() -> Vec<u8> {
-        docx_with(DOCX_CONTENT_TYPE, WORD_NAMESPACE)
+    fn assert_docx_container(bytes: &[u8]) {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        for name in ["[Content_Types].xml", "word/document.xml"] {
+            archive.by_name(name).unwrap();
+        }
     }
 
-    #[tokio::test]
-    async fn docx_bytes_pass_through_even_when_named_doc_without_a_renderer() {
-        let directory = tempfile::tempdir().unwrap();
-        let bytes = docx();
-        let result =
-            normalize_template_bytes("template.doc", bytes.clone(), None, directory.path())
-                .await
+    fn conversion(output: &[u8]) -> TemplateConversion {
+        TemplateConversion {
+            engine: "test normalizer".into(),
+            version: "1".into(),
+            method: "strict-to-transitional".into(),
+            converted_sha256: sha256(output),
+        }
+    }
+
+    fn normalization_response(
+        input: &[u8],
+        content: Option<&[u8]>,
+        provenance: Option<&TemplateConversion>,
+    ) -> Value {
+        json!({
+            "content_base64": content.map(|bytes| STANDARD.encode(bytes)),
+            "original_sha256": sha256(input),
+            "source_sha256": sha256(content.unwrap_or(input)),
+            "provenance": provenance,
+        })
+    }
+
+    #[test]
+    fn unchanged_docx_uses_the_request_bytes_and_still_checks_both_digests() {
+        let input = docx();
+        let normalized =
+            validate_normalizer_response(&input, normalization_response(&input, None, None))
                 .unwrap();
-        assert_eq!(result.docx_bytes, bytes);
-        assert_eq!(result.original_bytes, bytes);
-        assert_eq!(result.original_sha256, result.docx_sha256);
-        assert_eq!(result.original_name, "template.doc");
-        assert!(result.original_path.is_none());
-        assert!(result.conversion.is_none());
-        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
-    }
-
-    #[tokio::test]
-    async fn path_source_identity_is_preserved_without_writing_beside_it() {
-        let source = tempfile::tempdir().unwrap();
-        let scratch = tempfile::tempdir().unwrap();
-        let path = source.path().join("author.docx");
-        let bytes = docx();
-        std::fs::write(&path, &bytes).unwrap();
-        let result = normalize_template(&path, None, scratch.path())
-            .await
-            .unwrap();
-        assert_eq!(result.original_path.as_deref(), path.to_str());
-        assert_eq!(result.original_bytes, bytes);
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        assert_eq!(std::fs::read_dir(source.path()).unwrap().count(), 1);
+        assert_eq!(normalized.bytes, input);
+        assert_eq!(normalized.source_sha256, sha256(&input));
+        assert!(normalized.provenance.is_none());
     }
 
     #[test]
-    fn malformed_zip_and_non_word_inputs_do_not_pass_as_docx() {
-        assert!(validate_docx(b"PK\x03\x04broken").is_err());
-        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        writer
-            .start_file("unrelated.txt", zip::write::SimpleFileOptions::default())
-            .unwrap();
-        writer.write_all(b"not a Word document").unwrap();
-        assert!(validate_docx(&writer.finish().unwrap().into_inner()).is_err());
-        let root = tempfile::tempdir().unwrap();
-        assert!(normalize(
-            "x.doc".into(),
-            None,
-            b"{\\rtf1}".to_vec(),
-            None,
-            root.path()
+    fn changed_docx_returns_worker_bytes_and_matching_provenance() {
+        let input = b"strict input";
+        let output = docx();
+        let provenance = conversion(&output);
+        let normalized = validate_normalizer_response(
+            input,
+            normalization_response(input, Some(&output), Some(&provenance)),
         )
-        .unwrap_err()
-        .contains("not a legacy Word"));
-        assert!(normalize(
-            "x.docx".into(),
-            None,
-            CFB_SIGNATURE.to_vec(),
-            None,
-            root.path()
-        )
-        .unwrap_err()
-        .contains("Choose a LibreOffice executable"));
-        assert!(normalize(
-            "x.doc".into(),
-            None,
-            CFB_SIGNATURE.to_vec(),
-            Some(&root.path().join("missing")),
-            root.path()
-        )
-        .unwrap_err()
-        .contains("LibreOffice is unavailable"));
+        .unwrap();
+        assert_eq!(normalized.bytes, output);
+        assert_eq!(normalized.source_sha256, sha256(&output));
+        assert_eq!(
+            normalized.provenance.unwrap().converted_sha256,
+            sha256(&output)
+        );
+        assert_docx_container(&normalized.bytes);
     }
 
     #[test]
-    fn strict_ooxml_is_rejected_because_the_core_does_not_model_it() {
-        let strict_namespace = "http://purl.oclc.org/ooxml/wordprocessingml/main";
-        let strict = docx_with(STRICT_DOCX_CONTENT_TYPE, strict_namespace);
-        assert!(validate_docx(&strict)
+    fn inconsistent_worker_identities_and_content_are_refused() {
+        let input = b"original";
+        let output = b"normalized";
+        let provenance = conversion(output);
+
+        let mut response = normalization_response(input, Some(output), Some(&provenance));
+        response["original_sha256"] = json!("0".repeat(64));
+        assert!(validate_normalizer_response(input, response)
             .unwrap_err()
-            .contains("Strict OOXML Word documents are not supported"));
+            .contains("different bytes"));
 
-        let mismatched = docx_with(DOCX_CONTENT_TYPE, strict_namespace);
-        assert!(validate_docx(&mismatched).is_err());
+        let mut response = normalization_response(input, Some(output), Some(&provenance));
+        response["source_sha256"] = json!("0".repeat(64));
+        assert!(validate_normalizer_response(input, response)
+            .unwrap_err()
+            .contains("does not match its bytes"));
+
+        let unchanged_with_content = normalization_response(input, Some(input), None);
+        assert!(validate_normalizer_response(input, unchanged_with_content)
+            .unwrap_err()
+            .contains("inconsistent"));
+
+        let mut missing_content = normalization_response(input, None, None);
+        missing_content
+            .as_object_mut()
+            .unwrap()
+            .remove("content_base64");
+        assert!(validate_normalizer_response(input, missing_content)
+            .unwrap_err()
+            .contains("normalized DOCX content"));
+    }
+
+    #[test]
+    fn changed_docx_requires_complete_matching_provenance() {
+        let input = b"original";
+        let output = b"normalized";
+        assert!(validate_normalizer_response(
+            input,
+            normalization_response(input, Some(output), None)
+        )
+        .unwrap_err()
+        .contains("without conversion provenance"));
+
+        let mut wrong_digest = conversion(output);
+        wrong_digest.converted_sha256 = sha256(input);
+        assert!(validate_normalizer_response(
+            input,
+            normalization_response(input, Some(output), Some(&wrong_digest))
+        )
+        .unwrap_err()
+        .contains("invalid DOCX normalization provenance"));
+
+        let mut missing_method = conversion(output);
+        missing_method.method.clear();
+        assert!(validate_normalizer_response(
+            input,
+            normalization_response(input, Some(output), Some(&missing_method))
+        )
+        .unwrap_err()
+        .contains("invalid DOCX normalization provenance"));
+    }
+
+    #[test]
+    fn projects_receive_original_docx_but_the_converted_legacy_upload() {
+        let template = |original: &[u8], docx: &[u8], converted_from_legacy| NormalizedTemplate {
+            original_name: "template.docx".into(),
+            original_sha256: sha256(original),
+            original_bytes: original.to_vec(),
+            docx_bytes: docx.to_vec(),
+            docx_sha256: sha256(docx),
+            conversion: None,
+            converted_from_legacy,
+        };
+        let strict = template(b"strict source", b"normalized source", false);
+        assert_eq!(strict.project_upload_bytes(), b"strict source");
+        let legacy = template(CFB_SIGNATURE, b"converted DOCX", true);
+        assert_eq!(legacy.project_upload_bytes(), b"converted DOCX");
     }
 
     #[cfg(unix)]
@@ -383,8 +436,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn legacy_conversion_stages_private_copy_and_retains_both_identities() {
+    #[test]
+    fn legacy_conversion_stages_a_private_copy_and_returns_the_converted_docx() {
         let directory = tempfile::tempdir().unwrap();
         let scratch = directory.path().join("scratch with spaces # 字");
         std::fs::create_dir(&scratch).unwrap();
@@ -396,35 +449,22 @@ mod tests {
             &format!("cp '{}' \"$8/template.docx\"", fixture.display()),
         );
         let original = [CFB_SIGNATURE, b"legacy test bytes"].concat();
-        let result = normalize_template_bytes(
-            "original.doc",
-            original.clone(),
-            Some(&executable),
-            &scratch,
-        )
-        .await
-        .unwrap();
-        assert_eq!(result.original_bytes, original);
-        assert_eq!(result.docx_bytes, converted);
-        assert_ne!(result.original_sha256, result.docx_sha256);
-        let provenance = result.conversion.unwrap();
-        assert_eq!(provenance.engine, "LibreOffice");
-        assert_eq!(provenance.version, "LibreOffice 26.2 test");
-        assert_eq!(provenance.converted_sha256, result.docx_sha256);
-        assert_eq!(provenance.method, CONVERSION_METHOD);
+        let (docx, version) = convert_legacy(&original, &executable, &scratch).unwrap();
+        assert_eq!(docx, converted);
+        assert_eq!(version, "LibreOffice 26.2 test");
+        assert_docx_container(&docx);
         assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
     }
 
     #[cfg(unix)]
     #[test]
-    fn failed_or_unreadable_conversion_is_an_error_and_removes_scratch() {
+    fn failed_conversion_is_an_error_and_removes_scratch() {
         let directory = tempfile::tempdir().unwrap();
         let scratch = directory.path().join("scratch");
         std::fs::create_dir(&scratch).unwrap();
         for (behavior, expected) in [
             ("exit 7", "could not convert"),
             ("exit 0", "did not produce"),
-            ("echo invalid > \"$8/template.docx\"", "unreadable DOCX"),
         ] {
             let executable = fake_libreoffice(directory.path(), behavior);
             let error = convert_legacy(CFB_SIGNATURE, &executable, &scratch).unwrap_err();
@@ -439,9 +479,24 @@ mod tests {
         assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
     }
 
-    #[tokio::test]
+    #[cfg(unix)]
+    #[test]
+    fn legacy_output_validation_belongs_to_the_shared_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let scratch = directory.path().join("scratch");
+        std::fs::create_dir(&scratch).unwrap();
+        let executable = fake_libreoffice(
+            directory.path(),
+            "printf 'not a DOCX' > \"$8/template.docx\"",
+        );
+        let (docx, _) = convert_legacy(CFB_SIGNATURE, &executable, &scratch).unwrap();
+        assert_eq!(docx, b"not a DOCX");
+        assert!(zip::ZipArchive::new(Cursor::new(&docx)).is_err());
+    }
+
+    #[test]
     #[ignore = "requires explicitly selected local legacy Word input and LibreOffice"]
-    async fn real_legacy_template_conversion_keeps_author_source_unchanged() {
+    fn real_legacy_template_conversion_keeps_author_source_unchanged() {
         let source = PathBuf::from(
             std::env::var_os("OLEAFLY_LEGACY_TEMPLATE_TEST_SOURCE")
                 .expect("set OLEAFLY_LEGACY_TEMPLATE_TEST_SOURCE"),
@@ -452,25 +507,25 @@ mod tests {
         let before = std::fs::read(&source).unwrap();
         assert!(before.starts_with(CFB_SIGNATURE));
         let scratch = tempfile::tempdir().unwrap();
-        let result = normalize_template(&source, Some(&executable), scratch.path())
-            .await
-            .unwrap();
+        let (docx_bytes, version) = convert_legacy(&before, &executable, scratch.path()).unwrap();
         assert_eq!(std::fs::read(&source).unwrap(), before);
-        assert_eq!(result.original_bytes, before);
-        assert_eq!(result.original_sha256, sha256(&before));
-        validate_docx(&result.docx_bytes).unwrap();
-        let conversion = result.conversion.as_ref().unwrap();
-        assert_eq!(conversion.converted_sha256, result.docx_sha256);
+        assert_docx_container(&docx_bytes);
+        let conversion = TemplateConversion {
+            engine: "LibreOffice".into(),
+            version,
+            method: CONVERSION_METHOD.into(),
+            converted_sha256: sha256(&docx_bytes),
+        };
         assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
         if let Some(output) = std::env::var_os("OLEAFLY_LEGACY_TEMPLATE_TEST_OUTPUT") {
-            std::fs::write(PathBuf::from(output), &result.docx_bytes).unwrap();
+            std::fs::write(PathBuf::from(output), &docx_bytes).unwrap();
         }
         println!(
             "original_sha256={} docx_sha256={} docx_bytes={} conversion={}",
-            result.original_sha256,
-            result.docx_sha256,
-            result.docx_bytes.len(),
-            serde_json::to_string(conversion).unwrap()
+            sha256(&before),
+            sha256(&docx_bytes),
+            docx_bytes.len(),
+            serde_json::to_string(&conversion).unwrap()
         );
     }
 }

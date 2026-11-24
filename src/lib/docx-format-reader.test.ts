@@ -1,5 +1,6 @@
 import type { DocxEditorInstance } from "@docx-editor.dev/core/editor";
 import type { DocxFormatReadQuery } from "@oleafly/ai-tools";
+import { docxFormatQuery } from "@oleafly/ai-tools";
 import { openTreeSession } from "@docx-editor.dev/core/binding";
 import { writeOoxmlPackage } from "@docx-editor.dev/core/store";
 import { strToU8, zipSync } from "fflate";
@@ -11,16 +12,31 @@ import { packToolOutput, TOOL_RESULT_MAX_CHARS } from "./ai-context-pack";
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+const O = "urn:schemas-microsoft-com:office:office";
 const p = (text: string, props = "", run = "") => `<w:p><w:pPr>${props}</w:pPr><w:r><w:rPr>${run}</w:rPr><w:t>${text}</w:t></w:r></w:p>`;
-function fixture(body: string) {
-  const bytes = zipSync({
+interface FixtureOptions {
+  relationships?: string;
+  parts?: Record<string, Uint8Array>;
+  contentTypes?: string;
+}
+function nestedDocx(text: string) {
+  return zipSync({
     "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
     "_rels/.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="doc" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
-    "word/_rels/document.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="styles" Type="${R}/styles" Target="styles.xml"/><Relationship Id="header" Type="${R}/header" Target="header1.xml"/><Relationship Id="footnotes" Type="${R}/footnotes" Target="footnotes.xml"/></Relationships>`),
+    "word/document.xml": strToU8(`<w:document xmlns:w="${W}"><w:body>${p(text)}<w:sectPr/></w:body></w:document>`),
+  });
+}
+function fixture(body: string, options: FixtureOptions = {}) {
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${options.contentTypes ?? ""}<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`),
+    "_rels/.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="doc" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/_rels/document.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="styles" Type="${R}/styles" Target="styles.xml"/><Relationship Id="header" Type="${R}/header" Target="header1.xml"/><Relationship Id="footnotes" Type="${R}/footnotes" Target="footnotes.xml"/>${options.relationships ?? ""}</Relationships>`),
     "word/document.xml": strToU8(`<w:document xmlns:w="${W}"><w:body>${body}<w:sectPr/></w:body></w:document>`),
     "word/styles.xml": strToU8(`<w:styles xmlns:w="${W}"><w:style w:type="paragraph" w:styleId="Base"><w:pPr><w:keepNext/></w:pPr><w:rPr><w:sz w:val="24"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Unused"><w:basedOn w:val="Base"/><w:pPr><w:outlineLvl w:val="1"/></w:pPr></w:style><w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style><w:style w:type="table" w:styleId="Grid"><w:tblPr><w:tblBorders/></w:tblPr></w:style></w:styles>`),
     "word/header1.xml": strToU8(`<w:hdr xmlns:w="${W}">${p("Header text")}</w:hdr>`),
     "word/footnotes.xml": strToU8(`<w:footnotes xmlns:w="${W}"><w:footnote w:id="1">${p("Note text")}</w:footnote></w:footnotes>`),
+    ...(options.parts ?? {}),
   });
   const opened = openTreeSession(bytes);
   if (!opened.ok) throw new Error(opened.reason);
@@ -39,10 +55,192 @@ function fixture(body: string) {
   const openFacts = vi.fn(openDocxFormatFacts);
   const read = createDocxFormatReader({ session, exportBytes, openFacts,
     document: () => ({ sessionId: "live", filename: "test.docx", baselineId: "saved-baseline", savedRevision: 0 }) });
-  return { session, read, exportBytes, openFacts };
+  return { session, tree, read, exportBytes, openFacts };
 }
 
 describe("live DOCX format reader", () => {
+  it("paginates live altChunk and OLE gaps by object type and binds readSource to exported node bytes", async () => {
+    const altMarker = "ALTCHUNK-INTERNAL-ONLY";
+    const oleMarker = "OLE-INTERNAL-ONLY";
+    const rel = (id: string, type: string, target: string) =>
+      `<Relationship Id="${id}" Type="${R}/${type}" Target="${target}"/>`;
+    const alt = (id: string) => `<w:altChunk xmlns:r="${R}" r:id="${id}"/>`;
+    const ole = (id: string) => `<w:p><w:r><w:object><o:OLEObject xmlns:o="${O}" xmlns:r="${R}" r:id="${id}" ProgID="Package"/></w:object></w:r></w:p>`;
+    const f = fixture(
+      p("Before") + alt("alt1") + alt("alt2") + ole("ole1") + ole("ole2") +
+        `<w:p><w:r><w:object><w:objectPr/></w:object><w:t>Plain object</w:t></w:r></w:p>` + p("After"),
+      {
+        contentTypes: '<Default Extension="docx" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"/><Default Extension="bin" ContentType="application/octet-stream"/>',
+        relationships: rel("alt1", "aFChunk", "afchunk1.docx") + rel("alt2", "aFChunk", "afchunk2.docx") +
+          rel("ole1", "oleObject", "embeddings/oleObject1.bin") + rel("ole2", "oleObject", "embeddings/oleObject2.bin"),
+        parts: {
+          "word/afchunk1.docx": nestedDocx(altMarker),
+          "word/afchunk2.docx": nestedDocx(altMarker),
+          "word/embeddings/oleObject1.bin": strToU8(oleMarker),
+          "word/embeddings/oleObject2.bin": strToU8(oleMarker),
+        },
+      },
+    );
+
+    const altPage = await f.read({ kind: "objects", objectKind: "alt_chunk", limit: 1 });
+    expect(altPage.total).toBe(2);
+    const altObjects: Record<string, unknown>[] = [...(altPage.objects ?? [])];
+    let nextAlt = altPage.nextQuery;
+    while (nextAlt) {
+      const page = await f.read(docxFormatQuery(nextAlt));
+      altObjects.push(...(page.objects ?? []));
+      nextAlt = page.nextQuery;
+    }
+    expect(altObjects.map((object) => object.kind)).toEqual(["alt_chunk", "alt_chunk"]);
+    expect(altObjects.map((object) => (object.read_gap as Record<string, unknown>).code)).toEqual([
+      "alt_chunk_not_expanded", "alt_chunk_not_expanded",
+    ]);
+    expect(altObjects.map((object) => (object.read_gap as Record<string, unknown>).relationship_id)).toEqual(["alt1", "alt2"]);
+    expect(altObjects.map((object) => (object.read_gap as Record<string, unknown>).related_part)).toEqual([
+      "/word/afchunk1.docx", "/word/afchunk2.docx",
+    ]);
+
+    const olePage = await f.read({ kind: "objects", objectKind: "ole", limit: 1 });
+    expect(olePage.total).toBe(2);
+    const oleObjects: Record<string, unknown>[] = [...(olePage.objects ?? [])];
+    let nextOle = olePage.nextQuery;
+    while (nextOle) {
+      const page = await f.read(docxFormatQuery(nextOle));
+      oleObjects.push(...(page.objects ?? []));
+      nextOle = page.nextQuery;
+    }
+    expect(oleObjects.map((object) => object.kind)).toEqual(["ole", "ole"]);
+    expect(oleObjects.map((object) => (object.read_gap as Record<string, unknown>).code)).toEqual([
+      "ole_payload_not_read", "ole_payload_not_read",
+    ]);
+    expect(oleObjects.map((object) => (object.read_gap as Record<string, unknown>).relationship_id)).toEqual(["ole1", "ole2"]);
+    expect(oleObjects.map((object) => (object.read_gap as Record<string, unknown>).related_part)).toEqual([
+      "/word/embeddings/oleObject1.bin", "/word/embeddings/oleObject2.bin",
+    ]);
+
+    const facts: Awaited<ReturnType<typeof openDocxFormatFacts>> = await f.openFacts.mock.results[0]!.value;
+    expect(facts.snapshot.engine).toEqual({ name: "@docx-editor.dev/core", version: "2.36.0" });
+    const altPart = facts.snapshot.parts.find((part) => part.name === "/word/afchunk1.docx");
+    expect(altPart).toMatchObject({ byte_length: expect.any(Number) });
+    expect(altPart?.status).not.toBe("parsed");
+    expect(facts.snapshot.parts.find((part) => part.name === "/word/embeddings/oleObject1.bin")).toMatchObject({ status: "binary" });
+    expect(facts.snapshot.objects.map((object) => object.text ?? "").join(" ")).not.toContain(altMarker);
+    expect(facts.snapshot.objects.map((object) => object.text ?? "").join(" ")).not.toContain(oleMarker);
+    const paragraphs = await f.read({ kind: "paragraphs", limit: 50 });
+    expect(paragraphs.paragraphs?.map((paragraph) => paragraph.text ?? paragraph.modelText ?? "").join(" ")).not.toContain(altMarker);
+    expect(paragraphs.paragraphs?.map((paragraph) => paragraph.text ?? paragraph.modelText ?? "").join(" ")).not.toContain(oleMarker);
+    const overview = await f.read({ kind: "overview" });
+    expect(overview.overview).toMatchObject({ counts: { byKind: { alt_chunk: 2, ole: 2 } } });
+    expect(overview.overview?.counts).toMatchObject({ objects: (await f.read({ kind: "objects" })).total });
+    expect((overview.overview?.gaps ?? []) as { code: string; count: number; unit: string }[]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "alt_chunk_not_expanded", count: 2, unit: "object" }),
+      expect.objectContaining({ code: "ole_payload_not_read", count: 2, unit: "object" }),
+    ]));
+
+    for (const object of [altObjects[0], oleObjects[0]]) {
+      const route = object.readSource;
+      expect(route).toMatchObject({ kind: "nodes", node_address: { part: "/word/document.xml", source_sha256: altPage.sourceSha256 } });
+      const source = await f.read(docxFormatQuery(route));
+      const gap = object.read_gap as Record<string, unknown>;
+      expect(source.nodes?.[0]).toMatchObject({
+        node: {
+          localName: object.kind === "alt_chunk" ? "altChunk" : "OLEObject",
+          attributes: expect.arrayContaining([expect.objectContaining({ namespaceUri: R, localName: "id", value: gap.relationship_id })]),
+        },
+        node_address: { version: "xml-element-path-1", source_sha256: altPage.sourceSha256, part: "/word/document.xml" },
+      });
+      expect(source.sourceSha256).toBe(altPage.sourceSha256);
+    }
+
+    const other = fixture(p("Different bytes"));
+    await expect(other.read(docxFormatQuery(altObjects[0]!.readSource))).rejects.toThrow("different DOCX bytes");
+  });
+
+  it("does not read semantic text or embedded objects from an unselected AlternateContent branch", async () => {
+    const visible = "SELECTED-BRANCH-CONTENT";
+    const hidden = "HIDDEN-BRANCH-CONTENT";
+    const branch = `<mc:AlternateContent xmlns:mc="${MC}">` +
+      `<mc:Choice Requires="w"><w:p><w:r><w:t>${visible}</w:t></w:r></w:p><w:altChunk xmlns:r="${R}" r:id="visible-alt"/></mc:Choice>` +
+      `<mc:Fallback><w:p><w:r><w:t>${hidden}</w:t></w:r></w:p><w:altChunk xmlns:r="${R}" r:id="hidden-alt"/>` +
+      `<w:p><w:r><w:object><o:OLEObject xmlns:o="${O}" xmlns:r="${R}" r:id="hidden-ole" ProgID="Package"/></w:object></w:r></w:p></mc:Fallback>` +
+      `</mc:AlternateContent>`;
+    const f = fixture(branch, {
+      contentTypes: '<Default Extension="docx" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"/><Default Extension="bin" ContentType="application/octet-stream"/>',
+      relationships: `<Relationship Id="visible-alt" Type="${R}/aFChunk" Target="visible.docx"/>` +
+        `<Relationship Id="hidden-alt" Type="${R}/aFChunk" Target="hidden.docx"/>` +
+        `<Relationship Id="hidden-ole" Type="${R}/oleObject" Target="embeddings/hidden.bin"/>`,
+      parts: {
+        "word/visible.docx": nestedDocx("VISIBLE-ALTCHUNK-BODY"),
+        "word/hidden.docx": nestedDocx(hidden),
+        "word/embeddings/hidden.bin": strToU8(hidden),
+      },
+    });
+
+    const paragraphs = await f.read({ kind: "paragraphs", limit: 50 });
+    expect(paragraphs.paragraphs?.map((paragraph) => paragraph.text ?? paragraph.modelText ?? "").join(" ")).toContain(visible);
+    expect(paragraphs.paragraphs?.map((paragraph) => paragraph.text ?? paragraph.modelText ?? "").join(" ")).not.toContain(hidden);
+    const alt = await f.read({ kind: "objects", objectKind: "alt_chunk", limit: 50 });
+    expect(alt.total).toBe(1);
+    expect(alt.objects?.[0]).toMatchObject({ kind: "alt_chunk", read_gap: { relationship_id: "visible-alt" } });
+    expect((await f.read({ kind: "objects", objectKind: "ole", limit: 50 })).total).toBe(0);
+    const facts: Awaited<ReturnType<typeof openDocxFormatFacts>> = await f.openFacts.mock.results[0]!.value;
+    expect(facts.embeddedGaps.map((object) => [object.kind, object.read_gap.relationship_id])).toEqual([["alt_chunk", "visible-alt"]]);
+    expect(facts.snapshot.objects.some((object) => object.text?.includes(hidden))).toBe(false);
+  });
+
+  it("does not report a plain w:object container as an unread OLE payload", async () => {
+    const f = fixture(p("Before") + `<w:p><w:r><w:object><w:objectPr/></w:object><w:t>Plain object</w:t></w:r></w:p>`);
+    expect((await f.read({ kind: "objects", objectKind: "ole", limit: 50 })).total).toBe(0);
+    const overview = await f.read({ kind: "overview" });
+    const gaps = (overview.overview?.gaps ?? []) as { code: string }[];
+    expect(gaps.some((gap) => gap.code === "ole_payload_not_read")).toBe(false);
+    const facts: Awaited<ReturnType<typeof openDocxFormatFacts>> = await f.openFacts.mock.results[0]!.value;
+    expect(facts.embeddedGaps).toEqual([]);
+  });
+
+  it("rejects an embedded gap's old source address after a package-only edit", async () => {
+    const f = fixture(p("Before") + `<w:altChunk xmlns:r="${R}" r:id="import"/>`);
+    const first = await f.read({ kind: "objects", objectKind: "alt_chunk" });
+    const address = docxFormatQuery(first.objects?.[0]?.readSource);
+    expect((await f.read(address)).nodes?.[0]).toMatchObject({ node: { localName: "altChunk" } });
+    expect(f.exportBytes).toHaveBeenCalledTimes(1);
+
+    expect(f.tree.ensureHyperlinkRelationship("https://example.invalid/new-relationship")).toBeTruthy();
+    expect(f.session.revision()).toBe(first.revision);
+    await expect(f.read(address)).rejects.toThrow("different DOCX bytes");
+    const current = await f.read({ kind: "objects", objectKind: "alt_chunk" });
+    expect(current.sourceSha256).not.toBe(first.sourceSha256);
+    expect((await f.read(docxFormatQuery(current.objects?.[0]?.readSource))).nodes?.[0])
+      .toMatchObject({ node: { localName: "altChunk" } });
+    expect(f.exportBytes).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps paragraph identities across a filtered branch and exposes branch-dependent text as read-only", async () => {
+    const branch = (choice: string, fallback: string) => `<mc:AlternateContent xmlns:mc="${MC}">` +
+      `<mc:Choice Requires="w">${choice}</mc:Choice><mc:Fallback>${fallback}</mc:Fallback></mc:AlternateContent>`;
+    const f = fixture(p("Same") + branch(p("Selected"), p("Hidden1") + p("Hidden2")) +
+      `<w:p>${branch("<w:r><w:t>Chosen inline</w:t></w:r>", "<w:r><w:t>Fallback inline</w:t></w:r>")}</w:p>` + p("Same"));
+    const duplicates = f.session.listParagraphs().filter((paragraph) => paragraph.text === "Same");
+    expect(duplicates).toHaveLength(2);
+    const first = await f.read({ kind: "paragraphs", part: "/word/document.xml", limit: 4 });
+    expect(first.total).toBe(4);
+    const paragraphs = [...(first.paragraphs ?? [])];
+    for (let offset = first.nextOffset; offset !== null;) {
+      const next = await f.read({ kind: "paragraphs", part: "/word/document.xml", limit: 4, offset, expectedRevision: first.revision });
+      paragraphs.push(...(next.paragraphs ?? []));
+      offset = next.nextOffset;
+    }
+    expect(paragraphs.map((paragraph) => [paragraph.text, paragraph.paragraphRef, paragraph.textProjection])).toEqual([
+      ["Same", duplicates[0].handle.ref, "model"],
+      ["Selected", undefined, "export_text"],
+      ["Chosen inline", undefined, "export_text"],
+      ["Same", duplicates[1].handle.ref, "model"],
+    ]);
+    expect(paragraphs[1]).toMatchObject({
+      node_address: { path: [0, 0, 1, 0, 0] }, liveAddressing: "unavailable", modelTextAddressable: false,
+    });
+  });
+
   it("distinguishes retained XML node counts from semantic reading and links model placeholders to content atoms", async () => {
     const f = fixture(p("First") + `<w:p><m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:sSub><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sub><m:r><m:t>1</m:t></m:r></m:sub></m:sSub></m:oMath></w:p>`);
     const semantics = vi.spyOn(f.session, "readParagraph");
@@ -267,9 +465,12 @@ describe("live DOCX format reader", () => {
     expect(bytes(initial)).toBeLessThanOrEqual(24 * 1024);
     const node = initial.nodes?.[0];
     let json = String(node?.nodeJson);
-    let next = node?.nodeJsonContinuation as { part: string; path: number[]; text_offset: number } | null;
+    let next = node?.nodeJsonContinuation as Record<string, unknown> | null;
+    expect(node?.node_address).toBeDefined();
+    expect(next).toMatchObject({ node_address: node?.node_address, expected_revision: initial.revision });
+    expect(next).not.toHaveProperty("path");
     while (next) {
-      const result = await f.read({ kind: "nodes", part: next.part, path: next.path, textOffset: next.text_offset, limit: 1 });
+      const result = await f.read(docxFormatQuery(next));
       expect(bytes(result)).toBeLessThanOrEqual(24 * 1024);
       json += result.nodes?.[0].nodeJson;
       next = result.nodes?.[0].nodeJsonContinuation as typeof next;
@@ -483,9 +684,13 @@ describe("live DOCX format reader", () => {
       next = result.paragraphs?.[0].textContinuation as Record<string, unknown> | null;
     }
     expect(parts.join("")).toBe("A😀BC😀D");
-    const nodes = await f.read({ kind: "nodes", part: "/word/document.xml", path: [0], limit: 1 });
+    const address = { version: "xml-element-path-1" as const, source_sha256: first.sourceSha256, part: "/word/document.xml", path: [0] };
+    const nodes = await f.read({ kind: "nodes", nodeAddress: address });
     expect(nodes.nodes?.[0]).toMatchObject({ childrenOmitted: true, childCount: 1 });
     expect(nodes.nodes?.[0].node).not.toHaveProperty("children");
+    await expect(f.read({ kind: "nodes", part: address.part, path: address.path })).rejects.toThrow("legacy path");
+    await expect(f.read({ kind: "nodes", nodeAddress: { ...address, source_sha256: "0".repeat(64) } })).rejects.toThrow("different DOCX bytes");
+    await expect(f.read({ kind: "nodes", nodeAddress: { ...address, path: [0, 99] } })).rejects.toThrow("did not match");
     await expect(f.read({ limit: 51 })).rejects.toThrow("1 to 50");
   });
 

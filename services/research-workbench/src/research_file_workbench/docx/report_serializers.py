@@ -25,8 +25,10 @@ from research_file_workbench.docx.models import (
     DocxTable,
     DocxTableCell,
     DocxTextBlock,
+    DocxTextProjection,
     DocxUnsupportedRecord,
 )
+from research_file_workbench.docx.package_query import xml_element_node_address
 
 
 def _part_to_json(item: DocxPart) -> JsonObject:
@@ -65,12 +67,27 @@ def _relationship_to_json(item: DocxRelationship) -> JsonObject:
     }
 
 
-def _text_block_to_json(item: DocxTextBlock) -> JsonObject:
+def _reading_text(source: str, accepted: DocxTextProjection | None) -> JsonObject:
+    if accepted is None:
+        return {"text": source, "text_projection": "accepted_revisions"}
+    if accepted.text is None:
+        return {
+            "text": "",
+            "text_projection": "unavailable",
+            "text_projection_reason": accepted.reason,
+            "source_text": source,
+        }
+    return {"text": accepted.text, "text_projection": "accepted_revisions", "source_text": source}
+
+
+def _text_block_to_json(item: DocxTextBlock, *, for_query: bool) -> JsonObject:
     return {
         "region": item.region,
         "part_path": item.part_path,
         "node_locator": item.node_locator,
-        "text": item.text,
+        **(
+            _reading_text(item.text, item.accepted_projection) if for_query else {"text": item.text}
+        ),
         "parse_status": item.parse_status,
         "hidden": item.hidden,
         "contains_field_code": item.contains_field_code,
@@ -88,24 +105,28 @@ def _text_block_to_json(item: DocxTextBlock) -> JsonObject:
     }
 
 
-def _table_to_json(item: DocxTable) -> JsonObject:
+def _table_to_json(item: DocxTable, *, for_query: bool) -> JsonObject:
     return {
         "part_path": item.part_path,
         "node_locator": item.node_locator,
         "parse_status": "parsed",
         "grid_widths_twips": list(item.grid_widths_twips),
-        "rows": [[_table_cell_to_json(cell) for cell in row] for row in item.rows],
+        "rows": [
+            [_table_cell_to_json(cell, for_query=for_query) for cell in row] for row in item.rows
+        ],
         "repeat_header_rows": list(item.repeat_header_rows),
         "limitations": ["Rendered table geometry and style inheritance are not computed."],
     }
 
 
-def _table_cell_to_json(item: DocxTableCell) -> JsonObject:
+def _table_cell_to_json(item: DocxTableCell, *, for_query: bool) -> JsonObject:
     return {
         "row_index": item.row_index,
         "cell_index": item.cell_index,
         "node_locator": item.node_locator,
-        "text": item.text,
+        **(
+            _reading_text(item.text, item.accepted_projection) if for_query else {"text": item.text}
+        ),
         "grid_span": item.grid_span,
         "vertical_merge": item.vertical_merge,
         "parse_status": "parsed",
@@ -217,13 +238,15 @@ def _break_to_json(item: DocxBreak) -> JsonObject:
     }
 
 
-def _complex_object_to_json(item: DocxComplexObject) -> JsonObject:
+def _complex_object_to_json(item: DocxComplexObject, source_sha256: str) -> JsonObject:
     limitations = _unique((*item.limitations, "Object semantics are not interpreted or executed."))
     return {
         "part_path": item.part_path,
         "node_locator": item.node_locator,
+        "node_address": xml_element_node_address(source_sha256, item.part_path, item.element_path),
         "paragraph_locator": item.paragraph_locator,
         "kind": item.kind,
+        "in_selected_branch": item.in_selected_branch,
         "relationship_ids": list(item.relationship_ids),
         "related_parts": list(item.related_parts),
         "available_preview": list(item.available_preview),
@@ -234,8 +257,8 @@ def _complex_object_to_json(item: DocxComplexObject) -> JsonObject:
     }
 
 
-def _reference_to_json(item: DocxReference) -> JsonObject:
-    return {
+def _reference_to_json(item: DocxReference, *, for_query: bool) -> JsonObject:
+    result: JsonObject = {
         "part_path": item.part_path,
         "node_locator": item.node_locator,
         "paragraph_locator": item.paragraph_locator,
@@ -247,6 +270,26 @@ def _reference_to_json(item: DocxReference) -> JsonObject:
         "parse_status": item.parse_status,
         "limitations": list(item.limitations),
     }
+    if not for_query or item.kind != "comment_anchor":
+        return result
+    limitations = [
+        value
+        for value in item.limitations
+        if value != "Reference target content is not semantically interpreted."
+    ]
+    if (comment := item.comment) is None:
+        result["parse_status"] = "partial"
+        result["comment"] = None
+        limitations.append("Comment body could not be matched to a unique related Word comment.")
+    else:
+        result["comment"] = {
+            "author": comment.author,
+            "date": comment.date,
+            "node_locator": comment.node_locator,
+            **_reading_text(comment.text, comment.accepted_projection),
+        }
+    result["limitations"] = limitations
+    return result
 
 
 def _numbering_to_json(item: DocxNumbering) -> JsonObject:

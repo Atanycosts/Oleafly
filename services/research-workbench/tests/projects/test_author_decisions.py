@@ -91,6 +91,8 @@ def _rows(database_path: Path) -> dict[str, list[tuple[object, ...]]]:
 def _revert_to_version_1(database_path: Path) -> None:
     """Leave the database in the shape the earlier build wrote, with its rows intact."""
     with closing(sqlite3.connect(database_path)) as connection, connection:
+        connection.execute("DROP TABLE template_candidate_review")
+        connection.execute("DROP TABLE template_candidate_adoption")
         connection.execute("DROP INDEX author_decision_key")
         connection.execute("DROP TABLE author_decision")
         connection.execute("PRAGMA user_version = 1")
@@ -145,10 +147,12 @@ def test_a_version_1_project_is_upgraded_in_place_and_keeps_its_rows(
     assert reopened.get_baseline(baseline_id)["baseline_id"] == baseline_id
     after = _rows(database_path)
     assert "author_decision" in after
+    assert "template_candidate_adoption" in after
+    assert "template_candidate_review" in after
     for table, rows in before.items():
         assert after[table] == rows, table
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_a_newer_storage_version_is_refused_instead_of_interpreted(
@@ -174,7 +178,7 @@ def test_an_opener_holding_the_old_version_survives_another_opener_upgrading_it(
         # The same gate `connect_project` runs, with the version read before the upgrade committed.
         project_database._migrate(stale, 1)
 
-        assert stale.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert stale.execute("PRAGMA user_version").fetchone()[0] == 4
     assert ProjectStore(database_path).list_author_decisions() == []
 
 

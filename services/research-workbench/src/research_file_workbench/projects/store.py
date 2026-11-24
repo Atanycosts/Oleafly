@@ -15,7 +15,9 @@ from research_file_workbench.projects import (
     evidence_records,
     format_records,
     read_records,
+    template_candidate_review_records,
 )
+from research_file_workbench.projects.format_records import FormatSnapshotReference
 from research_file_workbench.projects.models import (
     BaselineConflictError,
     BaselineRequest,
@@ -70,6 +72,8 @@ class ProjectStore:
         confirmation_reason: str,
         evidence: Sequence[JsonObject],
         reader_version: str,
+        original_bytes: bytes | None = None,
+        provenance: JsonObject | None = None,
     ) -> JsonObject:
         """Atomically bind an immutable input after replay and expected-baseline checks."""
         with connect_project(self.database_path) as connection, connection:
@@ -82,6 +86,8 @@ class ProjectStore:
                 confirmation_reason=confirmation_reason,
                 evidence=evidence,
                 reader_version=reader_version,
+                original_bytes=original_bytes,
+                provenance=provenance,
             )
 
     def record_rejection(
@@ -132,10 +138,75 @@ class ProjectStore:
             connection.execute("BEGIN IMMEDIATE")
             return format_records.save_format_snapshot(connection, baseline_id, snapshot)
 
-    def get_format_snapshot(self, baseline_id: str) -> JsonObject:
-        """Read the latest retained core method result for the selected baseline."""
+    def find_format_snapshot_reference(
+        self, baseline_id: str, *, method_version: str | None = None
+    ) -> FormatSnapshotReference | None:
+        """Find the newest exact snapshot registration without reading snapshot bytes."""
         with connect_project(self.database_path) as connection:
-            return format_records.get_format_snapshot(connection, baseline_id)
+            return format_records.find_format_snapshot_reference(
+                connection, baseline_id, method_version=method_version
+            )
+
+    def get_format_snapshot(
+        self,
+        baseline_id: str,
+        *,
+        method_version: str | None = None,
+        reference: FormatSnapshotReference | None = None,
+    ) -> JsonObject:
+        """Read a latest or explicitly referenced core result for the selected baseline."""
+        with connect_project(self.database_path) as connection:
+            return format_records.get_format_snapshot(
+                connection,
+                baseline_id,
+                method_version=method_version,
+                reference=reference,
+            )
+
+    def read_format_snapshot_artifact(self, reference: FormatSnapshotReference) -> bytes:
+        """Read exact registered snapshot bytes after verifying their evidence binding."""
+        with connect_project(self.database_path) as connection:
+            return format_records.read_format_snapshot_artifact(connection, reference)
+
+    def copy_format_snapshot(
+        self,
+        baseline_id: str,
+        reference: FormatSnapshotReference,
+        artifact_bytes: bytes,
+    ) -> FormatSnapshotReference:
+        """Register transferred snapshot bytes for a matching target-baseline source."""
+        with connect_project(self.database_path) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return format_records.copy_format_snapshot(
+                connection, baseline_id, reference, artifact_bytes
+            )
+
+    def get_template_candidate_review(self) -> JsonObject | None:
+        """Return the pending reviewed format candidate for this target project."""
+        with connect_project(self.database_path) as connection:
+            return template_candidate_review_records.get_review(connection)
+
+    def referenced_candidate_project_ids(self) -> frozenset[str]:
+        """Return candidate projects named by this target's pending or adopted review."""
+        with connect_project(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT json_extract(record_json,'$.candidate_project_id') "
+                "FROM template_candidate_review "
+                "UNION "
+                "SELECT json_extract(request_json,'$.candidate_project_id') "
+                "FROM template_candidate_adoption"
+            ).fetchall()
+        return frozenset(value for (value,) in rows if isinstance(value, str) and value)
+
+    def save_template_candidate_review(
+        self, review: JsonObject, expected_candidate_check_id: str | None
+    ) -> JsonObject:
+        """Replace one pending review using its candidate check identity as a CAS."""
+        with connect_project(self.database_path) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return template_candidate_review_records.save_review(
+                connection, review, expected_candidate_check_id
+            )
 
     def save_render_bundle(
         self,

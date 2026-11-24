@@ -68,7 +68,9 @@ where
     )
     .await?;
 
-    let step_limit = if config.allow_long_runs {
+    let step_limit = if config.disable_run_limits {
+        u32::MAX
+    } else if config.allow_long_runs {
         config.max_steps
     } else {
         config.max_steps.min(MAX_AGENT_STEPS)

@@ -43,9 +43,10 @@ import {
 export type Page = TauriPage | BrowserPageAdapter;
 
 export const PROVIDER = "word-manuscript-live";
-export const MODEL = "gpt/gpt-6.1-sol";
+export const MODEL = process.env.OLEAFLY_WORD_MANUSCRIPT_MODEL ?? "gpt/gpt-6.2-sol";
 export const MODEL_EFFORT = "max" as const;
 export const TASK_LIMIT_MINUTES = 20;
+export const TASK_OBSERVATION_TIMEOUT_MS = (TASK_LIMIT_MINUTES * 60 + 5 * 60 + 90) * 1_000;
 
 export interface WordManuscriptSourceHashes {
   template: string;
@@ -286,7 +287,7 @@ export async function waitForTask(page: Page, projectId: string, taskId: string)
     }
     return latest && terminal.has(latest.status) ? latest.status : null;
   }, {
-    timeout: (TASK_LIMIT_MINUTES * 60 + 90) * 1_000,
+    timeout: TASK_OBSERVATION_TIMEOUT_MS,
     intervals: [1_000, 2_000],
   }).not.toBeNull();
   return latest!;

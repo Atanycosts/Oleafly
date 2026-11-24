@@ -32,9 +32,7 @@ from research_file_workbench.docx.report_serializers import (
 from research_file_workbench.docx.report_style_serializers import style_to_json
 
 REPORT_VERSION = "1.0.0"
-# 1.5.0 registers selected VML imagedata as an explicit unsupported observation, so an earlier
-# observation cannot claim complete support for the document's image resources.
-READER_VERSION = "s1-readonly-reader-1.5.0"
+READER_VERSION = "s1-readonly-reader-1.7.0"
 
 # The reader declares unconditional limits (unsupported constructs, part-level regions, no
 # page inference), so a DOCX observation is never complete coverage.  This constant is the
@@ -44,12 +42,13 @@ READER_VERSION = "s1-readonly-reader-1.5.0"
 COVERAGE_STATUS = "partial"
 
 
-def docx_read_result_to_report(result: DocxReadResult) -> JsonObject:
+def docx_read_result_to_report(result: DocxReadResult, *, for_query: bool = False) -> JsonObject:
     """Convert a :class:`DocxReadResult` into a JSON-compatible S1 report.
 
     Every extracted collection is present even when it has no observations.  A
     missing observation is represented by an explicit coverage status or
-    limitation; no empty object is used to claim successful parsing.
+    limitation; no empty object is used to claim successful parsing. The versioned content
+    query has its own text projection; structural reports and source evidence keep the raw facts.
     """
 
     limitations = _unique(
@@ -83,15 +82,19 @@ def docx_read_result_to_report(result: DocxReadResult) -> JsonObject:
         },
         "parts": [_part_to_json(item) for item in result.parts],
         "relationships": [_relationship_to_json(item) for item in result.relationships],
-        "text_blocks": [_text_block_to_json(item) for item in result.text_blocks],
-        "tables": [_table_to_json(item) for item in result.tables],
+        "text_blocks": [
+            _text_block_to_json(item, for_query=for_query) for item in result.text_blocks
+        ],
+        "tables": [_table_to_json(item, for_query=for_query) for item in result.tables],
         "images": [_image_to_json(item) for item in result.images],
         "math_objects": [_math_to_json(item) for item in result.math_objects],
         "fields": [_field_to_json(item) for item in result.fields],
         "sections": [_section_to_json(item) for item in result.sections],
         "breaks": [_break_to_json(item) for item in result.breaks],
-        "complex_objects": [_complex_object_to_json(item) for item in result.complex_objects],
-        "references": [_reference_to_json(item) for item in result.references],
+        "complex_objects": [
+            _complex_object_to_json(item, result.source_sha256) for item in result.complex_objects
+        ],
+        "references": [_reference_to_json(item, for_query=for_query) for item in result.references],
         "styles": [style_to_json(item) for item in result.styles],
         "numbering": [_numbering_to_json(item) for item in result.numbering],
         "unsupported_records": [

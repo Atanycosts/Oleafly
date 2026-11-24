@@ -564,7 +564,6 @@ mod tests {
         assert!(annotation.target.task_id.is_none());
         assert!(!annotation.explicit_request);
         assert!(store.list("paper").unwrap().is_empty());
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
         assert!(store.claim_next().unwrap().is_none());
         assert_eq!(
             list_selections(&store, "paper").unwrap(),
@@ -659,7 +658,6 @@ mod tests {
             "Original feedback"
         );
         assert_eq!(list_selections(&store, "paper").unwrap().len(), 1);
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
         assert!(store.claim_next().unwrap().is_none());
         let pending = store.annotation_deliveries("paper", &task.id).unwrap();
         assert_eq!(pending.len(), 1);
@@ -1100,7 +1098,6 @@ mod tests {
             assert_eq!(task.execution_generation, 0);
             assert_eq!(task.error, None);
             let store = state().store().unwrap();
-            assert!(store.queue_annotation_followups().unwrap().is_empty());
             assert!(store.claim_next().unwrap().is_none());
             let retained = research_task_pdf_selection(state(), task.id.clone())
                 .await

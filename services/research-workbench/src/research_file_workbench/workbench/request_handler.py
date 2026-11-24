@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, cast
 from urllib.parse import parse_qs, urlparse
 
 from research_file_workbench.common.json_io import JsonDocumentError
+from research_file_workbench.docx.models import DocxReadError
+from research_file_workbench.docx.normalization import (
+    DocxNormalizationError,
+    normalize_docx,
+)
+from research_file_workbench.docx.package_query import NodeAddressError
 from research_file_workbench.docx.query import ReadQuery, ReadQueryError
 from research_file_workbench.journals.models import SourceInput, require_keys
 from research_file_workbench.journals.store_records import BindingConflictError, WorldStoreError
@@ -34,6 +41,20 @@ from research_file_workbench.workbench.http_boundary import (
     text,
 )
 from research_file_workbench.workbench.service import ManuscriptUpdateRefused
+from research_file_workbench.workbench.template_candidate_adoption import adopt_template_candidate
+from research_file_workbench.workbench.template_candidate_review import (
+    CandidateReviewConflictError,
+    save_template_candidate_review,
+)
+from research_file_workbench.workbench.template_service import (
+    TemplatePreparationError,
+    adopt_template,
+    check_template,
+    prepare_template,
+    query_document,
+    retain_format,
+    start_template_copy,
+)
 
 if TYPE_CHECKING:
     from research_file_workbench.workbench.server import WorkbenchHttpServer
@@ -84,29 +105,33 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._error(exc)
 
     def do_POST(self) -> None:  # noqa: N802
+        template_transition = False
         try:
             self._require_local_origin()
             self._require_token()
             parsed = urlparse(self.path)
+            template_transition = parsed.path in {
+                "/api/template-prepare",
+                "/api/template-candidate-adopt",
+                "/api/template-candidate-review",
+            }
             require_query_fields(parse_qs(parsed.query, keep_blank_values=True), set())
             payload = self._request_json()
-            from research_file_workbench.workbench.template_service import (
-                adopt_template,
-                check_template,
-                query_document,
-                retain_format,
-                start_template_copy,
-            )
-
             template_routes = {
                 "/api/template-world": adopt_template,
                 "/api/docx-format": retain_format,
                 "/api/template-check": check_template,
+                "/api/template-prepare": prepare_template,
+                "/api/template-candidate-adopt": adopt_template_candidate,
+                "/api/template-candidate-review": save_template_candidate_review,
                 "/api/docx-query": query_document,
                 "/api/template-copy": start_template_copy,
             }
             if parsed.path in template_routes:
                 self._json(template_routes[parsed.path](self.server.service, payload))
+                return
+            if parsed.path == "/api/docx-normalize":
+                self._normalize_docx(payload)
                 return
             routes = {
                 "/api/worlds": self._create_world,
@@ -147,11 +172,31 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._discard_request_body()
             self.close_connection = True
             self._json_error(HTTPStatus.FORBIDDEN, str(exc))
+        except TemplatePreparationError as exc:
+            self._json_error(
+                HTTPStatus.CONFLICT,
+                str(exc),
+                code=exc.code,
+                result={
+                    "action": exc.action,
+                    "retryable_with_same_params": False,
+                    **({"world_version_id": exc.world_version_id} if exc.world_version_id else {}),
+                },
+            )
+        except CandidateReviewConflictError as exc:
+            self._json_error(HTTPStatus.CONFLICT, str(exc), code="candidate_review_conflict")
         except BindingConflictError as exc:
-            self._json_error(HTTPStatus.CONFLICT, str(exc))
+            self._json_error(
+                HTTPStatus.CONFLICT,
+                str(exc),
+                code="binding_conflict" if template_transition else None,
+            )
         except BaselineConflictError as exc:
             self._json_error(
-                HTTPStatus.CONFLICT, "论文版本已变化，请重新读取当前状态。", result=exc.result
+                HTTPStatus.CONFLICT,
+                "论文版本已变化，请重新读取当前状态。",
+                code="baseline_conflict" if template_transition else None,
+                result=exc.result,
             )
         except ManuscriptUpdateRefused as exc:
             self._json_error(HTTPStatus.BAD_REQUEST, str(exc), result=exc.result)
@@ -159,6 +204,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json_error(HTTPStatus.SERVICE_UNAVAILABLE, str(exc), code=exc.code)
         except RenderConversionError as exc:
             self._json_error(HTTPStatus.BAD_GATEWAY, str(exc), code=exc.code)
+        except NodeAddressError as exc:
+            self._json_error(HTTPStatus.BAD_REQUEST, str(exc))
+        except DocxNormalizationError as exc:
+            self._json_error(HTTPStatus.BAD_REQUEST, str(exc), code=exc.code)
+        except DocxReadError as exc:
+            self._json_error(HTTPStatus.BAD_REQUEST, str(exc))
         except ReadQueryError:
             self._json_error(
                 HTTPStatus.BAD_REQUEST,
@@ -200,10 +251,16 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _create_project(self, payload: dict[str, object]) -> None:
-        require_keys(payload, {"name", "filename", "content_base64"})
+        require_keys(payload, {"name", "filename", "content_base64"}, {"role"})
+        role = payload.get("role", "manuscript")
+        if not isinstance(role, str):
+            raise ValueError("论文项目角色无效。")
         self._json(
             self.server.service.import_manuscript(
-                text(payload, "name"), text(payload, "filename"), captured_bytes(payload)
+                text(payload, "name"),
+                text(payload, "filename"),
+                captured_bytes(payload),
+                role=role,
             )
         )
 
@@ -280,7 +337,11 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 "reason",
                 "request_id",
             },
+            {"source_upload"},
         )
+        source_upload = payload.get("source_upload", False)
+        if type(source_upload) is not bool:
+            raise RequestError("source_upload must be a boolean.")
         result = self.server.service.update_manuscript(
             text(payload, "project_id"),
             text(payload, "expected_baseline_id"),
@@ -289,8 +350,24 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             text(payload, "reason"),
             text(payload, "request_id"),
             surface="browser",
+            source_upload=source_upload,
         )
         self._json(result)
+
+    def _normalize_docx(self, payload: dict[str, object]) -> None:
+        require_keys(payload, {"content_base64"})
+        normalized = normalize_docx(captured_bytes(payload), require_word_package=True)
+        changed = normalized.source_sha256 != normalized.original_sha256
+        self._json(
+            {
+                "content_base64": (
+                    base64.b64encode(normalized.content).decode("ascii") if changed else None
+                ),
+                "original_sha256": normalized.original_sha256,
+                "source_sha256": normalized.source_sha256,
+                "provenance": normalized.provenance,
+            }
+        )
 
     def _bind(self, payload: dict[str, object]) -> None:
         require_keys(payload, {"project_id", "world_version_id", "expected_binding_id"})

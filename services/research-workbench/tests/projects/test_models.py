@@ -48,6 +48,25 @@ def test_transport_request_id_does_not_change_business_digest() -> None:
     )
 
 
+def test_strict_original_identity_participates_in_the_request_digest() -> None:
+    request = _request()
+    changed = replace(request, original_sha256="b" * 64)
+    other_original = replace(request, original_sha256="c" * 64)
+
+    assert changed.payload()["artifact_version_ids"] == [
+        "artifact-version-" + "a" * 64,
+        "artifact-version-" + "b" * 64,
+    ]
+    assert set(changed.payload()) == set(request.payload())
+    assert changed.request_digest != request.request_digest
+    assert changed.request_digest != other_original.request_digest
+
+
+def test_changed_source_requires_a_distinct_original_identity() -> None:
+    with pytest.raises(ProjectStoreError, match="changed source"):
+        replace(_request(), original_sha256="a" * 64)
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -70,10 +89,16 @@ def test_request_values_are_immutable() -> None:
         request.source_sha256 = "b" * 64
 
 
-@pytest.mark.parametrize("source_sha256", ["", "a" * 63, "A" * 64, "g" * 64, " a" + "b" * 62])
-def test_request_rejects_invalid_source_hash(source_sha256: str) -> None:
+@pytest.mark.parametrize("source_sha256", [None, "", "a" * 63, "A" * 64, "g" * 64, " a" + "b" * 62])
+def test_request_rejects_invalid_source_hash(source_sha256: str | None) -> None:
     with pytest.raises(ProjectStoreError):
         replace(_request(), source_sha256=source_sha256)
+
+
+@pytest.mark.parametrize("original_sha256", ["", "a" * 63, "A" * 64, "g" * 64])
+def test_request_rejects_invalid_original_hash(original_sha256: str) -> None:
+    with pytest.raises(ProjectStoreError):
+        replace(_request(), original_sha256=original_sha256)
 
 
 def test_request_requires_project_identity_even_when_expected_baseline_is_optional() -> None:

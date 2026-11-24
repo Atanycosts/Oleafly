@@ -118,6 +118,12 @@ pub fn guard_export_dest(dest: &str) -> Result<(), String> {
 
 static ATOMIC_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+enum PublishMode {
+    Replace,
+    NewDocx,
+    Export,
+}
+
 pub struct AtomicFile {
     parent: PathBuf,
     parent_identity: same_file::Handle,
@@ -125,16 +131,17 @@ pub struct AtomicFile {
     staging: PathBuf,
     staging_file: Option<File>,
     committed: bool,
+    create_only: bool,
     preserve_metadata: bool,
     keep_staging: bool,
 }
 
 impl AtomicFile {
     pub fn new(destination: &Path) -> Result<Self, String> {
-        Self::create(destination).map_err(String::from)
+        Self::create(destination, PublishMode::Replace).map_err(String::from)
     }
 
-    fn create(destination: &Path) -> Result<Self, WriteFailure> {
+    fn create(destination: &Path, mode: PublishMode) -> Result<Self, WriteFailure> {
         let requested_parent = destination
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -152,6 +159,17 @@ impl AtomicFile {
             .and_then(std::ffi::OsStr::to_str)
             .ok_or_else(|| "file destination name is not valid Unicode".to_string())?;
         let destination = parent.join(name);
+        let create_only = match mode {
+            PublishMode::Replace => false,
+            PublishMode::NewDocx => true,
+            PublishMode::Export => {
+                oleafly_core::word_source::is_docx_target(&destination)
+                    && crate::project::is_project_export_directory(&parent)?
+            }
+        };
+        if create_only {
+            crate::project::require_new_docx_destination(&destination)?;
+        }
 
         for _ in 0..10_000 {
             let sequence = ATOMIC_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -175,6 +193,7 @@ impl AtomicFile {
                         staging,
                         staging_file: Some(file),
                         committed: false,
+                        create_only,
                         preserve_metadata: false,
                         keep_staging: false,
                     });
@@ -190,7 +209,7 @@ impl AtomicFile {
 
     pub fn for_export(destination: &str) -> Result<Self, String> {
         guard_export_dest(destination)?;
-        Self::new(Path::new(destination))
+        Self::create(Path::new(destination), PublishMode::Export).map_err(String::from)
     }
 
     pub fn staging_path(&self) -> &Path {
@@ -234,7 +253,7 @@ impl AtomicFile {
             return Err("staged artifact changed before publish".into());
         }
         if let Ok(existing) = std::fs::symlink_metadata(&self.destination) {
-            if existing.is_file() && !existing.file_type().is_symlink() {
+            if !self.create_only && existing.is_file() && !existing.file_type().is_symlink() {
                 staging_file
                     .set_permissions(existing.permissions())
                     .map_err(|error| {
@@ -252,12 +271,18 @@ impl AtomicFile {
         drop(bound_staging);
         drop(current_staging);
         drop(self.staging_file.take());
-        let published = if self.preserve_metadata {
+        let published = if self.create_only {
+            crate::project::rename_exclusive(&self.staging, &self.destination)
+                .map_err(ReplaceFailure::intact)
+        } else if self.preserve_metadata {
             replace_file_preserving(&self.staging, &self.destination)
         } else {
             replace_file(&self.staging, &self.destination).map_err(ReplaceFailure::intact)
         };
         if let Err(failure) = published {
+            if self.create_only && failure.error.kind() == std::io::ErrorKind::AlreadyExists {
+                return Err(oleafly_core::word_source::WRITE_REFUSED.into());
+            }
             if failure.staging_is_only_copy {
                 self.keep_staging = true;
                 return Err(format!(
@@ -305,12 +330,24 @@ pub fn atomic_write(destination: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 pub(crate) fn write_atomically(destination: &Path, bytes: &[u8]) -> Result<(), WriteFailure> {
-    let mut transaction = AtomicFile::create(destination)?;
+    stage_bytes(destination, bytes, PublishMode::Replace)?.publish()
+}
+
+pub(crate) fn atomic_create_docx(destination: &Path, bytes: &[u8]) -> Result<(), WriteFailure> {
+    stage_bytes(destination, bytes, PublishMode::NewDocx)?.publish()
+}
+
+fn stage_bytes(
+    destination: &Path,
+    bytes: &[u8],
+    mode: PublishMode,
+) -> Result<AtomicFile, WriteFailure> {
+    let mut transaction = AtomicFile::create(destination, mode)?;
     transaction
         .staging_file_mut()
         .write_all(bytes)
         .map_err(|error| WriteFailure::io("failed to write staged file", error))?;
-    transaction.publish()
+    Ok(transaction)
 }
 
 pub(crate) fn atomic_write_preserving(
@@ -324,7 +361,7 @@ pub(crate) fn atomic_write_preserving(
     if existing.is_some_and(|metadata| link_count(destination, &metadata) > 1) {
         return write_through_links(destination, bytes, &backups()?);
     }
-    let mut transaction = AtomicFile::create(destination)?;
+    let mut transaction = AtomicFile::create(destination, PublishMode::Replace)?;
     transaction.preserve_metadata = true;
     transaction
         .staging_file_mut()
@@ -668,6 +705,21 @@ mod tests {
         let ok = root.join("out.pdf");
         assert!(guard_export_dest(&ok.to_string_lossy()).is_ok());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn docx_create_only_publish_preserves_a_file_that_arrives_after_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("source.docx");
+        let staged = stage_bytes(&target, b"draft package", PublishMode::NewDocx).unwrap();
+        std::fs::write(&target, b"original package").unwrap();
+
+        assert_eq!(
+            staged.commit().unwrap_err(),
+            oleafly_core::word_source::WRITE_REFUSED
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"original package");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

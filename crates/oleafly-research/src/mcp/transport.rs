@@ -130,16 +130,26 @@ pub(super) async fn call(
     if context.closed.load(Ordering::Acquire) {
         return Err("This research session has closed.".into());
     }
-    if let Some(binding) = context
+    let task = context
         .task
         .as_ref()
-        .filter(|_| tools::is_task_tool(context, name))
-    {
-        let _permit = context
-            .slots
-            .try_acquire()
-            .map_err(|_| "The research session is busy or has closed.".to_string())?;
-        let mut stopped = context.shutdown.clone();
+        .filter(|_| tools::is_task_tool(context, name));
+    let application = context.services.application.as_ref().filter(|application| {
+        application
+            .definitions()
+            .iter()
+            .any(|tool| tool.name == name)
+    });
+    if task.is_none() && application.is_none() {
+        tools::validate(name, arguments)?;
+    }
+    let _permit = context
+        .slots
+        .acquire()
+        .await
+        .map_err(|_| "This research session has closed.".to_string())?;
+    let mut stopped = context.shutdown.clone();
+    if let Some(binding) = task {
         let operation = call_task_tool(name, arguments.clone(), binding);
         return tokio::select! {
             biased;
@@ -152,17 +162,7 @@ pub(super) async fn call(
             }
         };
     }
-    if let Some(application) = context.services.application.as_ref().filter(|application| {
-        application
-            .definitions()
-            .iter()
-            .any(|tool| tool.name == name)
-    }) {
-        let _permit = context
-            .slots
-            .try_acquire()
-            .map_err(|_| "The research session is busy or has closed.".to_string())?;
-        let mut stopped = context.shutdown.clone();
+    if let Some(application) = application {
         let operation = application.call_content(name.into(), arguments.clone());
         return tokio::select! {
             biased;
@@ -172,12 +172,6 @@ pub(super) async fn call(
             }
         };
     }
-    tools::validate(name, arguments)?;
-    let _permit = context
-        .slots
-        .try_acquire()
-        .map_err(|_| "The research session is busy or has closed.".to_string())?;
-    let mut stopped = context.shutdown.clone();
     let operation = tools::execute(context.clone(), name.into(), arguments.clone());
     tokio::select! {
         biased;

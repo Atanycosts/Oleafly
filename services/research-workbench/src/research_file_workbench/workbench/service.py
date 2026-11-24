@@ -10,7 +10,7 @@ from uuid import uuid4
 from research_file_workbench.common.clock import utc_now_iso
 from research_file_workbench.common.filesystem import require_no_reparse_points, require_within
 from research_file_workbench.common.hashing import sha256_bytes
-from research_file_workbench.common.json_io import JsonObject, write_json_object
+from research_file_workbench.common.json_io import JsonObject, decode_json_object, write_json_object
 from research_file_workbench.docx.query import ReadQuery
 from research_file_workbench.docx.read_receipt import ReadCaller
 from research_file_workbench.docx.reader import read_docx_bytes
@@ -18,15 +18,16 @@ from research_file_workbench.docx.report import READER_VERSION
 from research_file_workbench.journals import models
 from research_file_workbench.journals.analysis import analyze_world
 from research_file_workbench.journals.checker import check_world
-from research_file_workbench.journals.models import CHECKER_VERSION, SourceInput
+from research_file_workbench.journals.models import CHECKER_VERSION, SourceInput, require_objects
 from research_file_workbench.journals.revisions import revise_rule
 from research_file_workbench.journals.store import WorldStore
-from research_file_workbench.projects.models import BaselineConflictError
+from research_file_workbench.projects.models import BaselineConflictError, require_project_role
 from research_file_workbench.projects.service import (
     create_project,
     import_captured_document,
     open_project,
 )
+from research_file_workbench.workbench.finding_queries import FindingQueryView
 from research_file_workbench.workbench.manuscripts import manuscript_source, read_manuscript
 from research_file_workbench.workbench.project_facade import (
     diff_worlds,
@@ -34,6 +35,8 @@ from research_file_workbench.workbench.project_facade import (
     history_details,
     manuscript_details,
     project_details,
+    project_paths,
+    referenced_candidate_project_ids,
 )
 
 
@@ -54,6 +57,13 @@ class WorkbenchService:
         self.root = root.resolve()
         self.font_dirs = font_dirs
         self._render_lock = threading.Lock()
+        self._template_findings_lock = threading.Lock()
+        self._template_findings: tuple[str, str, list[JsonObject]] | None = None
+        self._template_snapshot_lock = threading.Lock()
+        self._template_snapshot: tuple[str, str, str, str, JsonObject] | None = None
+        self._finding_query_lock = threading.Lock()
+        self._finding_query_view: tuple[str, FindingQueryView] | None = None
+        self._finding_query_snapshot: tuple[str, JsonObject] | None = None
 
     @classmethod
     def create(
@@ -165,9 +175,11 @@ class WorkbenchService:
         surface: str = "browser",
         project_id: str | None = None,
         reason: str | None = None,
+        role: str = "manuscript",
     ) -> JsonObject:
         """Retain an uploaded DOCX in a managed project; no client source path is written."""
         _surface(surface)
+        role = require_project_role(role)
         display_name = _display_name(name)
         filename = _name(filename)
         if Path(filename).suffix.lower() != ".docx":
@@ -206,11 +218,17 @@ class WorkbenchService:
                     expected_baseline_id=None,
                     confirmation_reason=reason
                     or (f"Captured from the {surface} surface for read-only journal checking."),
+                    source_upload=True,
                 )
                 if outcome.get("status") != "APPLIED":
                     raise ValueError("论文版本未能保存，请检查导入结果。")
                 write_json_object(
-                    staged_project / "display.json", {"name": display_name, "filename": filename}
+                    staged_project / "display.json",
+                    {
+                        "name": display_name,
+                        "filename": filename,
+                        **({"role": role} if role != "manuscript" else {}),
+                    },
                 )
                 self.store.validate_library()
                 require_no_reparse_points(project_root)
@@ -222,20 +240,35 @@ class WorkbenchService:
                     require_no_reparse_points(source_root)
                     require_within(source_root, self.root / "inputs")
                     shutil.rmtree(source_root)
-        return self.project(identity)
+        project = self.project(identity)
+        baseline = open_project(project_root).get_baseline(str(outcome["result_baseline_id"]))
+        return {
+            **project,
+            "source_sha256": baseline["source_sha256"],
+            "original_sha256": sha256_bytes(content),
+        }
 
     def project(self, project_id: str) -> JsonObject:
         """Return a managed project identity with its explicit binding and last check."""
+        candidate_ids = referenced_candidate_project_ids(project_paths(self.root))
+        return self._project(project_id, candidate_ids)
+
+    def _project(self, project_id: str, legacy_candidate_ids: frozenset[str]) -> JsonObject:
         return project_details(
             project_id=project_id,
             project_root=self.project_root,
             store=self.store,
-            check_record=self.check_record,
+            check_record=self.check_record_metadata,
+            legacy_candidate_ids=legacy_candidate_ids,
         )
 
     def state(self) -> JsonObject:
         """Return discovery metadata; discovery never records a content read or review."""
-        return discover_state(root=self.root, store=self.store, project_lookup=self.project)
+        return discover_state(root=self.root, store=self.store, project_lookup=self._project)
+
+    def world_metadata(self, version_id: str) -> JsonObject:
+        """Read exact world metadata without requiring readable retained sources."""
+        return self.store.get_world_metadata(version_id)
 
     def review(self, version_id: str) -> JsonObject:
         """Build source-bound review units without changing any world or check record."""
@@ -332,7 +365,7 @@ class WorkbenchService:
         return history_details(
             project_id=project_id,
             project_lookup=self.project,
-            check_record=self.check_record,
+            check_record=self.check_record_metadata,
             store=self.store,
             project_root=self.project_root,
         )
@@ -375,6 +408,7 @@ class WorkbenchService:
         request_id: str,
         *,
         surface: str = "browser",
+        source_upload: bool = False,
     ) -> JsonObject:
         """Retain an explicitly confirmed source update and leave old checks historical.
 
@@ -391,6 +425,7 @@ class WorkbenchService:
             request_id=request_id,
             expected_baseline_id=expected_baseline_id,
             confirmation_reason=f"Captured from the {surface} surface: {reason}",
+            source_upload=source_upload,
         )
         status = result.get("status")
         if status == "APPLIED":
@@ -512,6 +547,103 @@ class WorkbenchService:
     def check_record(self, check_id: str) -> JsonObject:
         """Derive current applicability without rewriting the historical check verdicts."""
         record = self.store.get_check(check_id)
+        return self._present_check(record, verify_sources=True)
+
+    def retained_template_findings(
+        self, project_id: str, artifact_version_id: str
+    ) -> list[JsonObject]:
+        """Return one verified immutable findings artifact from the single-entry cache."""
+        with self._template_findings_lock:
+            if (
+                self._template_findings is not None
+                and self._template_findings[0] == project_id
+                and self._template_findings[1] == artifact_version_id
+            ):
+                return self._template_findings[2]
+            self._template_findings = None
+            project = open_project(self.project_root(project_id))
+            retained = decode_json_object(project.read_artifact(artifact_version_id))
+            findings = require_objects(retained.get("findings"), "retained findings")
+            self._template_findings = (project_id, artifact_version_id, findings)
+            return findings
+
+    def prime_template_findings(
+        self,
+        project_id: str,
+        artifact_version_id: str,
+        findings: list[JsonObject],
+        *,
+        check_id: str,
+        snapshot: JsonObject,
+    ) -> None:
+        """Keep the committed facts available for the deferred review projection."""
+        with self._template_findings_lock:
+            self._template_findings = (project_id, artifact_version_id, findings)
+        with self._finding_query_lock:
+            self._finding_query_snapshot = (check_id, snapshot)
+
+    def cached_check_snapshot(self, check_id: str) -> JsonObject | None:
+        with self._finding_query_lock:
+            cached = self._finding_query_snapshot
+            return cached[1] if cached is not None and cached[0] == check_id else None
+
+    def cached_template_snapshot(
+        self,
+        version_id: str,
+        snapshot_source_id: str,
+        snapshot_sha256: str,
+        method: str,
+    ) -> JsonObject | None:
+        """Read the one cached parsed snapshot only when all source identities match."""
+        with self._template_snapshot_lock:
+            if self._template_snapshot is not None and self._template_snapshot[:4] == (
+                version_id,
+                snapshot_source_id,
+                snapshot_sha256,
+                method,
+            ):
+                return self._template_snapshot[4]
+            self._template_snapshot = None
+            return None
+
+    def cache_template_snapshot(
+        self,
+        version_id: str,
+        snapshot_source_id: str,
+        snapshot_sha256: str,
+        method: str,
+        snapshot: JsonObject,
+    ) -> None:
+        """Replace the single cached parsed snapshot after its source was validated."""
+        with self._template_snapshot_lock:
+            self._template_snapshot = (
+                version_id,
+                snapshot_source_id,
+                snapshot_sha256,
+                method,
+                snapshot,
+            )
+
+    def cached_finding_query_view(self, check_id: str) -> FindingQueryView | None:
+        with self._finding_query_lock:
+            if self._finding_query_view is not None and self._finding_query_view[0] == check_id:
+                return self._finding_query_view[1]
+            return None
+
+    def cache_finding_query_view(self, check_id: str, view: FindingQueryView) -> None:
+        with self._finding_query_lock:
+            self._finding_query_view = (check_id, view)
+            pending = self._finding_query_snapshot
+            if pending is not None and pending[0] == check_id:
+                self._finding_query_snapshot = None
+
+    def check_record_metadata(self, check_id: str) -> JsonObject:
+        """Derive historical presentation without requiring readable world or artifact bytes."""
+        record = self.store.get_check_metadata(check_id)
+        return self._present_check(record, verify_sources=False)
+
+    def _present_check(self, record: JsonObject, *, verify_sources: bool) -> JsonObject:
+        """Join one retained check to its current project and exact world metadata."""
         project_id = _text(record, "project_id")
         baseline = open_project(self.project_root(project_id)).get_baseline()
         binding = self.store.get_binding(project_id)
@@ -533,9 +665,14 @@ class WorkbenchService:
             reasons.append("checker_version_changed")
         if record.get("reader_version") != (SNAPSHOT_METHOD if template_check else READER_VERSION):
             reasons.append("reader_version_changed")
-        artifact = f"artifact-version-{_text(record, 'source_sha256')}"
-        open_project(self.project_root(project_id)).read_artifact(artifact)
-        world = self.store.get_world(_text(record, "world_version_id"))
+        if verify_sources:
+            artifact = f"artifact-version-{_text(record, 'source_sha256')}"
+            open_project(self.project_root(project_id)).read_artifact(artifact)
+            world = self.store.get_world(_text(record, "world_version_id"))
+            dispositions = self.store.list_dispositions(_text(record, "check_id"))
+        else:
+            world = self.store.get_world_metadata(_text(record, "world_version_id"))
+            dispositions = self.store.list_dispositions_metadata(_text(record, "check_id"))
         if world["analyzer_version"] != (
             TEMPLATE_ANALYZER_VERSION if template_check else models.ANALYZER_VERSION
         ):
@@ -551,7 +688,7 @@ class WorkbenchService:
             "validity": "STALE" if reasons else "CURRENT",
             "stale_reasons": reasons,
             "update_available": update,
-            "dispositions": self.store.list_dispositions(check_id),
+            "dispositions": dispositions,
         }
 
     def disposition(

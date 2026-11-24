@@ -118,7 +118,8 @@ def test_region_query_returns_only_selected_region_text(
     assert {item["region"] for item in items} == {region}
     assert {item["object_type"] for item in items} == {"text_block"}
     assert [item["node_locator"] for item in items] == [block.node_locator for block in expected]
-    assert [cast(JsonObject, item["content"])["text"] for item in items] == [
+    contents = [cast(JsonObject, item["content"]) for item in items]
+    assert [content.get("source_text", content["text"]) for content in contents] == [
         block.text for block in expected
     ]
     assert response["query_scope"] == {
@@ -578,7 +579,7 @@ def test_cursor_from_the_previous_query_method_is_rejected(
 
     query = ReadQuery(page_size=2)
     with monkeypatch.context() as historical:
-        historical.setattr(query_module, "QUERY_VERSION", "s1-read-query-1.5.0")
+        historical.setattr(query_module, "QUERY_VERSION", "s1-read-query-1.7.0")
         cursor = cast(str, _pagination(_query(regions_document, query))["next_cursor"])
     with pytest.raises(ReadQueryError, match="method.*changed"):
         _query(regions_document, replace(query, cursor=cursor))

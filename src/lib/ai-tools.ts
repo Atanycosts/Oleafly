@@ -7,8 +7,8 @@ import {
   readFileContent,
   writeFileContent,
   createFile,
-  deleteFile,
-  renameFile as renameFileCmd,
+  agentDeleteFile,
+  agentRenameFile as agentRenameFileCmd,
   listFiles,
   searchProject,
   compileIsolated,
@@ -325,13 +325,13 @@ const HOST: AiToolsHost = {
   },
   deleteFile: async (projectId, path, expectedGeneration) => {
     assertFolderWritable(projectId);
-    const result = await deleteFile(projectId, path, expectedGeneration);
+    const result = await agentDeleteFile(projectId, path, expectedGeneration);
     recordMutationResult(projectId, result);
     return result;
   },
   renameFile: async (projectId, from, to, expectedGeneration) => {
     assertFolderWritable(projectId);
-    const path = await renameFileCmd(projectId, from, to, "error", expectedGeneration);
+    const path = await agentRenameFileCmd(projectId, from, to, "error", expectedGeneration);
     const generation = await projectMutationGeneration(projectId).catch(() => null);
     if (generation !== null) {
       useFilesStore.getState().recordMutationGeneration(projectId, generation);

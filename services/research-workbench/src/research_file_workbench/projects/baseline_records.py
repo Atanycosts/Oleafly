@@ -34,6 +34,8 @@ def apply_baseline(
     confirmation_reason: str,
     evidence: Sequence[JsonObject],
     reader_version: str,
+    original_bytes: bytes | None = None,
+    provenance: JsonObject | None = None,
 ) -> JsonObject:
     """Apply one replay-safe baseline decision on the caller's transaction."""
     project = project_info(connection)
@@ -69,10 +71,18 @@ def apply_baseline(
             reader_version=reader_version,
             previous=previous,
             now=now,
+            original_bytes=original_bytes,
+            provenance=provenance,
         )
         result.update(
             status="APPLIED", result_baseline_id=baseline_id, invalidated_refs=invalidated
         )
+        if request.original_sha256 is not None:
+            result.update(
+                original_sha256=request.original_sha256,
+                original_artifact_version_id=f"artifact-version-{request.original_sha256}",
+                provenance=provenance,
+            )
     save_request(connection, request, source_path, confirmation_reason, result)
     return result
 
@@ -88,11 +98,26 @@ def _commit_baseline(
     reader_version: str,
     previous: object,
     now: str,
+    original_bytes: bytes | None,
+    provenance: JsonObject | None,
 ) -> tuple[str, list[str]]:
     """Persist artifact, baseline, evidence and current pointer as one unit."""
     artifact_records.store_blob(
         connection, request.artifact_version_id, request.source_sha256, source_bytes
     )
+    original_sha256 = request.original_sha256
+    if original_sha256 is not None:
+        if original_bytes is None:
+            raise ProjectStoreError("Original source bytes are required for a changed source")
+        artifact_records.store_blob(
+            connection,
+            f"artifact-version-{original_sha256}",
+            original_sha256,
+            original_bytes,
+        )
+        provenance = _conversion_provenance(provenance, request.source_sha256)
+    elif original_bytes is not None or provenance is not None:
+        raise ProjectStoreError("Original source metadata requires a changed source identity")
     baseline_id = f"baseline-{uuid.uuid4().hex}"
     baseline: JsonObject = {
         "baseline_id": baseline_id,
@@ -108,6 +133,12 @@ def _commit_baseline(
         "confirmation_reason": confirmation_reason,
         "created_at": now,
     }
+    if original_sha256 is not None:
+        baseline.update(
+            original_sha256=original_sha256,
+            original_artifact_version_id=f"artifact-version-{original_sha256}",
+            provenance=provenance,
+        )
     connection.execute(
         "INSERT INTO baseline VALUES (?,?,?)",
         (baseline_id, request.artifact_version_id, encode_json_object(baseline)),
@@ -279,8 +310,36 @@ def _verified_baseline(connection: sqlite3.Connection, row: sqlite3.Row) -> Json
         raise ProjectStoreError("Stored baseline references a missing artifact")
     if record.get("source_sha256") != row["artifact_sha256"]:
         raise ProjectStoreError("Stored baseline source hash differs from its retained artifact")
+    original_sha256 = record.get("original_sha256")
+    original_artifact = record.get("original_artifact_version_id")
+    provenance = record.get("provenance")
+    if original_sha256 is None:
+        if original_artifact is not None or provenance is not None:
+            raise ProjectStoreError("Ordinary baseline contains changed-source metadata")
+    else:
+        if original_sha256 == record["source_sha256"]:
+            raise ProjectStoreError("Changed-source identity matches its normalized source")
+        if original_artifact != f"artifact-version-{original_sha256}":
+            raise ProjectStoreError("Stored baseline original identity is invalid")
+        read_artifact(connection, str(original_artifact))
+        _conversion_provenance(provenance, str(record["source_sha256"]))
     read_artifact(connection, row["artifact_version_id"])
     return record
+
+
+def _conversion_provenance(provenance: object, source_sha256: str) -> JsonObject:
+    """Require complete conversion provenance tied to the retained derivative."""
+    if not isinstance(provenance, dict):
+        raise ProjectStoreError("Changed source bytes require conversion provenance")
+    if set(provenance) != {"engine", "version", "method", "converted_sha256"}:
+        raise ProjectStoreError("Conversion provenance has an invalid shape")
+    for name in ("engine", "version", "method"):
+        value = provenance[name]
+        if not isinstance(value, str) or not value.strip():
+            raise ProjectStoreError(f"Conversion provenance {name} is invalid")
+    if provenance["converted_sha256"] != source_sha256:
+        raise ProjectStoreError("Conversion provenance identifies different source bytes")
+    return provenance
 
 
 def get_request(connection: sqlite3.Connection, actor_id: str, request_id: str) -> JsonObject:

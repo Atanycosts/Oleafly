@@ -6,6 +6,7 @@ import type { AnnotationTarget } from "@/lib/task-collaboration";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
 import { useFilesStore } from "@/store/files";
 import { useDocxWorkspaceStore } from "@/store/docx-workspace";
+import { useMaterialViewerStore } from "@/store/material-viewer";
 import { useResearchTasksStore } from "@/store/research-tasks";
 import { useSettingsStore } from "@/store/settings";
 import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
@@ -118,6 +119,7 @@ beforeEach(() => {
   api.target.mockReset();
   useFilesStore.setState({ projectId: "paper" });
   useDocxWorkspaceStore.getState().close();
+  useMaterialViewerStore.getState().close();
   useDocxWorkspaceStore.setState({ savedVersion: 0 });
   useWorkspaceSurfaceStore.setState({
     active: "files",
@@ -235,20 +237,38 @@ it("keeps the sidebar busy state while another surface is shown and releases it 
   state.resolve({ worlds: [], projects: [] });
 });
 
-it("recovers from a failed Journal runtime connection with the entered Python path", async () => {
+it("retries the bundled Journal runtime without asking for a Python path", async () => {
   api.connect.mockRejectedValueOnce(new Error("Journal runtime is unavailable"));
   render(<JournalWorkspaceHarness />);
 
   expect(await screen.findByRole("alert")).toHaveTextContent("Journal runtime is unavailable");
-  const runtime = screen.getByLabelText(text.python);
-  expect(runtime).toHaveValue("");
-  fireEvent.change(runtime, { target: { value: "/opt/oleafly/python" } });
-  fireEvent.click(screen.getByRole("button", { name: text.connect }));
+  expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: text.retry }));
 
   expect(await screen.findByRole("heading", { name: "Example Journal" })).toBeInTheDocument();
-  expect(api.connect).toHaveBeenLastCalledWith("/opt/oleafly/python");
+  expect(api.connect).toHaveBeenLastCalledWith();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(sidebar().getByRole("combobox", { name: text.manuscript })).toHaveValue("manuscript");
+});
+
+it("clears an old selection excluded from manuscript discovery and allows a new association", async () => {
+  api.workspace.mockResolvedValue({ journalProjectId: "old-format-candidate" });
+  render(<JournalWorkspaceHarness />);
+
+  const select = within(await screen.findByTestId("journal-checks-panel"))
+    .getByRole("combobox", { name: text.manuscript });
+  await waitFor(() => expect(select).toBeEnabled());
+  expect(select).toHaveValue("");
+  expect(within(select).getAllByRole("option").map((option) => option.getAttribute("value")))
+    .toEqual(["", "manuscript"]);
+  expect(api.request.mock.calls.some(([path]) => path.startsWith("/api/history"))).toBe(false);
+  expect(api.invoke).not.toHaveBeenCalled();
+
+  fireEvent.change(select, { target: { value: "manuscript" } });
+  await waitFor(() => expect(select).toHaveValue("manuscript"));
+  expect(api.invoke).toHaveBeenCalledExactlyOnceWith("journal_workbench_link", {
+    projectId: "paper", workbenchProjectId: "manuscript",
+  });
 });
 
 it("hands a reviewed check to the assistant as an editable request after provider setup", async () => {
@@ -312,8 +332,8 @@ it.each(["provider setup", "retained review"] as const)("discards an assistant h
   expect(api.handoff).toHaveBeenCalledWith(expect.stringContaining(secondWorld.journal_name), { autoSend: false });
 });
 
-it("shows readable template comparison details in the center", async () => {
-  const templateWorld: JournalWorld = { ...world, template: {
+it("opens grouped comparison details and jumps to the manuscript retained by the selected check", async () => {
+  const templateWorld: JournalWorld = { ...world, version_id: "world-old", version_ordinal: 1, template: {
     source_id: "original-template",
     normalized_source_id: "normalized-template",
     snapshot_source_id: "template-facts",
@@ -321,49 +341,75 @@ it("shows readable template comparison details in the center", async () => {
     original_sha256: "b".repeat(64),
     provenance: null,
   } };
-  const templateCheck = {
+  const sourceSha = "c".repeat(64);
+  const templateCheck: JournalCheck = {
     ...checked(templateWorld.version_id, "template-check"),
-    template_comparison: {},
+    world: templateWorld,
+    baseline_id: "baseline-checked",
+    validity: "STALE",
+    template_comparison: { source_sha256: sourceSha },
   };
   const originalRequest = api.request.getMockImplementation();
   if (!originalRequest) throw new Error("Expected the journal request fixture");
   api.request.mockImplementation(async (path: string, payload?: unknown) => {
-    if (path === "/api/docx-query") {
-      return {
-        findings: [{
-          case_id: "case-font",
-          role: "body",
-          property_path: "run.fontSizePt",
-          observed: 10,
-          expected: 12,
-          verdict: "observed_difference",
-        }],
-        total: 1,
-        next_offset: null,
-      };
-    }
-    const response = await originalRequest(path, payload);
     const url = new URL(path, "http://workbench");
-    if (url.pathname === "/api/state") {
-      return {
-        ...response,
-        worlds: [templateWorld],
-        projects: response.projects.map((project: JournalProject) => ({
-          ...project,
-          latest_check: templateCheck,
-        })),
-      };
+    if (path === "/api/docx-query") {
+      const counts = { observed_match: 0, observed_difference: 1, cannot_determine: 0 };
+      switch ((payload as { operation: string }).operation) {
+        case "finding_groups": return {
+          groups: [{ id: "body-size", category: "body", action: "size", counts, location_count: 1 }],
+        };
+        case "finding_locations": return {
+          locations: [{ id: "opening", para_id: "old-para", label: "Opening paragraph", counts }],
+          total: 1, next_offset: null,
+        };
+        case "findings": return {
+          findings: [{
+            case_id: "case-font", role: "body", property_path: "run.fontSizePt",
+            observed: 10, expected: 12, verdict: "observed_difference",
+          }],
+          total: 1, next_offset: null,
+        };
+        default: throw new Error("Unexpected finding query");
+      }
     }
-    if (url.pathname === "/api/world") return templateWorld;
-    if (url.pathname === "/api/history") return { checks: [templateCheck] };
+    if (path === "/api/manuscript-source?project_id=manuscript&baseline_id=baseline-checked") return {
+      project_id: "manuscript", baseline_id: "baseline-checked", source_sha256: sourceSha,
+      filename: "paper.docx", content_base64: "AQID",
+    };
+    const response = await originalRequest(path, payload);
+    if (url.pathname === "/api/world" && url.searchParams.get("version_id") === "world-old") return templateWorld;
+    if (url.pathname === "/api/history") return { checks: [templateCheck, checked("world-current", "check-current")] };
     return response;
   });
   render(<JournalWorkspaceHarness />);
   const workspace = screen.getByTestId("journal-workspace");
+  fireEvent.click(await within(workspace).findByRole("button", { name: /Example Journal · v1/ }));
+  const group = await within(workspace).findByTestId("docx-finding-group-body-size");
+  const target = { check_id: "template-check" };
+  expect(api.request.mock.calls.filter(([path]) => path === "/api/docx-query")).toEqual([
+    ["/api/docx-query", { operation: "finding_groups", target }],
+  ]);
+  fireEvent.click(group);
+  const location = await within(workspace).findByRole("button", { name: "Opening paragraph" });
+  expect(api.request).toHaveBeenLastCalledWith("/api/docx-query", {
+    operation: "finding_locations", target, group_id: "body-size", verdict: "observed_difference", offset: 0, limit: 20,
+  });
+  fireEvent.click(location);
   expect(await within(workspace).findByText("Manuscript: 10 pt")).toBeInTheDocument();
   expect(within(workspace).getByText("Template: 12 pt")).toBeInTheDocument();
+  expect(api.request).toHaveBeenLastCalledWith("/api/docx-query", {
+    operation: "findings", target, group_id: "body-size", location_id: "opening", verdict: "observed_difference", offset: 0, limit: 20,
+  });
   expect(within(workspace).queryByText("case-font")).not.toBeInTheDocument();
   expect(within(workspace).queryByText("run.fontSizePt")).not.toBeInTheDocument();
+  fireEvent.click(within(workspace).getByRole("button", { name: en.docx.findingReview.openLocation }));
+  const retained = useMaterialViewerStore.getState().request;
+  expect(retained).toMatchObject({
+    kind: "docx", role: "checked", revision: sourceSha,
+    anchor: { kind: "object", id: "paragraph:old-para", label: "Opening paragraph" },
+  });
+  expect(await retained?.load()).toEqual(Uint8Array.of(1, 2, 3));
 });
 
 it("keeps an explicit manuscript binding without selecting another journal world", async () => {
@@ -581,6 +627,57 @@ it("updates the open copy context when the rail selects another journal world", 
   expect(useDocxWorkspaceStore.getState().request).toBe(opened);
   expect(useDocxWorkspaceStore.getState().context?.onSaved).toBe(onSaved);
   expect(screen.getByTestId("journal-world-select")).toHaveValue("world-old");
+});
+
+it("selects an imported template in the open working copy without adopting its binding", async () => {
+  const templateWorld: JournalWorld = {
+    ...world,
+    version_id: "world-template",
+    version_ordinal: 3,
+    template: {
+      source_id: "original-template",
+      normalized_source_id: "normalized-template",
+      snapshot_source_id: "template-facts",
+      source_sha256: "a".repeat(64),
+      original_sha256: "b".repeat(64),
+      provenance: null,
+    },
+  };
+  const manuscript: JournalProject = {
+    project_id: "manuscript",
+    name: "Retained manuscript",
+    baseline_id: "baseline",
+    binding: { binding_id: "binding", baseline_id: "baseline", world_version_id: "world-current" },
+    latest_check: checked("world-current", "check-current"),
+  };
+  api.templateImport.mockResolvedValueOnce(templateWorld);
+  api.request.mockImplementation(async (path: string) => {
+    const url = new URL(path, "http://workbench");
+    if (url.pathname === "/api/state") return { worlds: [world, templateWorld], projects: [manuscript] };
+    if (url.pathname === "/api/world") {
+      return url.searchParams.get("version_id") === templateWorld.version_id ? templateWorld : world;
+    }
+    if (url.pathname === "/api/history") return { checks: [checked("world-current", "check-current")] };
+    throw new Error(`Unexpected request ${path}`);
+  });
+  render(<JournalWorkspaceHarness />);
+  fireEvent.click(await screen.findByRole("button", { name: en.docx.open }));
+  await waitFor(() => expect(useDocxWorkspaceStore.getState().request?.world?.version_id).toBe("world-current"));
+  const opened = useDocxWorkspaceStore.getState().request;
+  const onSaved = useDocxWorkspaceStore.getState().context?.onSaved;
+
+  fireEvent.click(await sidebar().findByRole("button", { name: text.importTemplate }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText(text.files), {
+    target: { files: [new File(["template"], "journal-template.docx")] },
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: text.importTemplate }));
+
+  await waitFor(() => expect(useDocxWorkspaceStore.getState().context?.world?.version_id).toBe(templateWorld.version_id));
+  expect(useDocxWorkspaceStore.getState().request).toBe(opened);
+  expect(useDocxWorkspaceStore.getState().request?.project.binding?.world_version_id).toBe("world-current");
+  expect(useDocxWorkspaceStore.getState().context?.onSaved).toBe(onSaved);
+  expect(api.request).not.toHaveBeenCalledWith("/api/bind", expect.anything());
 });
 
 it("shows a template body rule by its readable role", async () => {
@@ -1274,7 +1371,7 @@ it("updates a manuscript baseline with the selected file and operator reason", a
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(api.request).toHaveBeenCalledWith("/api/baseline", {
     project_id: "manuscript", expected_baseline_id: "baseline", filename: "revision.docx", content_base64: btoa("new baseline bytes"),
-    reason: "Applied editor comments", request_id: expect.stringMatching(/^request-/),
+    reason: "Applied editor comments", request_id: expect.stringMatching(/^request-/), source_upload: true,
   });
   expect(screen.getByText(text.rebindAfterUpdate)).toBeInTheDocument();
   expect(sidebar().getByRole("button", { name: text.runCheck })).toBeDisabled();
@@ -1364,8 +1461,11 @@ it("uses the explicit template-check operation for the selected retained manuscr
   const originalRequest = api.request.getMockImplementation();
   if (!originalRequest) throw new Error("Expected the journal request fixture");
   api.workspace.mockResolvedValue({ journalProjectId: draft.project_id });
-  api.request.mockImplementation(async (path: string, payload?: unknown) => path === "/api/state"
-    ? { worlds: [templateWorld], projects: [draft] } : originalRequest(path, payload));
+  api.request.mockImplementation(async (path: string, payload?: unknown) => {
+    if (path === "/api/state") return { worlds: [templateWorld], projects: [draft] };
+    if (path === "/api/template-prepare") return { world: templateWorld, binding: draft.binding, refreshed: false };
+    return originalRequest(path, payload);
+  });
   render(<JournalWorkspaceHarness />);
   const run = await sidebar().findByRole("button", { name: text.runCheck });
   await waitFor(() => expect(run).toBeEnabled());
@@ -1373,6 +1473,38 @@ it("uses the explicit template-check operation for the selected retained manuscr
   await waitFor(() => expect(api.templateCheck).toHaveBeenCalledWith(draft, templateWorld.version_id));
   await waitFor(() => expect(run).toBeEnabled());
   expect(api.request.mock.calls.some(([path]) => path === "/api/check")).toBe(false);
+});
+
+it("shows the check for the prepared template version and synchronizes an open Word working copy", async () => {
+  const { templateWorld, draft } = templateWithoutManuscript();
+  const preparedWorld = { ...templateWorld, version_id: "world-refreshed", version_ordinal: templateWorld.version_ordinal + 1 };
+  const initial = { ...draft, binding: null };
+  const result = { ...checked(preparedWorld.version_id, "refreshed-check"), project_id: draft.project_id, baseline_id: draft.baseline_id };
+  let retained = initial as JournalProject;
+  api.templateCheck.mockImplementationOnce(async () => {
+    retained = { ...initial, latest_check: result, binding: {
+      binding_id: "refreshed-binding", baseline_id: draft.baseline_id, world_version_id: preparedWorld.version_id,
+    } };
+    return result;
+  });
+  api.request.mockImplementation(async (path: string) => {
+    if (path === "/api/state") return { worlds: [templateWorld, preparedWorld], projects: [retained] };
+    if (path === "/api/template-prepare") return { world: preparedWorld, binding: null, refreshed: true };
+    if (path === `/api/world?version_id=${templateWorld.version_id}`) return templateWorld;
+    if (path === `/api/world?version_id=${preparedWorld.version_id}`) return preparedWorld;
+    if (path === `/api/history?project_id=${draft.project_id}`) return { checks: retained.latest_check ? [result] : [] };
+    throw new Error(`Unexpected request ${path}`);
+  });
+  useDocxWorkspaceStore.getState().open({ appProjectId: "paper", project: initial, world: templateWorld, onSaved: async () => {} });
+  render(<JournalWorkspaceHarness />);
+  const run = await sidebar().findByRole("button", { name: text.runCheck });
+  await waitFor(() => expect(run).toBeEnabled());
+  fireEvent.click(run);
+
+  await waitFor(() => expect(screen.getByTestId("journal-world-select")).toHaveValue(preparedWorld.version_id));
+  expect(api.templateCheck).toHaveBeenCalledWith(initial, preparedWorld.version_id);
+  expect(useDocxWorkspaceStore.getState().context?.world).toEqual(preparedWorld);
+  expect(sidebar().getByText(`${text.current} · ${Object.values(result.summary).reduce((sum, count) => sum + count, 0)}`)).toBeInTheDocument();
 });
 
 it("shows a retained PDF source page and anchors its discussion to the selected fragment", async () => {
@@ -1504,28 +1636,16 @@ it("shows the project choice in both Journal surfaces before a project is open",
   expect(api.connect).not.toHaveBeenCalled();
 });
 
-it("lets the operator choose a missing runtime and reconnects without a default journal project", async () => {
+it("retries the bundled runtime without a default journal project", async () => {
   api.connect.mockRejectedValueOnce(new Error("Journal runtime is unavailable"));
-  api.pick
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce(["/opt/homebrew/bin/python3.12"]);
   api.workspace.mockResolvedValue({ journalProjectId: undefined });
   render(<JournalWorkspaceHarness />);
 
   expect(await screen.findByRole("alert")).toHaveTextContent("Journal runtime is unavailable");
-  const runtime = screen.getByLabelText(text.python);
-  const browse = screen.getByRole("button", { name: text.browse });
-
-  fireEvent.click(browse);
-  await waitFor(() => expect(api.pick).toHaveBeenCalledOnce());
-  expect(runtime).toHaveValue("");
-
-  fireEvent.click(browse);
-  await waitFor(() => expect(runtime).toHaveValue("/opt/homebrew/bin/python3.12"));
-  fireEvent.click(screen.getByRole("button", { name: text.connect }));
+  fireEvent.click(screen.getByRole("button", { name: text.retry }));
 
   expect(await screen.findByText(text.workspace.startTitle)).toBeInTheDocument();
-  expect(api.connect).toHaveBeenLastCalledWith("/opt/homebrew/bin/python3.12");
+  expect(api.connect).toHaveBeenLastCalledWith();
   expect(screen.getByTestId("journal-world-select")).toHaveValue("");
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 

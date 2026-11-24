@@ -61,11 +61,12 @@ Choose the best available component for a layer rather than the cheapest one. Be
 reserved for the evidence, versioning, staleness and handoff layer, which is the product
 differentiator; everything else prefers a maintained upstream component over a reimplementation.
 Every runtime import must be declared in `pyproject.toml`: the architecture test accepts the
-standard library, this project, or a declared dependency, and nothing else. The operator confirmed
-on 2026-11-02 that this checkout is a private local-use tool. AGPL/GPL components are acceptable;
-a hypothetical proprietary distribution is not a component-selection constraint. Keep upstream
-licence and attribution notices, and reassess scope if distribution or hosting for others is
-later requested. PyMuPDF (AGPL-3.0) for PDF text-layer extraction is an existing example.
+standard library, this project, or a declared dependency, and nothing else. Local and internal
+builds may use AGPL/GPL components under the operator's confirmed scope. The public desktop
+release is now a real distribution path, however, so component acceptance and public binary
+packaging are separate decisions. Keep upstream licence and attribution notices, and do not
+enable public Workbench-engine packaging without the release evidence described below. PyMuPDF
+(AGPL-3.0) for PDF text-layer extraction is the active example.
 PyMuPDF is pinned to a minor range because block
 segmentation feeds `journal-pdf-source-1.0.0`; a pymupdf upgrade that changes extraction
 results must bump that method version in the same change.
@@ -127,9 +128,36 @@ downloads, and Word/WPS visual equivalence remains unverified. See the owning
 
 Since 2026-11-09 this service lives in `services/research-workbench/` within the Oleafly
 repository. From the repository root run `pnpm workbench:setup`; `pnpm tauri dev` selects
-that environment unless `OLEAFLY_WORKBENCH_PYTHON` is set. A packaged application still uses
-its existing saved interpreter selector. The HTTP/MCP versions and library ownership are
-unchanged. The earlier standalone shell is frozen local history, outside the active build.
+that environment through `OLEAFLY_WORKBENCH_PYTHON`. Debug and test builds may use that explicit
+development setup. A packaged Apple Silicon release that includes the engine starts only its bundled
+`research-workbench/rfw-workbench` executable from the application resources. Packaged builds do
+not use the environment variable, the old saved Python setting, system Python or a service on a
+known port. The HTTP/MCP versions and library ownership are unchanged. The earlier standalone
+shell is frozen local history, outside the active build.
+
+`pnpm workbench:bundle` builds the engine with PyInstaller using Python 3.12 or later, stages it
+under `src-tauri/resources/research-workbench/`, and runs a packaged readiness test with two
+simultaneous services. The test verifies distinct loopback ports and sessions, library creation,
+the current HTTP contract, and shutdown through the owner control pipe. This remains the default
+for local and internal arm64 macOS builds. Intel macOS, Windows and Linux targets package no
+engine and show an explicit unavailable state rather than borrowing an interpreter.
+
+Public release builds set `OLEAFLY_WORKBENCH_BUNDLE_POLICY=public-unbundled`. The bundle script
+clears the staging directory and exits without an engine, and the release workflow checks the
+packaged app for both `rfw-workbench` and MuPDF/PyMuPDF files. Unknown policies fail the build;
+there is no fallback to local bundling. This prevents a public artifact from carrying PyMuPDF
+while its distribution route remains unresolved.
+
+PyInstaller 6.x is a build-only dependency under GPL-2.0-or-later with its non-free
+distribution exception; `pyinstaller-hooks-contrib` is GPL-2.0-or-later. Runtime dependencies
+are already declared above, including MCP and pydantic under MIT and PyMuPDF under AGPL-3.0 or
+a commercial licence. The build writes their collected licence texts and the Python PSF licence
+to `THIRD_PARTY_NOTICES.txt` in the staged engine. A notices file alone does not establish
+AGPL corresponding-source compliance. Before a public bundle can be considered, retain the exact
+MuPDF/PyMuPDF version and complete corresponding source for the shipped binaries, the AGPL text,
+build scripts, modification notices and a valid offer, or obtain written commercial clearance
+that covers Oleafly's public binary distribution of that exact version. A release verifier must
+check that evidence against the built files before the workflow policy changes.
 
 Portable tests use committed synthetic fixtures and test-only Phase 0 contracts. Private author
 catalogs, real render baselines, annotations, reports and libraries remain local. Actual Phase 0
@@ -149,13 +177,31 @@ submission acceptance on 2026-11-07. Develop the retained requirement-research,
 source-review, rule-versioning and supported manuscript-checking capabilities;
 do not list complete submission as unfinished product work.
 
-On first connection choose this environment's Python executable, or set
-`OLEAFLY_WORKBENCH_PYTHON`. Oleafly stores the runtime setting in
-`<OLEAFLY_DATA_DIR>/workbench-python.json` and uses
-`<OLEAFLY_DATA_DIR>/journal-library`. Imported DOCX updates create retained
+Development builds set `OLEAFLY_WORKBENCH_PYTHON`; packaged Apple Silicon builds use the engine
+inside their own resources. Oleafly uses `<OLEAFLY_DATA_DIR>/journal-library` for captured
+documents. The legacy `workbench-python.json` setting is no longer read. Imported DOCX updates create retained
 versions; select **使用此版本 / Use this version** to bind the current manuscript
 before rerunning a check. **交给代理分析 / Analyze with agent** opens an editable
 draft in the existing assistant, using its existing supplier/model/effort controls.
+
+The public release currently has no packaged engine. It must not be pointed at
+`OLEAFLY_WORKBENCH_PYTHON`, an older saved interpreter or an arbitrary service. To inspect
+existing data without changing the original, copy its `journal-library` directory and use a
+trusted development checkout:
+
+```sh
+cp -R "<OLEAFLY_DATA_DIR>/journal-library" /tmp/journal-library-inspection
+services/research-workbench/.venv/bin/rfw-workbench \
+  --library-root /tmp/journal-library-inspection state
+services/research-workbench/.venv/bin/rfw-workbench-mcp \
+  --library-root /tmp/journal-library-inspection --read-only
+```
+
+`state` reads discovery data from the copy. The MCP `--read-only` flag omits management tools,
+but read receipts can still be retained by that server; it is not a claim that no file can be
+written. A later build with a compatible engine can open the original library at its existing
+path; no snapshot, normalization or cross-process identity migration is involved. Back up the
+directory before using a different build version.
 
 **研究期刊要求 / Research journal requirements** starts an existing Oleafly ResearchTask
 with the selected provider, model, reasoning effort and budget. The host supplies the
@@ -285,11 +331,13 @@ New queries use the current reader; saved response recovery returns the exact or
 Old page bundles remain retained, but new page reads reject incompatible method dependencies.
 Re-register independently authored inputs to create a current bundle; do not relabel an old record.
 
-The current query method is `s1-read-query-1.7.0` and read receipts are `s1-read-receipt-1.2.0`.
+Current query and read-receipt versions are recorded in the
+[Workbench method versions](../../contracts/s1/mcp-surface.json).
 Optional Oleafly task metadata is retained as local correlation in new read receipts only; it is
 not authentication. Cursor decoding uses the shared strict JSON
 boundary: duplicate keys, non-finite values, malformed Base64 or an unexpected cursor shape are
-refused. A 1.6.0 cursor cannot continue a 1.7.0 query because the method is part of the cursor binding.
+refused. A cursor from a different query method cannot continue because the method is part of the
+cursor binding.
 Recovering an already saved response still returns its original method and bytes; it does not call
 an older query engine.
 

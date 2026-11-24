@@ -94,8 +94,11 @@ pnpm tauri dev
 Interactive development uses `~/.oleafly-dev` by default, so reset and seed tools
 cannot touch the library used by an installed Oleafly app. Set
 `OLEAFLY_DATA_DIR` explicitly when you need a different isolated library. The
-fetched sidecars under `src-tauri/binaries/` are git-ignored and must not be
-committed.
+`pnpm tauri dev` launcher keeps usage visible but does not enforce the overall
+Agent time, step, cost or research run-count budgets. Manual stop and per-call
+timeouts still apply. Set `OLEAFLY_ACCEPTANCE_DISABLE_RESEARCH_BUDGET_STOP=0` to
+check normal budget behavior, or `=1` to disable those budgets in a packaged
+acceptance instance. Fetched sidecars under `src-tauri/binaries/` are git-ignored.
 
 On Windows, `stage-windows-vcruntime.mjs` copies Microsoft's
 `vcruntime140.dll` into `src-tauri/binaries/`. Typst and TexLab need it and
@@ -124,9 +127,41 @@ not fetch or require any sidecar.
 The optional Journal checks integration uses the Python service in
 [`services/research-workbench`](../services/research-workbench/README.md). Install
 [uv](https://docs.astral.sh/uv/) and run `pnpm workbench:setup` from this repository root.
-This creates a Python 3.12 environment and installs the module with its development extras.
-`pnpm tauri dev` selects it automatically; `OLEAFLY_WORKBENCH_PYTHON` can select another
-installation. Packaged applications retain their existing Python selector and saved library.
+This creates a Python 3.12 environment and installs the module with its development and bundle
+extras. `pnpm tauri dev` selects it through `OLEAFLY_WORKBENCH_PYTHON`.
+
+Local and internal builds on Apple Silicon stage a self-contained engine with
+`pnpm workbench:bundle`; for those builds the normal Tauri hook does this by default and runs the
+packaged readiness/isolation test. The engine is a PyInstaller onedir bundle at
+`src-tauri/resources/research-workbench/`; its generated files are ignored, and its
+`THIRD_PARTY_NOTICES.txt` records the bundled Python and dependency licences. The staging
+step seals the bundled Python framework with `APPLE_SIGNING_IDENTITY` when available, or
+with an ad-hoc signature for local builds, before Tauri signs the application. The
+[macOS bundle file mapping](../src-tauri/tauri.macos.conf.json) copies the directory
+as a tree, preserving the signed framework's symlinks.
+
+The public release workflow sets `OLEAFLY_WORKBENCH_BUNDLE_POLICY=public-unbundled`. It
+clears any local staging directory, packages no Workbench engine, and verifies that the app
+contains neither `rfw-workbench` nor a MuPDF/PyMuPDF library. This is deliberate: bundling
+PyMuPDF/MuPDF in a public binary needs either the exact corresponding source and complete
+AGPL notices/offer or written commercial clearance, plus a release check that ties that
+evidence to the shipped version. Neither path is approved in this checkout. Local bundles
+must not be uploaded as public release artifacts. See [Releasing](releasing.md#public-workbench-engine).
+
+Packaged builds start only the engine inside their own application resources. They do not
+read `workbench-python.json`, accept `OLEAFLY_WORKBENCH_PYTHON`, attach to a service on a known
+port, or fall back to system Python. Intel macOS, Windows and Linux builds, and the current
+public Apple Silicon build, show an explicit unavailable state. That state keeps the existing
+`<OLEAFLY_DATA_DIR>/journal-library` in place and does not migrate or rewrite it. To inspect
+that data without changing the original, copy the directory and open the copy with a trusted
+development checkout; see the
+[Workbench development guide](../services/research-workbench/docs/engineering/development-guide.md#oleafly-application-and-mcp-connection).
+
+For a local daily installation, set `VITE_LOCAL_WORKBENCH=1` when building the
+macOS release. This disables the upstream updater in that build so an upstream
+release cannot replace the local Workbench integration. Rebuild from this
+checkout to update the local installation. Public releases use their own signing
+and update configuration.
 
 The Python module keeps its own `pyproject.toml`, tests and contracts. It does not join the
 Cargo or pnpm workspaces. Application data remains outside source control; the source merge
@@ -135,11 +170,12 @@ separate environment-bound acceptance checks.
 
 The journal panel can explicitly adopt `.doc` or `.docx` templates. Legacy Word conversion
 uses the existing local LibreOffice locator with a private profile and temporary directory.
-Only Transitional DOCX is supported by this format adapter. Strict OOXML is rejected with
-an instruction to resave it. The selected template retains original and normalized bytes,
-conversion provenance, complete package parts and a source-bound effective-format snapshot
-from the pinned DOCX core. Workbench owns storage, role/region comparison, coverage gaps and
-bounded raw/snapshot/finding queries. See the [journal contract](../services/research-workbench/contracts/journals/world-contract.json)
+Strict OOXML imports directly through the same Workbench DOCX normalization used for opening
+manuscripts; Transitional bytes pass through unchanged. The selected template retains original
+and normalized bytes, conversion provenance, complete package parts and a source-bound
+effective-format snapshot from the pinned DOCX core. Workbench owns storage, role/region
+comparison, coverage gaps and bounded raw/snapshot/finding queries. See the
+[journal contract](../services/research-workbench/contracts/journals/world-contract.json)
 and [template architecture](agent/architecture.md#word-模板与有效格式2026-11-14).
 
 The retained DOCX working-copy editor pins `@docx-editor.dev/core`, `react` and
@@ -176,9 +212,10 @@ of retaining every chunk's AST at once. Provider/search icons import their
 rendered variants directly so unused brands and UI components never enter the
 build graph. After updating the async plugin, regenerate its pnpm patch and
 verify async dependency loading with `src/lib/vite-config.test.ts`.
-Large desktop builds still need a larger Node heap; use
-`NODE_OPTIONS=--max-old-space-size=6144 pnpm build`. This limits the JavaScript
-heap, not the build process's total memory.
+`pnpm build` starts desktop Vite with an 8192 MiB Node heap limit by default.
+`pnpm tauri build` uses the same script. An explicit heap limit in
+`NODE_OPTIONS` takes precedence, as on smaller CI runners. The limit applies
+to the JavaScript heap, not to the build process's total memory.
 The project file remains a read-only source. Opening an unmanaged document
 imports it into a Workbench working copy and records the path-to-workbench
 mapping. **Save** commits the current editor bytes as a new baseline;
@@ -319,7 +356,7 @@ detailed references.
 
 ```bash
 pnpm tauri dev          # run the app with hot reload (frontend) + cargo incremental (backend)
-pnpm build              # typecheck + build the frontend (tsc -b && vite build)
+pnpm build              # typecheck + build the frontend
 pnpm tauri build        # produce a distributable bundle
 ```
 
@@ -503,8 +540,10 @@ Private-manuscript and real-model acceptance remain opt-in and are not enabled
 by this job.
 The frontend test job separately runs `pnpm exec vitest run --config e2e/vitest.config.ts`
 for the retained Word acceptance helpers, including the independent XML oracle
-and the live-provider relay's fixed forwarding route. These checks use synthetic
-inputs and local HTTP servers; they do not launch an app or call a model.
+and the live-provider relay's fixed forwarding route. The node-address regression
+uses the Python 3.12 Workbench runtime (`pnpm workbench:setup` locally) to retain
+a real format snapshot and read its addresses through loopback HTTP. These checks
+use synthetic inputs; they do not launch an app or call a model.
 
 ### The Rust toolchain pin
 

@@ -23,11 +23,12 @@ dependencies = [
   # a direct import is declared directly rather than relied on transitively.
   "pydantic>=2.12,<3",
   # PDF text-layer extraction for journal source fragments (page/bbox binding). PyMuPDF is
-  # AGPL-3.0; the operator decision (2026-10-31) is that this checkout stays a private local
-  # tool, so copyleft constraints are accepted for all AGPL/GPL dependencies without per-item
-  # justification. The minor version is pinned because block segmentation feeds
-  # `journal-pdf-source-1.0.0`: a pymupdf upgrade that changes extraction results must bump
-  # that method version in the same change.
+  # AGPL-3.0; local/internal use is accepted under the operator's private-tool decision, but
+  # public binary bundling is separately gated. The public release omits the Workbench engine
+  # until exact corresponding-source/notices or written commercial clearance is verified.
+  # The minor version is pinned because block segmentation feeds `journal-pdf-source-1.0.0`:
+  # a pymupdf upgrade that changes extraction results must bump that method version in the
+  # same change.
   "pymupdf>=1.28.2,<1.29",
 ]
 
@@ -42,6 +43,9 @@ fixture-building = [
   "Pillow>=12,<13",
   "python-docx>=1.2,<2",
 ]
+bundle = [
+  "pyinstaller>=6.16,<7",
+]
 
 [project.scripts]
 rfw-phase0 = "research_file_workbench.phase0.cli:main"
@@ -55,6 +59,7 @@ rfw-workbench-mcp = "research_file_workbench.workbench.mcp:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"research_file_workbench.docx" = ["markup-compatibility.json"]
 "research_file_workbench.workbench" = ["web/*.html", "web/*.js", "web/*.css", "web/transport/*.js", "web/ui/*.js", "web/views/*.js", "web/styles/*.css"]
 
 [tool.pytest.ini_options]

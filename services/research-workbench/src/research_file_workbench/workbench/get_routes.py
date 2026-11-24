@@ -18,6 +18,9 @@ def handle_api_get(
     if path == "/api/state":
         require_query_fields(query, set())
         handler._json(handler.server.service.state())
+    elif path == "/api/project":
+        require_query_fields(query, {"project_id"})
+        handler._json(handler.server.service.project(query_text(query, "project_id")))
     elif path == "/api/review":
         require_query_fields(query, {"version_id"})
         handler._json(handler.server.service.review(query_text(query, "version_id")))
@@ -54,6 +57,45 @@ def handle_api_get(
         handler._json(
             template_source(handler.server.service, query_text(query, "world_version_id"))
         )
+    elif path == "/api/template-candidate-review":
+        from research_file_workbench.workbench.template_candidate_review import (
+            get_template_candidate_review,
+        )
+
+        require_query_fields(query, {"project_id"})
+        handler._json(
+            get_template_candidate_review(handler.server.service, query_text(query, "project_id"))
+        )
+    elif path == "/api/template-candidate-summary":
+        from research_file_workbench.workbench.finding_queries import validate_pagination
+        from research_file_workbench.workbench.template_candidate_review import (
+            CandidateReviewConflictError,
+            get_template_candidate_summary,
+        )
+
+        fields = {"project_id"} | (query.keys() & {"check_id", "collection"})
+        if "collection" in query:
+            fields |= query.keys() & {"offset", "limit"}
+        require_query_fields(query, fields)
+        offset, limit = validate_pagination(
+            {field: int(query_text(query, field)) for field in query.keys() & {"offset", "limit"}},
+            default_limit=20,
+        )
+        try:
+            result = get_template_candidate_summary(
+                handler.server.service,
+                query_text(query, "project_id"),
+                check_id=query_text(query, "check_id") if "check_id" in query else None,
+                collection=query_text(query, "collection") if "collection" in query else None,
+                offset=offset,
+                limit=limit,
+            )
+        except CandidateReviewConflictError as exc:
+            handler._json_error(
+                HTTPStatus.BAD_REQUEST, str(exc), code="candidate_review_check_mismatch"
+            )
+        else:
+            handler._json(result)
     elif path == "/api/derived-renders":
         require_query_fields(query, {"project_id", "baseline_id"})
         handler._json(
@@ -87,7 +129,7 @@ def handle_api_get(
         handler._send(HTTPStatus.OK, content, "application/pdf" if role == "pdf" else "image/png")
     elif path == "/api/world":
         require_query_fields(query, {"version_id"})
-        handler._json(handler.server.service.store.get_world(query_text(query, "version_id")))
+        handler._json(handler.server.service.world_metadata(query_text(query, "version_id")))
     elif path == "/api/check":
         require_query_fields(query, {"check_id"})
         handler._json(handler.server.service.check_record(query_text(query, "check_id")))

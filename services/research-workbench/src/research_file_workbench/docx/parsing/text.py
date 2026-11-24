@@ -12,6 +12,7 @@ from research_file_workbench.docx.parsing.positions import (
     align_with,
     element_spans,
 )
+from research_file_workbench.docx.parsing.revision_text import RevisionText
 from research_file_workbench.docx.xml_support import (
     MATH_NAMESPACE,
     WORD_NAMESPACE,
@@ -32,6 +33,7 @@ def read_text_blocks(
     styles: tuple[DocxStyle, ...] = (),
     *,
     xml_payloads: dict[str, bytes],
+    revision_text_by_part: dict[str, RevisionText],
 ) -> tuple[tuple[DocxTextBlock, ...], list[str]]:
     """Read paragraph observations without joining adjacent words across separators.
 
@@ -47,6 +49,7 @@ def read_text_blocks(
         region = region_for_part(part_path)
         if region is None:
             continue
+        revision_text = revision_text_by_part[part_path]
         aligned: dict[int, ElementSpan] = {}
         payload = xml_payloads.get(part_path)
         if payload is not None:
@@ -106,6 +109,7 @@ def read_text_blocks(
                     numbering_level=numbering_level,
                     byte_start=span.start if span is not None else None,
                     byte_end=span.end if span is not None else None,
+                    accepted_projection=revision_text.project(paragraph, text, paragraph_only=True),
                 )
             )
     if not blocks:

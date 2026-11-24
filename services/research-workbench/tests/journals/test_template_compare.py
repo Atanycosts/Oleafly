@@ -1597,6 +1597,25 @@ def test_table_runs_never_pair_with_external_body_runs():
     }
 
 
+def test_findings_keep_the_manuscript_source_bound_node_address():
+    address = {
+        "version": "xml-element-path-1",
+        "source_sha256": "a" * 64,
+        "part": "/word/document.xml",
+        "path": [0, 0, 0],
+    }
+    manuscript = run_fact("manuscript", "body", size=12)
+    manuscript["node_address"] = address
+
+    findings = compare_template(
+        snapshot(run_fact("template", "body", size=10)),
+        snapshot(manuscript),
+    )
+
+    assert findings
+    assert all(finding["node_address"] == address for finding in findings)
+
+
 def style_definition(
     *,
     role: str,

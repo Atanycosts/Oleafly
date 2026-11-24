@@ -476,6 +476,7 @@ fn format_read_query_properties() -> Value {
         "object_kind":{"type":"string"},"role":{"type":"string"},"style_id":{"type":"string"},"object_id":{"type":"string"},"text":{"type":"string"},
         "text_offset":{"type":"integer","minimum":0},"text_limit":{"type":"integer","minimum":1,"maximum":16000},
         "path":{"type":"array","items":{"type":"integer","minimum":0}},"namespace_uri":{"type":"string"},"local_name":{"type":"string"},
+        "node_address":crate::journal_workbench::format::node_address_schema(&["xml-element-path-1"]),
         "attribute":{"type":"object","properties":{
             "namespace_uri":{"type":"string"},"local_name":{"type":"string"},"value":{"type":"string"}
         },"required":["local_name"],"additionalProperties":false},
@@ -542,10 +543,12 @@ impl ApplicationTools for DocxTools {
             ),
             ToolMeta::new(
                 "read_docx_document",
-                "Read a bounded paragraph page from this task's bound live DOCX session. text is display text and ranges use whole-paragraph modelText UTF-16 offsets. Each paragraph carries the route that continues its own modelText window. Math payloads expose readableMath and diagnostics rather than an image; drawing objects and fields with one embedded-image route carry read_docx_image when their pixels are available. Continue metadata with next_query, and use the returned text, atom and payload continuation fields for the exact modelText window. The live session may contain unsaved user edits.",
+                "Read the bound live DOCX body and read-only objects: fields, equations, drawings with text boxes, referenced footnotes and endnotes, and anchored comments. Object text is separate from paragraph text. Locations use whole-paragraph modelText UTF-16 offsets. Pass reference.start.read or reference.end.read back to this tool to locate the reference in the same live package version. Follow next_query to continue a page or long payload. Math payloads expose readableMath. Use an attached read_docx_image route for pixels. For unexpanded altChunk and OLE objects, check the gaps in read_docx_format overview.",
                 schema(
                     json!({
                         "session_id":{"type":"string"},"offset":{"type":"integer","minimum":0},
+                        "paragraph_ref":{"type":"string","minLength":1},
+                        "read_version":{"type":"string","minLength":1},
                         "limit":{"type":"integer","minimum":1,"maximum":50},
                         "expected_revision":{"type":"integer","minimum":0},
                         "text_offset":{"type":"integer","minimum":0},
@@ -632,7 +635,7 @@ impl ApplicationTools for DocxTools {
             ),
             ToolMeta::new(
                 "read_docx_format",
-                "Read system-parsed Word text, structure, styles and effective formatting. Begin with overview for the document directory and reading routes, then page paragraphs, styles or objects. Paragraph modelText provides absolute UTF-16 font-range offsets with fields as U+FFFC. The live session and saved baseline are distinct.",
+                "Read system-parsed Word text, structure, styles and effective formatting. Begin with overview and follow nextQuery for continuation. Paragraph modelText provides absolute UTF-16 font-range offsets with fields as U+FFFC. For exact XML node reads pass the returned node_address unchanged, without part or path. The live session and saved baseline are distinct.",
                 schema(
                     json!({
                         "query":{"type":"object","properties":format_read_query_properties(),"additionalProperties":false}
@@ -640,6 +643,7 @@ impl ApplicationTools for DocxTools {
                     &[],
                 ),
             ),
+            crate::journal_workbench::tools::docx_template_styles::task_definition(),
             ToolMeta::new(
                 "apply_docx_format",
             "Apply formatting to a paragraph, exact font range, frame or containing section/table/row/cell in the bound live DOCX at expected_revision. Scope defaults to paragraph. Use only fields for the selected scope. Styles must already exist. Save separately.",
@@ -814,6 +818,8 @@ impl ApplicationTools for DocxTools {
 #[serde(deny_unknown_fields)]
 struct Read {
     session_id: Option<String>,
+    paragraph_ref: Option<String>,
+    read_version: Option<String>,
     #[serde(default)]
     offset: usize,
     limit: Option<usize>,
@@ -844,11 +850,44 @@ impl ReadImage {
 }
 
 impl Read {
+    fn validate(&self, bound_session_id: &str) -> Result<(), String> {
+        if self
+            .session_id
+            .as_deref()
+            .is_some_and(|id| id != bound_session_id)
+            || !(1..=50).contains(&self.limit.unwrap_or(20))
+            || self.text_offset.is_some() != self.text_limit.is_some()
+            || self
+                .text_limit
+                .is_some_and(|limit| !(1..=8000).contains(&limit))
+            || self.atom_offset.is_some() && self.text_offset.is_none()
+            || self.payload_offset.is_some() && self.atom_offset.is_none()
+        {
+            return Err("Read one to fifty DOCX paragraphs, with an optional UTF-16 text window, from the bound session.".into());
+        }
+        if self.read_version.as_ref().is_some_and(|version| {
+            version.trim().is_empty()
+                || self.session_id.is_none()
+                || self.expected_revision.is_none()
+        }) || self.paragraph_ref.as_ref().is_some_and(|reference| {
+            reference.trim().is_empty() || self.offset != 0 || self.read_version.is_none()
+        }) {
+            return Err("Pass the exact versioned read route for a DOCX paragraph, without a nonzero offset.".into());
+        }
+        Ok(())
+    }
+
     fn renderer_arguments(&self) -> Value {
         let mut arguments = serde_json::Map::from_iter([
             ("offset".into(), json!(self.offset)),
             ("limit".into(), json!(self.limit.unwrap_or(20))),
         ]);
+        if let Some(value) = &self.paragraph_ref {
+            arguments.insert("paragraph_ref".into(), json!(value));
+        }
+        if let Some(value) = &self.read_version {
+            arguments.insert("read_version".into(), json!(value));
+        }
         if let Some(value) = self.expected_revision {
             arguments.insert("expected_revision".into(), json!(value));
         }
@@ -1243,6 +1282,19 @@ impl DocxTools {
         let bound = store
             .docx_task_binding(&self.task.project_id, &self.task.task_id)?
             .ok_or("Bind this task to a DOCX working copy from the document's task panel first.")?;
+        if name == crate::journal_workbench::tools::docx_template_styles::TOOL {
+            let query = serde_json::from_value(args).map_err(|error| error.to_string())?;
+            let workbench = self
+                .app
+                .state::<crate::journal_workbench::JournalWorkbenchState>();
+            return crate::journal_workbench::tools::docx_template_styles::read(
+                &workbench,
+                &bound.workbench_project_id,
+                &bound.session_id,
+                query,
+            )
+            .await;
+        }
         let mut arguments = args.clone();
         let operation = match name {
             "get_docx_workspace_context"
@@ -1267,20 +1319,7 @@ impl DocxTools {
             "read_docx_document" => {
                 let read: Read =
                     serde_json::from_value(args.clone()).map_err(|error| error.to_string())?;
-                if read
-                    .session_id
-                    .as_ref()
-                    .is_some_and(|id| id != &bound.session_id)
-                    || !(1..=50).contains(&read.limit.unwrap_or(20))
-                    || read.text_offset.is_some() != read.text_limit.is_some()
-                    || read
-                        .text_limit
-                        .is_some_and(|limit| !(1..=8000).contains(&limit))
-                    || read.atom_offset.is_some() && read.text_offset.is_none()
-                    || read.payload_offset.is_some() && read.atom_offset.is_none()
-                {
-                    return Err("Read one to fifty DOCX paragraphs, with an optional UTF-16 text window, from the bound session.".into());
-                }
+                read.validate(&bound.session_id)?;
                 arguments = read.renderer_arguments();
                 "read"
             }
@@ -1790,6 +1829,26 @@ mod tests {
     fn docx_read_arguments_omit_unset_optional_fields() {
         let read: Read = serde_json::from_value(json!({})).unwrap();
         assert_eq!(read.renderer_arguments(), json!({"offset": 0, "limit": 20}));
+    }
+
+    #[test]
+    fn docx_reference_read_requires_the_same_session_and_version() {
+        let route = json!({
+            "session_id": "bound", "paragraph_ref": "p2", "expected_revision": 3,
+            "read_version": "package-version", "text_offset": 42, "text_limit": 320
+        });
+        let read: Read = serde_json::from_value(route.clone()).unwrap();
+        assert!(read.validate("bound").is_ok());
+        assert!(read.validate("other").is_err());
+        assert_eq!(read.renderer_arguments()["paragraph_ref"], "p2");
+        assert_eq!(read.renderer_arguments()["read_version"], "package-version");
+        assert_eq!(read.renderer_arguments()["expected_revision"], 3);
+        for field in ["session_id", "expected_revision", "read_version"] {
+            let mut unbound = route.clone();
+            unbound.as_object_mut().unwrap().remove(field);
+            let read: Read = serde_json::from_value(unbound).unwrap();
+            assert!(read.validate("bound").is_err(), "{field}");
+        }
     }
 
     #[test]

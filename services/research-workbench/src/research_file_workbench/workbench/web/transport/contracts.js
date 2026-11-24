@@ -63,6 +63,7 @@ const isCheckSummary = recordOf({ check_id: isText, created_at: isText, summary:
 const isProject = recordOf({
   project_id: isText, name: isText, baseline_id: isText,
   binding: nullable(isBinding), latest_check: nullable(isCheckSummary),
+  role: optional(oneOf("manuscript", "format_candidate")),
 });
 const isDisposition = recordOf({ check_id: isText, rule_id: isText, action: oneOf("note", "defer"), note: isText, created_at: isText });
 const isRuleResult = (value) => isObject(value) && (value.property === "object_format" ? recordOf({
@@ -117,6 +118,7 @@ const isSourcePage = recordOf({
 const responseShapes = {
   "/api/session": ["会话", recordOf({ token: isText, contract_version: isText, asset_version: (value) => isString(value) && /^[0-9a-f]{64}$/.test(value) })],
   "/api/state": ["工作区", recordOf({ worlds: listOf(isWorldSummary), projects: listOf(isProject), capabilities: isCapabilities })],
+  "/api/project": ["论文", isProject],
   "/api/world": ["期刊版本", isWorld], "/api/worlds": ["期刊版本", isWorld], "/api/revise": ["期刊版本", isWorld],
   "/api/projects": ["论文", isProject], "/api/bind": ["版本绑定", isBinding],
   "/api/review": ["来源片段", isReview], "/api/source-page": ["PDF 页面预览", isSourcePage], "/api/manuscript": ["稿件资料", isManuscript],

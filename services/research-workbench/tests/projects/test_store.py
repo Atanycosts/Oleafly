@@ -827,6 +827,7 @@ def test_inconsistent_continuation_cursor_cannot_publish_a_read(
         ("project_id", "project-another"),
         ("artifact_version_ids", ["artifact-version-" + "0" * 64]),
         ("artifact_version_ids", []),
+        ("source_sha256", None),
         ("source_sha256", "0" * 64),
     ],
 )

@@ -35,7 +35,7 @@ from research_file_workbench.docx.report import (
     docx_read_result_to_report,
 )
 
-QUERY_VERSION = "s1-read-query-1.7.0"
+QUERY_VERSION = "s1-read-query-1.8.0"
 
 # Continuation state of the requested selection after this response.  It is derived from the
 # same computation as ``pagination.has_more``, so it says only whether another page exists --
@@ -73,6 +73,9 @@ _LIMITATIONS = (
     "Only returned object observations are read; package coverage and semantics remain partial.",
     "Image and preview references do not mean their visual contents were read.",
     "Part-level regions do not establish table or textbox containment.",
+    "Use text for accepted-revisions reading; source_text may include deleted or moved-from text.",
+    "An unavailable text projection is not an empty manuscript passage. Field and math objects "
+    "remain source evidence, not an accepted or refreshed view.",
 )
 
 
@@ -150,7 +153,7 @@ def query_docx(
     Page selection requires externally verified mapping evidence. This function validates
     its source and shape; the caller remains responsible for checking referenced files.
     """
-    report = docx_read_result_to_report(result)
+    report = docx_read_result_to_report(result, for_query=True)
     observations = _index(result, report)
     if query.object_id is not None and not any(
         item.object_id == query.object_id for item in observations

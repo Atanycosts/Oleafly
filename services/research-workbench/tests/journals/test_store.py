@@ -453,7 +453,7 @@ def test_deleted_world_source_relation_is_not_repaired_by_idempotent_retry(store
         store.save_world(world, sources)
 
 
-def test_world_and_check_recovery_detect_source_corruption(store, tmp_path):
+def test_world_summaries_remain_discoverable_after_source_corruption(store, tmp_path):
     world, sources = world_input()
     store.save_world(world, sources)
     binding = bind(store, world, tmp_path)
@@ -461,9 +461,17 @@ def test_world_and_check_recovery_detect_source_corruption(store, tmp_path):
     store.save_check(check)
     with sqlite3.connect(store.database_path) as connection:
         connection.execute("UPDATE source SET content=?", (b"damaged",))
+    assert [item["version_id"] for item in store.list_worlds()] == [world["version_id"]]
+    assert store.get_world_metadata(world["version_id"])["version_id"] == world["version_id"]
+    with pytest.raises(WorldStoreError, match="source content"):
+        store.get_world(world["version_id"])
+    assert store.get_check_metadata(check["check_id"])["check_id"] == check["check_id"]
+    assert [item["check_id"] for item in store.list_check_metadata(binding["project_id"])] == [
+        check["check_id"]
+    ]
+    assert store.list_dispositions_metadata(check["check_id"]) == []
     for operation in (
         lambda: store.get_world(world["version_id"]),
-        store.list_worlds,
         lambda: store.get_check(check["check_id"]),
         store.list_checks,
     ):

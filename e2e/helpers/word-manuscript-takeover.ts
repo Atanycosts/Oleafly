@@ -3,13 +3,31 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { live, type Page } from "./word-manuscript-live";
-import type { DocxDocumentRead, DocxFormatReadResult } from "../../packages/ai-tools/src/tools";
+import type { DocxDocumentRead, DocxFormatReadResult, DocxInlineAtom } from "../../packages/ai-tools/src/tools";
 import { expect } from "../fixtures";
 import { scriptValue } from "../script-value";
 import { webviewScreenshot } from "../webview-screenshot";
 import { assertManuscriptInitialExport } from "./word-manuscript-oracle";
 
 const read = live;
+
+function rebaseImageReadRoute(atom: DocxInlineAtom, revision: number): DocxInlineAtom {
+  if (atom.kind !== "drawing") return atom;
+  const payload = atom.payload as {
+    next?: { tool: string; arguments: { expected_revision: number } };
+  } | undefined;
+  if (payload?.next?.tool !== "read_docx_image") return atom;
+  return {
+    ...atom,
+    payload: {
+      ...payload,
+      next: {
+        ...payload.next,
+        arguments: { ...payload.next.arguments, expected_revision: revision },
+      },
+    },
+  };
+}
 
 async function clickButton(page: Page, root: string, label: string) {
   await page.evaluate(`(() => {
@@ -372,7 +390,11 @@ export async function runWordManuscriptTakeover(
     const undone = await read(page);
     sameSession(undone);
     expect(undone.document.dirty).toBe(true);
-    expect(undone.paragraphs).toEqual(before.paragraphs);
+    expect(undone.paragraphs).toEqual(before.paragraphs.map(paragraph => ({
+      ...paragraph,
+      revision: undone.document.sessionRevision,
+      atoms: paragraph.atoms.map(atom => rebaseImageReadRoute(atom, undone.document.sessionRevision)),
+    })));
     report.afterOrderedUndo = undone.document;
     const undoneBytes = await download(page, resolve(outputDirectory, "takeover-undone.docx"));
     report.undoXml = assertManuscriptInitialExport(initialBytes, undoneBytes);

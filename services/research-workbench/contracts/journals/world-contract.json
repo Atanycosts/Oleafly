@@ -4,7 +4,8 @@
     "world_schema": "journal-world-1.1.0",
     "analyzer": "journal-world-analyzer-1.6.0",
     "checker": "journal-geometry-checker-1.2.0",
-    "http": "journal-http-1.13.0"
+    "http": "journal-http-1.20.0",
+    "strict_docx_normalization": "strict-docx-normalization-1.0.0"
   },
   "scope": "journal_sources_and_selected_docx_template_comparison",
   "workflow": [
@@ -139,7 +140,7 @@
     "Disposition actions are note or defer and retain the original check verdict."
   ],
   "http": {
-    "contract_version": "journal-http-1.13.0",
+    "contract_version": "journal-http-1.20.0",
     "transport": "same_origin_json_on_ipv4_loopback_only",
     "session": {
       "route": "GET /api/session",
@@ -156,14 +157,23 @@
       {
         "method": "GET",
         "path": "/api/state",
-        "query_fields": []
+        "query_fields": [],
+        "semantics": "Discovers ordinary manuscript projects only, not retained format candidates. Template summaries include template_preparation (state, reason and analyzer and snapshot method versions). Readiness describes analysis compatibility; a 1.2.0 snapshot is reported as pending_refresh because the desktop reader can capture current facts from its retained normalized template DOCX."
+      },
+      {
+        "method": "GET",
+        "path": "/api/project",
+        "query_fields": ["project_id"],
+        "response_fields": ["project_id", "name", "baseline_id", "binding", "latest_check", "role"],
+        "semantics": "Returns an exact managed project summary, including a format candidate when addressed by ID. Role is manuscript or format_candidate. Older projects without a stored role are classified as format_candidate only when named in a retained candidate review or adoption."
       },
       {
         "method": "GET",
         "path": "/api/world",
         "query_fields": [
           "version_id"
-        ]
+        ],
+        "semantics": "Returns verified world metadata even when a retained source cannot be read. Source retrieval and execution still verify the actual bytes."
       },
       {
         "method": "GET",
@@ -243,7 +253,20 @@
           "name",
           "filename",
           "content_base64"
-        ]
+        ],
+        "optional_body_fields": ["role"],
+        "additional_response_fields": [
+          "source_sha256",
+          "original_sha256"
+        ],
+        "semantics": "Import captured DOCX bytes. Ordinary imports default to role=manuscript; a formatting run creates its isolated project with role=format_candidate. A Strict source is preserved as an original artifact and the baseline identifies its normalized working bytes; Transitional bytes are not rewritten. The response adds the committed source_sha256 and captured original_sha256 to the project summary."
+      },
+      {
+        "method": "POST",
+        "path": "/api/docx-normalize",
+        "body_fields": ["content_base64"],
+        "returns": ["content_base64", "original_sha256", "source_sha256", "provenance"],
+        "semantics": "Prepare captured Word DOCX bytes without a write. Unchanged input returns null content_base64, equal digests, and null provenance. A Strict derivative returns its bytes, both digests, and versioned provenance. Valid Strict packages that cannot be represented by the working copy return HTTP 400 with an explicit reason and code strict_docx_unsupported. Template adoption validates supplied derivative bytes and provenance; it does not invoke this preparation route."
       },
       {
         "method": "POST",
@@ -376,7 +399,14 @@
           "content_base64",
           "reason",
           "request_id"
-        ]
+        ],
+        "optional_body_fields": ["source_upload"],
+        "changed_source_response_fields": [
+          "original_sha256",
+          "original_artifact_version_id",
+          "provenance"
+        ],
+        "semantics": "Only a caller explicitly submitting a user-selected replacement file sets source_upload=true. Preserve any Strict original and bind its working bytes in the same baseline transaction. Omission or false saves the exact bytes, never a normalized substitute. Both modes retain the expected-baseline conflict check. A stale expected baseline returns 409 before either artifact or changed-source metadata is published, so a conflict cannot claim an original that was not stored. The changed_source_response_fields appear only on APPLIED results."
       },
       {
         "method": "POST",
@@ -538,16 +568,25 @@
     "contract_version": "docx-template-comparison-1.1.0",
     "analyzer": "docx-template-analyzer-1.3.0",
     "checker": "docx-template-checker-1.1.0",
-    "snapshot_method": "docx-core-format-snapshot-1.2.0",
+    "snapshot_method": "docx-core-format-snapshot-1.3.0",
     "findings_evidence_method": "docx-template-comparison-1.1.0",
     "snapshot_schema_version": 1,
-    "snapshot_method_binding": "New imports and baseline captures require method_version equal to snapshot_method. Historical snapshots without it retain docx-core-format-snapshot-1.0.0 identity and remain queryable; new checks require recapture. Historical evidence is never relabelled as the current method.",
-    "style_definitions": "Current snapshots retain every declared style, including unused paragraph, character, table and numbering styles. Identity, inheritance and declared XML remain queryable. effective_status distinguishes paragraph_and_run, character run, and declaration_only; declaration_only does not assert computed layout. Only paragraph definitions supply missing semantic/heading paragraph and run comparison candidates. Manuscript definitions do not generate document findings. Font acquisition includes these fallback run candidates; unknown roles, non-paragraph definitions and definitions superseded by corresponding non-table instances do not add fonts. Earlier 1.1.0 and 1.0.0 snapshots remain readable; new execution requires 1.2.0 capture. Historical analyzer worlds preserve their stored font requirements; new checks require the current analyzer.",
+    "snapshot_method_binding": "New imports, baseline captures and checks require the current snapshot_method. Earlier snapshots and checks remain queryable; a snapshot without a method retains docx-core-format-snapshot-1.0.0 identity. Only known 1.2.0 snapshots can be recaptured in place as a new world version. Oleafly computes current facts from the exact retained normalized DOCX; Workbench validates the captured method, source and package identities against those bytes. Historical worlds remain immutable.",
+    "markup_compatibility": {
+      "policy": "../../src/research_file_workbench/docx/markup-compatibility.json",
+      "selection": "In parts covered by the semantic readers, recognize AlternateContent in the markup-compatibility namespace. Select the first Choice in source order whose unqualified Requires contains at least one prefix and every listed prefix resolves in that Choice's scope to a supported namespace URI. Otherwise select the first Fallback. Project only the selected branch. If neither can be selected, report a located gap and project no branch content.",
+      "raw_sources": "Raw XML queries and package inventory retain both branches and their original element indices. Complex-object registration is package evidence, not a claim about the selected branch. Semantic projection is not evidence of Word or WPS rendering."
+    },
+    "style_definitions": "Current snapshots retain declared styles from the selected semantic input, including unused paragraph, character, table and numbering styles. Identity, inheritance and declared XML remain queryable. effective_status distinguishes paragraph_and_run, character run, and declaration_only; declaration_only does not assert computed layout. Only paragraph definitions supply missing semantic/heading paragraph and run comparison candidates. Manuscript definitions do not generate document findings. Font acquisition includes these fallback run candidates; unknown roles, non-paragraph definitions and definitions superseded by corresponding non-table instances do not add fonts. Historical analyzer worlds preserve their stored font requirements; new checks require the current analyzer.",
     "paragraph_controls": "Effective paragraph properties include keepNext, keepLines, widowControl, pageBreakBefore, framePresent and frame. Frame attributes inherit individually; numeric distances are points, absent attributes remain null. These facts do not establish rendered pagination or pixel equivalence.",
     "object_table_context": "Optional metadata on tr/tc/paragraph/run and descendants: source-local table_object_id, zero-based row_index, row_count, optional column_index/column_count, and conditions. Conditions originate in tblLook, active positive cnfStyle bits and structural position, not formatting values. Table objects do not fabricate row positions. The context refines internal component scope independently of example dimensions, source IDs and cross-document order; raw table_style/cache/node identities are not format requirements.",
     "table_band_size_limit": "The pinned core computes one-row and one-column bands. Effective tblStyleRowBandSize or tblStyleColBandSize greater than one, from direct table properties or the table style basedOn chain, produces unsupported code table_band_size_unsupported bound to the table object. Affected table-internal manuscript objects and profiles containing affected template candidates return cannot_determine. Unrelated components and table-level stable properties remain comparable. Exact authored XML stays queryable.",
     "adoption": "Explicit template-world import selects the captured template as a project comparison basis without per-property confirmation. It does not authenticate publisher requirements.",
     "storage": "Original bytes, normalized DOCX and snapshot JSON use existing content-addressed sources; baseline snapshots use artifact/evidence; comparisons use world/binding/check_record. No parallel database.",
+    "snapshot_reference": {
+      "fields": ["baseline_id", "source_sha256", "snapshot_artifact_version_id", "method_version"],
+      "semantics": "An exact baseline registration of the current method, source DOCX SHA-256 and retained snapshot artifact (artifact-version- plus SHA-256 of the stored bytes). An invalid reference is refused, never resolved to a different registration. An identical-byte candidate copy can register that artifact against its own baseline; a different source must supply and validate its own snapshot."
+    },
     "template_fields": [
       "source_id",
       "normalized_source_id",
@@ -597,18 +636,74 @@
       "expected_value_count"
     ],
     "case_identity": "case-sha256(object_id + NUL + property_path); stable for the same canonical object and property within a source version. Not a cross-document object identity.",
-    "optional_finding_fields": ["region", "table_context", "reason"],
+    "optional_finding_fields": ["region", "table_context", "reason", "node_address"],
     "coverage": "Missing semantic/region profiles with effective facts yield object cannot_determine with reason No corresponding template profile. World coverage_gaps aggregate template core unsupported codes and unknown/mixed role-region counts with representative object locators; exact facts remain in docx-query. They do not imply publisher violations or complete rendering interpretation.",
     "http": {
       "GET /api/template-source": {
         "required_query": ["world_version_id"],
         "returns": ["world_version_id", "source_sha256", "content_base64"],
-        "semantics": "Exact retained normalized Word template bytes for a selected world, with source hash verified before returning. Used by the editor's existing style dependency importer; no manuscript is created or changed."
+        "semantics": "Exact retained normalized Word template bytes for a selected world, with source hash verified before returning. The original bytes and conversion provenance remain in the world template metadata; this route never re-normalizes or substitutes a fresh conversion. Used by the editor's existing style dependency importer; no manuscript is created or changed."
       },
       "POST /api/template-copy": {
         "required": ["world_version_id", "name", "request_id"],
         "returns": "project and origin containing request/world/initial baseline/source identities",
-        "semantics": "Create an editable managed manuscript from the exact retained normalized template, preserve original/template sources, capture its current format snapshot and bind the selected world. No author path is written. A repeated request ID recovers the same project and initial origin without resetting later edits or bindings. Conflicting request reuse returns 409."
+        "semantics": "Create an editable managed manuscript from the exact retained normalized template, preserve original/template sources, capture its current format snapshot and bind the selected world. The copy reuses the verified normalized source and its registered snapshot rather than reconverting the original. No author path is written. A repeated request ID recovers the same project and initial origin without resetting later edits or bindings. Conflicting request reuse returns 409."
+      },
+      "POST /api/template-prepare": {
+        "required": ["project_id", "expected_baseline_id"],
+        "optional": ["world_version_id", "surface", "include_snapshot_reference", "retained_snapshot"],
+        "returns": ["world", "binding", "refreshed"],
+        "snapshot_reference": "When include_snapshot_reference is true, also returns snapshot_reference for the supplied baseline and current method, or null if none is registered.",
+        "binding": "Candidate preparation (include_snapshot_reference=true) leaves the project binding unchanged. Adoption binds the exact world checked on the candidate. An ordinary preparation uses the existing binding CAS when the selected world is the current project binding.",
+        "refusal": ["error", "code", "action", "retryable_with_same_params"],
+        "retained_snapshot": "For template_snapshot_recapture_required the response also carries the exact world_version_id. The desktop reads /api/template-source and resubmits preparation with retained_snapshot {world_version_id, snapshot} captured by the current reader. The retained world selection must still match, and the capture must validate against its exact normalized DOCX.",
+        "semantics": "Validate the explicit template or the current binding before creating a format candidate. Refresh known older analysis from verified retained sources, without changing historical worlds or checks or substituting another template. Reuse the retained refresh for the exact selected world and current analyzer and reader methods on repeat preparation. Return the exact upgraded world and current reader to the candidate review."
+      },
+      "POST /api/template-candidate-adopt": {
+        "required": ["project_id", "expected_baseline_id", "expected_binding_id", "candidate_project_id", "candidate_baseline_id", "expected_candidate_binding_id", "candidate_source_sha256", "candidate_check_id", "request_id"],
+        "returns": ["result_baseline_id", "binding"],
+        "semantics": "Atomically save the exact checked candidate on the captured manuscript baseline and bind the world selected by the named exact candidate check. The request check must equal the current pending reviewed candidate; a missing or different pending check returns 409 candidate_review_conflict without writing. The current manuscript baseline, source and binding must still match the original review, even when the request expects the current IDs. The check, final candidate baseline, source bytes, binding, world and snapshot are verified before writing. A repeated identical request returns the retained receipt. A changed baseline or binding refuses without overwriting either. Success consumes the matching pending review."
+      },
+      "GET /api/template-candidate-review": {
+        "required_query": ["project_id"],
+        "returns": ["review", "status", "reason"],
+        "nullable": ["review", "reason"],
+        "status": ["ready", "conflict"],
+        "reason": ["target_baseline_changed", "target_binding_changed", "candidate_baseline_changed", "candidate_binding_changed"],
+        "record_fields": ["candidate_project_id", "input_baseline_id", "input_source_sha256", "candidate_baseline_id", "candidate_source_sha256", "candidate_binding_id", "candidate_check_id", "world_version_id", "snapshot_artifact_version_id", "snapshot_method_version", "target_baseline_id", "target_source_sha256", "target_binding_id", "original_source_sha256", "confirmed_items", "unconfirmed_items"],
+        "item_optional_fields": {"row": "positive integer", "group.object_number": "positive integer", "group.table_area": ["header", "body", "exception"], "template_object_id": "exact template object ID in the check's retained world"},
+        "historical_reviews": "Reviewed items recorded before row, object_number and table_area existed remain valid without those fields.",
+        "semantics": "Return at most one pending reviewed DOCX format candidate for the target project. input_source_sha256 is the initial baseline actually supplied to candidate generation; target_source_sha256 is the original saved working baseline. original_source_sha256 is opaque external-author-file metadata and Workbench never opens that path. The captured target binding must belong to the target project, but its baseline_id may legitimately remain older than target_baseline_id after an ordinary save or a named template override. Ready requires exact current target baseline and binding identity, candidate baseline/binding, candidate check, selected world and snapshot. A current-state mismatch returns the retained review with conflict so the candidate remains downloadable, but it is not adoptable. No manuscript or template is inferred by filename."
+      },
+      "POST /api/template-candidate-review": {
+        "required": ["project_id", "expected_candidate_check_id", "review"],
+        "returns": ["review", "status", "reason"],
+        "semantics": "Save or replace the pending reviewed candidate metadata and its server-derived checklist in the same row and transaction. The caller supplies no checklist fields. expected_candidate_check_id is null when none was observed and otherwise must equal the stored check. The captured target baseline and binding must still be retained and the binding must belong to the target project; a target current-baseline or binding change is stored as conflict rather than discarded. The candidate final baseline/binding/check/world/snapshot must still match exactly; candidate-side drift or damaged check/template evidence is refused without a write. A stale check identity returns 409 candidate_review_conflict."
+      },
+      "GET /api/template-candidate-summary": {
+        "required_query": ["project_id"],
+        "optional_query": ["check_id", "collection", "offset", "limit"],
+        "response_version": 1,
+        "returns": ["schema_version", "summary", "page"],
+        "summary": {
+          "identity": "target_project_id plus the identity fields of the pending review, excluding confirmed_items and unconfirmed_items",
+          "status": "ready or conflict, with the review's reason on mismatch; describes saved Workbench baselines and bindings, not open unsaved edits, external author bytes or adoption authorization",
+          "template": ["version_id", "version_ordinal", "journal_id", "journal_name", "scope", "source_id", "normalized_source_id", "snapshot_source_id", "source_sha256", "original_sha256", "authority", "name"],
+          "checker_version": "Method of the retained final check",
+          "counts": ["confirmed", "unconfirmed", "remaining", "observed_difference", "cannot_determine"],
+          "source_coverage_gaps": "Coverage gaps recorded by the selected world's check",
+          "candidate_reader_gaps": "Compact reader observations with code, detail, object_count and optional location represented by example_object_id (null if absent)"
+        },
+        "page": {
+          "fields": ["collection", "items", "total", "next_offset"],
+          "collections": {
+            "confirmed": "Saved, recheck-confirmed format write items; existing group, document location and template evidence are preserved",
+            "unconfirmed": "Saved attempted writes not confirmed by the recheck; never included in the confirmed count",
+            "remaining": "Existing final-check groups with an observed_difference or cannot_determine. Group IDs, verdict counts and location_count retain their finding_groups meanings. examples carries one representative finding per unresolved verdict with its case, object, property, values, optional node address or reason, template object IDs and finding location ID. Full details remain in the exact final check."
+          },
+          "pagination": "Only with collection. Offset defaults to 0 and limit to 20 (1..1000); offset above 0 requires check_id. A supplied check_id must name the current pending candidate; otherwise HTTP 400 candidate_review_check_mismatch. next_offset is null at the end."
+        },
+        "semantics": "Read only the pending candidate for the target project. The actual checked template may differ from the target's current default binding. No pending review returns {schema_version:1,summary:null} without a check pin. All-match groups are omitted; write counts, group counts and finding counts are separate, not additive. New reviews keep the checklist with the pending review; legacy reviews are projected from retained evidence without rewriting them. Adoption consumes the pending review and its checklist together. This is not a new check or a compliance verdict."
       },
       "POST /api/template-world": {
         "required": [
@@ -624,20 +719,14 @@
         "optional": [
           "sources"
         ],
-        "returns": "world with template metadata; sources from the same import are retained"
+        "returns": "world with template metadata; sources from the same import are retained",
+        "semantics": "The supplied snapshot identifies the exact normalized bytes. For new DOCX imports Workbench verifies the supplied working bytes and provenance against the captured original; a mismatch returns HTTP 400 with code docx_normalization_mismatch. Reopening or refreshing a retained world uses its stored source bytes, not a newly converted copy."
       },
       "POST /api/docx-format": {
-        "required": [
-          "project_id",
-          "baseline_id",
-          "snapshot"
-        ],
-        "returns": [
-          "baseline_id",
-          "snapshot_id",
-          "source_sha256",
-          "engine"
-        ]
+        "required": ["project_id", "baseline_id"],
+        "exactly_one": ["snapshot", "retained_snapshot"],
+        "retained_snapshot": "{project_id, reference} names the source project and its exact snapshot registration. Workbench verifies the origin registration, snapshot bytes and target baseline bytes before registering the snapshot for the target.",
+        "returns": "The target snapshot reference. A new snapshot upload also returns snapshot_id and engine."
       },
       "POST /api/template-check": {
         "required": [
@@ -648,29 +737,71 @@
           "request_id",
           "origin"
         ],
+        "optional": [
+          "response",
+          "snapshot_reference"
+        ],
         "origin": {
           "surface": "user | agent",
           "reason": "optional string"
         },
         "returns": "existing check envelope plus template_comparison and typed object findings",
         "idempotency": "Same project/request_id and exact payload replay the retained check; conflicting reuse returns 409. Replay does not rebind a newer baseline.",
-        "pagination": "template_comparison carries first 100 findings, total/has_more/next_offset and findings_artifact_version_id. Complete findings live once in existing project artifact/evidence. rule_results carry finding_selector and finding_summary, not duplicated object findings."
+        "pagination": "template_comparison carries first 100 findings, total/has_more/next_offset and findings_artifact_version_id. Complete findings live once in existing project artifact/evidence. rule_results carry finding_selector and finding_summary, not duplicated object findings.",
+        "summary_response": "response=summary returns check_id, project_id, baseline_id, world_version_id, binding_id, source_sha256, validity and a compact template_comparison with source_sha256, groups, total, finding_summary and findings_artifact_version_id. It does not return the world, rule results or detailed findings. The retained check keeps the default first-page shape. request_digest excludes response, so replays of the same semantic request are compatible across projections.",
+        "candidate_response": "response=candidate requires snapshot_reference for the expected baseline. Returns check_id, project_id, baseline_id, world_version_id, binding_id, source_sha256, reader_version, snapshot_artifact_version_id, validity, template_comparison with total and finding_summary only, and table_header_templates. Full findings are retained as usual; candidate and verification evidence are queried separately. The candidate flow requests finding_groups once for the final retained check, including when no edit was made.",
+        "table_header_templates": "A top-level array derived only from the checked world's retained verified template snapshot. Each item has column_count and rows, with each row carrying the exact object_id and a readable location. Comparable tables are direct top-level main-body tables with a three-component path and a non-empty table.columnWidthsPt; floats, nested tables, text boxes and Choice content are excluded. Headers use row.isHeader, never table conditions. A column count is emitted only when every comparable table has the same complete contiguous leading header count, at least one header row and at least one body row; otherwise that column count is omitted. Rows come from the first agreeing table in document order and do not pair by table position with the manuscript. Replay reads the same exact world and retained snapshot recorded by the check.",
+        "snapshot_binding": "When supplied, the exact snapshot reference is validated against the checked baseline and its artifact ID is recorded in check.dependencies.snapshot_artifact_version_id. This does not replace baseline and binding conflict checks."
       },
       "POST /api/docx-query": {
         "required": [
           "target",
           "operation"
         ],
-        "target": "snapshot/part/nodes/relationships: {world_version_id} or {project_id,baseline_id}; findings: {check_id}",
+        "target": "snapshot/part/nodes/relationships: {world_version_id} or {project_id,baseline_id}; findings/finding_groups/finding_locations/candidate_findings/finding_verification: {check_id}; template_styles: {project_id}",
         "operations": [
           "snapshot",
           "part",
           "nodes",
           "relationships",
-          "findings"
+          "findings",
+          "finding_groups",
+          "finding_locations",
+          "candidate_findings",
+          "finding_verification",
+          "template_styles"
         ],
         "part": "original part bytes as content_base64 with hash/content_type/length",
-        "pagination": "nodes, relationships and findings return total, has_more, next_offset; offset default 0, limit default 100, maximum 1000. Findings filters apply before pagination, so total counts filtered findings.",
+        "node_address": {
+          "fields": ["version", "source_sha256", "part", "path"],
+          "version": "xml-element-path-1",
+          "source_sha256": "SHA-256 of the exact DOCX package selected by target, not a part or snapshot digest.",
+          "part": "Exact package part name, returned with a leading slash.",
+          "path": "The XML root is [0]; subsequent indices count only sibling elements from zero in the original part. Text, xml:space, comments, processing instructions and compatibility or layout projections do not change these coordinates.",
+          "availability": "Node reads return node_address. New format objects, style definitions and manuscript findings carry it where there is an original XML element. New content reads include it in complex_object content. Historical snapshots, findings and reads are not rewritten. Existing part/path/object_id and child records keep their original meaning.",
+          "query": "Exact nodes reads pass node_address without top-level part or path. A part without an address scans the part. An unknown version, different source bytes, missing part/element or selector mismatch is rejected with an HTTP 400 and the reason in error.",
+          "legacy": "Use workbench-xml-child-path-1 only when the original Workbench raw-node result establishes its exact source_sha256, part and mixed-child element path. A bare path or an exact address landing on a text slot is refused. A scan can return new addresses from retained bytes, but it does not prove correspondence with an old locator. If the source, element or correspondence cannot be established, locate it again explicitly; never infer or substitute a nearby node."
+        },
+        "pagination": "nodes, relationships, findings, finding_locations and candidate_findings return total, has_more, next_offset; offset default 0, limit default 100, maximum 1000. template_styles has its own default 10 and maximum 50. Filters apply before pagination. finding_groups returns the complete group projection.",
+        "template_styles": {
+          "target": "{project_id} only; no world, version, baseline or UI style selection is accepted",
+          "optional": ["role", "heading_level", "style_id", "offset", "limit", "expected_binding_id"],
+          "request": "Target only the project's actual current binding. role and style_id are exact filters. heading_level is a 1-based human outline level in 1..9, matched only through the role=heading semantic role and retained outline facts. Filters combine with AND before pagination.",
+          "pagination": "offset defaults to 0; limit defaults to 10 and is bounded to 1..50. expected_binding_id is required when offset is greater than zero. When supplied on any page it must equal the current binding_id or the request returns HTTP 409; this prevents a rebind between pages from mixing template revisions.",
+          "response_fields": ["schema_version", "operation", "project_id", "status", "binding", "source_sha256", "styles", "examples", "style_total", "example_variant_total", "total", "has_more", "next_offset"],
+          "status": {
+            "available": "A current binding names a template world whose exact retained snapshot passed source and package validation.",
+            "unbound": "The project has no current template binding. binding and source_sha256 are null; styles is empty.",
+            "template_unavailable": "The current binding names a world without selected DOCX template facts. The compact binding is returned for diagnosis; source_sha256 is null and styles is empty."
+          },
+          "binding_fields": ["binding_id", "world_version_id", "baseline_id", "previous_binding_id"],
+          "binding_semantics": "binding is null only for unbound. It is a compact read-only pin of the actual get_binding result; the query never creates, changes or refreshes a binding, manuscript or retained snapshot.",
+          "style_fields": ["object_id", "part", "path", "style_id", "name", "type", "based_on", "role", "role_basis", "effective_status", "declared", "computed", "heading_level", "node_address"],
+          "optional_style_fields": ["effective_status", "declared", "heading_level", "node_address"],
+          "style_semantics": "Declared style data and the core's computed values stay separate. Heading levels use retained outline facts, not guessed names. Computed values and examples omit duplicate raw paragraph/run declaration and layout-cache inputs. Different style definitions remain separate and do not imply an authoritative or unique rule.",
+          "examples": "Independently match nonempty template paragraphs and runs by role/outline and paragraph or run style ID, including direct formatting without a matching style declaration. Group only equal effective facts in the same part and role/style/region/table scope, retaining a count and a source-located representative with its role basis. Competing variants stay separate. The combined pagination orders matching definitions first, then example variants in snapshot order; styles and examples contain the relevant portion of that page.",
+          "source_sha256": "The exact retained normalized template DOCX digest verified with the bound world snapshot; null when unavailable."
+        },
         "snapshot_pagination": "Without offset/limit/collection, returns the complete retained snapshot. Otherwise collection selects objects (default) or style_definitions; offset defaults to 0, limit defaults to 100, maximum 1000. Only the selected collection is included, avoiding repeated full style definitions in object pages. Envelope collection/total/has_more/next_offset describe that collection; parts/capabilities/unsupported metadata remains complete. A page is a view, not a replacement snapshot for POST /api/docx-format.",
         "findings_target": {
           "check_id": "retained check ID"
@@ -678,9 +809,11 @@
         "findings_filters": [
           "verdict",
           "role",
-          "property_path"
+          "property_path",
+          "group_id",
+          "location_id"
         ],
-        "findings_filter_semantics": "Optional exact-match string verdict/role/property_path filters are combined with AND.",
+        "findings_filter_semantics": "Optional exact-match string verdict/role/property_path filters are combined with AND. group_id and location_id select the same finding projection used by finding_groups and finding_locations; an identifier from another check is refused. A grouped detail value finding for paragraph.lineSpacing.value carries line_spacing_rule with the observed and expected values from the same retained object and part, even when the rule record has another verdict or falls outside the current page.",
         "findings_response": [
           "schema_version",
           "operation",
@@ -690,7 +823,41 @@
           "total",
           "has_more",
           "next_offset"
-        ]
+        ],
+        "finding_groups": "Returns schema_version, check_id, baseline_id, source_sha256, all author-facing groups and a summary. Each group has a deterministic check-scoped id, category, action, verdict counts and location_count; heading groups include heading_level, table groups include object_number and optionally table_area.",
+        "finding_categories": [
+          "title",
+          "heading",
+          "body",
+          "table",
+          "formula",
+          "figure",
+          "figure_caption",
+          "table_caption",
+          "references",
+          "other"
+        ],
+        "finding_actions": [
+          "font",
+          "emphasis",
+          "line_spacing",
+          "paragraph_spacing",
+          "indent",
+          "alignment",
+          "kerning",
+          "page_flow",
+          "borders",
+          "cell_margins",
+          "size",
+          "numbering",
+          "layout",
+          "coverage",
+          "other"
+        ],
+        "finding_group_semantics": "Groups are derived from retained raw findings and the snapshot captured by the check's own reader method: category, action, heading level, table object and table area. Heading levels are 1-based human-facing outline levels. Whole-table groups omit table_area; row/cell groups use header, body or exception. firstRow conditional headers are header, ordinary row/column banding is body, and exception covers remaining conditional side/corner cases. Equation and drawing descendants are recognized from retained declared namespace/local name, grouped and located by their outermost oMath/oMathPara or drawing/pict/object ancestor rather than as unsupported_node; this remains true inside a table and the location retains its table row/column coordinates.",
+        "finding_locations": "Requires group_id; optional verdict, offset and limit. Returns deterministic locations with id, optional para_id/label, optional table object_number and row/column, plus verdict counts and page metadata. Paragraph and run findings anchor to their owning paragraph for every action, including coverage and otherwise-other actions. Whole-table, row and cell findings anchor to the first addressable paragraph inside that exact retained object; when none exists they retain the raw table, row or cell object rather than borrowing an adjacent paragraph. Formula and figure findings anchor to their complete visual and retain enclosing table row/column coordinates. Section findings use section membership. Group and location queries use the snapshot artifact pinned by the check when present; older checks use their recorded reader method. If that input is unavailable, the query fails rather than using a different artifact or method.",
+        "candidate_findings": "Requires property_paths; optional offset and limit. Selects only observed_difference records with exactly one expected value, no reason, and no table scope. The compact planner projection carries case_id, object identity, part/path, property_path, verdict, observed, expected, template_object_ids and template_object_count when available; it omits reason and does not assume a specific main document part. The page includes a template_locations map with bounded labels for the first two template object IDs per finding, from the check's retained template world.",
+        "finding_verification": "Requires 1..500 targets containing case_id, property_path and object_ids. property_path may be empty for retained coverage findings. Returns every matching retained record by exact case/property or final object/property, deduplicated across targets, all verdicts included; observed is included only when scalar or null. It reports the declared target_limit."
       }
     },
     "additional_guides": "Additional guide prose is retained as located source material without automatic rules. Explicit structured components use the existing component/decision and deterministic checker service; template observations remain separate."

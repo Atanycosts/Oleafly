@@ -10,9 +10,11 @@ from research_file_workbench.docx.parsing.tables import read_tables
 from research_file_workbench.docx.parsing.text import read_text_blocks
 from research_file_workbench.docx.xml_support import (
     WORD_NAMESPACE,
+    first_child,
     iter_selected,
     paragraphs,
     region_for_part,
+    selected_children,
 )
 
 __all__ = [
@@ -32,20 +34,18 @@ def read_paragraph_scopes(
         region = region_for_part(part_path)
         if region is None:
             continue
-        body = root.find(f"{{{WORD_NAMESPACE}}}body") if region == "body" else None
+        body = first_child(root, "body") if region == "body" else None
+        body_paragraphs = (
+            [child for child in selected_children(body) if child.tag == f"{{{WORD_NAMESPACE}}}p"]
+            if body is not None
+            else []
+        )
         direct_body_indices = {
-            id(paragraph): index
-            for index, paragraph in enumerate(
-                (child for child in body if child.tag == f"{{{WORD_NAMESPACE}}}p")
-                if body is not None
-                else (),
-                start=1,
-            )
+            id(paragraph): index for index, paragraph in enumerate(body_paragraphs, start=1)
         }
         body_container_indices = {
             id(element): body_index
-            for paragraph in (body if body is not None else ())
-            if (body_index := direct_body_indices.get(id(paragraph))) is not None
+            for body_index, paragraph in enumerate(body_paragraphs, start=1)
             for element in iter_selected(paragraph)
         }
         region_indices: dict[str, int] = {}

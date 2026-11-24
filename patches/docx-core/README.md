@@ -43,6 +43,18 @@ atomic boundaries such as a simple field. Source records and explicit adoption p
 are application-owned in `src/lib/docx-equations.ts`, submitted with the math operation
 as package edits in the existing transaction. Apply this patch after OMML recognition.
 
+`source-element-address.source.patch` adds an optional read-time hook without changing
+canonical node identities or serialization. Apply it after the equation patch.
+`openHeadlessDocument(bytes, onElementSource?)` and
+`readOoxmlPart(xml, { name, contentType, onElementSource? })` pass each original element
+as `(partName, nodeId, path)`. The same hook flows through stepped and package reads.
+`nodeId` is the existing canonical text-inclusive identity. `path` addresses elements
+only: `[0]` is the part root and each following item is the zero-based element position
+among its siblings. Text nodes, including whitespace and `xml:space`-governed text, do
+not consume positions. The callback runs after the canonical id is assigned and before
+child repair, so it reports the original XML element rather than a repaired tree.
+Omitting the hook leaves the existing read path and output unchanged.
+
 The supported subset is an explicit-width page/margin horizontal frame wider than
 every section column with `none` or `notBeside` wrap. Each intersected column gets an
 existing exclusion zone. Adjacent text-relative frame groups stack in source order.
@@ -64,12 +76,15 @@ git apply /absolute/path/to/Oleafly/patches/docx-core/format-execution.source.pa
 git apply /absolute/path/to/Oleafly/patches/docx-core/raw-entry-reuse.source.patch
 git apply /absolute/path/to/Oleafly/patches/docx-core/omml-recognition.source.patch
 git apply /absolute/path/to/Oleafly/patches/docx-core/equation-source-editing.source.patch
+git apply /absolute/path/to/Oleafly/patches/docx-core/source-element-address.source.patch
 ```
 
 In each checkout, empty only its generated `packages/core/dist` directory and run
 `node ../../node_modules/tsup/dist/cli-default.js` from `packages/core`.
 The upstream `tsup` 9.0.0 configuration builds both runtime formats. Retain the
 published declarations, CSS, WASM and notices. The formatting extension adds the `setSectionProperties.columns` declaration and `planImportStyles`/`StyleImportResult` exports. Retain the published declaration paths and add those source-owned declarations to the same installed patch. It adds no third-party dependency. Build `i18n` declarations before checking the core types.
+The source-address extension adds `OoxmlElementSource`, `onElementSource` metadata and
+optional hook parameters to the matching published declarations.
 
 From the patched checkout root, rebuild the declaration chunks named by the package:
 
@@ -117,7 +132,8 @@ bun test packages/core/src/layout/__tests__/paragraph-frame*.test.ts \
   packages/core/src/layout/__tests__/equation-math-script.test.ts \
   packages/core/src/layout/__tests__/equation-matrix-delimiter.test.ts \
   packages/core/src/layout/__tests__/equation-nary-limits.test.ts \
-  packages/core/src/output/__tests__/semantic-paint-equation.test.ts
+  packages/core/src/output/__tests__/semantic-paint-equation.test.ts \
+  packages/core/src/store/package/__tests__/source-element-address.test.ts
 ```
 
 Map the build's hashed imports back to the pristine package's chunk names:

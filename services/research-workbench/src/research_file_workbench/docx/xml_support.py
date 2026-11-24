@@ -5,12 +5,15 @@ from __future__ import annotations
 from collections.abc import Iterator
 from xml.etree import ElementTree
 
+from research_file_workbench.docx.parsing.markup_compatibility import (
+    selected_children as selected_children,
+)
+
 WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 MATH_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 OFFICE_RELATIONSHIP_NAMESPACE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 )
-MARKUP_COMPATIBILITY_NAMESPACE = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 WORDPROCESSING_DRAWING_NAMESPACE = (
     "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 )
@@ -88,41 +91,22 @@ def iter_selected(root: ElementTree.Element) -> Iterator[ElementTree.Element]:
         yield from iter_selected(child)
 
 
-def selected_children(element: ElementTree.Element) -> tuple[ElementTree.Element, ...]:
-    """Select the explicit fallback branch when alternative content provides one."""
-    if tag_local_name(element.tag) != "AlternateContent":
-        return tuple(element)
-    # Unknown Choice requirements cannot be treated as rendered truth; use the explicit fallback
-    # for text/layout projection while complex-object registration inspects all package branches.
-    fallback = next(
-        (
-            child
-            for child in element
-            if child.tag == f"{{{MARKUP_COMPATIBILITY_NAMESPACE}}}Fallback"
-        ),
-        None,
-    )
-    choice = next(
-        (child for child in element if child.tag == f"{{{MARKUP_COMPATIBILITY_NAMESPACE}}}Choice"),
-        None,
-    )
-    selected = fallback if fallback is not None else choice
-    return tuple(selected) if selected is not None else ()
-
-
 def first_child(element: ElementTree.Element | None, local_name: str) -> ElementTree.Element | None:
-    """Return the first direct child with the requested local tag name."""
+    """Return the first projected child with the requested local tag name."""
     if element is None:
         return None
-    return next((child for child in element if tag_local_name(child.tag) == local_name), None)
+    return next(
+        (child for child in selected_children(element) if tag_local_name(child.tag) == local_name),
+        None,
+    )
 
 
 def first_descendant(
     element: ElementTree.Element, namespace: str, local_name: str
 ) -> ElementTree.Element | None:
-    """Return the first descendant with the requested expanded tag name."""
+    """Return the first projected descendant with the requested expanded tag name."""
     qualified_name = f"{{{namespace}}}{local_name}"
-    return next((child for child in element.iter(qualified_name)), None)
+    return next((child for child in iter_selected(element) if child.tag == qualified_name), None)
 
 
 def string_attribute(

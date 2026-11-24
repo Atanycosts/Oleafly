@@ -14,6 +14,7 @@ use super::{
     RunOutcomeKind, RunSpec, RunStatus, MAX_IN_FLIGHT_RUNS, MAX_RUN_COMMAND_BYTES, POLL_EVERY,
     WAIT_MAX,
 };
+use crate::budget::BudgetStopPolicy;
 use crate::model::{now_ms, CommandPolicy, ResearchTask, RunRecord, RunState, TaskRuntimeEvent};
 use crate::scheduler::{lock, TaskEventSink};
 use crate::store::TaskStore;
@@ -91,6 +92,7 @@ pub struct RunCleanup {
 pub struct RunManager {
     tasks_root: PathBuf,
     runtime: tokio::runtime::Handle,
+    budget_stop: BudgetStopPolicy,
     executors: Mutex<HashMap<&'static str, Arc<dyn RunExecutor>>>,
     completions: broadcast::Sender<RunCompletion>,
     monitoring: AtomicBool,
@@ -162,10 +164,19 @@ fn bounded_tail(text: String) -> String {
 
 impl RunManager {
     pub fn new(tasks_root: PathBuf, runtime: tokio::runtime::Handle) -> Arc<Self> {
+        Self::with_budget_stop(tasks_root, runtime, BudgetStopPolicy::Enforced)
+    }
+
+    pub fn with_budget_stop(
+        tasks_root: PathBuf,
+        runtime: tokio::runtime::Handle,
+        budget_stop: BudgetStopPolicy,
+    ) -> Arc<Self> {
         let (completions, _) = broadcast::channel(64);
         Arc::new_cyclic(|this| Self {
             tasks_root,
             runtime,
+            budget_stop,
             executors: Mutex::new(HashMap::new()),
             completions,
             monitoring: AtomicBool::new(false),
@@ -185,6 +196,10 @@ impl RunManager {
         let mut ids: Vec<_> = lock(&self.executors).keys().copied().collect();
         ids.sort_unstable();
         ids
+    }
+
+    pub fn budget_stop(&self) -> BudgetStopPolicy {
+        self.budget_stop
     }
 
     fn executor(&self, id: &str) -> Option<Arc<dyn RunExecutor>> {
@@ -286,7 +301,11 @@ impl RunManager {
         }
         let store = self.store()?;
         let runs = store.runs(&task.id)?;
-        if let Some(max) = brief.budget.max_runs {
+        if let Some(max) = brief
+            .budget
+            .max_runs
+            .filter(|_| self.budget_stop.enforced())
+        {
             let counted = runs.len().saturating_sub(store.runs_baseline(&task.id)?);
             if counted >= max as usize {
                 return Err(format!("The task reached its run limit of {max}."));

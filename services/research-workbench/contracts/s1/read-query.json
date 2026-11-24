@@ -1,5 +1,5 @@
 {
-  "contract_version": "s1-read-query-1.7.0",
+  "contract_version": "s1-read-query-1.8.0",
   "status": "implemented_slice_pending_full_s1_acceptance",
   "entry_point": "rfw-s1-query",
   "input": "existing_application_owned_s1_run",
@@ -48,9 +48,26 @@
     ],
     "cursor_decoding": "strict_base64_and_json_object_with_unique_keys_and_no_nonfinite_numbers",
     "cursor_fields": ["binding", "offset"],
-    "cursor_method_change": "A cursor from query 1.6.0 is not reusable under 1.7.0; start a new query without it. Saved responses retain their original bytes, status and method identity.",
+    "cursor_method_change": "A cursor from an older query method is not reusable; start a new query without it. Saved responses retain their original bytes, status and method identity.",
     "unread_scope": "all_indexed_objects_not_returned_in_this_response",
     "byte_limit": null
+  },
+  "complex_object_content": {
+    "node_address": "Original element in the package identified by source_sha256. Pass it unchanged to the journal node query against the same retained baseline.",
+    "in_selected_branch": "True when the object is outside AlternateContent or in its selected projection. False identifies raw package evidence only.",
+    "limitations": "Object-specific limits, including alternate-format content not expanded and OLE payloads not interpreted or executed."
+  },
+  "text_content": {
+    "applies_to": ["text_block", "table row cell", "reference.comment"],
+    "text": "Plain text of this source-located object as if supported inline revisions were accepted. Includes insertions and moved-to wrappers, not deletions or moved-from wrappers. An entirely deleted passage has empty text. Read text_projection before treating empty text as a result.",
+    "text_projection": ["accepted_revisions", "unavailable"],
+    "source_text": "Previous selected-branch projection, including deleted or moved-from text. Present when different or when accepted text is unavailable; otherwise text also gives the source projection. Not a reject-all view or a raw XML serialization.",
+    "text_projection_reason": "Present only on unavailable: paragraph_boundary_revision, table_structure_revision, move_range_revision, or alternate_content_gap. In this case text is empty and only source_text has the original projection; do not use it as current content.",
+    "scope": "Retains source paragraph and cell identities, offsets, and object counts, not a rewritten DOCX. Paragraph byte offsets still locate the complete element in the retained part; they do not index into either text field. Does not merge paragraph marks, apply table geometry revisions, refresh fields, or recalculate layout. revision_state and standalone field/math objects still report source facts. The structural reader and evidence keep their existing projection. Saved older responses have no text_projection and can include deleted text in text."
+  },
+  "comment_anchor_content": {
+    "comment": "A unique selected Word comment from the anchor's internal comments relationship and exact reference_id, for both range and point anchors. Contains text projection, declared author and date (each nullable), and a node_locator inside the existing target_part. The anchor's own node_locator and paragraph_locator stay unchanged.",
+    "unavailable": "comment is null and the reference is partial when the related body cannot be uniquely read. A matched comment may contain empty text. Unanchored comments, modern thread metadata, replies and resolution state are not inferred."
   },
   "response_axes": {
     "status": {

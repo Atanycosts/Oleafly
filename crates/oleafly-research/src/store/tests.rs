@@ -916,7 +916,6 @@ fn pdf_initialization_rollback_keeps_original_feedback_and_rejects_started_or_us
             .unwrap(),
         vec![root.clone()]
     );
-    assert!(store.queue_annotation_followups().unwrap().is_empty());
     let work_count: i64 = store
         .open()
         .unwrap()

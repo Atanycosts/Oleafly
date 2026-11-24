@@ -281,6 +281,73 @@ async fn application_call_content_preserves_one_text_result_and_its_image() {
 }
 
 #[tokio::test]
+async fn application_burst_queues_at_the_session_limit_and_returns_every_result() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Semaphore;
+
+    struct GatedApplication {
+        started: Arc<AtomicUsize>,
+        release: Arc<Semaphore>,
+    }
+
+    impl super::ApplicationTools for GatedApplication {
+        fn definitions(&self) -> Vec<super::protocol::ToolMeta> {
+            super::ApplicationTools::definitions(&EchoApplication {
+                names: vec!["application_echo".into()],
+            })
+        }
+
+        fn call(&self, name: String, args: Value) -> TaskRuntimeFuture<Value> {
+            let started = self.started.clone();
+            let release = self.release.clone();
+            Box::pin(async move {
+                started.fetch_add(1, Ordering::Relaxed);
+                release.acquire().await.unwrap().forget();
+                super::ApplicationTools::call(&EchoApplication { names: vec![] }, name, args).await
+            })
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let started = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(Semaphore::new(0));
+    let mut services = no_services();
+    services.application = Some(Arc::new(GatedApplication {
+        started: started.clone(),
+        release: release.clone(),
+    }));
+    let bridge = transport::serve(
+        "project-a".into(),
+        FileScope::open(root.path(), None).unwrap(),
+        Vec::new(),
+        services,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let calls = futures_util::future::join_all((0..14).map(|index| {
+        let bridge = &bridge;
+        async move {
+            bridge
+                .call_tool("application_echo", &json!({"message": index.to_string()}))
+                .await
+        }
+    }));
+    tokio::pin!(calls);
+    assert!(futures_util::poll!(calls.as_mut()).is_pending());
+    assert_eq!(started.load(Ordering::Relaxed), 8);
+    release.add_permits(14);
+    let results = tokio::time::timeout(Duration::from_secs(2), calls)
+        .await
+        .unwrap();
+    for (index, result) in results.into_iter().enumerate() {
+        assert_eq!(decode(&result.unwrap()), json!({"echo": index.to_string()}));
+    }
+    bridge.shutdown().await;
+}
+
+#[tokio::test]
 async fn application_tools_apply_the_owners_timeout_and_still_obey_shutdown() {
     struct WaitingApplication;
     impl super::ApplicationTools for WaitingApplication {
@@ -336,9 +403,17 @@ async fn application_tools_apply_the_owners_timeout_and_still_obey_shutdown() {
     let pending = bridge.call_tool("application_until_closed", &arguments);
     tokio::pin!(pending);
     assert!(futures_util::poll!(pending.as_mut()).is_pending());
+    let _other_slots = bridge.context.slots.acquire_many(7).await.unwrap();
+    let queued = bridge.call_tool("application_until_closed", &arguments);
+    tokio::pin!(queued);
+    assert!(futures_util::poll!(queued.as_mut()).is_pending());
     bridge.shutdown().await;
     assert_eq!(
         pending.await.unwrap_err(),
+        "This research session has closed."
+    );
+    assert_eq!(
+        queued.await.unwrap_err(),
         "This research session has closed."
     );
 }

@@ -7,18 +7,43 @@ so tests and callers retain the existing validation and lookup boundaries.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from research_file_workbench.common.filesystem import require_no_reparse_points
 from research_file_workbench.common.json_io import JsonObject, load_json_object
 from research_file_workbench.journals.store import WorldStore
+from research_file_workbench.projects.models import require_project_role
 from research_file_workbench.projects.service import open_project
 from research_file_workbench.workbench.manuscripts import manuscript_workspace
 
 ProjectLookup = Callable[[str], JsonObject]
+DiscoveryProjectLookup = Callable[[str, frozenset[str]], JsonObject]
 CheckLookup = Callable[[str], JsonObject]
 RootLookup = Callable[[str], Path]
+
+
+def project_paths(root: Path) -> tuple[Path, ...]:
+    """List validated project directories; unknown files are never skipped silently."""
+    projects = root / "projects"
+    require_no_reparse_points(projects)
+    if not projects.exists():
+        return ()
+    paths: list[Path] = []
+    for path in sorted(projects.iterdir()):
+        require_no_reparse_points(path)
+        if not path.is_dir():
+            raise ValueError("论文存储目录包含未知文件，请检查应用数据。")
+        paths.append(path)
+    return tuple(paths)
+
+
+def referenced_candidate_project_ids(paths: Iterable[Path]) -> frozenset[str]:
+    """Resolve legacy candidates from reviewed relations; unlinked copies stay ordinary."""
+    candidate_ids: set[str] = set()
+    for path in paths:
+        candidate_ids.update(open_project(path).referenced_candidate_project_ids())
+    return frozenset(candidate_ids)
 
 
 def project_details(
@@ -27,6 +52,7 @@ def project_details(
     project_root: RootLookup,
     store: WorldStore,
     check_record: CheckLookup,
+    legacy_candidate_ids: frozenset[str] = frozenset(),
 ) -> JsonObject:
     """Return a managed project identity with binding and latest check."""
     path = project_root(project_id)
@@ -35,8 +61,12 @@ def project_details(
     display_path = path / "display.json"
     require_no_reparse_points(display_path)
     display = load_json_object(display_path)
-    if set(display) != {"name", "filename"}:
+    if set(display) - {"name", "filename", "role"} or not {"name", "filename"} <= set(display):
         raise ValueError("论文显示元数据字段不完整。")
+    stored_role = display.get("role")
+    role = require_project_role(stored_role) if stored_role is not None else None
+    if role is None:
+        role = "format_candidate" if project_id in legacy_candidate_ids else "manuscript"
     name = _display_name(display.get("name"))
     filename_value = display.get("filename")
     if not isinstance(filename_value, str):
@@ -45,7 +75,7 @@ def project_details(
     if Path(filename).suffix.lower() != ".docx":
         raise ValueError("论文显示元数据文件名无效。")
     binding = store.get_binding(project_id)
-    checks = store.list_checks(project_id=project_id)
+    checks = store.list_check_metadata(project_id=project_id)
     latest: JsonObject | None = None
     if checks:
         # The store returns commit order; a clock adjustment must not hide a later check.
@@ -56,21 +86,22 @@ def project_details(
         "baseline_id": baseline["baseline_id"],
         "binding": binding,
         "latest_check": latest,
+        "role": role,
     }
 
 
-def discover_state(*, root: Path, store: WorldStore, project_lookup: ProjectLookup) -> JsonObject:
+def discover_state(
+    *, root: Path, store: WorldStore, project_lookup: DiscoveryProjectLookup
+) -> JsonObject:
     """Return discovery metadata without recording a content read or review."""
     store.validate_library()
-    projects = root / "projects"
-    require_no_reparse_points(projects)
+    paths = project_paths(root)
+    legacy_candidate_ids = referenced_candidate_project_ids(paths)
     records: list[JsonObject] = []
-    if projects.exists():
-        for path in sorted(projects.iterdir()):
-            require_no_reparse_points(path)
-            if not path.is_dir():
-                raise ValueError("论文存储目录包含未知文件，请检查应用数据。")
-            records.append(project_lookup(path.name))
+    for path in paths:
+        project = project_lookup(path.name, legacy_candidate_ids)
+        if project["role"] != "format_candidate":
+            records.append(project)
     return {
         "worlds": store.list_worlds(),
         "projects": records,
@@ -115,7 +146,7 @@ def history_details(
         "project_id": project_id,
         "checks": [
             check_record(_text(record, "check_id"))
-            for record in store.list_checks(project_id=project_id)
+            for record in store.list_check_metadata(project_id=project_id)
         ],
         "bindings": store.list_bindings(project_id),
         "reads": open_project(project_root(project_id)).list_reads(),

@@ -32,6 +32,7 @@ pub mod typst_forms;
 pub mod typst_log;
 pub mod typst_toolchain;
 mod utf8_stream;
+pub mod word_source;
 mod workspace;
 
 pub use bounded_read::{read_bounded, BoundedRead};

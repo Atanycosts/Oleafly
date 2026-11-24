@@ -89,6 +89,49 @@ gh attestation verify ./Oleafly-installer-file \
   --predicate-type https://spdx.dev/Document/v2.3
 ```
 
+## Public Workbench engine
+
+The public Release workflow sets `OLEAFLY_WORKBENCH_BUNDLE_POLICY=public-unbundled`.
+It removes any locally staged Workbench engine and checks the staging directory before
+Tauri uploads anything. The packaged macOS application is checked again for `rfw-workbench`
+and MuPDF/PyMuPDF files. These public builds cannot open Workbench-backed Word working
+copies or run Journal checks on any platform. They do not reuse a configured Python, and
+the existing `<OLEAFLY_DATA_DIR>/journal-library` stays in place. If you rely on Word working
+copies, export the drafts you need and back up that directory before upgrading. See the
+[development guide](development.md#journal-workbench-service) for opening a copy of the
+library with a trusted checkout.
+
+This is the fail-closed default, not a statement that local bundling is useless.
+Normal arm64 macOS builds from a checkout still bundle the engine for local or internal
+use. Do not upload those artifacts to a public release.
+
+PyMuPDF/MuPDF is offered under AGPL-3.0 or a commercial licence. A public binary may
+not be published merely because the bundle contains a licence text. Before changing the
+release policy, record and verify one of these routes for the exact shipped version:
+
+- **AGPL route:** retain the complete corresponding source for MuPDF, PyMuPDF and every
+  bundled component, the exact build configuration and scripts, modifications, the AGPL
+  text and notices, and an offer/source-location that satisfies the licence. The source
+  must correspond to the binaries actually built; a version string or an unrelated
+  upstream archive is not enough.
+- **Commercial route:** obtain written clearance from the rights holder that expressly
+  permits Oleafly to redistribute the exact PyMuPDF/MuPDF version in public desktop
+  binaries. Keep the clearance with the release record.
+
+Attestations and SBOMs identify artifacts; they do not supply redistribution rights.
+Implement a verifier that checks the chosen evidence against the built bundle, then change
+the policy deliberately. Until that exists, public releases must remain engine-free.
+
+## Historical tag rebuilds
+
+The workflow can be dispatched for an older tag while its YAML comes from the current
+branch. Every optional build helper is therefore discovered from the checked-out tag:
+missing Workbench, language-server, Pandoc, Typst, Biber, VC++ runtime, smoke-test or
+changelog scripts are skipped rather than run against files that do not exist. The SBOM
+input includes the old tag's actual manifests, and a tag with no Workbench service does
+not gain a Workbench smoke or install step. Do not "fix" a historical build by copying
+current-tree helper files into its checkout.
+
 ## Gotchas
 
 - **The tag must match the manifests.** That's the whole job of

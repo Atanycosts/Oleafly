@@ -11,6 +11,19 @@ use tokio::sync::oneshot;
 
 use super::{request, Session};
 
+pub(crate) fn node_address_schema(versions: &[&str]) -> Value {
+    json!({
+        "type":"object", "additionalProperties":false,
+        "required":["version","source_sha256","part","path"],
+        "properties":{
+            "version":{"type":"string","enum":versions},
+            "source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+            "part":{"type":"string","minLength":1},
+            "path":{"type":"array","minItems":1,"items":{"type":"integer","minimum":0}}
+        }
+    })
+}
+
 struct Pending {
     reply: oneshot::Sender<Result<Value, String>>,
     claimed: bool,

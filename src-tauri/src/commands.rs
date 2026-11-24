@@ -1045,6 +1045,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn docx_export_creates_a_copy_without_replacing_project_sources() {
+        let fixture = crate::trust::testing::LinkedFixture::new();
+        let (_, linked) = fixture.link("exports");
+        let library = crate::paths::create_project_dir("docx-export-project").unwrap();
+        for root in [linked, library] {
+            let original = root.join("Author.DoCx");
+            std::fs::write(&original, b"original package").unwrap();
+            assert_eq!(
+                write_export_bytes(original.to_str().unwrap(), b"candidate").unwrap_err(),
+                oleafly_core::word_source::WRITE_REFUSED
+            );
+            let copy = root.join("Candidate.docx");
+            write_export_bytes(copy.to_str().unwrap(), b"candidate").unwrap();
+            assert_eq!(std::fs::read(copy).unwrap(), b"candidate");
+            assert_eq!(std::fs::read(original).unwrap(), b"original package");
+        }
+        let external = fixture.folders.path().join("outside.docx");
+        std::fs::write(&external, b"earlier export").unwrap();
+        write_export_bytes(external.to_str().unwrap(), b"new export").unwrap();
+        assert_eq!(std::fs::read(external).unwrap(), b"new export");
+    }
+
+    #[test]
     fn restricted_projects_report_the_bundled_engine() {
         let _env_guard = crate::paths::data_dir_env_lock();
         let data = tempfile::tempdir().unwrap();

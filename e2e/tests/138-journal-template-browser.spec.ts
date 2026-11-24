@@ -75,6 +75,7 @@ interface RequestRecorder {
   path: string;
   method: string;
   status: number;
+  operation?: string;
   request_sha256?: string;
   response: unknown;
 }
@@ -421,10 +422,14 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
         payload && typeof payload === "object" && "content_base64" in payload
           ? (payload as { content_base64?: unknown }).content_base64
           : undefined;
+      const operation = payload && typeof payload === "object" && "operation" in payload
+        ? payload.operation
+        : undefined;
       requests.push({
         path,
         method: payload === undefined ? "GET" : "POST",
         status: response.status,
+        ...(typeof operation === "string" ? { operation } : {}),
         ...(typeof contentBase64 === "string"
           ? { request_sha256: sha256(bytesFromBase64(contentBase64)) }
           : {}),
@@ -531,6 +536,7 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
             if (command === "journal_workbench_request") {
               return (window as any).journalTemplateRequest(args.path, args.payload ?? undefined);
             }
+            if (command === "journal_word_original_sha256") return null;
             if (command === "docx_recovery_save") {
               const input = args.request;
               const bytes = Uint8Array.from(atob(input.contentBase64), (char) => char.charCodeAt(0));
@@ -588,7 +594,7 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
       });
     });
     stage = "opening real DOCX dialog";
-    await page.goto(`${browserBase}/e2e/journal-template-harness.html`);
+    await page.goto(`${browserBase}/e2e/journal-template-harness.html?project_id=${encodeURIComponent(project.project_id)}`);
     await expect(page.getByTestId("docx-workspace")).toBeVisible({ timeout: 90_000 });
     await expect(page.locator(".docx-paragraph-fragment").filter({ hasText: "Synthetic body target" })).toBeVisible({
       timeout: 90_000,
@@ -660,6 +666,55 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
     ]));
     stages.push({ stage: "check-before-format", result: beforeCheckResult, finding: beforeFontFinding });
 
+    stage = "reviewing an isolated candidate with lazy evidence";
+    const firstCandidateRequest = requests.length;
+    const receipt = await page.evaluate((templateId) =>
+      (window as any).__prepareFormatCandidate(templateId), world.version_id);
+    expect(receipt).toMatchObject({ ok: true, changes: 1, unconfirmedChanges: 0, unresolvedGroups: expect.any(Number) });
+    const candidate = page.getByTestId("docx-format-candidate");
+    await expect(candidate).toHaveAttribute("data-phase", "ready");
+    const changes = candidate.getByTestId("docx-format-candidate-changes");
+    await expect(changes.getByText(/Synthetic body target/)).toBeVisible();
+    await expect(changes.getByTestId("docx-format-candidate-change")).toHaveCount(0);
+    await changes.getByRole("button", { name: /Font size/ }).click();
+    await expect(changes.getByTestId("docx-format-candidate-change")).toContainText(/Template: Template (?:alias )?body/);
+    await changes.getByTestId("docx-format-candidate-change-location").click();
+    const preview = page.getByTestId("docx-format-candidate-preview");
+    await expect(preview).toHaveAttribute("data-docx-history", "readonly");
+    await expect(preview.locator("[data-docx-anchor-highlight]").first()).toBeVisible();
+    const candidateRequests = requests.slice(firstCandidateRequest);
+    expect(candidateRequests.filter(({ operation }) => operation).map(({ operation }) => operation))
+      .toEqual(expect.arrayContaining(["candidate_findings", "finding_verification"]));
+    expect(candidateRequests.some(({ operation }) => operation === "findings" || operation === "finding_locations")).toBe(false);
+    expect(candidateRequests.some(({ path }) => path.startsWith("/api/template-source"))).toBe(false);
+    const browserReview = candidate.getByTestId("docx-finding-browser");
+    await expect(browserReview).toContainText("does not independently check English word choice, spelling, or punctuation");
+    await browserReview.getByRole("combobox").selectOption("cannot_determine");
+    const captions = browserReview.locator("section").filter({ has: page.getByRole("heading", { name: "Figure captions", exact: true }) });
+    await captions.getByRole("button", { name: /Coverage/ }).click();
+    const locations = captions.getByTestId("docx-finding-locations");
+    const location = locations.getByRole("button", { name: /Retained caption text/ });
+    await expect(location).toBeVisible();
+    expect(requests.slice(firstCandidateRequest).some(({ operation }) => operation === "findings")).toBe(false);
+    await location.click();
+    await expect(captions.getByTestId("docx-finding-details")).toContainText("Coverage limitation");
+    expect(requests.slice(firstCandidateRequest).some(({ operation }) => operation === "findings")).toBe(true);
+    stage = "reopening the retained candidate without a new check";
+    const reopenedAt = requests.length;
+    await page.reload();
+    await expect(candidate).toHaveAttribute("data-phase", "ready", { timeout: 30_000 });
+    await expect(candidate.getByTestId("docx-adopt-format-candidate")).toBeEnabled();
+    await expect(changes.getByText(/Synthetic body target/)).toBeVisible();
+    expect(requests.slice(reopenedAt).some(({ path }) => path.startsWith("/api/template-check"))).toBe(false);
+    await candidate.getByRole("button", { name: "Close candidate review" }).click();
+    const unmodified = await page.evaluate(async () => (window as any).__docxTools.read_docx_document.execute({}));
+    expect(unmodified.document).toMatchObject({ baselineId: project.baseline_id, sessionRevision: 0, dirty: false });
+    const reopenedTarget = unmodified.paragraphs.find((item: { text: string }) =>
+      item.text.includes("Synthetic body target"),
+    );
+    expect(reopenedTarget).toBeTruthy();
+    stages.push({ stage: "isolated-candidate-lazy-review", receipt });
+
     stage = "applying direct fourteen point body format";
     const formatApplied = await page.evaluate(async ({ paragraphRef, expectedRevision }) =>
       (window as any).__docxTools.apply_docx_format.execute({
@@ -667,7 +722,7 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
         expected_revision: expectedRevision,
         font: { size: 14 },
       }),
-    { paragraphRef: targetRead.paragraphRef, expectedRevision: beforeFormat.revision });
+    { paragraphRef: reopenedTarget.paragraphRef, expectedRevision: unmodified.document.sessionRevision });
     expect(formatApplied).toMatchObject({
       ok: true,
       changed: true,
@@ -677,7 +732,7 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
       (window as any).__docxTools.read_docx_format.execute({
         query: { paragraph_ref: paragraphRef, kind: "objects", limit: 20 },
       }),
-    targetRead.paragraphRef);
+    reopenedTarget.paragraphRef);
     expect(afterFormat).toMatchObject({
       revision: 1,
       paragraph: { font: { size: 14 }, paragraph: { style: "Body" } },

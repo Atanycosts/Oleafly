@@ -20,15 +20,20 @@ import {
 } from "@docx-editor.dev/core/layout";
 import {
   openHeadlessDocument,
+  paraIdOf,
   readOoxmlPart,
+  relationshipsOf,
   resolveContentTypeOf,
-  stylesPartOf,
+  resolveRelationship,
   type OoxmlElement,
   type OoxmlNode,
   type OoxmlProperty,
 } from "@docx-editor.dev/core/store";
 import corePackage from "@docx-editor.dev/core/package.json";
+import type { DocxNodeAddress } from "@oleafly/ai-tools";
+import { missingAlternateContentBranch, projectDocxMarkupCompatibility } from "./docx-markup-compatibility";
 import type {
+  DocxEmbeddedReadGap,
   DocxFormatFacts,
   DocxFormatJson,
   DocxFormatObject,
@@ -46,7 +51,10 @@ import type {
 export type * from "./docx-format-types";
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-const METHOD_VERSION = "docx-core-format-snapshot-1.2.0";
+const OFFICE = "urn:schemas-microsoft-com:office:office";
+const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const METHOD_VERSION = "docx-core-format-snapshot-1.3.0";
+const NODE_ADDRESS_VERSION = "xml-element-path-1";
 const STORY_NAMES = new Set(["document", "hdr", "ftr", "footnote", "endnote"]);
 const STRUCTURAL_NAMES = new Set(["tbl", "tr", "tc", "sectPr", "drawing", "pict", "object", "sdt", "txbxContent", "footnotes", "endnotes", "comment"]);
 
@@ -372,8 +380,8 @@ function styleDefinitions(
   table: StyleCascadeTable,
   stylesRoot: OoxmlElement | null,
   part: string,
-  pathsByNode: WeakMap<OoxmlNode, number[]>,
-  idOf: (part: string, node: OoxmlNode) => string,
+  sourceOf: (part: string, node: OoxmlElement) => Pick<DocxFormatStyleDefinition, "object_id" | "part" | "path" | "node_address">,
+  declarationOf: (node: OoxmlElement) => DocxFormatProperties,
 ): DocxFormatStyleDefinition[] {
   const definitions: DocxFormatStyleDefinition[] = [];
   const escaped = (value: string) => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
@@ -389,11 +397,11 @@ function styleDefinitions(
       const isCharacter = style?.type === "character";
       const run = isCharacter ? cascadeRunProperties([], [{ localName: "rStyle", attributes: { val: styleId } }], table) : null;
       definitions.push({
-        object_id: idOf(part, sourceNode), part, path: pathsByNode.get(sourceNode) ?? [],
+        ...sourceOf(part, sourceNode),
         style_id: styleId, name: style?.name ?? attr(child(sourceNode, "name"), "val") ?? null,
         type: style?.type ?? attr(sourceNode, "type") ?? "unknown",
         based_on: style?.basedOn ?? attr(child(sourceNode, "basedOn"), "val") ?? null,
-        role: "unknown", role_basis: [], declared: record(sourceNode),
+        role: "unknown", role_basis: [], declared: declarationOf(sourceNode),
         effective_status: isCharacter ? "run" : "declaration_only",
         properties: { paragraph: {}, run: run ? record(resolveRunStyle(run, table.themeFonts)) : {},
           script_usage: { latin: true, east_asian: true, complex: true, other: true } },
@@ -410,18 +418,15 @@ function styleDefinitions(
     const cascade = cascadeParagraphFormatting(table, child(paragraph, "pPr"));
     const layout = resolveParagraphLayoutInputs(paragraph, 0, table);
     const role = roleFor(table, style.styleId, layout, "", "unknown");
-    const path = pathsByNode.get(sourceNode) ?? [];
     definitions.push({
-      object_id: idOf(part, sourceNode),
-      part,
-      path,
+      ...sourceOf(part, sourceNode),
       style_id: style.styleId,
       name: style.name ?? null,
       type: style.type,
       based_on: style.basedOn,
       role: role.role,
       role_basis: role.basis,
-      declared: record(sourceNode),
+      declared: declarationOf(sourceNode),
       effective_status: "paragraph_and_run",
       properties: {
         paragraph: record({ ...layout, ...effectiveParagraphFlags(layout.props), frame: effectiveFrame(layout.props) }),
@@ -616,46 +621,92 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<DocxFormatFacts> {
   const bytes = new Uint8Array(sourceBytes);
-  const opened = openHeadlessDocument(bytes);
+  const sourcePaths = new Map<string, Map<string, readonly number[]>>();
+  const onElementSource = (part: string, nodeId: string, path: readonly number[]) => {
+    let paths = sourcePaths.get(part);
+    if (!paths) sourcePaths.set(part, paths = new Map());
+    paths.set(nodeId, path);
+  };
+  const opened = openHeadlessDocument(bytes, onElementSource);
   if (!opened.ok) throw new Error(`DOCX facts could not open package: ${opened.reason}${opened.detail ? ` (${opened.detail})` : ""}`);
   const view = opened.view;
   const pkg = view.currentPackage();
   const sourceSha256 = await sha256(bytes);
-  const table = buildStyleCascadeTable(view.stylesRoot(), view.documentThemeFonts(), view.settingsRoot());
-  const stylesPart = stylesPartOf(pkg);
-  const numbering = buildNumberingIndex(view.numberingRoot());
   const trees = new Map(pkg.parts);
   for (const [name, partBytes] of pkg.partBytes) {
     if (trees.has(name)) continue;
     const contentType = resolveContentTypeOf(pkg, name);
     if (name.endsWith(".xml") || name.endsWith(".rels") || contentType?.includes("xml")) {
-      const parsed = readOoxmlPart(new TextDecoder().decode(partBytes), { name, contentType: contentType ?? "application/xml" });
+      const parsed = readOoxmlPart(new TextDecoder().decode(partBytes), { name, contentType: contentType ?? "application/xml", onElementSource });
       if (parsed.ok) trees.set(name, parsed.part);
     }
   }
-  const nodes: { part: string; path: number[]; node: OoxmlElement }[] = [];
+  const locatorOf = (part: string, node: OoxmlElement, path: number[]) => {
+    const physicalPath = sourcePaths.get(part)?.get(node.id);
+    const address: DocxNodeAddress | undefined = physicalPath && {
+      version: NODE_ADDRESS_VERSION, source_sha256: sourceSha256, part, path: physicalPath,
+    };
+    return { part, path, ...(address ? { node_address: address } : {}) };
+  };
+  const nodes: (ReturnType<typeof locatorOf> & { node: OoxmlElement })[] = [];
   const nodesById = new Map<string, OoxmlElement>();
   const nodePaths = new Map<string, number[]>();
-  const pathsByNode = new WeakMap<OoxmlNode, number[]>();
+  const paragraphNodesByParaId = new Map<string, OoxmlElement | null>();
   const indexNode = (part: string, node: OoxmlNode, path: number[]): void => {
-    nodePaths.set(`${part}\0${node.id}`, path);
-    pathsByNode.set(node, path);
     if (node.kind === "textValue") return;
-    nodesById.set(`${part}\0${node.id}`, node);
-    nodes.push({ part, path, node });
+    const key = `${part}\0${node.id}`;
+    nodePaths.set(key, path);
+    nodesById.set(key, node);
+    if (node.kind === "paragraph") {
+      const paraId = paraIdOf(node);
+      if (paraId) {
+        const paragraphKey = `${part}\0${paraId}`;
+        paragraphNodesByParaId.set(paragraphKey, paragraphNodesByParaId.has(paragraphKey) ? null : node);
+      }
+    }
+    nodes.push({ ...locatorOf(part, node, path), node });
     node.children.forEach((nested, index) => { indexNode(part, nested, [...path, index]); });
   };
   for (const [name, part] of trees) indexNode(name, part.root, [0]);
   const idOf = (part: string, node: OoxmlNode) => `${part}#${nodePaths.get(`${part}\0${node.id}`)?.join(".") ?? "synthetic"}`;
+  const sourceOf = (part: string, node: OoxmlElement) => ({
+    object_id: idOf(part, node), ...locatorOf(part, node, nodePaths.get(`${part}\0${node.id}`)!),
+  });
   const objects: DocxFormatObject[] = [];
-  const styleSnapshots = styleDefinitions(table, stylesPart?.root ?? null, stylesPart?.name ?? "/word/styles.xml", pathsByNode, idOf);
+  const embeddedGaps: DocxEmbeddedReadGap[] = [];
   const unsupported: DocxFormatSnapshotV1["unsupported"] = [];
   const noteUnsupported = (code: string, detail: string, objectId: string) => {
     const existing = unsupported.find((entry) => entry.code === code);
     if (existing) existing.object_ids.push(objectId);
     else unsupported.push({ code, detail, object_ids: [objectId] });
   };
-  const mainDocumentPart = view.part();
+  const branchDependentParagraphs = new WeakSet<OoxmlElement>();
+  const addressableParagraphIds = new Map<string, string>();
+  const projectedRoots = new Map<OoxmlElement, OoxmlElement>();
+  const partByRoot = new Map([...trees].map(([name, { root }]) => [root, name] as const));
+  const project = (part: string, root: OoxmlElement): OoxmlElement => {
+    const cached = projectedRoots.get(root);
+    if (cached) return cached;
+    const projected = projectDocxMarkupCompatibility(root, (node) => {
+      const source = sourceOf(part, node);
+      noteUnsupported(missingAlternateContentBranch.code, missingAlternateContentBranch.detail, source.object_id);
+      objects.push({ ...source, kind: "unsupported_node", role: "unknown", role_basis: [],
+        properties: {}, declared: declared(node), evidence: {} });
+    }, branchDependentParagraphs);
+    projectedRoots.set(root, projected);
+    return projected;
+  };
+  const projectRoot = (root: OoxmlElement | null): OoxmlElement | null =>
+    root ? project(partByRoot.get(root)!, root) : null;
+  const rawStyleRoot = view.stylesRoot();
+  const styleRoot = projectRoot(rawStyleRoot);
+  const table = buildStyleCascadeTable(styleRoot, view.documentThemeFonts(), projectRoot(view.settingsRoot()));
+  const numbering = buildNumberingIndex(projectRoot(view.numberingRoot()));
+  const stylesName = rawStyleRoot ? partByRoot.get(rawStyleRoot)! : "/word/styles.xml";
+  const styleSnapshots = styleDefinitions(table, styleRoot, stylesName, sourceOf,
+    (node) => record(nodesById.get(`${stylesName}\0${node.id}`)));
+  const rawMainDocumentPart = view.part();
+  const mainDocumentPart = { ...rawMainDocumentPart, root: project(rawMainDocumentPart.name, rawMainDocumentPart.root) };
   const sectionEnumeration = enumerateDocumentSectionsBounded(mainDocumentPart);
   const bodyBlocks = storyBlocks(mainDocumentPart);
   const bodyBlockIds = new Set(bodyBlocks.map((block) => block.id));
@@ -672,8 +723,7 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
   const bodySectionNode = bodyNode && child(bodyNode, "sectPr");
   const finalSectionIndex = sectionEnumeration.sections.at(-1)?.index;
   const sectionBindings: SectionBinding[] = sectionEnumeration.sections.map((section) => {
-    const terminalId = section.blockStart < section.blockEndExclusive ? bodyBlocks[section.blockEndExclusive - 1]?.id : undefined;
-    const terminal = terminalId ? nodesById.get(`${mainDocumentPart.name}\0${terminalId}`) : undefined;
+    const terminal = section.blockStart < section.blockEndExclusive ? bodyBlocks[section.blockEndExclusive - 1] : undefined;
     const paragraphProperties = terminal?.kind === "paragraph" ? child(terminal, "pPr") : undefined;
     const paragraphSectPr = paragraphProperties ? child(paragraphProperties, "sectPr") : undefined;
     const boundaryNode = paragraphSectPr ?? (
@@ -708,8 +758,8 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
     storyContent: boolean;
   };
   const makeObject = (part: string, node: OoxmlElement, kind: string, role: DocxFormatRole): DocxFormatObject => ({
-    object_id: idOf(part, node), part, path: pathsByNode.get(node) as number[], kind,
-    role, role_basis: [], properties: {}, declared: declared(node), evidence: {},
+    ...sourceOf(part, node), kind,
+    role, role_basis: [], properties: {}, declared: declared(nodesById.get(`${part}\0${node.id}`)!), evidence: {},
   });
   const bindToSection = (object: DocxFormatObject, binding: SectionBinding): void => {
     object.region = { section_object_id: binding.objectId, role: "unknown", role_basis: [] };
@@ -721,9 +771,10 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
       membership: "enumerateDocumentSectionsBounded",
     });
   };
-  for (const [partName, part] of trees) {
-    const rootIsStory = part.root.namespaceUri === W && ["document", "hdr", "ftr", "footnotes", "endnotes", "comments"].includes(part.root.localName);
+  for (const [partName, rawPart] of trees) {
+    const rootIsStory = rawPart.root.namespaceUri === W && ["document", "hdr", "ftr", "footnotes", "endnotes", "comments"].includes(rawPart.root.localName);
     if (!rootIsStory) continue;
+    const part = { ...rawPart, root: project(partName, rawPart.root) };
     const blocks = storyBlocks(part);
     const listItems = resolveStoryListItems(blocks, numbering, table);
     const cellContexts = new Map<string, {
@@ -755,6 +806,24 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
       if (cell) Object.assign(context, { cellStyle: cell.style, width: cell.width, inCell: true, tableContext: cell.tableContext });
       const row = rowProperties.get(node.id);
       if (row) context.tableContext = row.tableContext;
+      const gapKind = node.namespaceUri === W && node.localName === "altChunk" ? "alt_chunk"
+        : (node.namespaceUri === OFFICE && node.localName === "OLEObject") ||
+          (node.namespaceUri === W && ["objectEmbed", "objectLink"].includes(node.localName)) ? "ole" : undefined;
+      if (context.storyContent && gapKind) {
+        const object = makeObject(partName, node, gapKind, context.story);
+        if (context.paragraph) object.evidence.paragraph_object_id = context.paragraph.object.object_id;
+        const relationshipId = node.attributes.find((attribute) =>
+          attribute.localName === "id" && attribute.namespaceUri === REL)?.value;
+        const relationship = relationshipsOf(pkg, partName).find((entry) => entry.id === relationshipId);
+        const target = relationship && resolveRelationship(relationship);
+        embeddedGaps.push({ ...object, kind: gapKind, read_gap: {
+          code: gapKind === "alt_chunk" ? "alt_chunk_not_expanded" : "ole_payload_not_read",
+          detail: gapKind === "alt_chunk" ? "The alternate-format part is not expanded into the document text."
+            : "The OLE payload is not opened, executed or semantically parsed.",
+          ...(relationshipId ? { relationship_id: relationshipId } : {}),
+          ...(target?.mode === "Internal" && target.target.ok ? { related_part: target.target.partName } : {}),
+        } });
+      }
       let object: DocxFormatObject | undefined;
       if (node.namespaceUri === W && node.localName === "p" && context.storyContent) {
         const pPr = child(node, "pPr");
@@ -772,6 +841,11 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
           script_usage: scriptUsage(text),
         });
         object.evidence = record({ style_chain: styleChain(table, cascade.styleId), doc_defaults: true, theme: table.themeFonts, in_table_cell: context.inCell, top_level_body: partName === pkg.mainDocumentPart && bodyBlockIds.has(node.id), container_width_pt: context.width });
+        const source = nodesById.get(`${partName}\0${node.id}`)!;
+        const paraId = node.kind === "paragraph" ? paraIdOf(node) : null;
+        if (paraId && paragraphNodesByParaId.get(`${partName}\0${paraId}`) === source && !branchDependentParagraphs.has(source)) {
+          addressableParagraphIds.set(object.object_id, paraId);
+        }
         context.paragraph = { object, layout };
       } else if (node.namespaceUri === W && node.localName === "r" && context.paragraph) {
         const inherited = context.paragraph.layout.inheritedRunProperties;
@@ -831,7 +905,7 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
           (partName !== mainDocumentPart.name || sectionBinding?.boundaryNode?.id === node.id)) {
         object = makeObject(partName, node, "section", "unknown");
         object.properties = record({ section: parseSectionProperties(node) });
-        object.declared = record({ node });
+        object.declared = record({ node: nodesById.get(`${partName}\0${node.id}`) });
       } else if (STORY_NAMES.has(node.localName) && node.namespaceUri === W) {
         object = makeObject(partName, node, "story", context.story);
         object.role_basis = [{ source: "story", value: node.localName, certainty: "explicit" }];
@@ -896,19 +970,32 @@ export async function openDocxFormatFacts(sourceBytes: Uint8Array): Promise<Docx
     if (request.kind === "relationships") {
       return { ...bound, kind: "relationships", relationships: Array.from(pkg.relationships).filter(([part]) => !request.part || part === request.part).flatMap(([, relationships]) => relationships.map(record)) };
     }
+    if ("path" in request) throw new Error("A legacy path cannot locate a DOCX node. Re-read the part and use node_address.");
+    const address = request.node_address;
+    if (address !== undefined) {
+      if (request.part !== undefined) throw new Error("node_address cannot be combined with part.");
+      if (!address || address.version !== NODE_ADDRESS_VERSION) throw new Error("Unsupported DOCX node_address version.");
+      if (address.source_sha256 !== sourceSha256) throw new Error("Node address was recorded for different DOCX bytes. Read the requested version again.");
+      if (typeof address.part !== "string" || !address.part || !Array.isArray(address.path) || address.path[0] !== 0 ||
+          address.path.some((index) => !Number.isSafeInteger(index) || index < 0)) {
+        throw new Error("A DOCX node_address needs a part and a path of non-negative integers starting at 0.");
+      }
+    }
+    const part = address?.part ?? request.part;
     const requestedAttribute = request.attribute;
     const matches = nodes.filter((entry) =>
-      (!request.part || entry.part === request.part) &&
-      (!request.path || request.path.length === entry.path.length && request.path.every((index, position) => entry.path[position] === index)) &&
+      (!part || entry.part === part) &&
+      (!address || entry.node_address?.path.length === address.path.length && address.path.every((index, position) => entry.node_address?.path[position] === index)) &&
       (!request.namespace_uri || entry.node.namespaceUri === request.namespace_uri) &&
       (!request.local_name || entry.node.localName === request.local_name) &&
       (!requestedAttribute || entry.node.attributes.some((attribute) => attribute.localName === requestedAttribute.local_name &&
         (!requestedAttribute.namespace_uri || attribute.namespaceUri === requestedAttribute.namespace_uri) &&
         (requestedAttribute.value === undefined || attribute.value === requestedAttribute.value))),
     );
+    if (address && matches.length !== 1) throw new Error("Node address did not match one element in this DOCX format view. Read the original package for its physical XML.");
     const offset = Math.max(0, Math.trunc(request.offset ?? 0));
     const limit = Math.max(1, Math.min(1000, Math.trunc(request.limit ?? 100)));
-    return { ...bound, kind: "nodes", nodes: matches.slice(offset, offset + limit).map((entry) => ({ part: entry.part, path: [...entry.path], node: record(entry.node) })), total: matches.length, next_offset: offset + limit < matches.length ? offset + limit : null };
+    return { ...bound, kind: "nodes", nodes: matches.slice(offset, offset + limit).map(({ node, ...locator }) => ({ ...locator, path: [...locator.path], node: record(node) })), total: matches.length, next_offset: offset + limit < matches.length ? offset + limit : null };
   };
-  return { snapshot, query };
+  return { snapshot, documentPart: rawMainDocumentPart, stylesRoot: styleRoot, query, addressableParagraphIds, embeddedGaps };
 }

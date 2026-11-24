@@ -848,6 +848,7 @@ mod tests {
             0,
             Arc::new(|| None::<f64>),
             Box::new(move || *lock(&source)),
+            crate::budget::BudgetStopPolicy::Enforced,
         ));
         fixture
             .services
@@ -896,6 +897,7 @@ mod tests {
             0,
             Arc::new(|| None::<f64>),
             Box::new(move || *lock(&source)),
+            crate::budget::BudgetStopPolicy::Enforced,
         ));
         fixture
             .services

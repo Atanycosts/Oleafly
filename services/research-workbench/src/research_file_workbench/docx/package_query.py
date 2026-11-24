@@ -25,16 +25,26 @@ _DEFAULT_LIMIT = 100
 _MAX_LIMIT = 1000
 _RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
 _XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
+XML_ELEMENT_PATH_VERSION = "xml-element-path-1"
+WORKBENCH_XML_CHILD_PATH_VERSION = "workbench-xml-child-path-1"
+_NODE_ADDRESS_VERSIONS = {
+    XML_ELEMENT_PATH_VERSION,
+    WORKBENCH_XML_CHILD_PATH_VERSION,
+}
 
 
 class PackageQueryError(ValueError):
     """Raised when a package query or the selected package facts are invalid."""
 
 
+class NodeAddressError(PackageQueryError):
+    """An address refusal with a message that can be returned without echoing input."""
+
+
 @dataclass(frozen=True, slots=True)
 class _NodeSelector:
+    address: _NodeAddress | None
     part: str | None
-    path: tuple[int, ...] | None
     namespace_uri: str | None
     local_name: str | None
     attribute_namespace_uri: str | None
@@ -42,6 +52,14 @@ class _NodeSelector:
     attribute_value: str | None
     offset: int
     limit: int
+
+
+@dataclass(frozen=True, slots=True)
+class _NodeAddress:
+    version: str
+    source_sha256: str
+    part: str
+    path: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +76,7 @@ def query_package(content: bytes, query: JsonObject) -> JsonObject:
     if not isinstance(query, dict):
         raise PackageQueryError("Package query must be an object")
     operation = _required_text(query.get("operation"), "operation")
+    source_sha256 = sha256_bytes(content)
     if operation == "part":
         _require_fields(query, {"operation", "part"})
         requested_part = _required_text(query["part"], "part")
@@ -75,9 +94,10 @@ def query_package(content: bytes, query: JsonObject) -> JsonObject:
                 "attribute",
                 "offset",
                 "limit",
+                "node_address",
             },
         )
-        node_selector = _node_selector(query)
+        node_selector = _node_selector(query, source_sha256)
         requested_part = None
         relationship_query = None
     elif operation == "relationships":
@@ -91,7 +111,6 @@ def query_package(content: bytes, query: JsonObject) -> JsonObject:
     else:
         raise PackageQueryError(f"Unsupported package query operation: {operation}")
 
-    source_sha256 = sha256_bytes(content)
     common: JsonObject = {
         "schema_version": 1,
         "source_sha256": source_sha256,
@@ -124,6 +143,7 @@ def query_package(content: bytes, query: JsonObject) -> JsonObject:
                         canonical_names,
                         content_types,
                         node_selector,
+                        source_sha256,
                     ),
                 }
             assert relationship_query is not None
@@ -143,16 +163,20 @@ def query_package(content: bytes, query: JsonObject) -> JsonObject:
         raise PackageQueryError(str(exc)) from exc
 
 
-def _node_selector(query: JsonObject) -> _NodeSelector:
-    path_value = query.get("path")
-    path: tuple[int, ...] | None = None
-    if path_value is not None:
-        if not isinstance(path_value, list) or not path_value:
-            raise PackageQueryError("path must be a non-empty integer array")
-        for index in path_value:
-            if type(index) is not int or index < 0:
-                raise PackageQueryError("path entries must be non-negative integers")
-        path = tuple(cast(list[int], path_value))
+def _node_selector(query: JsonObject, source_sha256: str) -> _NodeSelector:
+    address = (
+        _node_address(query["node_address"], source_sha256) if "node_address" in query else None
+    )
+    if address is not None and ({"part", "path"} & set(query)):
+        raise NodeAddressError(
+            "node_address cannot be combined with top-level part or path; "
+            "re-query with only the declared node address"
+        )
+    if address is None and "path" in query:
+        raise NodeAddressError(
+            "Top-level path has no declared address source; re-query with node_address using "
+            f"{XML_ELEMENT_PATH_VERSION} or {WORKBENCH_XML_CHILD_PATH_VERSION}"
+        )
 
     attribute = query.get("attribute")
     attribute_namespace_uri: str | None = None
@@ -179,8 +203,8 @@ def _node_selector(query: JsonObject) -> _NodeSelector:
         _required_text(query["local_name"], "local_name") if "local_name" in query else None
     )
     return _NodeSelector(
-        part=_optional_part(query, "part"),
-        path=path,
+        address=address,
+        part=None if address is not None else _optional_part(query, "part"),
         namespace_uri=namespace_uri,
         local_name=local_name,
         attribute_namespace_uri=attribute_namespace_uri,
@@ -191,13 +215,91 @@ def _node_selector(query: JsonObject) -> _NodeSelector:
     )
 
 
+def _node_address(value: object, source_sha256: str) -> _NodeAddress:
+    if not isinstance(value, dict):
+        raise NodeAddressError("node_address must be an object")
+    address = cast(JsonObject, value)
+    if address.keys() != {"version", "source_sha256", "part", "path"}:
+        raise NodeAddressError(
+            "node_address must contain only version, source_sha256, part and path"
+        )
+    version = address["version"]
+    if not isinstance(version, str) or version not in _NODE_ADDRESS_VERSIONS:
+        raise NodeAddressError(
+            "Unsupported node_address version; use the version returned with the address"
+        )
+    address_sha256 = address["source_sha256"]
+    if (
+        not isinstance(address_sha256, str)
+        or len(address_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in address_sha256)
+    ):
+        raise NodeAddressError("node_address.source_sha256 must be a lowercase SHA-256 digest")
+    if address_sha256 != source_sha256:
+        raise NodeAddressError(
+            "Node address was recorded for different DOCX bytes; "
+            "select the retained version identified by node_address.source_sha256"
+        )
+    part = address["part"]
+    if not isinstance(part, str) or not part.strip() or "\x00" in part:
+        raise NodeAddressError("node_address.part must be an exact package part name")
+    path_value = address["path"]
+    if not isinstance(path_value, list) or not path_value:
+        raise NodeAddressError("node_address.path must be a non-empty integer array")
+    if any(type(index) is not int or index < 0 for index in path_value):
+        raise NodeAddressError("node_address.path entries must be non-negative integers")
+    path = tuple(cast(list[int], path_value))
+    if path[0] != 0:
+        raise NodeAddressError("node_address.path must start at root index 0")
+    return _NodeAddress(version=version, source_sha256=address_sha256, part=part, path=path)
+
+
+def validate_node_address(
+    value: object,
+    *,
+    source_sha256: str,
+    available_parts: set[str],
+    allowed_versions: set[str] | None = None,
+) -> JsonObject:
+    """Validate a retained node address without resolving it against XML again."""
+    address = _node_address(value, source_sha256)
+    if allowed_versions is not None and address.version not in allowed_versions:
+        raise PackageQueryError(f"Unsupported node_address version: {address.version}")
+    internal_part = address.part[1:] if address.part.startswith("/") else address.part
+    public_part = f"/{internal_part}"
+    if (
+        not internal_part
+        or "\\" in internal_part
+        or "\x00" in internal_part
+        or any(segment in {"", ".", ".."} for segment in internal_part.split("/"))
+        or internal_part not in available_parts
+    ):
+        raise PackageQueryError(f"Node address part is absent from the package: {address.part}")
+    return {
+        "version": address.version,
+        "source_sha256": address.source_sha256,
+        "part": public_part,
+        "path": list(address.path),
+    }
+
+
 def _query_nodes(
     archive: ZipFile,
     names: tuple[str, ...],
     canonical_names: dict[str, str],
     content_types: dict[str, str],
     selector: _NodeSelector,
+    source_sha256: str,
 ) -> JsonObject:
+    if selector.address is not None:
+        return _query_exact_node(
+            archive,
+            names,
+            canonical_names,
+            content_types,
+            selector,
+            source_sha256,
+        )
     selected_names = (
         (_resolve_part(selector.part, names),)
         if selector.part is not None
@@ -210,16 +312,8 @@ def _query_nodes(
         if not _is_xml_part(internal_name, content_types.get(internal_name)):
             raise PackageQueryError(f"DOCX part is not XML: {canonical_names[internal_name]}")
         root = _parse_xml(_read_part_bytes(archive, internal_name), canonical_names[internal_name])
-        if selector.path is not None and selector.part is not None:
-            resolved = _resolve_node_path(root, selector.path)
-            if resolved == "invalid":
-                raise PackageQueryError(
-                    f"Node path is outside the selected XML part: {canonical_names[internal_name]}"
-                )
-        for path, element, preserve_space in _iter_elements(root, (0,), False):
+        for path, node_path, element, preserve_space in _iter_elements(root, (0,), (0,), False):
             if not _matches_node(
-                canonical_names[internal_name],
-                path,
                 element,
                 selector,
             ):
@@ -229,20 +323,67 @@ def _query_nodes(
                     _node_record(
                         canonical_names[internal_name],
                         path,
+                        node_path,
                         element,
                         preserve_space,
+                        source_sha256,
                     )
                 )
             total += 1
+    return _nodes_page(rows, total=total, offset=selector.offset, limit=selector.limit)
+
+
+def _query_exact_node(
+    archive: ZipFile,
+    names: tuple[str, ...],
+    canonical_names: dict[str, str],
+    content_types: dict[str, str],
+    selector: _NodeSelector,
+    source_sha256: str,
+) -> JsonObject:
+    assert selector.address is not None
+    try:
+        internal_name = _resolve_part(selector.address.part, names)
+    except PackageQueryError as exc:
+        raise NodeAddressError(
+            "Unknown DOCX part in node_address; scan the source package again"
+        ) from exc
+    if not _is_xml_part(internal_name, content_types.get(internal_name)):
+        raise NodeAddressError("The DOCX part in node_address is not XML")
+    root = _parse_xml(_read_part_bytes(archive, internal_name), canonical_names[internal_name])
+    resolved = _resolve_node_address(root, selector.address)
+    element, path, node_path, preserve_space = resolved
+    if not _matches_node(element, selector):
+        raise NodeAddressError(
+            "Node address resolves to a different element than the requested selectors"
+        )
+    rows = (
+        [
+            _node_record(
+                canonical_names[internal_name],
+                path,
+                node_path,
+                element,
+                preserve_space,
+                source_sha256,
+            )
+        ]
+        if selector.offset == 0
+        else []
+    )
+    return _nodes_page(rows, total=1, offset=selector.offset, limit=selector.limit)
+
+
+def _nodes_page(rows: list[JsonObject], *, total: int, offset: int, limit: int) -> JsonObject:
     returned = len(rows)
-    has_more = selector.offset + returned < total
+    has_more = offset + returned < total
     return {
         "nodes": rows,
         "total": total,
-        "offset": selector.offset,
-        "limit": selector.limit,
+        "offset": offset,
+        "limit": limit,
         "has_more": has_more,
-        "next_offset": selector.offset + returned if has_more else None,
+        "next_offset": offset + returned if has_more else None,
     }
 
 
@@ -369,17 +510,30 @@ def _relationship_records(
 def _node_record(
     part: str,
     path: tuple[int, ...],
+    node_path: tuple[int, ...],
     element: ElementTree.Element,
     preserve_space: bool,
+    source_sha256: str,
 ) -> JsonObject:
     namespace_uri, local_name = _split_xml_name(element.tag)
     return {
+        "node_address": xml_element_node_address(source_sha256, part, node_path),
         "part": part,
         "path": list(path),
         "namespace_uri": namespace_uri,
         "local_name": local_name,
         "attributes": [_attribute_record(name, value) for name, value in element.attrib.items()],
         "children": _child_records(path, element, preserve_space),
+    }
+
+
+def xml_element_node_address(source_sha256: str, part: str, path: tuple[int, ...]) -> JsonObject:
+    """Describe a physical element in the original XML part of captured DOCX bytes."""
+    return {
+        "version": XML_ELEMENT_PATH_VERSION,
+        "source_sha256": source_sha256,
+        "part": f"/{part.lstrip('/')}",
+        "path": list(path),
     }
 
 
@@ -426,61 +580,69 @@ def _child_records(
 def _iter_elements(
     element: ElementTree.Element,
     path: tuple[int, ...],
+    node_path: tuple[int, ...],
     inherited_preserve_space: bool,
-) -> Iterator[tuple[tuple[int, ...], ElementTree.Element, bool]]:
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...], ElementTree.Element, bool]]:
     preserve_space = _effective_preserve_space(element, inherited_preserve_space)
-    yield path, element, preserve_space
+    yield path, node_path, element, preserve_space
     index = 0
     if _meaningful_text(element.text, preserve_space):
         index += 1
-    for child in element:
-        yield from _iter_elements(child, (*path, index), preserve_space)
+    for child_index, child in enumerate(element):
+        yield from _iter_elements(
+            child,
+            (*path, index),
+            (*node_path, child_index),
+            preserve_space,
+        )
         index += 1
         if _meaningful_text(child.tail, preserve_space):
             index += 1
 
 
-def _resolve_node_path(
-    root: ElementTree.Element, path: tuple[int, ...]
-) -> ElementTree.Element | str:
-    if path[0] != 0:
-        return "invalid"
+def _resolve_node_address(
+    root: ElementTree.Element, address: _NodeAddress
+) -> tuple[ElementTree.Element, tuple[int, ...], tuple[int, ...], bool]:
     current = root
+    mixed_path: tuple[int, ...] = (0,)
+    node_path: tuple[int, ...] = (0,)
     preserve_space = _effective_preserve_space(root, False)
-    for child_index in path[1:]:
+    physical_indices = address.version == XML_ELEMENT_PATH_VERSION
+    for target_index in address.path[1:]:
         index = 0
         if _meaningful_text(current.text, preserve_space):
-            if child_index == 0:
-                return "text"
+            if not physical_indices and target_index == 0:
+                raise NodeAddressError("Legacy address points to text, not an XML element")
             index = 1
         found: ElementTree.Element | None = None
-        for child in current:
-            if index == child_index:
+        found_mixed_index: int | None = None
+        found_physical_index: int | None = None
+        for position, child in enumerate(current):
+            candidate_index = position if physical_indices else index
+            if candidate_index == target_index:
                 found = child
+                found_mixed_index = index
+                found_physical_index = position
                 break
             index += 1
             if _meaningful_text(child.tail, preserve_space):
-                if child_index == index:
-                    return "text"
+                if not physical_indices and target_index == index:
+                    raise NodeAddressError("Legacy address points to text, not an XML element")
                 index += 1
-        if found is None:
-            return "invalid"
+        if found is None or found_mixed_index is None or found_physical_index is None:
+            raise NodeAddressError("Node address does not exist in the selected XML part")
+        mixed_path = (*mixed_path, found_mixed_index)
+        node_path = (*node_path, found_physical_index)
         current = found
         preserve_space = _effective_preserve_space(current, preserve_space)
-    return current
+    return current, mixed_path, node_path, preserve_space
 
 
 def _matches_node(
-    part: str,
-    path: tuple[int, ...],
     element: ElementTree.Element,
     selector: _NodeSelector,
 ) -> bool:
     namespace_uri, local_name = _split_xml_name(element.tag)
-    if selector.part is not None and part != f"/{selector.part.lstrip('/')}":
-        return False
-    if selector.path is not None and path != selector.path:
-        return False
     if selector.namespace_uri is not None and namespace_uri != (selector.namespace_uri or None):
         return False
     if selector.local_name is not None and local_name != selector.local_name:

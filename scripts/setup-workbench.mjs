@@ -15,5 +15,5 @@ function run(args) {
 }
 
 if (!existsSync(python)) run(["venv", "--python", "3.12", environment]);
-run(["pip", "install", "--python", python, "-e", ".[dev,fixture-building]"]);
+run(["pip", "install", "--python", python, "-e", ".[dev,fixture-building,bundle]"]);
 process.stdout.write(`Workbench Python: ${python}\n`);

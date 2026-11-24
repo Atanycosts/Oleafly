@@ -120,20 +120,71 @@ working copy for the same path and source. It follows a rename by content hash;
 when an external replacement finds the old draft or an exact copy of the new
 content, it asks whether to continue an existing working copy or create one. A
 new source with no matching working copy imports directly. The file tree and
-Journal checks share this editor and its exact-font state. Legacy `.doc`
-normalization uses the configured LibreOffice installation; Strict OOXML
-`.docx` files must be resaved as Transitional OOXML.
+Journal checks share this editor and its exact-font state. Both Strict and
+Transitional `.docx` open directly. For Strict, Oleafly retains the original
+and edits a separate DOCX working copy; saving or downloading the working
+copy does not preserve Strict conformance. Only legacy `.doc` needs LibreOffice.
+
+Opening a Word working copy requires the Workbench engine. Builds that omit it
+leave existing drafts in place but cannot open them. See the
+[release guide](releasing.md#public-workbench-engine) before upgrading a build
+you use for Word editing.
+
+Generic text writes and replacements refuse `.docx`, even with write approval.
+Generic binary saves, exports, and replacement moves cannot overwrite an
+existing project `.docx`. A Word result stays in the task's review instead of
+being applied by the generic file review. To edit the document, use its Word
+working copy. To bring in a separate file, import it or export to a new filename.
+This protects product write paths; it does not lock files against external apps
+or shell commands.
 
 The first manuscript import parses its retained bytes once. Reopening an
 unchanged mapped file uses verified project metadata and the current saved
 baseline without first reading the full manuscript catalog and history.
 
 Journal checks starts with a manuscript and a Word template. The left sidebar
-selects those inputs and starts a check; the central Journal checks tab shows
-the results, expected and observed formats, source text and earlier checks.
-Template facts are available before a manuscript is imported. The right-hand
-Agent can discuss and edit the open document through the existing document
-tools. Continue with Agent prepares an editable request in that chat.
+selects those inputs and starts a check. The central Journal checks tab groups
+results by manuscript object and format action: headings by level, body text by
+paragraph within an action, tables by table and area, and equations and figures
+by complete object. Kerning, pagination controls and layout have their own
+review groups. Open a group to see its locations, then select a location to
+compare what the manuscript has with what the template shows. Earlier checks
+open locations in the saved manuscript version they checked. This comparison
+does not independently check English word choice, spelling or punctuation.
+Template facts are available before a manuscript is imported. Importing a Word
+template while the manuscript is open makes it available for formatting without
+reopening the editor or changing the project's binding. Select a template
+and use **Format with Agent** in Word, or ask the Research Assistant to match
+the selected template without changing content. For a supported older analysis,
+Oleafly refreshes it from the retained DOCX and reuses the refreshed version on
+later requests for that exact template. If the saved sources cannot support a
+refresh, recapture the template. Both formatting entry points start from a separate
+copy of the current draft. The review beside the manuscript groups confirmed
+changes by paragraph and format action, with the template example attached.
+It lists unconfirmed writes separately and uses the same expandable groups for
+remaining differences and coverage gaps. Where a location can be opened, it
+highlights the read-only candidate preview. The candidate preserves table structure,
+cell formatting and existing row settings. It can add missing keep-row-together
+settings to short, simple body rows, and repeat a clearly marked header when
+comparable template tables agree. It groups these changes by table and area.
+Paper size and orientation, other section layout, table grid and cell properties,
+frames, line spacing and paragraph pagination settings are unchanged. Automatic
+formatting edits the main document; headers, footers, notes and comments remain
+read only in the candidate. Review page breaks in the target editor: even a
+local format change can move a table.
+
+**Adopt** verifies that text, equations, media bytes and other protected
+structure are unchanged, then saves a new working-copy version and binds the
+template version used by the candidate. Closing the document or quitting Oleafly
+keeps the pending review. Reopen the same working copy to continue without
+running the Agent again. Candidates are available in that review, not in the
+manuscript picker; they cannot become the working copy linked to a project.
+If the original file, working draft, saved version or
+template binding has changed, you can still inspect and download the candidate,
+but cannot adopt it over the changed draft. Download the adopted DOCX from
+Oleafly; no external Word or WPS round trip is required. The author file is
+never overwritten. Without a selected template, **Continue with Agent** instead
+prepares an editable request for the right-hand chat.
 
 Word's Document tools panel shows missing font families, acquisition status,
 source and license information, installed versions and task activity. Installing
@@ -180,6 +231,9 @@ current paragraph identity without enumerating the manuscript. When the Agent
 requests context, the host resolves a write address against the live session and
 revision. Chat, desktop MCP and research tasks share
 the live document services for formatting, fonts, saving, checking and export.
+Generic Agent file tools cannot overwrite or delete DOCX sources, including
+via a folder deletion or the application of a task result. Explicit file-tree
+management remains available to the user.
 The left sidebar and central surface show actual operation receipts. Following
 the assigned flow can reveal its current Word target. Editing, scrolling or
 navigating pauses that movement, while execution continues. **Continue following**

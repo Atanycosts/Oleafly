@@ -23,6 +23,10 @@ const templateAcceptance = process.env.OLEAFLY_DOCX_TEMPLATE === "1";
 const templateLive = process.env.OLEAFLY_WORD_TEMPLATE_LIVE === "1";
 const manuscriptLive = process.env.OLEAFLY_WORD_MANUSCRIPT_LIVE === "1";
 const interactionPerformance = process.env.OLEAFLY_WORD_INTERACTION_PERFORMANCE === "1";
+const candidateTimeoutMinutes = Number(process.env.OLEAFLY_WORD_FORMAT_CANDIDATE_TIMEOUT_MINUTES ?? 25);
+if (!Number.isInteger(candidateTimeoutMinutes) || candidateTimeoutMinutes < 1) {
+  throw new Error("OLEAFLY_WORD_FORMAT_CANDIDATE_TIMEOUT_MINUTES must be a positive integer.");
+}
 const templateInput = process.env.OLEAFLY_JOURNAL_TEMPLATE;
 const templateInputHash = process.env.OLEAFLY_JOURNAL_TEMPLATE_SHA256;
 const englishInput = process.env.OLEAFLY_NATIVE_DOCX_EN;
@@ -71,6 +75,7 @@ export async function startLiveRelay(upstream, wire, forwarded) {
         entry.status = incoming.statusCode;
         response.writeHead(incoming.statusCode, incoming.headers);
         let partial = "";
+        const calledTools = new Map();
         incoming.on("data", chunk => {
           partial += chunk.toString();
           const lines = partial.split("\n");
@@ -81,10 +86,21 @@ export async function startLiveRelay(upstream, wire, forwarded) {
               const value = JSON.parse(line.slice(6));
               if (value.model) entry.returnedModel = value.model;
               if (value.usage) entry.usage = value.usage;
+              for (const choice of value.choices ?? []) {
+                for (const call of choice.delta?.tool_calls ?? []) {
+                  const name = call.function?.name;
+                  if (!name) continue;
+                  const key = `${choice.index}:${call.index}`;
+                  calledTools.set(key, (calledTools.get(key) ?? "") + name);
+                }
+              }
             } catch { /* Other SSE records are passed through unchanged. */ }
           }
         });
-        incoming.on("end", () => { entry.finishedAt = new Date().toISOString(); });
+        incoming.on("end", () => {
+          entry.finishedAt = new Date().toISOString();
+          if (calledTools.size) entry.calledTools = [...calledTools.values()];
+        });
         incoming.pipe(response);
       });
       forwarded.add(upstreamRequest);
@@ -232,6 +248,11 @@ async function record() {
     binary,
     data,
     socket,
+    ...(manuscriptLive ? {
+      wordFormatCandidate: {
+        timeoutMinutes: candidateTimeoutMinutes,
+      },
+    } : {}),
     lifecycle,
     webStorage: moves,
   }, null, 2));
@@ -312,7 +333,10 @@ const environment = {
   OLEAFLY_E2E_PRODUCTION: "1",
   OLEAFLY_DOCX_RECOVERY_RUN: run,
   ...(liveTask ? { OLEAFLY_DOCX_LIVE_RUN: run } : {}),
-  ...(manuscriptLive ? { OLEAFLY_WORD_MANUSCRIPT_RUN: run } : {}),
+  ...(manuscriptLive ? {
+    OLEAFLY_WORD_MANUSCRIPT_RUN: run,
+    OLEAFLY_WORD_FORMAT_CANDIDATE_TIMEOUT_MINUTES: String(candidateTimeoutMinutes),
+  } : {}),
   ...(templateAcceptance ? {
     OLEAFLY_TEMPLATE_NATIVE_ACCEPTANCE: "1",
     OLEAFLY_NATIVE_TEMPLATE_DOC: resolve(templateInput),
@@ -498,9 +522,14 @@ try {
           ? ["prepare", "restore-save", "reconcile"]
           : ["prepare", "restore", "discard"]) await runStage(stage);
   const liveEffort = manuscriptLive ? "max" : "high";
-  const completedLiveRequests = wire.filter(request => request.model === "gpt/gpt-6.1-sol" && request.reasoningEffort === liveEffort && request.status === 200 && request.finishedAt && /(^|\/)gpt-6\.1-sol$/.test(request.returnedModel ?? ""));
+  const liveModel = manuscriptLive ? (process.env.OLEAFLY_WORD_MANUSCRIPT_MODEL ?? "gpt/gpt-6.2-sol") : "gpt/gpt-6.1-sol";
+  const returnedModelLabel = liveModel.split("/").at(-1);
+  const completedLiveRequests = wire.filter(request => request.model === liveModel && request.reasoningEffort === liveEffort && request.status === 200 && request.finishedAt && request.returnedModel?.split("/").at(-1) === returnedModelLabel);
   if (liveTask && completedLiveRequests.length < (manuscriptLive ? 2 : 1)) {
-    throw new Error(`The transparent relay did not verify the required completed Sol/${liveEffort} requests and matching returned model labels.`);
+    throw new Error(`The transparent relay did not verify at least ${manuscriptLive ? 2 : 1} completed ${liveModel} (${liveEffort}) request(s) with matching returned model labels.`);
+  }
+  if (manuscriptLive && !completedLiveRequests.some((request) => request.calledTools?.includes("create_docx_format_candidate"))) {
+    throw new Error("The live model response did not call the Word candidate tool from ordinary chat.");
   }
   await assertInputsUnchanged();
   if (normalizedTemplate) {

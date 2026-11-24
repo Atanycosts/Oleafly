@@ -10,7 +10,7 @@ use oleafly_agent::CancellationToken;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::approvals::ApprovalQueue;
-use crate::budget::{BudgetClock, BudgetClocks, BudgetKind, HARD_STOP_AFTER};
+use crate::budget::{BudgetClock, BudgetClocks, BudgetKind, BudgetStopPolicy, HARD_STOP_AFTER};
 use crate::collaboration::{
     ActorKind, GroupActor, GroupObject, GroupSnapshot, MemberDraft, MessageDraft,
 };
@@ -371,7 +371,11 @@ impl ResearchTaskState {
 
     pub fn attach(&self, host: Arc<dyn ResearchHost>, runtime: tokio::runtime::Handle) {
         if let Ok(root) = self.inner.root.clone() {
-            let runs = RunManager::new(root.clone(), runtime.clone());
+            let runs = RunManager::with_budget_stop(
+                root.clone(),
+                runtime.clone(),
+                BudgetStopPolicy::from_environment(),
+            );
             let local = host.supervisor_command().map(LocalExecutor::new);
             #[cfg(test)]
             let local = local.or_else(|| Some(LocalExecutor::in_process()));
@@ -885,9 +889,8 @@ impl ResearchTaskState {
         for task in self.store()?.queue_group_followups()? {
             self.emit_task(&task);
         }
-        for task in self.store()?.queue_annotation_followups()? {
-            self.emit_task(&task);
-        }
+        // Single-agent annotations stay retained for an explicit retry instead
+        // of starting another generation on their own.
         loop {
             if self.inner.stopping.load(Ordering::Acquire) {
                 return Ok(());
@@ -1512,6 +1515,7 @@ impl ResearchTaskState {
                     .as_ref()
                     .and_then(|host| host.task_spend_usd(&spend_task))
             }),
+            services.runs.budget_stop(),
         ));
         services.clocks.insert(&task.id, clock.clone());
         let watcher = self.watch_budget(
@@ -1567,7 +1571,7 @@ impl ResearchTaskState {
                     }));
                 }
             }
-            None if outcome.is_ok() => {
+            None if outcome.is_ok() && clock.enforces_stop() => {
                 if let Some(max) = task.brief.budget.max_runs {
                     let baseline = store.runs_baseline(&task.id).unwrap_or(0);
                     if services

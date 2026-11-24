@@ -7,6 +7,7 @@ use oleafly_collab::doc::NodeKind;
 use oleafly_collab::live::LiveProject;
 use oleafly_collab::materialize;
 use oleafly_collab::CollabError;
+use oleafly_core::word_source;
 use serde::Serialize;
 use tokio::sync::oneshot;
 
@@ -95,6 +96,9 @@ fn write_renaming(
     };
     if !live.can_edit() && !live.suggesting() {
         return Ok(refused);
+    }
+    if word_source::is_docx_target(&target) {
+        return Err(CollabError::InvalidPath(word_source::WRITE_REFUSED.into()));
     }
     let mut placed = by_path(&materialize::layout(&live.doc().nodes()?));
     if under_a_file(&placed, &path) {
@@ -530,6 +534,35 @@ mod tests {
             .collect();
         paths.sort();
         paths
+    }
+
+    #[test]
+    fn docx_blob_cannot_be_replaced_with_collaborative_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "paper.DoCx";
+        let mut doc = ProjectDoc::create().unwrap();
+        let blob = doc
+            .add_node(None, name, NodeKind::Blob, Some("0123"), "")
+            .unwrap();
+        let mut live = LiveProject::new(doc, 0, ProjectRole::Owner);
+
+        let error = write_into(
+            &mut live,
+            &mut WrittenTexts::default(),
+            None,
+            dir.path(),
+            name,
+            None,
+            "replacement",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, CollabError::InvalidPath(message) if message == word_source::WRITE_REFUSED)
+        );
+        assert_eq!(
+            by_path(&materialize::layout(&live.doc().nodes().unwrap())).get(name),
+            Some(&(blob, NodeKind::Blob, Some("0123".into())))
+        );
     }
 
     #[test]

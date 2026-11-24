@@ -50,6 +50,10 @@ jobs:
       # The 0.2.8 build graph exceeds Node's default ~4GB heap during vite
       # build on the 7GB macOS arm64 runners.
       NODE_OPTIONS: --max-old-space-size=6144
+      # Public artifacts must not contain PyMuPDF/MuPDF until a checked release
+      # policy establishes the exact corresponding-source or commercial terms.
+      OLEAFLY_WORKBENCH_BUNDLE_POLICY: public-unbundled
+      OLEAFLY_WORKBENCH_TARGET: ${{ matrix.rust_target }}
     strategy:
       fail-fast: false
       matrix:
@@ -152,22 +156,125 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # A manual dispatch can check out an older tag while this workflow comes
+      # from the current branch. Gate every current-tree helper on files or
+      # package scripts that actually exist in that tag.
+      - name: Detect checked-out release capabilities
+        id: capabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          has_script() {
+            node -e 'const p=require("./package.json"); process.exit(p.scripts?.[process.argv[1]] ? 0 : 1)' "$1" >/dev/null 2>&1
+          }
+          before_build_uses_workbench() {
+            node -e 'const c=require("./src-tauri/tauri.conf.json"); process.exit(c.build?.beforeBuildCommand?.includes("tauri:before-build") ? 0 : 1)' >/dev/null 2>&1
+          }
+
+          workbench_bundle=false
+          if [ -f services/research-workbench/pyproject.toml ] \
+            && [ -f scripts/build-workbench.mjs ] \
+            && [ -f scripts/test-workbench-bundle.mjs ] \
+            && [ -f src-tauri/tauri.macos.conf.json ] \
+            && has_script workbench:bundle \
+            && has_script tauri:before-build \
+            && before_build_uses_workbench; then
+            workbench_bundle=true
+          fi
+          workbench_engine=false
+          if [ "$workbench_bundle" = true ] \
+            && [ "${OLEAFLY_WORKBENCH_BUNDLE_POLICY:-local}" != public-unbundled ]; then
+            workbench_engine=true
+          fi
+
+          language_server_tests=false
+          if has_script language-servers:test; then
+            language_server_tests=true
+          fi
+          stage_tinymist=false
+          if [ -f scripts/fetch-language-servers.mjs ] \
+            && grep -q -- '--install-mode' scripts/fetch-language-servers.mjs \
+            && grep -q 'tinymist' scripts/fetch-language-servers.mjs; then
+            stage_tinymist=true
+          fi
+          sign_tinymist=false
+          if [ "$stage_tinymist" = true ] \
+            && [ -f scripts/sign-bundled-tinymist.mjs ]; then
+            sign_tinymist=true
+          fi
+
+          fetch_tectonic=false
+          [ -f scripts/fetch-tectonic.sh ] && fetch_tectonic=true
+          fetch_biber=false
+          [ -f scripts/fetch-biber.sh ] && fetch_biber=true
+          fetch_typst=false
+          [ -f scripts/fetch-typst.sh ] && fetch_typst=true
+          fetch_pandoc=false
+          [ -f scripts/fetch-pandoc.sh ] && fetch_pandoc=true
+          stage_vcruntime=false
+          [ -f scripts/stage-windows-vcruntime.mjs ] && stage_vcruntime=true
+          smoke_typst=false
+          if [ "$fetch_typst" = true ] && [ -f scripts/smoke-typst.sh ]; then
+            smoke_typst=true
+          fi
+          smoke_markdown=false
+          if [ "$fetch_pandoc" = true ] \
+            && [ "$fetch_tectonic" = true ] \
+            && [ -f scripts/smoke-markdown.sh ]; then
+            smoke_markdown=true
+          fi
+          changelog_extract=false
+          [ -f scripts/changelog-extract.sh ] && changelog_extract=true
+
+          {
+            echo "workbench_bundle=$workbench_bundle"
+            echo "workbench_engine=$workbench_engine"
+            echo "language_server_tests=$language_server_tests"
+            echo "stage_tinymist=$stage_tinymist"
+            echo "sign_tinymist=$sign_tinymist"
+            echo "fetch_tectonic=$fetch_tectonic"
+            echo "fetch_biber=$fetch_biber"
+            echo "fetch_typst=$fetch_typst"
+            echo "fetch_pandoc=$fetch_pandoc"
+            echo "stage_vcruntime=$stage_vcruntime"
+            echo "smoke_typst=$smoke_typst"
+            echo "smoke_markdown=$smoke_markdown"
+            echo "changelog_extract=$changelog_extract"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Workbench bundle runtime
+        if: matrix.rust_target == 'aarch64-apple-darwin' && steps.capabilities.outputs.workbench_engine == 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/research-workbench/pyproject.toml
+
+      - name: Install Workbench bundle dependencies
+        if: matrix.rust_target == 'aarch64-apple-darwin' && steps.capabilities.outputs.workbench_engine == 'true'
+        working-directory: services/research-workbench
+        run: python -m pip install -e ".[bundle]"
+
       - name: Validate language-server manifest and fetch confinement
+        if: steps.capabilities.outputs.language_server_tests == 'true'
         run: pnpm language-servers:test
 
       # Fetch the Tectonic LaTeX-compiler sidecar for the build target. Tauri
       # bundles it (bundle.externalBin) so the shipped app compiles offline.
       - name: Fetch checksum-pinned Tectonic sidecar
+        if: steps.capabilities.outputs.fetch_tectonic == 'true'
         shell: bash
         run: bash scripts/fetch-tectonic.sh ${{ matrix.rust_target }}
 
       # Biber 2.17 matched to Tectonic's biblatex; declared as externalBin
       # tectonic-biber. Missing here breaks the Tauri bundler on release.
       - name: Fetch checksum-pinned Biber sidecar
+        if: steps.capabilities.outputs.fetch_biber == 'true'
         shell: bash
         run: bash scripts/fetch-biber.sh ${{ matrix.rust_target }}
 
       - name: Stage checksum-pinned Tinymist resource archive
+        if: steps.capabilities.outputs.stage_tinymist == 'true'
         shell: bash
         run: node scripts/fetch-language-servers.mjs --server tinymist --target ${{ matrix.rust_target }} --install-mode resource
 
@@ -175,7 +282,7 @@ jobs:
       # unsigned. Sign it before Tauri bundles the resource, or the whole app is
       # rejected. No-op on other platforms and on unsigned builds.
       - name: Sign the bundled Tinymist binary (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.capabilities.outputs.sign_tinymist == 'true'
         shell: bash
         env:
           SIGN_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -219,16 +326,18 @@ jobs:
           node scripts/sign-bundled-tinymist.mjs --target ${{ matrix.rust_target }}
 
       - name: Fetch Typst sidecar
+        if: steps.capabilities.outputs.fetch_typst == 'true'
         shell: bash
         run: bash scripts/fetch-typst.sh ${{ matrix.rust_target }}
 
       - name: Stage the Microsoft VC++ runtime that Typst and TexLab need
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest' && steps.capabilities.outputs.stage_vcruntime == 'true'
         run: node scripts/stage-windows-vcruntime.mjs
 
       # Pandoc powers the ad-hoc document converters. Shipping the pinned
       # sidecar keeps every conversion available when the app is offline.
       - name: Fetch checksum-pinned Pandoc sidecar
+        if: steps.capabilities.outputs.fetch_pandoc == 'true'
         shell: bash
         run: |
           bash scripts/fetch-pandoc.sh ${{ matrix.rust_target }}
@@ -246,6 +355,7 @@ jobs:
           fi
 
       - name: Smoke-test Typst sidecar
+        if: steps.capabilities.outputs.smoke_typst == 'true'
         shell: bash
         run: bash scripts/smoke-typst.sh ${{ matrix.rust_target }}
 
@@ -254,6 +364,7 @@ jobs:
       # Restoring the package cache keeps warm runs off that host entirely;
       # the key scheme matches ci.yml so the Linux job can reuse CI's cache.
       - name: Cache Tectonic packages for the Markdown smoke test
+        if: steps.capabilities.outputs.smoke_markdown == 'true'
         uses: actions/cache@v6
         with:
           path: |
@@ -264,6 +375,7 @@ jobs:
           restore-keys: tectonic-pkgs-md-v1-${{ matrix.rust_target }}-
 
       - name: Smoke-test managed Pandoc with packaged Tectonic input
+        if: steps.capabilities.outputs.smoke_markdown == 'true'
         shell: bash
         run: bash scripts/smoke-markdown.sh ${{ matrix.rust_target }}
 
@@ -333,6 +445,20 @@ jobs:
           echo 'TAURI_SIGN_ARGS=--config src-tauri/tauri.windows-signing.conf.json' >> "$GITHUB_ENV"
           echo "Windows signing: enabled"
 
+      - name: Preflight the public Workbench bundle policy
+        if: contains(matrix.rust_target, '-apple-darwin') && steps.capabilities.outputs.workbench_bundle == 'true' && steps.capabilities.outputs.workbench_engine != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/build-workbench.mjs
+          test ! -e src-tauri/resources/research-workbench/rfw-workbench
+          test ! -L src-tauri/resources/research-workbench/rfw-workbench
+          if find src-tauri/resources/research-workbench \
+            \( -iname '*mupdf*' -o -iname '*pymupdf*' \) -print -quit | grep -q .; then
+            echo "public staging unexpectedly contains a MuPDF/PyMuPDF file" >&2
+            exit 1
+          fi
+
       # Build the release notes from CHANGELOG.md so both the GitHub Release and
       # the updater's `notes` say what changed. tauri-action copies
       # `releaseBody` into `latest.json`.
@@ -345,7 +471,20 @@ jobs:
             echo 'body<<CHANGELOG_EOF'
             echo "## What's new in ${VERSION#v}"
             echo ""
-            bash scripts/changelog-extract.sh "$VERSION"
+            if [ "${{ steps.capabilities.outputs.changelog_extract }}" = true ]; then
+              bash scripts/changelog-extract.sh "$VERSION"
+            else
+              awk -v version="${VERSION#v}" '
+                $0 ~ ("^## \\[" version "\\]") { capture = 1; next }
+                capture && /^## / { exit }
+                capture { print }
+              ' CHANGELOG.md
+            fi
+            if [ "${{ steps.capabilities.outputs.workbench_bundle }}" = true ] \
+              && [ "${{ steps.capabilities.outputs.workbench_engine }}" != true ]; then
+              echo ""
+              echo "**Word and Journal checks:** This public build does not include the Workbench engine. It cannot open managed Word working copies or run Journal checks, and it will not reuse a configured Python. Before upgrading, export any drafts you need and back up your \`journal-library\` directory. The upgrade does not migrate or remove it."
+            fi
             echo ""
             echo "---"
             echo ""
@@ -399,6 +538,36 @@ jobs:
           # below performs a deterministic target-owned merge before release.
           retryAttempts: 3
           args: ${{ matrix.args }} ${{ env.TAURI_SIGN_ARGS }} ${{ env.TAURI_BUNDLE_ARGS }}
+
+      - name: Verify packaged Workbench engine
+        if: matrix.rust_target == 'aarch64-apple-darwin' && steps.capabilities.outputs.workbench_engine == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          engine="$app/Contents/Resources/resources/research-workbench/rfw-workbench"
+          framework="$app/Contents/Resources/resources/research-workbench/_internal/Python.framework"
+          test -x "$engine"
+          file "$engine" | grep -q 'arm64'
+          codesign --verify --strict "$engine"
+          codesign --verify --strict "$framework"
+          OLEAFLY_WORKBENCH_BUNDLE="$engine" node scripts/test-workbench-bundle.mjs
+
+      - name: Verify the public app has no Workbench engine
+        if: contains(matrix.rust_target, '-apple-darwin') && steps.capabilities.outputs.workbench_bundle == 'true' && steps.capabilities.outputs.workbench_engine != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app"
+          engine_root="$app/Contents/Resources/resources/research-workbench"
+          test ! -e "$engine_root/rfw-workbench"
+          test ! -L "$engine_root/rfw-workbench"
+          if find "$app" \( -iname '*mupdf*' -o -iname '*pymupdf*' \) -print -quit | grep -q .; then
+            echo "public app unexpectedly contains a bundled MuPDF/PyMuPDF file" >&2
+            exit 1
+          fi
+          echo "public app contains no Workbench engine or bundled MuPDF"
 
       # Work with byte-for-byte copies of the files tauri-action uploaded to
       # the draft release. This keeps provenance and SBOM subjects aligned with
@@ -454,6 +623,10 @@ jobs:
           for (const name of ["package.json", "pnpm-lock.yaml", "Cargo.toml", "Cargo.lock"]) {
             copyInput(path.join(workspace, name));
           }
+          const optionalInput = (source) => {
+            if (fs.existsSync(source)) copyInput(source);
+          };
+          optionalInput(path.join(workspace, "services", "research-workbench", "pyproject.toml"));
           const collectManifests = (directory) => {
             if (!fs.existsSync(directory)) return;
             for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -517,28 +690,41 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.rust_target }}
+          FETCH_TECTONIC: ${{ steps.capabilities.outputs.fetch_tectonic }}
+          FETCH_BIBER: ${{ steps.capabilities.outputs.fetch_biber }}
+          FETCH_TYPST: ${{ steps.capabilities.outputs.fetch_typst }}
+          FETCH_PANDOC: ${{ steps.capabilities.outputs.fetch_pandoc }}
+          STAGE_VCRUNTIME: ${{ steps.capabilities.outputs.stage_vcruntime }}
         run: |
-          node scripts/fetch-language-servers.mjs --check --server tinymist --target "$TARGET" --install-mode resource
+          set -euo pipefail
+          if [ "${{ steps.capabilities.outputs.stage_tinymist }}" = true ]; then
+            node scripts/fetch-language-servers.mjs --check --server tinymist --target "$TARGET" --install-mode resource
+          fi
           # Legs built with --target put their binaries under target/<triple>.
           if [[ "$TARGET" == *-apple-darwin || "$TARGET" == "aarch64-unknown-linux-gnu" ]]; then
             RUNTIME_DIR="src-tauri/target/$TARGET/release"
-            test -f "$RUNTIME_DIR/tectonic"
-            test ! -e "$RUNTIME_DIR/tinymist"
-            test -f "$RUNTIME_DIR/pandoc"
-            test -f "$RUNTIME_DIR/typst"
           elif [[ "$TARGET" == *windows* ]]; then
             RUNTIME_DIR="src-tauri/target/release"
-            test -f "$RUNTIME_DIR/tectonic.exe"
-            test ! -e "$RUNTIME_DIR/tinymist.exe"
-            test -f "$RUNTIME_DIR/pandoc.exe"
-            test -f "$RUNTIME_DIR/typst.exe"
-            test -f "$RUNTIME_DIR/vcruntime140.dll"
           else
             RUNTIME_DIR="src-tauri/target/release"
-            test -f "$RUNTIME_DIR/tectonic"
-            test ! -e "$RUNTIME_DIR/tinymist"
-            test -f "$RUNTIME_DIR/pandoc"
-            test -f "$RUNTIME_DIR/typst"
+          fi
+          SUFFIX=""
+          if [[ "$TARGET" == *windows* ]]; then SUFFIX=".exe"; fi
+          require_sidecar() {
+            local enabled="$1" name="$2"
+            if [ "$enabled" = true ]; then
+              test -f "$RUNTIME_DIR/$name$SUFFIX"
+            fi
+          }
+          require_sidecar "$FETCH_TECTONIC" tectonic
+          require_sidecar "$FETCH_BIBER" tectonic-biber
+          require_sidecar "$FETCH_TYPST" typst
+          require_sidecar "$FETCH_PANDOC" pandoc
+          if [ "${{ steps.capabilities.outputs.stage_tinymist }}" = true ]; then
+            test ! -e "$RUNTIME_DIR/tinymist$SUFFIX"
+          fi
+          if [ "$STAGE_VCRUNTIME" = true ] && [[ "$TARGET" == *windows* ]]; then
+            test -f "$RUNTIME_DIR/vcruntime140.dll"
           fi
 
       - name: Describe the Linux desktop entries (diagnostic only)

@@ -1,0 +1,471 @@
+diff --git a/packages/core/src/store/headless-document-view.ts b/packages/core/src/store/headless-document-view.ts
+index 5f80b46..6c1f03f 100644
+--- a/packages/core/src/store/headless-document-view.ts
++++ b/packages/core/src/store/headless-document-view.ts
+@@ -17,7 +17,11 @@ import {
+   type OoxmlPackageRejection,
+ } from './package/ooxml-package.ts';
+ import { resolveRelationship } from './package/relationships.ts';
+-import { type OoxmlElement, type OoxmlPart } from './package/ooxml-tree.ts';
++import {
++  type OoxmlElement,
++  type OoxmlElementSource,
++  type OoxmlPart,
++} from './package/ooxml-tree.ts';
+ import { normalizeParagraphIdentity } from './package/para-id.ts';
+ import { refreshBoundContent } from './store/bound-content-refresh.ts';
+ import { materializeGlossaryPlaceholders } from './store/placeholder-materialize.ts';
+@@ -111,8 +115,11 @@ function relatedPart(
+  * Open DOCX bytes through the bounded store reader and expose only neutral layout reads.
+  * @public
+  */
+-export function openHeadlessDocument(bytes: Uint8Array): OpenHeadlessDocumentResult {
+-  const loaded = readOoxmlPackage(bytes);
++export function openHeadlessDocument(
++  bytes: Uint8Array,
++  onElementSource?: OoxmlElementSource
++): OpenHeadlessDocumentResult {
++  const loaded = readOoxmlPackage(bytes, {}, onElementSource);
+   if (!loaded.ok) {
+     return {
+       ok: false,
+diff --git a/packages/core/src/store/package/__tests__/source-element-address.test.ts b/packages/core/src/store/package/__tests__/source-element-address.test.ts
+new file mode 100644
+index 0000000..e4dfe88
+--- /dev/null
++++ b/packages/core/src/store/package/__tests__/source-element-address.test.ts
+@@ -0,0 +1,171 @@
++import { describe, expect, test } from 'bun:test';
++import { strToU8, zipSync } from 'fflate';
++import { openHeadlessDocument } from '../../headless-document-view.ts';
++import { readOoxmlPartSteps, setSteppedPartReadForTest } from '../ooxml-part-steps.ts';
++import { readOoxmlPart, serializeOoxmlPart, WML_NAMESPACE_URI } from '../ooxml-tree.ts';
++import { readOoxmlPackage } from '../ooxml-package.ts';
++
++const PART = '/word/document.xml';
++const CONTENT_TYPE =
++  'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml';
++
++interface SourceAddress {
++  readonly partName: string;
++  readonly nodeId: string;
++  readonly path: readonly number[];
++}
++
++function collect(xml: string): SourceAddress[] {
++  const addresses: SourceAddress[] = [];
++  const result = readOoxmlPart(
++    xml,
++    {
++      name: PART,
++      contentType: CONTENT_TYPE,
++      onElementSource: (partName, nodeId, path) => {
++        addresses.push({ partName, nodeId, path });
++      },
++    },
++    undefined
++  );
++  if (!result.ok) throw new Error(result.reason);
++  return addresses;
++}
++
++function paths(addresses: readonly SourceAddress[]): number[][] {
++  return addresses.map((address) => [...address.path]).sort((left, right) => {
++    for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
++      const difference = left[index]! - right[index]!;
++      if (difference !== 0) return difference;
++    }
++    return left.length - right.length;
++  });
++}
++
++function docx(documentXml: string): Uint8Array {
++  const contentTypes =
++    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
++    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
++    `<Override PartName="${PART}" ContentType="${CONTENT_TYPE}"/>` +
++    '</Types>';
++  const relationships =
++    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
++    '<Relationship Id="document" ' +
++    'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" ' +
++    'Target="word/document.xml"/>' +
++    '</Relationships>';
++  return zipSync({
++    '[Content_Types].xml': strToU8(contentTypes),
++    '_rels/.rels': strToU8(relationships),
++    'word/document.xml': strToU8(documentXml),
++  });
++}
++
++describe('physical source element addresses', () => {
++  test('keeps element paths separate from canonical text-inclusive node ids', () => {
++    const xml =
++      `<w:document xmlns:w="${WML_NAMESPACE_URI}" xml:space="preserve">\u00a0` +
++      '<w:body><w:p><w:r><w:t>hello</w:t></w:r></w:p></w:body></w:document>';
++    const addresses = collect(xml);
++
++    expect(paths(addresses)).toEqual([
++      [0],
++      [0, 0],
++      [0, 0, 0],
++      [0, 0, 0, 0],
++      [0, 0, 0, 0, 0],
++    ]);
++    expect(
++      addresses
++        .map(({ nodeId, path }) => [nodeId, [...path]] as const)
++        .sort(([left], [right]) => left.localeCompare(right))
++    ).toEqual([
++      [`${PART}#0`, [0]],
++      [`${PART}#0.1`, [0, 0]],
++      [`${PART}#0.1.0`, [0, 0, 0]],
++      [`${PART}#0.1.0.0`, [0, 0, 0, 0]],
++      [`${PART}#0.1.0.0.0`, [0, 0, 0, 0, 0]],
++    ]);
++    expect(addresses.every(({ partName }) => partName === PART)).toBe(true);
++    expect(addresses.every(({ path }) => Object.isFrozen(path))).toBe(true);
++  });
++
++  test('reports the original elements before repaired children merge them', () => {
++    const xml =
++      `<w:document xmlns:w="${WML_NAMESPACE_URI}"><w:body><w:tbl>` +
++      '<w:tblPr/><w:tblPr/><w:tblGrid><w:gridCol w:w="100"/></w:tblGrid>' +
++      '<w:tr><w:tc><w:p><w:r><w:t>X</w:t></w:r></w:p></w:tc></w:tr>' +
++      '</w:tbl></w:body></w:document>';
++
++    expect(paths(collect(xml))).toContainEqual([0, 0, 0, 0]);
++    expect(paths(collect(xml))).toContainEqual([0, 0, 0, 1]);
++  });
++
++  test('carries the same addresses through the stepped part read', () => {
++    const xml =
++      `<w:document xmlns:w="${WML_NAMESPACE_URI}"><w:body>` +
++      Array.from(
++        { length: 80 },
++        (_, index) => `<w:p><w:r><w:t>${index}</w:t></w:r></w:p>`
++      ).join('') +
++      '</w:body></w:document>';
++    const oneShot = collect(xml);
++    const stepped: SourceAddress[] = [];
++    const restore = setSteppedPartReadForTest(1, 64);
++    try {
++      const steps = readOoxmlPartSteps(
++        xml,
++        {
++          name: PART,
++          contentType: CONTENT_TYPE,
++          onElementSource: (partName, nodeId, path) => {
++            stepped.push({ partName, nodeId, path });
++          },
++        },
++        undefined
++      );
++      for (const step of steps) void step;
++    } finally {
++      restore();
++    }
++
++    expect(stepped).toEqual(oneShot);
++  });
++
++  test('carries the hook through the bounded package loader', () => {
++    const xml =
++      `<w:document xmlns:w="${WML_NAMESPACE_URI}"><w:body>` +
++      '<w:p><w:r><w:t>hello</w:t></w:r></w:p></w:body></w:document>';
++    const addresses: SourceAddress[] = [];
++    const result = readOoxmlPackage(docx(xml), {}, (partName, nodeId, path) => {
++      addresses.push({ partName, nodeId, path });
++    });
++
++    if (!result.ok) throw new Error(result.reason);
++    expect(addresses.map(({ path }) => [...path])).toContainEqual([0, 0, 0]);
++    expect(addresses.map(({ nodeId }) => nodeId)).toContain(`${PART}#0.0.0`);
++  });
++
++  test('exposes the hook on openHeadlessDocument without changing canonical output', () => {
++    const xml =
++      `<w:document xmlns:w="${WML_NAMESPACE_URI}"><w:body>` +
++      '<w:p><w:r><w:t>hello</w:t></w:r></w:p></w:body></w:document>';
++    const bytes = docx(xml);
++    const addresses: SourceAddress[] = [];
++    const opened = openHeadlessDocument(bytes, (partName, nodeId, path) => {
++      addresses.push({ partName, nodeId, path });
++    });
++
++    if (!opened.ok) throw new Error(opened.reason);
++    const plain = openHeadlessDocument(bytes);
++    if (!plain.ok) throw new Error(plain.reason);
++    expect(serializeOoxmlPart(opened.view.part())).toBe(
++      serializeOoxmlPart(plain.view.part())
++    );
++    expect(addresses).toContainEqual({
++      partName: PART,
++      nodeId: `${PART}#0.0.0`,
++      path: [0, 0, 0],
++    });
++  });
++});
+diff --git a/packages/core/src/store/package/index.ts b/packages/core/src/store/package/index.ts
+index 5d01bc2..3c565d4 100644
+--- a/packages/core/src/store/package/index.ts
++++ b/packages/core/src/store/package/index.ts
+@@ -109,6 +109,7 @@ export {
+   type OoxmlNode,
+   type OoxmlPart,
+   type OoxmlPartMetadata,
++  type OoxmlElementSource,
+   type OoxmlReadRejection,
+   type OoxmlReadResult,
+   type OoxmlNodeIdentityRules,
+diff --git a/packages/core/src/store/package/ooxml-package.ts b/packages/core/src/store/package/ooxml-package.ts
+index b09b3db..756ae96 100644
+--- a/packages/core/src/store/package/ooxml-package.ts
++++ b/packages/core/src/store/package/ooxml-package.ts
+@@ -51,7 +51,12 @@ import {
+   type IgnoredContentTypes,
+   type OverrideRecord,
+ } from './content-types.ts';
+-import type { OoxmlElement, OoxmlPart, OoxmlReadRejection } from './ooxml-tree.ts';
++import type {
++  OoxmlElement,
++  OoxmlElementSource,
++  OoxmlPart,
++  OoxmlReadRejection,
++} from './ooxml-tree.ts';
+ import { serializeOoxmlPartSteps } from './ooxml-serialize-steps.ts';
+ import { captureXmlPartRoot } from './canonical-primitive-lower.ts';
+ import { commentExportPackage } from './comment-export-cleanup.ts';
+@@ -431,9 +436,10 @@ export function ooxmlPackageReadCount(): number {
+  */
+ export function readOoxmlPackage(
+   bytes: Uint8Array,
+-  limits: OoxmlPackageLimits = {}
++  limits: OoxmlPackageLimits = {},
++  onElementSource?: OoxmlElementSource
+ ): OoxmlPackageResult {
+-  const steps = readOoxmlPackageSteps(bytes, limits);
++  const steps = readOoxmlPackageSteps(bytes, limits, onElementSource);
+   for (;;) {
+     const next = steps.next();
+     if (next.done) return next.value;
+@@ -449,7 +455,8 @@ export function readOoxmlPackage(
+  */
+ export function* readOoxmlPackageSteps(
+   bytes: Uint8Array,
+-  limits: OoxmlPackageLimits = {}
++  limits: OoxmlPackageLimits = {},
++  onElementSource?: OoxmlElementSource
+ ): Generator<void, OoxmlPackageResult> {
+   packageReadCount += 1;
+   const zip = readZip(bytes, limits.zip ?? DEFAULT_ZIP_LIMITS);
+@@ -599,7 +606,11 @@ export function* readOoxmlPackageSteps(
+     if (!decoded.ok) return { ok: false, reason: decoded.reason, detail: partName };
+     const read = yield* readOoxmlPartSteps(
+       decoded.xml,
+-      { name: normalized.partName, contentType },
++      {
++        name: normalized.partName,
++        contentType,
++        ...(onElementSource === undefined ? {} : { onElementSource }),
++      },
+       limits.xml
+     );
+     if (!read.ok) return { ok: false, reason: read.reason, detail: partName };
+diff --git a/packages/core/src/store/package/ooxml-part-steps.ts b/packages/core/src/store/package/ooxml-part-steps.ts
+index 6b9b47c..d456f52 100644
+--- a/packages/core/src/store/package/ooxml-part-steps.ts
++++ b/packages/core/src/store/package/ooxml-part-steps.ts
+@@ -137,13 +137,20 @@ function* convertRootSteps(
+   metadata: OoxmlPartMetadata
+ ): Generator<void, OoxmlReadResult> {
+   try {
++    const readMetadata = new OoxmlReadMetadata(metadata.onElementSource);
++    const sourcePath =
++      metadata.onElementSource === undefined ? undefined : Object.freeze([0]);
+     const opened = openElement(
+       root,
+-      new OoxmlReadMetadata(),
++      readMetadata,
+       rootBindings(),
+       metadata.name,
+       '0',
+-      false
++      false,
++      undefined,
++      undefined,
++      undefined,
++      sourcePath
+     );
+     const converted = yield* closeSteps(opened);
+     return {
+diff --git a/packages/core/src/store/package/ooxml-read-metadata.ts b/packages/core/src/store/package/ooxml-read-metadata.ts
+index e541094..1ba557a 100644
+--- a/packages/core/src/store/package/ooxml-read-metadata.ts
++++ b/packages/core/src/store/package/ooxml-read-metadata.ts
+@@ -1,4 +1,9 @@
+-import type { OoxmlAttribute, OoxmlNamespaceBinding, OoxmlNode } from './ooxml-tree.ts';
++import type {
++  OoxmlAttribute,
++  OoxmlElementSource,
++  OoxmlNamespaceBinding,
++  OoxmlNode,
++} from './ooxml-tree.ts';
+ 
+ const EMPTY_ATTRIBUTES: readonly OoxmlAttribute[] = Object.freeze([]);
+ export const EMPTY_NAMESPACE_BINDINGS: readonly OoxmlNamespaceBinding[] = Object.freeze([]);
+@@ -24,6 +29,8 @@ function attributesKey(attributes: readonly OoxmlAttribute[]): string {
+ 
+ /** Shares immutable metadata within one part read, without retaining document nodes. */
+ export class OoxmlReadMetadata {
++  constructor(readonly onElementSource?: OoxmlElementSource) {}
++
+   private readonly attributes = new Map<string, readonly OoxmlAttribute[]>();
+   private keyBytes = 0;
+   /** Reads of a shared, frozen authored record, with the namespace scope they were read in. */
+diff --git a/packages/core/src/store/package/ooxml-tree.ts b/packages/core/src/store/package/ooxml-tree.ts
+index 4b40dc8..6af4dd1 100644
+--- a/packages/core/src/store/package/ooxml-tree.ts
++++ b/packages/core/src/store/package/ooxml-tree.ts
+@@ -1357,10 +1357,18 @@ export interface OoxmlPart {
+   readonly root: OoxmlElement;
+ }
+ 
++/** Receives the canonical identity of each original element as a part is read. */
++export type OoxmlElementSource = (
++  partName: string,
++  nodeId: OoxmlNodeId,
++  path: readonly number[]
++) => void;
++
+ /** A part's identity without its tree — enough to enumerate a package cheaply. */
+ export interface OoxmlPartMetadata {
+   readonly name: string;
+   readonly contentType: string;
++  readonly onElementSource?: OoxmlElementSource;
+ }
+ 
+ /**
+@@ -1773,6 +1781,8 @@ export interface OpenedElement {
+   readonly metadata: OoxmlReadMetadata;
+   readonly partName: string;
+   readonly path: string;
++  readonly sourcePath?: readonly number[];
++  readonly retainedElementOrdinals?: Uint32Array;
+   readonly name: ReturnType<typeof resolveElementName>;
+   readonly declarations: ReturnType<typeof namespaceDeclarations>;
+   readonly resolvedAttributes: ReturnType<typeof resolveAttributes>;
+@@ -1794,7 +1804,8 @@ export function openElement(
+   inheritedPreserve: boolean,
+   parentWmlLocalName?: string,
+   parentCandidate: KnownKind | 'generic' | undefined = undefined,
+-  parent?: DrawingParentContext
++  parent?: DrawingParentContext,
++  sourcePath?: readonly number[]
+ ): OpenedElement {
+   const declarations = namespaceDeclarations(element, inherited);
+   const name = resolveElementName(element.name, declarations.bindings);
+@@ -1845,6 +1856,16 @@ export function openElement(
+     WML_TEXT_KINDS.has(candidateKind),
+     preserve && !preserveGoverns ? XML_INDENTATION_TEXT : BLANK_TEXT
+   );
++  let retainedElementOrdinals: Uint32Array | undefined;
++  if (metadata.onElementSource !== undefined) {
++    retainedElementOrdinals = new Uint32Array(retainedChildren.length);
++    let ordinal = 0;
++    for (let index = 0; index < retainedChildren.length; index += 1) {
++      if (retainedChildren[index]!.type !== 'element') continue;
++      retainedElementOrdinals[index] = ordinal;
++      ordinal += 1;
++    }
++  }
+   const childParent: DrawingParentContext = {
+     wmlLocalName: isWml ? name.localName : undefined,
+     kind: candidateKind,
+@@ -1856,6 +1877,8 @@ export function openElement(
+     metadata,
+     partName,
+     path,
++    ...(sourcePath === undefined ? {} : { sourcePath }),
++    ...(retainedElementOrdinals === undefined ? {} : { retainedElementOrdinals }),
+     name,
+     declarations,
+     resolvedAttributes,
+@@ -1875,6 +1898,11 @@ export function openChildOf(
+   index: number
+ ): OpenedElement {
+   const { childParent } = opened;
++  const sourceOrdinal = opened.retainedElementOrdinals?.[index];
++  const sourcePath =
++    opened.sourcePath === undefined || sourceOrdinal === undefined
++      ? undefined
++      : Object.freeze([...opened.sourcePath, sourceOrdinal]);
+   return openElement(
+     child,
+     opened.metadata,
+@@ -1884,7 +1912,8 @@ export function openChildOf(
+     opened.preserve,
+     childParent.wmlLocalName,
+     childParent.kind === 'generic' ? undefined : (childParent.kind as KnownKind),
+-    childParent
++    childParent,
++    sourcePath
+   );
+ }
+ 
+@@ -1911,6 +1940,10 @@ export function convertChildOf(opened: OpenedElement, child: XmlNode, index: num
+ /** @internal The kind checks and the node of `opened`, over its converted children. */
+ export function closeElement(opened: OpenedElement, converted: readonly OoxmlNode[]): OoxmlElement {
+   const id = nodeId(opened.partName, opened.path);
++  const onElementSource = opened.metadata.onElementSource;
++  if (onElementSource !== undefined) {
++    onElementSource(opened.partName, id, opened.sourcePath!);
++  }
+   const children = repairedChildren(opened, converted, id);
+   const { name, declarations, resolvedAttributes, attributes, candidateKind, parent } = opened;
+   const attributesOk =
+@@ -1962,9 +1995,21 @@ function convertElement(
+   inherited: ReadonlyMap<string, string>,
+   partName: string,
+   path: string,
+-  inheritedPreserve: boolean
++  inheritedPreserve: boolean,
++  sourcePath?: readonly number[]
+ ): OoxmlElement {
+-  const opened = openElement(element, metadata, inherited, partName, path, inheritedPreserve);
++  const opened = openElement(
++    element,
++    metadata,
++    inherited,
++    partName,
++    path,
++    inheritedPreserve,
++    undefined,
++    undefined,
++    undefined,
++    sourcePath
++  );
+   return closeElement(
+     opened,
+     opened.retainedChildren.map((child, index) => convertChildOf(opened, child, index))
+@@ -1997,8 +2042,19 @@ export function readOoxmlPart(
+   if (roots.length === 0) return { ok: false, reason: 'missing-root' };
+   if (roots.length !== 1) return { ok: false, reason: 'multiple-roots' };
+   try {
++    const readMetadata = new OoxmlReadMetadata(metadata.onElementSource);
++    const sourcePath =
++      metadata.onElementSource === undefined ? undefined : Object.freeze([0]);
+     const root = deepFreezeNode(
+-      convertElement(roots[0], new OoxmlReadMetadata(), rootBindings(), metadata.name, '0', false)
++      convertElement(
++        roots[0],
++        readMetadata,
++        rootBindings(),
++        metadata.name,
++        '0',
++        false,
++        sourcePath
++      )
+     ) as OoxmlElement;
+     return {
+       ok: true,

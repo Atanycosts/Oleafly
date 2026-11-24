@@ -1,3 +1,6 @@
+import type { DocxNodeAddress } from "@oleafly/ai-tools";
+import type { OoxmlElement, OoxmlPart } from "@docx-editor.dev/core/store";
+
 export type DocxFormatJson = null | boolean | number | string | DocxFormatJson[] | { [key: string]: DocxFormatJson };
 export type DocxFormatProperties = { [key: string]: DocxFormatJson };
 export type DocxFormatRole =
@@ -28,10 +31,14 @@ export interface DocxFormatTableContext {
   conditions: string[];
 }
 
-export interface DocxFormatObject {
+interface DocxFormatSource {
   object_id: string;
   part: string;
   path: number[];
+  node_address?: DocxNodeAddress;
+}
+
+export interface DocxFormatObject extends DocxFormatSource {
   kind: string;
   role: DocxFormatRole;
   role_basis: DocxFormatRoleBasis[];
@@ -44,10 +51,12 @@ export interface DocxFormatObject {
   evidence: DocxFormatProperties;
 }
 
-export interface DocxFormatStyleDefinition {
-  object_id: string;
-  part: string;
-  path: number[];
+export interface DocxEmbeddedReadGap extends DocxFormatObject {
+  kind: "alt_chunk" | "ole";
+  read_gap: { code: string; detail: string; relationship_id?: string; related_part?: string };
+}
+
+export interface DocxFormatStyleDefinition extends DocxFormatSource {
   style_id: string;
   name: string | null;
   type: string;
@@ -107,7 +116,7 @@ export type DocxFormatQueryRequest =
   | {
       kind: "nodes";
       part?: string;
-      path?: number[];
+      node_address?: DocxNodeAddress;
       namespace_uri?: string;
       local_name?: string;
       attribute?: { namespace_uri?: string; local_name: string; value?: string };
@@ -123,11 +132,15 @@ export type DocxFormatQueryResult = {
   | { kind: "part"; part: string; format: "bytes"; data: Uint8Array }
   | { kind: "part"; part: string; format: "text"; data: string }
   | { kind: "part"; part: string; format: "tree"; data: DocxFormatJson }
-  | { kind: "nodes"; nodes: { part: string; path: number[]; node: DocxFormatProperties }[]; total: number; next_offset: number | null }
+  | { kind: "nodes"; nodes: (Omit<DocxFormatSource, "object_id"> & { node: DocxFormatProperties })[]; total: number; next_offset: number | null }
   | { kind: "relationships"; relationships: DocxFormatProperties[] }
 );
 
 export interface DocxFormatFacts {
   snapshot: DocxFormatSnapshotV1;
+  documentPart: OoxmlPart;
+  stylesRoot: OoxmlElement | null;
   query(request: DocxFormatQueryRequest): DocxFormatQueryResult;
+  addressableParagraphIds: ReadonlyMap<string, string>;
+  embeddedGaps: readonly DocxEmbeddedReadGap[];
 }

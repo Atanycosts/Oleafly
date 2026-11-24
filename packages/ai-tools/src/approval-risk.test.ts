@@ -18,6 +18,14 @@ describe("toolRisk", () => {
     }
   });
 
+  it.each([
+    "list_docx_templates", "read_docx_template_check", "read_docx_candidate_review",
+    "read_docx_saved_content", "read_docx_template_styles",
+  ])("keeps %s available for read-only planning", (tool) => {
+    expect(toolRisk(tool)).toBe("read");
+    expect(planModeTools({ [tool]: true })).toHaveProperty(tool);
+  });
+
   it("classifies read-only project tools as read", () => {
     for (const tool of [
       "read_file",

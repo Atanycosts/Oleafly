@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
@@ -31,7 +32,11 @@ from research_file_workbench.docx.parsing.package import (
     read_relationships,
     read_unsupported_records,
 )
+from research_file_workbench.docx.parsing.references import read_comment_details
+from research_file_workbench.docx.parsing.revision_text import RevisionText
+from research_file_workbench.docx.parsing.strict_ooxml import is_strict_document
 from research_file_workbench.docx.parsing.styles import read_numbering, read_styles
+from research_file_workbench.docx.xml_support import region_for_part
 
 
 def read_docx(path: Path) -> DocxReadResult:
@@ -66,18 +71,36 @@ def read_docx_bytes(payload: bytes, *, source_label: str) -> DocxReadResult:
             parts, xml_roots, xml_payloads, part_issues = inventory_parts(
                 archive, names, content_types
             )
+            main = xml_roots.get("word/document.xml")
+            if main is not None and is_strict_document(main):
+                raise DocxReadError(
+                    "Strict DOCX needs a normalized working copy. "
+                    "Open or upload it as a source file."
+                )
             relationships, relationship_issues = read_relationships(names, xml_roots)
             styles, style_issues = read_styles(xml_roots)
+            revisions = {
+                part: RevisionText(root)
+                for part, root in xml_roots.items()
+                if region_for_part(part) is not None
+            }
             text_blocks, text_issues = read_text_blocks(
-                xml_roots, styles, xml_payloads=xml_payloads
+                xml_roots, styles, xml_payloads=xml_payloads, revision_text_by_part=revisions
             )
-            tables, table_issues = read_tables(xml_roots)
+            tables, table_issues = read_tables(xml_roots, revisions)
             images, image_issues = read_images(xml_roots, relationships)
             math_objects, math_issues = read_math_objects(xml_roots)
             fields, field_issues = read_fields(xml_roots)
             sections, breaks, layout_issues = read_layout(xml_roots, relationships)
             complex_objects, complex_issues = read_complex_objects(xml_roots, relationships)
             references, reference_issues = read_references(xml_roots, relationships)
+            comment_details = read_comment_details(xml_roots, references, relationships)
+            references = tuple(
+                replace(reference, comment=comment_details[reference.node_locator])
+                if reference.node_locator in comment_details
+                else reference
+                for reference in references
+            )
             numbering, numbering_issues = read_numbering(xml_roots)
             paragraph_scopes = read_paragraph_scopes(xml_roots)
             issues = tuple(

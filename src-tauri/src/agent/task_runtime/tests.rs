@@ -785,7 +785,6 @@ async fn acp_annotation_receipts_distinguish_startup_failure_from_sent_failure_a
         if scenario == "unsupported-model" {
             assert!(saved.error.unwrap().contains("does not offer"));
         }
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
         state.launch_ready().await.unwrap();
         assert_eq!(
             store.require(&task.id).unwrap().execution_generation,

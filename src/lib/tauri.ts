@@ -443,21 +443,36 @@ export async function createFile(
   return { path: result.path, generation: result.generation };
 }
 
-export const deleteFile = (
+function deleteFileCommand(
+  command: "delete_file" | "agent_delete_file",
   projectId: string,
   path: string,
   expectedGeneration?: number,
   permanent?: boolean,
-) =>
-  projectWrite(
+) {
+  return projectWrite(
     projectId,
-    invoke<FileMutationResult>("delete_file", {
+    invoke<FileMutationResult>(command, {
       projectId,
       path,
       expectedGeneration,
       ...(permanent ? { permanent: true } : {}),
     }),
   );
+}
+
+export const deleteFile = (
+  projectId: string,
+  path: string,
+  expectedGeneration?: number,
+  permanent?: boolean,
+) => deleteFileCommand("delete_file", projectId, path, expectedGeneration, permanent);
+
+export const agentDeleteFile = (
+  projectId: string,
+  path: string,
+  expectedGeneration?: number,
+) => deleteFileCommand("agent_delete_file", projectId, path, expectedGeneration);
 
 export class FileConflictError extends Error {
   readonly destination: string;
@@ -474,7 +489,8 @@ export class FileConflictError extends Error {
 export const isFileConflictError = (error: unknown): error is FileConflictError =>
   error instanceof FileConflictError;
 
-export async function renameFile(
+async function renameFileCommand(
+  command: "rename_file" | "agent_rename_file",
   projectId: string,
   from: string,
   to: string,
@@ -483,7 +499,7 @@ export async function renameFile(
 ): Promise<string> {
   const result = await projectWrite(
     projectId,
-    invoke<RenameFileResult>("rename_file", {
+    invoke<RenameFileResult>(command, {
       projectId,
       from,
       to,
@@ -494,6 +510,22 @@ export async function renameFile(
   if (result.status === "conflict") throw new FileConflictError(result);
   return result.path;
 }
+
+export const renameFile = (
+  projectId: string,
+  from: string,
+  to: string,
+  conflictStrategy: FileConflictStrategy = "error",
+  expectedGeneration?: number,
+) => renameFileCommand("rename_file", projectId, from, to, conflictStrategy, expectedGeneration);
+
+export const agentRenameFile = (
+  projectId: string,
+  from: string,
+  to: string,
+  conflictStrategy: FileConflictStrategy = "error",
+  expectedGeneration?: number,
+) => renameFileCommand("agent_rename_file", projectId, from, to, conflictStrategy, expectedGeneration);
 
 export const copyFile = (
   projectId: string,
@@ -1799,8 +1831,8 @@ export const chatsSearch = (query: string) =>
   invoke<ChatSearchHit[]>("chats_search", { query });
 export const usageSummary = (projectId: string) =>
   invoke<UsageTotals>("usage_summary", { projectId });
-export const budgetGet = (projectId: string) =>
-  invoke<number | null>("budget_get_cmd", { projectId });
+export const budgetGet = (projectId: string, forEnforcement?: boolean) =>
+  invoke<number | null>("budget_get_cmd", { projectId, forEnforcement });
 export const budgetSet = (projectId: string, budgetUsd: number | null) =>
   invoke<void>("budget_set_cmd", { projectId, budgetUsd });
 

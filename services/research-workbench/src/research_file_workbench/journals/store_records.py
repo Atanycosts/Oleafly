@@ -110,8 +110,13 @@ def verified_payload(row: sqlite3.Row) -> JsonObject:
     return record
 
 
-def world_record(connection: sqlite3.Connection, row: sqlite3.Row) -> JsonObject:
-    """Verify one world and all source links before returning its record."""
+def world_record(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    verify_source_bytes: bool = True,
+) -> JsonObject:
+    """Verify one world record, optionally including its immutable source bytes."""
     record = verified_payload(row)
     validate_world_identity(record)
     sources = source_references(record)
@@ -123,13 +128,19 @@ def world_record(connection: sqlite3.Connection, row: sqlite3.Row) -> JsonObject
     }
     if retained != set(sources):
         raise WorldStoreError("World source links do not match its immutable manifest")
-    for source_id in sources:
-        source_content(required_row(connection, "source", "source_id", source_id))
+    if verify_source_bytes:
+        for source_id in sources:
+            source_content(required_row(connection, "source", "source_id", source_id))
     return {
         **record,
         "version_ordinal": row["version_ordinal"],
         "created_at": row["created_at"],
     }
+
+
+def world_metadata_record(connection: sqlite3.Connection, row: sqlite3.Row) -> JsonObject:
+    """Verify world identity and links without requiring readable retained source bytes."""
+    return world_record(connection, row, verify_source_bytes=False)
 
 
 def current_binding(connection: sqlite3.Connection, project_id: str) -> JsonObject | None:
@@ -148,7 +159,12 @@ def current_binding(connection: sqlite3.Connection, project_id: str) -> JsonObje
     return binding
 
 
-def check_record(connection: sqlite3.Connection, row: sqlite3.Row) -> JsonObject:
+def check_record(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    verify_world_sources: bool = True,
+) -> JsonObject:
     """Verify a check against its retained binding, world and dependencies."""
     record = verified_payload(row)
     binding = verified_payload(
@@ -171,6 +187,7 @@ def check_record(connection: sqlite3.Connection, row: sqlite3.Row) -> JsonObject
             "version_id",
             require_text(record.get("world_version_id"), "world_version_id"),
         ),
+        verify_source_bytes=verify_world_sources,
     )
     embedded_world = record.get("world")
     if embedded_world is not None:
@@ -182,6 +199,11 @@ def check_record(connection: sqlite3.Connection, row: sqlite3.Row) -> JsonObject
     validate_check_dependencies(record)
     validate_check_result(record, world)
     return record
+
+
+def check_metadata_record(connection: sqlite3.Connection, row: sqlite3.Row) -> JsonObject:
+    """Verify historical check structure without requiring its world source bytes."""
+    return check_record(connection, row, verify_world_sources=False)
 
 
 def validate_check_dependencies(check: JsonObject) -> None:
@@ -199,6 +221,12 @@ def validate_check_dependencies(check: JsonObject) -> None:
             "checker_version": check["checker_version"],
             "completeness": "core_object_format_comparison",
         }
+        if "snapshot_artifact_version_id" in dependencies:
+            expected["snapshot_artifact_version_id"] = digest_id(
+                dependencies["snapshot_artifact_version_id"],
+                "artifact-version",
+                "snapshot artifact",
+            )
         if dependencies != expected:
             raise WorldStoreError("Template check dependencies differ from retained versions")
         return

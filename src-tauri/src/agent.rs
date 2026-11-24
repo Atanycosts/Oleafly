@@ -9,6 +9,7 @@ use futures_util::future::Abortable;
 use oleafly_agent::{
     AgentEvent, CompletionRequest, CompletionResponse, ProviderConfig, RunConfig, ToolOutput,
 };
+use oleafly_research::budget::BudgetStopPolicy;
 use tauri::{Manager, State};
 
 use crate::config::{AppConfig, ModelProbe, ProbeVerdict};
@@ -755,7 +756,7 @@ pub async fn agent_run(
     on_event: tauri::ipc::Channel<AgentEvent>,
 ) -> Result<oleafly_agent::RunOutcome, String> {
     let agent_state = state.inner();
-    let config = sanitized_run_config(config);
+    let config = sanitized_run_config(config, BudgetStopPolicy::from_environment());
     let run_id = request_id.clone();
     let pinned_project = project_id.filter(|id| crate::paths::validate_project_id(id).is_ok());
     let record_scope = thread_id
@@ -1010,9 +1011,14 @@ pub async fn agent_run(
 
 pub const SUBAGENT_TOOL: &str = "spawn_subagents";
 
-const READ_RISK_TOOLS: [&str; 36] = [
+const READ_RISK_TOOLS: &[&str] = &[
     "list_docx_documents",
+    "list_docx_templates",
     "read_docx_document",
+    "read_docx_template_check",
+    "read_docx_candidate_review",
+    "read_docx_saved_content",
+    "read_docx_template_styles",
     "capture_docx_target",
     "read_file",
     "read_skill_file",
@@ -1094,7 +1100,7 @@ const ORCHESTRATION_TOOLS: [&str; 8] = [
 
 fn tool_pipeline() -> oleafly_agent::ToolPipeline {
     let mut registry = oleafly_agent::ToolRegistry::default();
-    for name in READ_RISK_TOOLS {
+    for &name in READ_RISK_TOOLS {
         let tool = if SERIAL_READ_TOOLS.contains(&name) {
             oleafly_agent::RegisteredTool::exclusive()
         } else {
@@ -1462,7 +1468,7 @@ fn drop_pending_tools(state: &AgentState, request_id: &str, generation: Option<u
     });
 }
 
-fn sanitized_run_config(config: Option<RunConfig>) -> RunConfig {
+fn sanitized_run_config(config: Option<RunConfig>, budget_policy: BudgetStopPolicy) -> RunConfig {
     let mut config = config.unwrap_or_default();
     config.max_steps = config.max_steps.clamp(1, MAX_RUN_STEPS);
     config.max_retries = config.max_retries.min(MAX_RUN_RETRIES);
@@ -1471,6 +1477,7 @@ fn sanitized_run_config(config: Option<RunConfig>) -> RunConfig {
         .clamp(MIN_RETRY_BASE_MS, MAX_RETRY_BASE_MS);
     config.allow_long_runs = false;
     config.max_duration_ms = None;
+    config.disable_run_limits = !budget_policy.enforced();
     config
 }
 

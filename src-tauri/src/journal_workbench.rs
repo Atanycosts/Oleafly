@@ -9,14 +9,20 @@ pub(crate) mod word;
 use crate::proc::NoConsole;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tauri::{Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
-const HTTP_CONTRACT_VERSION: &str = "journal-http-1.13.0";
+const HTTP_CONTRACT_VERSION: &str = "journal-http-1.20.0";
+const BUNDLED_ENGINE_DIRECTORY: &str = "resources/research-workbench";
+const BUNDLED_ENGINE_NAME: &str = if cfg!(windows) {
+    "rfw-workbench.exe"
+} else {
+    "rfw-workbench"
+};
 
 #[derive(Default)]
 pub struct JournalWorkbenchState(
@@ -30,6 +36,7 @@ pub(crate) struct Session {
     token: String,
     client: reqwest::Client,
     library_root: PathBuf,
+    runtime: String,
 }
 
 #[derive(Serialize)]
@@ -39,37 +46,147 @@ pub struct Connection {
     library_root: String,
 }
 
-fn runtime_path() -> Result<PathBuf, String> {
-    Ok(crate::paths::oleafly_root()?.join("workbench-python.json"))
+enum Runtime {
+    Bundled(PathBuf),
+    DevelopmentPython(PathBuf),
 }
 
-fn configured_python() -> Result<String, String> {
-    if let Ok(python) = std::env::var("OLEAFLY_WORKBENCH_PYTHON") {
-        return Ok(python);
-    }
-    let path = runtime_path()?;
-    if !path.exists() {
-        return Err(
-            "Choose the Python executable from the Workbench environment to connect.".into(),
-        );
-    }
-    serde_json::from_slice(
-        &std::fs::read(path)
-            .map_err(|error| format!("could not read Workbench runtime: {error}"))?,
-    )
-    .map_err(|error| format!("invalid Workbench runtime setting: {error}"))
+#[derive(Clone, Copy)]
+enum BundledEngineIssue {
+    UnsupportedPlatform,
+    OmittedFromPublicRelease,
+    Damaged,
 }
 
-async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, String> {
+impl Runtime {
+    fn executable(&self) -> &Path {
+        match self {
+            Self::Bundled(path) | Self::DevelopmentPython(path) => path,
+        }
+    }
+
+    fn label(&self) -> String {
+        self.executable().to_string_lossy().into_owned()
+    }
+}
+
+fn bundled_engine_error(issue: BundledEngineIssue, library_root: &Path) -> String {
+    let library_root = library_root.display();
+    match issue {
+        BundledEngineIssue::UnsupportedPlatform => format!(
+            "Journal checks are unavailable on this platform build. Existing Journal data \
+             stays at {library_root}; nothing was started or migrated. Use an Apple Silicon \
+             macOS build that includes the Research Workbench engine, such as a local \
+             `pnpm workbench:bundle` build, or inspect a copy with a trusted development \
+             checkout. This build will not substitute a saved or environment Python."
+        ),
+        BundledEngineIssue::OmittedFromPublicRelease => format!(
+            "This build was produced without the Research Workbench engine; the current public \
+             release policy omits it because bundled PyMuPDF/MuPDF redistribution is not approved. \
+             Existing Journal data stays at {library_root}; nothing was started or migrated. Use \
+             a locally built Apple Silicon release with `pnpm workbench:bundle`, or inspect a copy \
+             with a trusted development checkout. This build will not substitute another Python \
+             runtime."
+        ),
+        BundledEngineIssue::Damaged => format!(
+            "The Research Workbench engine in this app is damaged or incomplete. Reinstall this \
+             Oleafly build; existing Journal data stays at {library_root}. No other Python \
+             runtime was started."
+        ),
+    }
+}
+
+fn resolve_bundled_executable(resources: &Path, library_root: &Path) -> Result<PathBuf, String> {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return Err(bundled_engine_error(
+            BundledEngineIssue::UnsupportedPlatform,
+            library_root,
+        ));
+    }
+    let resources = resources
+        .canonicalize()
+        .map_err(|_| bundled_engine_error(BundledEngineIssue::Damaged, library_root))?;
+    let engine_root = resources.join(BUNDLED_ENGINE_DIRECTORY);
+    match engine_root.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(bundled_engine_error(
+                BundledEngineIssue::OmittedFromPublicRelease,
+                library_root,
+            ));
+        }
+        Err(_) => {
+            return Err(bundled_engine_error(
+                BundledEngineIssue::Damaged,
+                library_root,
+            ));
+        }
+        Ok(_) => {}
+    }
+    let engine_root = engine_root
+        .canonicalize()
+        .map_err(|_| bundled_engine_error(BundledEngineIssue::Damaged, library_root))?;
+    if !engine_root.starts_with(&resources) || !engine_root.is_dir() {
+        return Err(bundled_engine_error(
+            BundledEngineIssue::Damaged,
+            library_root,
+        ));
+    }
+    let has_payload = std::fs::read_dir(&engine_root)
+        .map_err(|_| bundled_engine_error(BundledEngineIssue::Damaged, library_root))?
+        .any(|entry| {
+            entry.is_ok_and(|entry| entry.file_name() != std::ffi::OsStr::new(".gitkeep"))
+        });
+    if !has_payload {
+        return Err(bundled_engine_error(
+            BundledEngineIssue::OmittedFromPublicRelease,
+            library_root,
+        ));
+    }
+    let executable = engine_root
+        .join(BUNDLED_ENGINE_NAME)
+        .canonicalize()
+        .map_err(|_| bundled_engine_error(BundledEngineIssue::Damaged, library_root))?;
+    if !executable.starts_with(&engine_root) || !executable.is_file() {
+        return Err(bundled_engine_error(
+            BundledEngineIssue::Damaged,
+            library_root,
+        ));
+    }
+    Ok(executable)
+}
+
+fn bundled_runtime(app: &tauri::AppHandle, library_root: &Path) -> Result<Runtime, String> {
+    let resources = app
+        .path()
+        .resource_dir()
+        .map_err(|_| bundled_engine_error(BundledEngineIssue::Damaged, library_root))?;
+    resolve_bundled_executable(&resources, library_root).map(Runtime::Bundled)
+}
+
+fn configured_runtime(app: &tauri::AppHandle, library_root: &Path) -> Result<Runtime, String> {
+    if cfg!(debug_assertions) {
+        let python = std::env::var("OLEAFLY_WORKBENCH_PYTHON").map_err(|_| {
+            "Set OLEAFLY_WORKBENCH_PYTHON or start development with `pnpm tauri dev`.".to_string()
+        })?;
+        Ok(Runtime::DevelopmentPython(PathBuf::from(python)))
+    } else {
+        bundled_runtime(app, library_root)
+    }
+}
+
+async fn start(runtime: &Runtime, library_root: &Path) -> Result<Session, String> {
     let mut font_roots = crate::assets::font_cache_roots()?.to_vec();
     font_roots.push(crate::system_fonts::resolved_font_cache()?);
-    let mut command = Command::new(python);
+    let mut command = Command::new(runtime.executable());
+    if matches!(runtime, Runtime::DevelopmentPython(_)) {
+        command.args(["-u", "-m", "research_file_workbench.workbench.launcher"]);
+    }
     command
-        .args(["-u", "-m", "research_file_workbench.workbench.launcher"])
         .arg("--library-root")
         .arg(library_root)
         .env_remove("PYTHONPATH")
         .env_remove("PYTHONHOME")
+        .env_remove("OLEAFLY_WORKBENCH_PYTHON")
         .env(
             "OLEAFLY_FONT_DIRS",
             std::env::join_paths(font_roots).map_err(|error| error.to_string())?,
@@ -79,9 +196,10 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
     command.no_console();
+    let runtime_label = runtime.label();
     let mut child = command
         .spawn()
-        .map_err(|error| format!("could not start Workbench with {python}: {error}"))?;
+        .map_err(|error| format!("could not start Workbench with {runtime_label}: {error}"))?;
     let mut address = String::new();
     let output = child.stdout.take().expect("piped stdout");
     tokio::time::timeout(
@@ -125,6 +243,7 @@ async fn start(python: &str, library_root: &std::path::Path) -> Result<Session, 
         token,
         client,
         library_root: library_root.to_path_buf(),
+        runtime: runtime_label,
     })
 }
 
@@ -174,6 +293,13 @@ fn response_body(status: reqwest::StatusCode, body: Value) -> Result<Value, Stri
             .to_string());
     }
     Ok(body)
+}
+
+fn ipc_response_body(status: reqwest::StatusCode, body: Value) -> Result<Value, Value> {
+    if status.is_client_error() && body["code"].is_string() && body["error"].is_string() {
+        return Err(body);
+    }
+    response_body(status, body).map_err(Value::String)
 }
 
 pub(crate) async fn request_docx_baseline(
@@ -270,6 +396,54 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn bundled_engine_errors_are_distinct_and_preserve_the_library() {
+        let library = Path::new("/tmp/Oleafly/journal-library");
+        let unsupported = bundled_engine_error(BundledEngineIssue::UnsupportedPlatform, library);
+        let omitted = bundled_engine_error(BundledEngineIssue::OmittedFromPublicRelease, library);
+        let damaged = bundled_engine_error(BundledEngineIssue::Damaged, library);
+
+        assert!(unsupported.contains("unavailable on this platform build"));
+        assert!(omitted.contains("produced without the Research Workbench engine"));
+        assert!(damaged.contains("damaged or incomplete"));
+        for message in [&unsupported, &omitted, &damaged] {
+            assert!(message.contains(library.to_string_lossy().as_ref()));
+            assert!(message.contains("Journal data"));
+        }
+        assert!(unsupported.contains("will not substitute a saved or environment Python"));
+        assert!(omitted.contains("will not substitute another Python runtime"));
+        assert!(damaged.contains("No other Python runtime was started"));
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn bundled_engine_detection_distinguishes_omitted_from_damaged() {
+        let temporary = tempfile::tempdir().unwrap();
+        let resources = temporary.path().join("Resources");
+        let library = temporary.path().join("journal-library");
+        std::fs::create_dir_all(&resources).unwrap();
+
+        let omitted = resolve_bundled_executable(&resources, &library).unwrap_err();
+        assert!(omitted.contains("produced without the Research Workbench engine"));
+
+        let engine_root = resources.join(BUNDLED_ENGINE_DIRECTORY);
+        std::fs::create_dir_all(&engine_root).unwrap();
+        std::fs::write(engine_root.join(".gitkeep"), b"").unwrap();
+        let unbundled = resolve_bundled_executable(&resources, &library).unwrap_err();
+        assert!(unbundled.contains("produced without the Research Workbench engine"));
+
+        std::fs::write(engine_root.join("_internal"), b"incomplete").unwrap();
+        let damaged = resolve_bundled_executable(&resources, &library).unwrap_err();
+        assert!(damaged.contains("damaged or incomplete"));
+
+        let executable = engine_root.join(BUNDLED_ENGINE_NAME);
+        std::fs::write(&executable, b"engine").unwrap();
+        assert_eq!(
+            resolve_bundled_executable(&resources, &library).unwrap(),
+            executable.canonicalize().unwrap(),
+        );
+    }
 }
 
 pub(crate) async fn retained_docx_source_hash(
@@ -296,27 +470,40 @@ pub(crate) async fn retained_docx_source_hash(
         .ok_or("Workbench did not return the retained DOCX source identity.".into())
 }
 
+async fn ensure_started(
+    app: &tauri::AppHandle,
+    state: &JournalWorkbenchState,
+) -> Result<(String, PathBuf), String> {
+    let library_root = crate::paths::oleafly_root()?.join("journal-library");
+    let mut current = state.0.lock().await;
+    if let Some(session) = current.as_mut() {
+        if session
+            .child
+            .try_wait()
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok((session.runtime.clone(), session.library_root.clone()));
+        }
+        *current = None;
+    }
+    let runtime = configured_runtime(app, &library_root)?;
+    let label = runtime.label();
+    std::fs::create_dir_all(&library_root).map_err(|error| error.to_string())?;
+    let library_root = library_root
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let session = start(&runtime, &library_root).await?;
+    *current = Some(session);
+    Ok((label, library_root))
+}
+
 #[tauri::command]
 pub async fn journal_workbench_connect(
     app: tauri::AppHandle,
     state: State<'_, JournalWorkbenchState>,
-    python: Option<String>,
 ) -> Result<Connection, String> {
-    let python = python.map_or_else(configured_python, Ok)?;
-    let library_root = crate::paths::oleafly_root()?.join("journal-library");
-    let mut current = state.0.lock().await;
-    if current.is_none() {
-        std::fs::create_dir_all(&library_root).map_err(|error| error.to_string())?;
-        let session = start(
-            &python,
-            &library_root.canonicalize().map_err(|e| e.to_string())?,
-        )
-        .await?;
-        let bytes = serde_json::to_vec(&python).map_err(|error| error.to_string())?;
-        crate::sandbox::atomic_write(&runtime_path()?, &bytes)?;
-        *current = Some(session);
-    }
-    drop(current);
+    let (python, library_root) = ensure_started(&app, &state).await?;
     start_reconciliation(&app, &state)?;
     Ok(Connection {
         python,
@@ -330,7 +517,7 @@ pub async fn journal_workbench_request(
     state: State<'_, JournalWorkbenchState>,
     path: String,
     payload: Option<Value>,
-) -> Result<Value, String> {
+) -> Result<Value, Value> {
     let mut current = state.0.lock().await;
     let session = current.as_mut().ok_or("Connect Workbench first.")?;
     if let Some(status) = session
@@ -339,12 +526,12 @@ pub async fn journal_workbench_request(
         .map_err(|error| error.to_string())?
     {
         *current = None;
-        return Err(format!(
-            "Workbench exited ({status}). Reconnect to continue."
-        ));
+        return Err(format!("Workbench exited ({status}). Reconnect to continue.").into());
     }
-    let changed = payload.is_some();
-    let result = request(session, &path, payload).await?;
+    let changed =
+        payload.is_some() && !matches!(path.as_str(), "/api/docx-query" | "/api/docx-normalize");
+    let (status, body) = request_response(session, &path, payload).await?;
+    let result = ipc_response_body(status, body)?;
     drop(current);
     if changed {
         let app = app.clone();
@@ -362,6 +549,8 @@ pub async fn journal_workbench_request(
 /// Normalize a user-selected template without opening the author path for writing.
 #[tauri::command]
 pub async fn journal_template_normalize(
+    app: tauri::AppHandle,
+    state: State<'_, JournalWorkbenchState>,
     name: String,
     content_base64: String,
     executable: Option<String>,
@@ -372,9 +561,19 @@ pub async fn journal_template_normalize(
         .map_err(|error| format!("Could not read the selected Word template: {error}"))?;
     let renderer = executable.map(PathBuf::from).or_else(render::find_renderer);
     let temporary_root = crate::paths::oleafly_root()?.join("tmp/template-imports");
-    let normalized =
-        normalization::normalize_template_bytes(&name, bytes, renderer.as_deref(), &temporary_root)
-            .await?;
+    ensure_started(&app, &state).await?;
+    let current = state.0.lock().await;
+    let session = current
+        .as_ref()
+        .ok_or("Connect Workbench before importing a Word template.")?;
+    let normalized = normalization::normalize_template_bytes(
+        session,
+        &name,
+        bytes,
+        renderer.as_deref(),
+        &temporary_root,
+    )
+    .await?;
     let provenance = normalized.conversion.as_ref().map(|conversion| {
         serde_json::json!({
             "engine": conversion.engine, "version": conversion.version,
@@ -518,13 +717,8 @@ pub(crate) async fn prepare_research_context(
     let store = tasks.store()?;
     if crate::task_inputs::journal_input(store.root(), &context.task_id)?.is_some() {
         let workbench = app.state::<JournalWorkbenchState>();
-        let mut current = workbench.0.lock().await;
-        if current.is_none() {
-            let python = configured_python()?;
-            let root = crate::paths::oleafly_root()?.join("journal-library");
-            *current =
-                Some(start(&python, &root.canonicalize().map_err(|e| e.to_string())?).await?);
-        }
+        ensure_started(app, &workbench).await?;
+        let current = workbench.0.lock().await;
         sync::reconcile_task(
             current.as_ref().expect("connected Workbench"),
             &store,
@@ -615,7 +809,8 @@ pub fn shutdown(app: &tauri::AppHandle) {
 /// Reconnect retained task scopes on application restart, even while their
 /// members are idle and the Journal panel has not been opened.
 pub(crate) async fn resume(app: &tauri::AppHandle) -> Result<(), String> {
-    start_reconciliation(app, &app.state::<JournalWorkbenchState>())
+    let state = app.state::<JournalWorkbenchState>();
+    start_reconciliation(app, &state)
 }
 
 fn start_reconciliation(
@@ -672,23 +867,9 @@ async fn reconcile_and_schedule(app: &tauri::AppHandle) -> Result<(), String> {
         };
     }
     let workbench = app.state::<JournalWorkbenchState>();
-    let mut current = workbench.0.lock().await;
-    if let Some(session) = current.as_mut() {
-        if session
-            .child
-            .try_wait()
-            .map_err(|e| e.to_string())?
-            .is_some()
-        {
-            *current = None;
-        }
-    }
-    if current.is_none() {
-        let python = configured_python()?;
-        let root = crate::paths::oleafly_root()?.join("journal-library");
-        *current = Some(start(&python, &root.canonicalize().map_err(|e| e.to_string())?).await?);
-    }
-    let session = current.as_ref().expect("connected Workbench");
+    ensure_started(app, &workbench).await?;
+    let current = workbench.0.lock().await;
+    let session = current.as_ref().ok_or("Connect Workbench first.")?;
     for task_id in inputs {
         if let Err(error) = sync::reconcile_task(session, &store, &task_id).await {
             failures.push(format!("{task_id}: {error}"));

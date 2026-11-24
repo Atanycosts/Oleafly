@@ -146,6 +146,20 @@ describe("read_file", () => {
 });
 
 describe("write_file", () => {
+  it.each([
+    ["write_file", { content: "plain text" }],
+    ["replace_in_file", { find: "old", replace: "plain text" }],
+  ] as const)("routes %s on DOCX to the Word working copy before reading or seeking approval", async (name, args) => {
+    const { host } = makeHost();
+    const confirm = vi.fn<ConfirmFn>(async () => true);
+    const result = await createOleaflyTools(host, { confirm })[name].execute({ path: "./papers/Source.DoCx", ...args });
+    expect(result).toEqual({ error: expect.stringContaining("Word working copy") });
+    expect(host.readFileContent).not.toHaveBeenCalled();
+    expect(host.prepareExternalMutation).not.toHaveBeenCalled();
+    expect(host.writeFileContent).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
   it("writes against the prepared generation when no approval is needed", async () => {
     const { host, files } = makeHost();
     const result = await createOleaflyTools(host).write_file.execute({ path: "a.tex", content: "hello" });

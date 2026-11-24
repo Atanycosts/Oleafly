@@ -184,10 +184,15 @@ def validate_world_for_execution(world: JsonObject) -> None:
             "and establish explicit structured requirements before a new check"
         )
     if "template" in world:
-        from research_file_workbench.journals.template_models import TEMPLATE_ANALYZER_VERSION
+        from research_file_workbench.journals.template_models import (
+            SNAPSHOT_METHOD,
+            TEMPLATE_ANALYZER_VERSION,
+        )
 
         if world["analyzer_version"] != TEMPLATE_ANALYZER_VERSION:
             raise WorldAnalysisError("Template analyzer changed; recapture the template")
+        if world["reader_version"] != SNAPSHOT_METHOD:
+            raise WorldAnalysisError("DOCX template format reader changed; recapture the template")
         return
     if world["analyzer_version"] != ANALYZER_VERSION:
         raise WorldAnalysisError("Journal analyzer changed; reanalyze sources before a new check")

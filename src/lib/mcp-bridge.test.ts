@@ -22,8 +22,8 @@ const mocks = vi.hoisted(() => ({
     readFileContent: vi.fn(),
     writeFileContent: vi.fn(),
     createFile: vi.fn(),
-    deleteFile: vi.fn(),
-    renameFile: vi.fn(),
+    agentDeleteFile: vi.fn(),
+    agentRenameFile: vi.fn(),
     projectMutationGeneration: vi.fn(async () => 0),
     setMainDocCmd: vi.fn(),
     listFiles: vi.fn(),
@@ -406,6 +406,11 @@ describe("mcp tool registry", () => {
     const known = new Set([...block.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]));
 
     expect(known.size).toBeGreaterThan(0);
+    expect(registry).toHaveProperty("list_docx_templates");
+    expect(registry).not.toHaveProperty("read_docx_template_check");
+    expect(registry).not.toHaveProperty("read_docx_candidate_review");
+    expect(registry).not.toHaveProperty("read_docx_saved_content");
+    expect(registry).not.toHaveProperty("read_docx_template_styles");
     expect(Object.keys(registry).filter((name) => !known.has(name))).toEqual([]);
   });
 
@@ -729,13 +734,13 @@ describe("MCP tool calls and the project's deny rules", () => {
       mcp_approval_policy: "trust",
     });
     mocks.api.approvalsList.mockResolvedValue({ delete_file: "deny" });
-    mocks.api.deleteFile.mockClear();
+    mocks.api.agentDeleteFile.mockClear();
 
     const { bridge, result } = await callTool("delete_file", { path: "chapters/one.tex" });
     const { useMcpActivityStore } = await import("@/store/mcp-activity");
 
     expect(mocks.api.approvalsList).toHaveBeenCalledWith("proj");
-    expect(mocks.api.deleteFile).not.toHaveBeenCalled();
+    expect(mocks.api.agentDeleteFile).not.toHaveBeenCalled();
     expect(result).toEqual(
       bridge.toMcpResult({ error: "This tool is denied for this project in approvals.toml." }, []),
     );
