@@ -21,6 +21,7 @@ import { notifyProjectFilesChanged } from "@/lib/cross-window";
 import { readPickedFileBase64, registerPickedFileForE2E, writeProjectBytes } from "@/lib/tauri";
 import { E2E_HOOKS } from "@/lib/e2e-flags";
 import { logError } from "@/lib/log";
+import { readExcelWorkbook } from "@/lib/spreadsheet-reader";
 import { useFilesStore } from "@/store/files";
 
 export type TableTarget = "latex" | "typst";
@@ -61,13 +62,23 @@ function validateTableRows(rows: string[][]): string[][] {
   return rows;
 }
 
-function validateSheetRange(XLSX: typeof import("xlsx"), sheet: import("xlsx").WorkSheet): void {
+function spreadsheetRows(XLSX: typeof import("xlsx"), sheet: import("xlsx").WorkSheet): string[][] {
   const ref = sheet["!ref"];
-  if (!ref) return;
+  if (!ref) return [];
   const range = XLSX.utils.decode_range(ref);
   if (range.e.r - range.s.r + 1 > MAX_TABLE_ROWS || range.e.c - range.s.c + 1 > MAX_TABLE_COLUMNS) {
     throw new Error(`this spreadsheet is larger than ${MAX_TABLE_ROWS.toLocaleString()} rows by ${MAX_TABLE_COLUMNS} columns. Import a smaller range instead.`);
   }
+  const rows: string[][] = [];
+  for (let row = range.s.r; row <= range.e.r; row += 1) {
+    const cells: string[] = [];
+    for (let column = range.s.c; column <= range.e.c; column += 1) {
+      const cell = sheet[XLSX.utils.encode_cell({ r: row, c: column })];
+      cells.push(cell ? XLSX.utils.format_cell(cell) : "");
+    }
+    rows.push(cells);
+  }
+  return validateTableRows(rows);
 }
 
 export type TableFileFormat = "csv" | "tsv" | "spreadsheet" | "json";
@@ -102,11 +113,8 @@ export async function readTableFileFromBytes(fileName: string, bytes: Uint8Array
     if (!table) throw new Error(i18n.t(($) => $.editor.tableImport.jsonNotTable));
     return { rows: validateTableRows(table.rows), format: "json", jsonShape: table.shape, text };
   }
-  return {
-    rows: validateTableRows(parseDelimited(text)),
-    format: /\.tsv$/i.test(fileName) ? "tsv" : "csv",
-    text,
-  };
+  const format = /\.tsv$/i.test(fileName) ? "tsv" : "csv";
+  return { rows: validateTableRows(parseDelimited(text, { delimiter: format === "tsv" ? "\t" : undefined })), format, text };
 }
 
 export async function readTableFile(path: string): Promise<TableFile> {
@@ -176,24 +184,15 @@ export async function readTableRowsFromBytes(
   fileName: string,
   bytes: Uint8Array,
 ): Promise<string[][]> {
-  if (/\.json$/i.test(fileName)) {
-    return (await readTableFileFromBytes(fileName, bytes)).rows;
-  }
   if (/\.(xlsx|xls)$/i.test(fileName)) {
-    const XLSX = await import("xlsx");
-    const workbook = XLSX.read(bytes, {
-      type: "array",
-      sheetRows: MAX_TABLE_ROWS + 1,
-    });
+    const { xlsx: XLSX, workbook } = await readExcelWorkbook(bytes, { sheets: 0, cellHTML: false, cellFormula: false });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     if (!sheet) {
       throw new Error("that spreadsheet has no sheets to import");
     }
-    validateSheetRange(XLSX, sheet);
-    const text = XLSX.utils.sheet_to_csv(sheet, { FS: "\t" });
-    return validateTableRows(parseDelimited(text));
+    return spreadsheetRows(XLSX, sheet);
   }
-  return validateTableRows(parseDelimited(new TextDecoder().decode(bytes)));
+  return (await readTableFileFromBytes(fileName, bytes)).rows;
 }
 
 export async function readTableRows(path: string): Promise<string[][]> {

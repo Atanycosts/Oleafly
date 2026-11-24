@@ -102,8 +102,20 @@ describe("readTableRows", () => {
     await expect(readTableRows("/tmp/empty.xlsx")).resolves.toEqual([]);
   });
 
+  it("preserves commas, whitespace, and blank rows in a single-column worksheet", async () => {
+    const sheet = XLSX.utils.aoa_to_sheet([["Smith, Jane"], [], ["  Doe, Alex  "]]);
+    mocks.readPickedFileBase64.mockResolvedValue(workbookBase64(sheet));
+    await expect(readTableRows("/tmp/names.xlsx")).resolves.toEqual([["Smith, Jane"], [""], ["  Doe, Alex  "]]);
+  });
+
+  it("reads a single-column TSV without guessing from commas", async () => {
+    mocks.readPickedFileBase64.mockResolvedValue(csvBase64("Name\nSmith, Jane\n"));
+    await expect(readTableRows("/tmp/names.tsv")).resolves.toEqual([["Name"], ["Smith, Jane"]]);
+  });
+
   it.each([
     ["rows", MAX_TABLE_ROWS, 0],
+    ["sparse rows", MAX_TABLE_ROWS + 1_000, 0],
     ["columns", 0, MAX_TABLE_COLUMNS],
   ] as const)("rejects an XLSX sheet with too many %s before expanding its sparse range", async (_dimension, row, column) => {
     const lastCell = XLSX.utils.encode_cell({ r: row, c: column });
@@ -113,7 +125,7 @@ describe("readTableRows", () => {
       "!ref": `A1:${lastCell}`,
     };
     mocks.readPickedFileBase64.mockResolvedValue(workbookBase64(sheet));
-    const expand = vi.spyOn(XLSX.utils, "sheet_to_csv");
+    const expand = vi.spyOn(XLSX.utils, "format_cell");
     await expect(readTableRows("/tmp/oversized.xlsx")).rejects.toThrow(/Import a smaller range/);
     expect(expand).not.toHaveBeenCalled();
   });
