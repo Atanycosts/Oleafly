@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, Crosshair } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
   fetchDocxFindingDetails,
   fetchDocxFindingLocations,
@@ -406,10 +407,10 @@ export function DocxFindingBrowser({
       .sort((left, right) => (left.level ?? Number.MAX_SAFE_INTEGER)
         - (right.level ?? Number.MAX_SAFE_INTEGER));
   }, [visibleGroups]);
-  const summary = useMemo(() => ({
-    checks: visibleGroups.reduce((sum, group) => sum + group.counts[verdict], 0),
-    locations: groups.reduce((sum, group) => sum + group.location_count, 0),
-  }), [groups, verdict, visibleGroups]);
+  const findingCount = useMemo(
+    () => visibleGroups.reduce((sum, group) => sum + group.counts[verdict], 0),
+    [verdict, visibleGroups],
+  );
 
   const locationKey = expandedGroupId
     ? [checkId, expandedGroupId, verdict, locationOffset].join("\u0000")
@@ -552,14 +553,15 @@ export function DocxFindingBrowser({
         <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground">
           {t(($) => $.researchTools.docx.findingReview.groupCount, {
             count: group.counts[verdict],
-            locations: group.location_count,
           })}
         </span>
       </button>
       {expanded && <div id={`docx-finding-locations-${group.id}`} data-testid="docx-finding-locations" className="border-t">
         {locationsFailed && <p role="alert" className="p-2 text-destructive">{review.locationsFailed}</p>}
         {!locationsFailed && <div aria-busy={locationsBusy}>
-          {locationsBusy && <p role="status" className="p-2 text-muted-foreground">{review.loadingLocations}</p>}
+          {locationsBusy && <div className="p-2">
+            <Spinner size="sm" role="status" aria-label={review.loadingLocations} className="text-muted-foreground" />
+          </div>}
           {locations && <>
             {locations.locations.length
               ? <ul className="divide-y">
@@ -612,7 +614,7 @@ export function DocxFindingBrowser({
       {expanded && selectedLocation && <div data-testid="docx-finding-details" className="border-t bg-muted/20 p-2.5">
         {detailsFailed && <p role="alert" className="text-destructive">{review.detailsFailed}</p>}
         <div className="space-y-2" aria-busy={detailsBusy}>
-          {detailsBusy && <p role="status" className="text-muted-foreground">{review.loadingDetails}</p>}
+          {detailsBusy && <Spinner size="sm" role="status" aria-label={review.loadingDetails} className="text-muted-foreground" />}
           {details && <>
             {details.findings.length
               ? <div className="space-y-2">
@@ -664,25 +666,27 @@ export function DocxFindingBrowser({
 
   return <section className={`space-y-2 ${className}`} data-testid="docx-finding-browser">
     {title && <p className="font-medium">{title}</p>}
-    <label className="flex items-center gap-2 font-medium">
-      {template.filter}
-      <select
-        aria-label={template.filter}
-        className="rounded border bg-background p-1"
-        value={verdict}
-        onChange={(event) => changeVerdict(event.target.value as DocxFindingVerdict)}
-      >
-        {verdicts.map((value) => <option key={value} value={value}>{verdictLabels[value]}</option>)}
-      </select>
-    </label>
-    <div className="space-y-0.5 text-muted-foreground">
-      <p>{t(($) => $.researchTools.docx.findingReview.summaryChecks, { count: summary.checks })}</p>
-      <p>{t(($) => $.researchTools.docx.findingReview.summaryLocations, { locations: summary.locations })}</p>
-      <p className="text-[0.6875rem]">{t(($) => $.researchTools.docx.findingReview.summaryNote)}</p>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <label className="flex items-center gap-2 font-medium">
+        {template.filter}
+        <select
+          aria-label={template.filter}
+          className="rounded border bg-background p-1"
+          value={verdict}
+          onChange={(event) => changeVerdict(event.target.value as DocxFindingVerdict)}
+        >
+          {verdicts.map((value) => <option key={value} value={value}>{verdictLabels[value]}</option>)}
+        </select>
+      </label>
+      <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+        <span data-testid="docx-finding-summary">
+          {t(($) => $.researchTools.docx.findingReview.summaryChecks, { count: findingCount })}
+        </span>
+        <span className="rounded bg-muted/50 px-1.5 py-0.5 text-[0.6875rem]">
+          {t(($) => $.researchTools.docx.findingReview.languageScope)}
+        </span>
+      </div>
     </div>
-    <p className="rounded bg-muted/50 p-2 text-muted-foreground">
-      {t(($) => $.researchTools.docx.findingReview.languageScope)}
-    </p>
     {grouped.size === 0
       ? <p className="text-muted-foreground">{t(($) => $.researchTools.docx.findingReview.noGroups)}</p>
       : <div className="space-y-3">

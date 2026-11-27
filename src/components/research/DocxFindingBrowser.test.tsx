@@ -82,9 +82,8 @@ it("groups by document section and loads locations then exact checks only when o
   expect(screen.getByText("Heading 2")).toBeInTheDocument();
   expect(screen.getByText("Table 2")).toBeInTheDocument();
   expect(screen.getByText("Header rows")).toBeInTheDocument();
-  expect(screen.getByText("Matching checks: 3")).toBeInTheDocument();
-  expect(screen.getByText("Locations across all comparison results: 5")).toBeInTheDocument();
-  expect(screen.getByText(en.docx.findingReview.summaryNote)).toBeInTheDocument();
+  expect(screen.getByTestId("docx-finding-summary")).toHaveTextContent("Findings: 3");
+  expect(screen.queryByText(/locations/i)).not.toBeInTheDocument();
   expect(screen.getByText(en.docx.findingReview.languageScope)).toBeInTheDocument();
   expect(api.locations).not.toHaveBeenCalled();
   expect(api.details).not.toHaveBeenCalled();
@@ -293,7 +292,7 @@ it("nests headings by level and keeps an unspecified level separate", () => {
   expect(screen.getByText(en.docx.findingReview.unspecifiedHeadingLevel)).toBeInTheDocument();
 });
 
-it("labels matching checks separately from locations counted across all verdicts", () => {
+it("shows one finding count without a second location total or footnote", () => {
   const groups = [group({
     id: "counted",
     category: "body",
@@ -303,15 +302,14 @@ it("labels matching checks separately from locations counted across all verdicts
   })];
   render(<DocxFindingBrowser checkId="check-one" groups={groups} />);
 
-  expect(screen.getByText("Matching checks: 1")).toBeInTheDocument();
-  expect(screen.getByText("Locations across all comparison results: 9")).toBeInTheDocument();
-  expect(screen.getByText("Checks: 1 · locations across all results: 9")).toBeInTheDocument();
+  expect(screen.getByTestId("docx-finding-summary")).toHaveTextContent("Findings: 1");
+  expect(screen.getByTestId("docx-finding-group-counted")).toHaveTextContent("Findings: 1");
+  expect(screen.queryByText(/locations/i)).not.toBeInTheDocument();
 
   fireEvent.change(screen.getByRole("combobox"), { target: { value: "cannot_determine" } });
-  expect(screen.getByText("Matching checks: 2")).toBeInTheDocument();
-  expect(screen.getByText("Locations across all comparison results: 9")).toBeInTheDocument();
-  expect(screen.getByText("Checks: 2 · locations across all results: 9")).toBeInTheDocument();
-  expect(screen.getByText(en.docx.findingReview.summaryNote)).toBeInTheDocument();
+  expect(screen.getByTestId("docx-finding-summary")).toHaveTextContent("Findings: 2");
+  expect(screen.getByTestId("docx-finding-group-counted")).toHaveTextContent("Findings: 2");
+  expect(screen.queryByText(/locations/i)).not.toBeInTheDocument();
 });
 
 it("keeps the language scope visible when the current result has no groups", () => {

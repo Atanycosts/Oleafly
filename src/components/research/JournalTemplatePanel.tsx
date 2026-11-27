@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Spinner } from "@/components/ui/spinner";
 import {
   fetchDocxFindingGroups,
   type DocxFindingGroup,
@@ -64,7 +65,7 @@ export function JournalTemplatePanel({ world, project, check, onJump }: {
     <p className="font-semibold">{text.title}</p>
     <p className="text-muted-foreground">{text.adopted}</p>
     {hasComparison && <div className="space-y-2">
-      {findingBusy && <p role="status" className="text-muted-foreground">{review.loadingGroups}</p>}
+      {findingBusy && <Spinner size="sm" role="status" aria-label={review.loadingGroups} className="text-muted-foreground" />}
       {findingFailed && <p role="alert" className="text-destructive">{workspace.journalTemplate.loadFailed}</p>}
       {groups && checkId && <DocxFindingBrowser
         checkId={checkId}

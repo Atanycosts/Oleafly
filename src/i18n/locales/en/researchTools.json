@@ -2874,10 +2874,8 @@
   },
   "docx": {
     "findingReview": {
-      "summaryChecks": "Matching checks: {{count}}",
-      "summaryLocations": "Locations across all comparison results: {{locations}}",
-      "summaryNote": "A location can recur under multiple actions. This is not a unique document-location total.",
-      "groupCount": "Checks: {{count}} · locations across all results: {{locations}}",
+      "summaryChecks": "Findings: {{count}}",
+      "groupCount": "Findings: {{count}}",
       "categories": {
         "title": "Titles and front matter",
         "heading": "Headings",
@@ -2924,23 +2922,23 @@
       "loadingGroups": "Loading format comparison…",
       "loadingLocations": "Loading locations…",
       "locationsFailed": "Could not load these locations. Try again.",
-      "noLocations": "No locations match this comparison result.",
+      "noLocations": "No locations match this finding group.",
       "loadingDetails": "Loading format checks…",
       "detailsFailed": "Could not load these format checks. Try again.",
-      "noDetails": "No format checks match this location and comparison result.",
-      "noGroups": "No format groups match this comparison result.",
+      "noDetails": "No findings match this location and filter.",
+      "noGroups": "No findings match this filter.",
       "previous": "Previous",
       "next": "Next",
-      "languageScope": "This comparison checks formatting only. It does not independently check English word choice, spelling, or punctuation.",
+      "languageScope": "Formatting only",
       "limitations": {
-        "noProfile": "Coverage limitation: no matching template format was found. This is not a pass.",
-        "tableBands": "Table layout limitation: this row or column layout cannot be compared. Review it in the document.",
-        "expectedValuesDiffer": "Template examples disagree. No single value was chosen.",
-        "pageFlow": "Page flow and layout are not established by retained formatting. Review the page in the document.",
-        "layout": "Retained formatting does not establish this layout. Review it in the document.",
-        "coverage": "Coverage limitation, not a pass.",
-        "cannotDetermine": "Not enough evidence to determine this value. This is not a pass.",
-        "genericReason": "The available information is not enough to determine this value. This is not a pass."
+        "noProfile": "No matching format in the template.",
+        "tableBands": "Review this row or column layout in the manuscript.",
+        "expectedValuesDiffer": "Template examples use different settings.",
+        "pageFlow": "Review page breaks in the manuscript.",
+        "layout": "Review the layout in the manuscript.",
+        "coverage": "Not checked.",
+        "cannotDetermine": "Not enough information to check this setting.",
+        "genericReason": "Not enough information to check this setting."
       }
     },
     "taskActivity": {

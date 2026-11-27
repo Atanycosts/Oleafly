@@ -2840,10 +2840,8 @@
   },
   "docx": {
     "findingReview": {
-      "summaryChecks": "当前筛选的检查：{{count}} 项",
-      "summaryLocations": "全部比较结果中的分组位置：{{locations}} 处",
-      "summaryNote": "同一位置可能出现在多个格式项中。这里不是文档中的唯一位置总数。",
-      "groupCount": "当前筛选 {{count}} 项 · 全部结果中的分组位置 {{locations}} 处",
+      "summaryChecks": "发现：{{count}} 项",
+      "groupCount": "发现：{{count}} 项",
       "categories": {
         "title": "标题与文前信息",
         "heading": "各级标题",
@@ -2890,23 +2888,23 @@
       "loadingGroups": "正在读取格式比较…",
       "loadingLocations": "正在读取位置…",
       "locationsFailed": "无法读取这些位置，请重试。",
-      "noLocations": "当前比较结果没有对应的位置。",
+      "noLocations": "此发现分组没有对应的位置。",
       "loadingDetails": "正在读取格式检查…",
       "detailsFailed": "无法读取这些格式检查，请重试。",
-      "noDetails": "此位置在当前比较结果下没有格式检查。",
-      "noGroups": "当前比较结果没有可显示的格式分组。",
+      "noDetails": "此位置在当前筛选下没有匹配的发现。",
+      "noGroups": "当前筛选没有匹配的发现。",
       "previous": "上一页",
       "next": "下一页",
-      "languageScope": "这里只比较格式，不会单独检查英文用词、拼写或标点。",
+      "languageScope": "仅比较格式",
       "limitations": {
-        "noProfile": "覆盖范围不足：未找到可对应的模板格式，不能据此判定为通过。",
-        "tableBands": "表格版式限制：当前无法比较这种行或列布局，请结合文档页面核对。",
-        "expectedValuesDiffer": "模板示例不一致，未选定单一目标值。",
-        "pageFlow": "留存格式不能确定分页与版面效果，请结合文档页面核对。",
-        "layout": "留存格式不能确定这一版面设置，请结合文档页面核对。",
-        "coverage": "覆盖范围不足，不能据此判定为通过。",
-        "cannotDetermine": "现有证据不足以确定这一项，不能据此判定为通过。",
-        "genericReason": "现有信息不足以确定这一项，不能据此判定为通过。"
+        "noProfile": "模板中没有对应格式。",
+        "tableBands": "请在稿件中核对行列布局。",
+        "expectedValuesDiffer": "模板示例的设置不一致。",
+        "pageFlow": "请在稿件中核对分页。",
+        "layout": "请在稿件中核对版面。",
+        "coverage": "未检查。",
+        "cannotDetermine": "信息不足，无法检查此项。",
+        "genericReason": "信息不足，无法检查此项。"
       }
     },
     "taskActivity": {

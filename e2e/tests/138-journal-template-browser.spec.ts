@@ -688,7 +688,7 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
     expect(candidateRequests.some(({ operation }) => operation === "findings" || operation === "finding_locations")).toBe(false);
     expect(candidateRequests.some(({ path }) => path.startsWith("/api/template-source"))).toBe(false);
     const browserReview = candidate.getByTestId("docx-finding-browser");
-    await expect(browserReview).toContainText("does not independently check English word choice, spelling, or punctuation");
+    await expect(browserReview.getByText("Formatting only", { exact: true })).toBeVisible();
     await browserReview.getByRole("combobox").selectOption("cannot_determine");
     const captions = browserReview.locator("section").filter({ has: page.getByRole("heading", { name: "Figure captions", exact: true }) });
     await captions.getByRole("button", { name: /Coverage/ }).click();
@@ -697,7 +697,10 @@ test("template DOCX drives the live editor, saved baseline and explicit recheck"
     await expect(location).toBeVisible();
     expect(requests.slice(firstCandidateRequest).some(({ operation }) => operation === "findings")).toBe(false);
     await location.click();
-    await expect(captions.getByTestId("docx-finding-details")).toContainText("Coverage limitation");
+    const details = captions.getByTestId("docx-finding-details");
+    await expect(details).toContainText("Cannot determine");
+    await expect(details).toContainText("No matching format in the template.");
+    await expect(details).toContainText("Not checked.");
     expect(requests.slice(firstCandidateRequest).some(({ operation }) => operation === "findings")).toBe(true);
     stage = "reopening the retained candidate without a new check";
     const reopenedAt = requests.length;
