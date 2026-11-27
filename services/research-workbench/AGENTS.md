@@ -67,11 +67,12 @@ take precedence over it. Do not treat planned capabilities as implemented.
 - Every runtime import must be declared in `pyproject.toml`. `tests/engineering/test_architecture.py`
   enforces this: stdlib, this project, or a declared dependency, nothing else. Adding a dependency
   means editing `pyproject.toml` and the development guide in the same change.
-- This module originated as a private, local-use tool. Its source now shares the Oleafly repository;
-  retained author evidence and runtime data stay private. AGPL/GPL components are acceptable under the
-  operator's confirmed scope; do not reject suitable components on a hypothetical proprietary
-  distribution requirement. Retain upstream licence and attribution notices. Reassess the
-  scope only if the operator later requests distribution or a hosted service for others.
+- This module originated as a private, local-use tool. Local and internal builds may use AGPL/GPL
+  components under the operator's confirmed scope, but a public binary release is a separate
+  distribution decision. The public release workflow currently omits the Workbench engine because
+  bundled PyMuPDF/MuPDF has no approved corresponding-source or commercial policy. Do not enable
+  public engine bundling without verified exact-source/licence evidence or written commercial
+  clearance, and retain upstream notices in every permitted internal bundle.
 - Never silently fall back from a declared operation to a lower-fidelity operation.
 - Never catch an error and return an empty object as success.
 - Journal worlds are versioned application data. New imports are immediately usable locally;

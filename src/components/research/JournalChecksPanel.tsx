@@ -10,11 +10,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ensureAiProviderOrOpenSettings, handoffToAssistant } from "@/features/assistant-handoff";
 import { useFilesStore } from "@/store/files";
 import { useDocxWorkspaceStore } from "@/store/docx-workspace";
+import { useMaterialViewerStore } from "@/store/material-viewer";
 import { useResearchTasksStore } from "@/store/research-tasks";
 import { useSettingsStore, type RailTab } from "@/store/settings";
 import { useWorkspaceSurfaceStore } from "@/store/workspace-surface";
 import { getResearchWorkspace } from "@/lib/research-workspace";
-import { pickOpenPaths } from "@/lib/tauri";
 import type { AnnotationTarget } from "@/lib/task-collaboration";
 import {
   capturedJournalFile,
@@ -42,7 +42,8 @@ import {
   type JournalWorld,
   type ManuscriptRead,
 } from "@/lib/journal-workbench";
-import { checkJournalTemplate, importJournalTemplate, startTemplateWorkingCopy } from "@/lib/docx-template-client";
+import { checkJournalTemplate, importJournalTemplate, prepareJournalTemplate, startTemplateWorkingCopy } from "@/lib/docx-template-client";
+import { loadDocxSource } from "@/lib/docx-workbench";
 import { JournalAnnotations } from "./JournalAnnotations";
 import { JournalTemplatePanel } from "./JournalTemplatePanel";
 import { JournalObjectView } from "./JournalObjectView";
@@ -128,7 +129,6 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
   const text = t(($) => $.researchTools.journal, { returnObjects: true });
   const detailId = useId();
   const [connection, setConnection] = useState<JournalConnection | null>(null);
-  const [python, setPython] = useState("");
   const [snapshot, setSnapshot] = useState<JournalState>({
     projects: [],
     worlds: [],
@@ -234,7 +234,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     ]);
     if (sequence !== loadSequence.current) return;
     setSnapshot(next);
-    setLinkedId(selectedId);
+    setLinkedId(selected?.project_id ?? null);
     setWorld(nextWorld);
     setCheck(selected?.latest_check ?? null);
     setHistory(records?.checks ?? []);
@@ -252,11 +252,10 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
       .then(async ([connected, workspace]) => {
         if (!active) return;
         setConnection(connected);
-        setPython(connected.python);
-        const opened = useDocxWorkspaceStore.getState().request;
+        const { request: opened, context } = useDocxWorkspaceStore.getState();
         const openedHere = opened?.appProjectId === projectId ? opened : null;
         const initialProjectId = openedHere?.project.project_id ?? workspace.journalProjectId ?? null;
-        const initialWorldId = openedHere?.world?.version_id;
+        const initialWorldId = openedHere ? context?.world?.version_id : undefined;
         if (openedHere) {
           fileTreeSync.current = `${projectId}:${initialProjectId}:${initialWorldId ?? ""}`;
         }
@@ -372,7 +371,9 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     if (savedVersion === handledSavedVersion.current) return;
     handledSavedVersion.current = savedVersion;
     if (!connection || !linkedId) return;
-    const versionId = pendingWorldSelection.current ?? world?.version_id;
+    const { request, context } = useDocxWorkspaceStore.getState();
+    const versionId = pendingWorldSelection.current ?? (request?.appProjectId === projectId && request.project.project_id === linkedId
+      ? context?.world?.version_id : world?.version_id);
     let active = true;
     const sequence = beginRequest();
     void load(linkedId, versionId, sequence)
@@ -399,6 +400,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
     finishRequest,
     linkedId,
     load,
+    projectId,
     savedVersion,
     world?.version_id,
   ]);
@@ -429,6 +431,16 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
         pendingWorldSelection.current = null;
       }
     }
+  }
+
+  function syncOpenWorkspaceWorld(next: JournalWorld) {
+    const store = useDocxWorkspaceStore.getState();
+    if (
+      store.request?.appProjectId !== projectId ||
+      store.request.project.project_id !== linkedId ||
+      !store.context
+    ) return;
+    store.updateContext({ ...store.context, world: next });
   }
 
   async function openEvidence(selectedRule: JournalRule | null, sequence: number) {
@@ -726,9 +738,28 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
               }
               onClick={() =>
                 void perform(async (sequence) => {
-                  if (project && world?.template) await checkJournalTemplate(project, world.version_id);
-                  else await journalRequest<JournalCheck>("/api/check", { project_id: project?.project_id });
-                  await load(linkedId, world?.version_id, sequence);
+                  if (!project || !world) return;
+                  const opened = useDocxWorkspaceStore.getState().request;
+                  let preparedWorld = world;
+                  if (world.template) {
+                    const prepared = await prepareJournalTemplate(project.project_id, project.baseline_id, world.version_id);
+                    await checkJournalTemplate({ ...project, binding: prepared.binding }, prepared.world.version_id);
+                    preparedWorld = prepared.world;
+                  } else {
+                    await journalRequest<JournalCheck>("/api/check", { project_id: project.project_id });
+                  }
+                  await load(project.project_id, preparedWorld.version_id, sequence);
+                  if (sequence !== loadSequence.current) return;
+                  const store = useDocxWorkspaceStore.getState();
+                  if (opened && store.request === opened && opened.appProjectId === projectId && opened.project.project_id === project.project_id) {
+                    if (preparedWorld.version_id !== world.version_id && store.context &&
+                        (store.context.world?.version_id === world.version_id || !store.context.world)) {
+                      handledContextWorld.current = preparedWorld.version_id;
+                      syncOpenWorkspaceWorld(preparedWorld);
+                    }
+                    store.saved();
+                    handledSavedVersion.current = useDocxWorkspaceStore.getState().savedVersion;
+                  }
                   useWorkspaceSurfaceStore.getState().openJournal();
                 })
               }
@@ -768,39 +799,19 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
             <section className="space-y-3 rounded-xl border p-5">
               <p className="font-medium">{text.connect}</p>
               <p className="text-sm text-muted-foreground">{text.runtimeHelp}</p>
-              <Input
-                value={python}
-                onChange={(event) => setPython(event.target.value)}
-                aria-label={text.python}
-                placeholder={text.python}
-              />
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() =>
-                    void perform(async () => {
-                      const paths = await pickOpenPaths({ title: text.python });
-                      if (paths?.[0]) setPython(paths[0]);
-                    })
-                  }
-                >
-                  {text.browse}
-                </Button>
-                <Button
-                  disabled={busy || !python.trim()}
-                  onClick={() =>
-                    void perform(async (sequence) => {
-                      const connected = await connectJournalWorkbench(python.trim());
-                      setConnection(connected);
-                      const workspace = await getResearchWorkspace(projectId);
-                      await load(workspace.journalProjectId ?? null, undefined, sequence);
-                    })
-                  }
-                >
-                  {text.connect}
-                </Button>
-              </div>
+              <Button
+                disabled={busy}
+                onClick={() =>
+                  void perform(async (sequence) => {
+                    const connected = await connectJournalWorkbench();
+                    setConnection(connected);
+                    const workspace = await getResearchWorkspace(projectId);
+                    await load(workspace.journalProjectId ?? null, undefined, sequence);
+                  })
+                }
+              >
+                {text.retry}
+              </Button>
             </section>
           </div>
         ) : (
@@ -888,7 +899,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                     </Button>
                   </div>
                 </section>
-                {world && <JournalTemplateSummary world={world} project={project} check={visibleCheck} />}
+                {world && <JournalTemplateSummary world={world} project={project} check={visibleCheck} appProjectId={projectId} />}
               </>
             ) : (
               <>
@@ -934,7 +945,7 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
                     <p className="mt-2 text-sm text-muted-foreground">{text.workspace.readyToCheck}</p>
                   </section>
                 )}
-                <JournalTemplateSummary world={world} project={project} check={visibleCheck} />
+                <JournalTemplateSummary world={world} project={project} check={visibleCheck} appProjectId={projectId} />
                 <section className="space-y-3" aria-label={text.rules}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="font-semibold">
@@ -1085,7 +1096,9 @@ function JournalProjectPanel({ projectId }: { projectId: string }) {
               await linkJournalProject(projectId, manuscript.project_id);
               await load(manuscript.project_id, world?.version_id, sequence);
             } else if (form === "world" || form === "template") {
-              await load(linkedId, (imported as JournalWorld).version_id, sequence);
+              const nextWorld = imported as JournalWorld;
+              await load(linkedId, nextWorld.version_id, sequence);
+              if (nextWorld.template && sequence === loadSequence.current) syncOpenWorkspaceWorld(nextWorld);
             } else {
               await load(linkedId, world?.version_id, sequence);
             }
@@ -1628,6 +1641,7 @@ function JournalImportDialog({
                   content_base64: captured.content_base64,
                   reason,
                   request_id: `request-${crypto.randomUUID()}`,
+                  source_upload: true,
                 });
               return journalRequest<JournalProject>("/api/projects", {
                 name,
@@ -1791,12 +1805,23 @@ function JournalImportDialog({
   );
 }
 
-function JournalTemplateSummary({ world, project, check }: {
+function JournalTemplateSummary({ world, project, check, appProjectId }: {
   world: JournalWorld;
   project: JournalProject | null;
   check: JournalCheck | null;
+  appProjectId: string;
 }) {
-  return world.template
-    ? <div data-testid="journal-template-summary"><JournalTemplatePanel world={world} project={project} check={check} /></div>
-    : null;
+  if (!world.template) return null;
+  const revision = check?.template_comparison?.source_sha256;
+  return <div data-testid="journal-template-summary"><JournalTemplatePanel world={world} project={project} check={check}
+    onJump={check && project && typeof revision === "string" ? ({ para_id, label }) => {
+      if (!para_id) return;
+      useMaterialViewerStore.getState().open({
+        projectId: appProjectId, documentId: `docx:${check.project_id}`, title: project.name,
+        kind: "docx", role: "checked", revision,
+        anchor: { kind: "object", id: `paragraph:${para_id}`, label },
+        load: async () => (await loadDocxSource(check.project_id, check.baseline_id)).bytes,
+      });
+    } : undefined} />
+  </div>;
 }

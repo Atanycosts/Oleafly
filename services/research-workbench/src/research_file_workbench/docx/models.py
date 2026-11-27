@@ -36,6 +36,14 @@ class DocxRelationship:
 
 
 @dataclass(frozen=True)
+class DocxTextProjection:
+    """Accepted-revision text when it differs from the source, or why it is unavailable."""
+
+    text: str | None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class DocxTextBlock:
     """Source text observed in one Word paragraph without interpreting page layout.
 
@@ -60,6 +68,7 @@ class DocxTextBlock:
     numbering_level: int | None = None
     byte_start: int | None = None
     byte_end: int | None = None
+    accepted_projection: DocxTextProjection | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +81,7 @@ class DocxTableCell:
     text: str
     grid_span: int
     vertical_merge: Literal["none", "restart", "continue"]
+    accepted_projection: DocxTextProjection | None = None
 
 
 @dataclass(frozen=True)
@@ -174,14 +184,27 @@ class DocxComplexObject:
 
     part_path: str
     node_locator: str
-    kind: Literal["chart", "ole", "group_drawing", "unknown_extension"]
+    kind: Literal["chart", "ole", "group_drawing", "alt_chunk", "unknown_extension"]
     relationship_ids: tuple[str, ...]
     related_parts: tuple[str, ...]
     available_preview: tuple[str, ...]
     parse_status: Literal["registered", "unsupported"]
+    element_path: tuple[int, ...]
+    in_selected_branch: bool
     limitations: tuple[str, ...] = ()
     metadata: tuple[tuple[str, str], ...] = ()
     paragraph_locator: str | None = None
+
+
+@dataclass(frozen=True)
+class DocxCommentDetail:
+    """Plain text and declared metadata resolved from an existing comment anchor."""
+
+    text: str
+    author: str | None
+    date: str | None
+    node_locator: str
+    accepted_projection: DocxTextProjection | None = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +227,7 @@ class DocxReference:
     parse_status: Literal["parsed", "partial", "unsupported"]
     limitations: tuple[str, ...]
     paragraph_locator: str | None = None
+    comment: DocxCommentDetail | None = None
 
 
 @dataclass(frozen=True)
@@ -244,6 +268,7 @@ class DocxUnsupportedRecord:
         "broken_relationship",
         "missing_relationship",
         "vml_picture",
+        "alternate_content_no_supported_branch",
     ]
     relationship_id: str | None
     failure_reason: str

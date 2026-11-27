@@ -11,6 +11,7 @@ if (args[0] === "dev" && !env.OLEAFLY_DATA_DIR) {
   env.OLEAFLY_DATA_DIR = join(homedir(), ".oleafly-dev");
   process.stderr.write(`Oleafly dev library: ${env.OLEAFLY_DATA_DIR}\n`);
 }
+if (args[0] === "dev") env.OLEAFLY_ACCEPTANCE_DISABLE_RESEARCH_BUDGET_STOP ??= "1";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const workbenchPython = join(

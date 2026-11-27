@@ -12,6 +12,7 @@ from research_file_workbench.docx.xml_support import (
     WORD_NAMESPACE,
     first_child,
     integer_attribute,
+    selected_children,
     string_attribute,
     tag_local_name,
 )
@@ -25,7 +26,7 @@ def read_styles(
     if root is None:
         return (), []
     style_elements: dict[str, ElementTree.Element] = {}
-    for element in root:
+    for element in selected_children(root):
         style_id = string_attribute(element, WORD_NAMESPACE, "styleId")
         if tag_local_name(element.tag) == "style" and style_id is not None:
             style_elements[style_id] = element
@@ -104,12 +105,16 @@ def read_numbering(
     if root is None:
         return (), []
     abstract_levels: dict[int, tuple[tuple[int, str | None, str | None], ...]] = {}
-    for abstract in (item for item in root if tag_local_name(item.tag) == "abstractNum"):
+    for abstract in (
+        item for item in selected_children(root) if tag_local_name(item.tag) == "abstractNum"
+    ):
         abstract_id = integer_attribute(abstract, WORD_NAMESPACE, "abstractNumId")
         if abstract_id is None:
             continue
         level_records: list[tuple[int, str | None, str | None]] = []
-        for level in (item for item in abstract if tag_local_name(item.tag) == "lvl"):
+        for level in (
+            item for item in selected_children(abstract) if tag_local_name(item.tag) == "lvl"
+        ):
             level_id = integer_attribute(level, WORD_NAMESPACE, "ilvl")
             number_format = string_attribute(first_child(level, "numFmt"), WORD_NAMESPACE, "val")
             level_text = string_attribute(first_child(level, "lvlText"), WORD_NAMESPACE, "val")
@@ -117,7 +122,7 @@ def read_numbering(
                 level_records.append((level_id, number_format, level_text))
         abstract_levels[abstract_id] = tuple(level_records)
     numbering: list[DocxNumbering] = []
-    for number in (item for item in root if tag_local_name(item.tag) == "num"):
+    for number in (item for item in selected_children(root) if tag_local_name(item.tag) == "num"):
         num_id = integer_attribute(number, WORD_NAMESPACE, "numId")
         abstract_id = integer_attribute(first_child(number, "abstractNumId"), WORD_NAMESPACE, "val")
         if num_id is None:

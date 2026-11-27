@@ -418,10 +418,11 @@ set while the main process evaluates the config).
 
 ## Journal template acceptance
 
-These acceptance paths use Transitional OOXML DOCX. A document in Strict OOXML
-is not supported: save it as Transitional in Word first, then use the saved
-copy. The browser tests leave the author inputs in place, retain hashes in their
-reports, and retain imported bytes in each run's isolated Workbench library.
+The browser template harness uses Transitional OOXML fixtures. The
+[native IEEE acceptance](#strict-ieee-ooxml) checks direct Strict OOXML import
+through the desktop app and Workbench. The browser tests leave the author
+inputs in place, retain hashes in their reports, and retain imported bytes
+in each run's isolated Workbench library.
 The native runner additionally records the original template, normalized
 template, English and Chinese input hashes in `runner.json` and checks them
 before and after cleanup.
@@ -558,95 +559,126 @@ section changes are rejected.
 The test retains `word-template-live-report.json`, actual transcript/usage and DOCX evidence.
 It measures one bounded real-model task, without establishing whole-manuscript quality or Office pagination equivalence.
 
-### Whole-manuscript live Word acceptance
+### Strict IEEE OOXML
 
-`145-word-manuscript-live.spec.ts` runs the English and Chinese manuscripts as
-separate Sol tasks with `reasoningEffort=max` and a 20-minute budget per task.
-It requires the same read-only template and manuscript paths and exact hashes
-as the native template command above. Replace `OLEAFLY_WORD_TEMPLATE_LIVE` with
-`OLEAFLY_WORD_MANUSCRIPT_LIVE=1` and provide
-`OLEAFLY_DOCX_LIVE_URL=http://127.0.0.1:PORT/v1` to the same runner. These two
-live modes are mutually exclusive. The whole-manuscript mode runs only `145`.
-Provider configuration belongs to the runner's isolated application library.
-Task startup waits for the actual generation-zero DOCX binding activity after
-the UI bind action and verifies its complete document identity before execution.
+Use the unmodified A4 DOCX and the `Word-Letter-A4.zip` archive from the
+[IEEE conference template download](https://www.ieee.org/conferences/publishing/templates.html).
+The A4 file must match its entry in the ZIP; the test reads Letter directly from
+the archive. Both files have the usual DOCX main-part content type and a Strict
+Word root. No office-suite conversion is used.
 
-Run native visual acceptance with an unlocked, visible console. macOS can suspend
-WebKit animation frames while the console is locked, preventing real PDF painting
-and the deterministic takeover steps. A data-only diagnostic that omits those
-steps does not establish a `145` pass.
+Build the isolated debug app with the [E2E overlay](#isolated-web-storage)
+and set the Workbench Python path from `pnpm workbench:setup`:
 
-While waiting for a model task, a Playwright eval timeout is logged as a missing
-read-only status observation and polling continues within the original deadline.
-Other query errors fail immediately. A terminal state must still come from a
-successful query; this does not retry edits or extend the task budget.
+```sh
+OLEAFLY_E2E_APP_BINARY="$PWD/src-tauri/target/debug/bundle/macos/Oleafly.app/Contents/MacOS/oleafly" \
+OLEAFLY_WORKBENCH_PYTHON="$PWD/services/research-workbench/.venv/bin/python" \
+OLEAFLY_STRICT_IEEE_NATIVE=1 \
+OLEAFLY_STRICT_IEEE_A4="/absolute/path/conference-template-a4.docx" \
+OLEAFLY_STRICT_IEEE_ZIP="/absolute/path/Word-Letter-A4.zip" \
+./scripts/e2e.sh e2e/tests/146-strict-ieee-native.spec.ts --retries=0
+```
 
-The scenario creates managed copies with controlled format errors distributed
-across four selected paragraphs, three table cells and the first section,
-plus one editorial marker appended to an existing plain-text paragraph. The
-task names the selected target paragraphs by their exact text, the three table
-numbers and the first section. It authorizes changes only to those targets
-and removal of the unique marker. Independent expected format values remain
-in the test. Paragraph edits are limited to size (including complex-script size),
-ordinary bold and alignment, with paragraph-mark updates limited to the same
-formatting API; existing complex-script bold is preserved. Cell edits are limited
-to vertical alignment and direct fill/shading; section edits to page size and
-margins while retaining columns. Font families, styles and spacing are preserved.
-Successful model reads must establish full manuscript text coverage,
-including continued text and non-body stories, plus the applicable template
-text and format evidence. Paragraph text windows and targeted format reads
-are accepted. Reading every paragraph's effective format is not required.
-The format overview explicitly binds its revision. Its source hash identifies
-the live export; narrative-read identity identifies the saved baseline. Empty
-footnote and endnote paragraphs are included in non-body coverage. Failed reads
-remain in evidence and can be recovered by complete successful reads.
+The test opens the original A4 from the file tree as an unbound working copy,
+imports A4 as its first template, and uses **Return to document** to confirm
+the formatting action appears in the same editor session. It runs an A4 check
+to establish a binding, then imports Letter and confirms import alone does
+not change the binding or the open baseline. The A4-versus-Letter check reads
+the retained manuscript and template snapshots and resolves a finding's exact
+paragraph node against the working bytes. The test compares the originals'
+hashes before and after. The report is under ignored
+`.private/strict-ieee-native/run-*/`; override the parent with
+`OLEAFLY_STRICT_IEEE_OUTPUT`. This does not exercise candidate generation,
+production app startup or Word/WPS rendering.
 
-Template reads explicitly use the effective snapshot route for every object and
-style definition. Acceptance independently decodes each page's shared dictionaries
-and compares identity, text and retained facts with a full pre-task inventory;
-metadata references must resolve to that collection's read first page. The inventory
-itself is setup evidence and does not count as model reading. Effective views omit
-declarations, so targeted raw reads remain necessary where the task needs them.
-The three cell targets share the current template's first table/first-cell identity
-with text `Symbol`; the prompt supplies its locator without expected format values
-and requires a direct property-node read to establish shading presence or absence.
+### Whole-manuscript live Word format candidates
 
-Acceptance checks actual edit, font-preparation, save and check receipts against
-the retained DOCX bytes and an independent ZIP/XML oracle. The content assertion
-requires the marked paragraph's exact original text and preserves all other
-author text. Any normalization of invalid paragraph identities is confined to
-the managed fixture and recorded explicitly. It verifies that the
-previous check becomes stale, the final check identifies the saved baseline and
-selected template, normal reopen restores that saved source, and the public
-DOCX export matches its exact retained bytes. Template
-differences and unresolved cases are recorded without requiring every finding
-to disappear. After multiple saves, acceptance checks the saved checkpoint of the
-last changed operation before the final save. It preserves that operation's original
-document identity and previous checkpoints; the save request, final receipt and
-retained bytes establish the final saved hash.
-A separate deterministic takeover probe covers manual navigation
-and editing, pause, continued background operations and resumed following on
-the real English manuscript before its model task starts. Resume must reveal the
-actual target in the viewport, hit the expected paragraph and produce a fresh
-highlight in consecutive observations; any reveal-error banner fails the probe.
-The pre-probe initial
-export remains separate evidence. After discarding probe edits and reopening
-the same saved baseline, the test reads a new model-session identity and
-paragraph references, then strictly verifies a separate model-start export.
-Model read coverage uses that session and its export hash. The probe is
-execution evidence, separate from model judgment and reading coverage.
+`145-word-manuscript-live.spec.ts` exercises the public Word candidate flow on
+the actual legacy journal template and the actual English and Chinese author
+manuscripts: English starts in the Word toolbar; Chinese starts with the
+message `按这份模板排，不改内容` in ordinary chat. Each language uses its own
+blank project, managed working copy, exports and report entry. A third English
+copy tests editing the active manuscript during candidate preparation.
 
-All fixtures, raw transcripts, operation receipts, DOCX outputs and reports stay
-under ignored `.private/whole-manuscript/run-*`. The runner passes this directory
-as `OLEAFLY_WORD_MANUSCRIPT_RUN`, checks all three author-input hashes before and
-after, restores E2E WebKit storage and exits its owned process. The root report
-is `word-manuscript-live-report.json`; `runner.json` records lifecycle and input
-identities, and `live-wire.json` records requested effort, returned model labels,
-HTTP outcomes and usage. Upstream identity remains the provider's evidence.
-The scenario must pass on the built application before it establishes a result.
-It does not establish Word/WPS pagination equivalence.
+Hash the three read-only inputs before a run, for example:
 
-The independent XML oracle passes its JSON input through a private temporary file
-opened as child stdin, then closes and removes it after either success or failure.
-This gives Python a finite EOF for multi-megabyte manuscripts; the oracle script
-and format/content assertions are unchanged by this transport choice.
+```sh
+shasum -a 256 \
+  "/absolute/path/IJAM_MSWord_template..doc" \
+  "/absolute/path/IJAM_english_working.docx" \
+  "/absolute/path/批注.docx"
+```
+
+Use those exact lowercase hashes:
+
+- Template: `5c9f9dcedd69beddafd3605d0c40966a9e2a777814c507b8e220e5388d4a2d2b`
+- English manuscript: `778b76e7abcd01fbd68fa3e09a75bf07a726c6febeb18f758131e2c562027c2d`
+- Chinese manuscript: `a3d998b1a0e439282595bd13c7407e55adb42c6643b49b50b5d4a26b14999288`
+
+Start the local OpenAI-compatible relay separately. The runner uses an isolated
+application library and provides:
+
+- Template: `OLEAFLY_JOURNAL_TEMPLATE` and `OLEAFLY_JOURNAL_TEMPLATE_SHA256`
+- English: `OLEAFLY_NATIVE_DOCX_EN` and `OLEAFLY_NATIVE_DOCX_EN_SHA256`
+- Chinese: `OLEAFLY_NATIVE_DOCX_ZH` and `OLEAFLY_NATIVE_DOCX_ZH_SHA256`
+- Template mode and candidate flow: `OLEAFLY_DOCX_TEMPLATE=1` and
+  `OLEAFLY_WORD_MANUSCRIPT_LIVE=1`
+- Relay: `OLEAFLY_DOCX_LIVE_URL=http://127.0.0.1:PORT/v1`
+- Packaged macOS app: `OLEAFLY_E2E_APP_BINARY=/path/to/Oleafly.app/Contents/MacOS/oleafly`;
+  build with test hooks as described above and run `node e2e/run-docx-recovery.mjs`.
+
+The default model is `gpt/gpt-6.2-sol`; set
+`OLEAFLY_WORD_MANUSCRIPT_MODEL` only when the relay exposes a different model.
+The runner exposes `max` as the model's only reasoning choice and selects it in
+chat. Acceptance checks the real relay's model, effort, returned label and HTTP
+status, and verifies that ordinary chat called `create_docx_format_candidate`
+in its streamed response. Use `OLEAFLY_ACCEPTANCE_DISABLE_RESEARCH_BUDGET_STOP=1`
+to exercise the packaged app under the same budget policy as `pnpm tauri dev`.
+
+`OLEAFLY_WORD_FORMAT_CANDIDATE_TIMEOUT_MINUTES` defaults to 25 and is the
+observation timeout for each candidate, not a research budget. The runner
+records it in `runner.json`. This flow does not create a ResearchTask.
+
+For each language the scenario:
+
+1. Checks the author input hash, writes the exact source into a blank project's
+   file tree and opens it through Explorer.
+2. Confirms the clean working-copy baseline and the original source identity.
+3. Imports the legacy template through Journal checks and selects that template
+   world for the opened document.
+4. Starts from the Word toolbar or ordinary chat and waits for the candidate
+   panel to show at least one confirmed change.
+5. Opens a change preview and verifies the pane is read-only while the active
+   document keeps its session, baseline, revision, source hash and clean state.
+6. Adopts the candidate, confirms a new clean baseline, uses **Export DOCX**,
+   verifies the adopted bytes and reads back the previous version.
+7. Compares the initial live export and adopted export with the independent
+   Python verifier in `e2e/helpers/word-format-candidate.ts`.
+8. Closes, reopens through Explorer, downloads again, and requires byte-identical
+   output plus the adopted baseline and source hash.
+9. Confirms the project file-tree copy and the original author input remain
+   unchanged.
+
+In the concurrent-edit case, the test types into the active editor, attempts
+adoption, and checks that the newer draft remains intact and the candidate is
+still downloadable.
+
+The independent verifier requires the same package part set and byte-identical
+binary parts. It ignores only Word identity/cache normalizations
+(`w14:paraId`/`textId`, `w:rsid*`, `xml:space`, `w:lastRenderedPageBreak`,
+`w:proofErr`), XML namespace declaration and prefix serialization, and
+format-property containers in story XML. Elements and attributes are still
+compared by expanded namespace. It permits changes in known format parts such as
+styles, numbering, themes, fonts, settings and web settings. Text, formulas,
+drawings, relationships, story structure and all other XML remain protected.
+The verifier separately compares existing tables, sections, frames, tab stops
+and paragraph pagination properties. It rejects a rewrite with no actual XML
+format change. These checks do not measure the resulting page breaks.
+
+All source files, normalized template, DOCX exports, `runner.json`,
+`live-wire.json` and `word-manuscript-live-report.json` stay under ignored
+`.private/whole-manuscript/run-*`. The runner checks all three input hashes before
+and after, restores E2E WebKit storage and exits its owned process. A pass establishes the
+candidate, preview, adoption, exact export and reopen behavior on the built app;
+it does not require every template difference to be repaired and does not
+establish Word/WPS pagination or complete journal compliance.

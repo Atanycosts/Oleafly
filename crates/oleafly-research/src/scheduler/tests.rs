@@ -311,7 +311,6 @@ async fn unavailable_runtime_and_agent_fail_without_blocking_healthy_admissions(
         );
         assert_eq!(receipt.delivered_generation, None);
     }
-    assert!(store.queue_annotation_followups().unwrap().is_empty());
     state.launch_ready().await.unwrap();
     assert_eq!(
         store.require(&unavailable.id).unwrap().execution_generation,
@@ -2758,7 +2757,7 @@ async fn a_brief_whose_compute_target_was_removed_is_refused() {
 }
 
 #[tokio::test]
-async fn non_builtin_followup_receives_structured_historical_annotation_context() {
+async fn explicit_retry_receives_structured_historical_annotation_context() {
     use crate::annotations::{
         AnnotationAuthor, AnnotationDraft, AnnotationSourceDraft, AnnotationTarget,
     };
@@ -2789,7 +2788,15 @@ async fn non_builtin_followup_receives_structured_historical_annotation_context(
         })
         .unwrap();
 
-    finish_run(&state, first, Ok(outcome("Initial result reviewed"))).await;
+    finish_run(
+        &state,
+        first,
+        Err("Initial attempt failed before review".into()),
+    )
+    .await;
+    state.retry(&task.id, RetryMode::Resume).unwrap();
+    state.request_start(&task.id).unwrap();
+    state.launch_ready().await.unwrap();
     let follow_up = next_run(&mut starts).await;
     assert_eq!(follow_up.context.prompt, task.prompt);
     assert_eq!(follow_up.context.annotations, vec![annotation.clone()]);
@@ -2819,6 +2826,51 @@ async fn non_builtin_followup_receives_structured_historical_annotation_context(
         Ok(outcome("Historical decision rechecked")),
     )
     .await;
+    stop(&state).await;
+}
+
+#[tokio::test]
+async fn annotation_request_does_not_auto_start_a_followup() {
+    use crate::annotations::{AnnotationAuthor, AnnotationDraft, AnnotationTarget};
+
+    let data = DataRoot::new();
+    data.project("paper");
+    let state = data.state(1);
+    let (runtime, mut starts) = ControlledRuntime::new();
+    state.register_runtime("fixture", runtime).unwrap();
+    let store = state.store().unwrap();
+    let task = requested(&store, draft("paper", "Retained request"));
+    state.launch_ready().await.unwrap();
+    let first = next_run(&mut starts).await;
+    finish_run(&state, first, Ok(outcome("Initial result reviewed"))).await;
+
+    let annotation = state
+        .submit_annotation(
+            AnnotationDraft::new(
+                AnnotationTarget::new("paper", "decision", "result-choice").task(&task.id),
+                AnnotationAuthor::user("owner"),
+                "Keep this request for an explicit follow-up.",
+            )
+            .request(),
+        )
+        .unwrap();
+    state.launch_ready().await.unwrap();
+
+    assert!(starts.try_recv().is_err());
+    assert_eq!(
+        store.require(&task.id).unwrap().status,
+        ResearchTaskStatus::AwaitingReview
+    );
+    assert_eq!(
+        store.annotation("paper", &annotation.id).unwrap(),
+        annotation
+    );
+    let receipt = store
+        .annotation_deliveries("paper", &task.id)
+        .unwrap()
+        .remove(0);
+    assert_eq!(receipt.prepared_generation, None);
+    assert_eq!(receipt.delivered_generation, None);
     stop(&state).await;
 }
 
@@ -2858,7 +2910,6 @@ async fn annotation_startup_failure_is_attempted_once_and_explicit_retry_keeps_t
     let receipts = store.annotation_deliveries("paper", &task.id).unwrap();
     assert_eq!(receipts[0].prepared_generation, Some(generation));
     assert_eq!(receipts[0].delivered_generation, None);
-    assert!(store.queue_annotation_followups().unwrap().is_empty());
     state.launch_ready().await.unwrap();
     assert!(starts.try_recv().is_err());
     assert_eq!(

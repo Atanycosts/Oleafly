@@ -229,9 +229,11 @@ Workbench 与 TaskStore 各自提交。补接按任务绑定的库/稿件重扫�
 ### Word 模板与有效格式（2026-11-14）
 
 用户在期刊面板明确选作模板的 `.doc` 或 `.docx` 立即成为该 world 的比较依据。
-旧 Word CFB 文件通过本机 LibreOffice 的独立临时目录和 profile 转为 DOCX，保留原文件字节、规范化字节与转换来源。
-DOCX 入口只接纳 Transitional OOXML；Strict 必须先另存为 Transitional，不产生空快照。
-作者原路径不参与转换写入。模板示例的观察差异与显式建立的结构化约束分开返回。指南只保留原文和位置，
+旧 Word CFB 文件通过本机 LibreOffice 的独立临时目录和 profile 转为 DOCX。Strict `.docx` 由包内 Workbench 直接识别，
+按 OPC 主文档关系、内容类型和 Word 根节点判断；命名空间、已知关系类型和格式字段在统一入口映射为现有内核可消费的工作副本。
+模板采集、文件树开稿和被明确选择的替换稿共用该入口。Transitional 字节不改写；留存快照、检查及节点地址绑定派生工作字节，
+不重新转换历史版本，也不把转换前后的地址混用。作者原件与转换来源另行留存，原路径不参与写入。
+模板示例的观察差异与显式建立的结构化约束分开返回。指南只保留原文和位置，
 由用户或 Agent 理解后通过现有组件与决定接口建立要求；固定句式／正则不再生成或确认规则。
 
 [`docx-format.ts`](../../src/lib/docx-format.ts) 复用固定 core 的公开包读取、样式级联、有效段落／run 格式、分节和表格结构。
@@ -244,18 +246,37 @@ Workbench 拥有留存、规则、查询及比较，沿现有 source/world/basel
 主窗口按需计算已保存字节的格式，活动编辑窗无需打开；live 查询则从同一编辑 session 导出，并核对 revision。
 实时修改使用同会话段落 handle，再解析为活动 tree 中的目标；导出时可能插入属性节点，导出的 canonical 路径只作为
 事实证据，不作为后续写入地址。不靠段落文字或跨文档节点 ID 对齐。
+精确回查原始 XML 用 [Workbench 地址契约](../../services/research-workbench/contracts/journals/world-contract.json) 的 `node_address`：
+内核在重排前登记原始元素的位置，只数元素，地址绑定精确 DOCX 字节。把快照、样式、检查发现、存档稿件的复杂对象或节点扫描返回的地址原样交给
+`journal_read` 的 `format / nodes`，并选择同一留存基线或模板版本。旧的混合索引只有在原 Workbench 节点结果能确认稿件、部件和路径时才按旧规则读取。
+重扫只给新地址，不证明新旧位置对应；无法确认时重新定位，不取邻近节点。活动文档的 `read_docx_format` 只接受同一导出字节的地址；该地址不是实时编辑句柄。
+
+格式快照与 Workbench 结构读取共用 [兼容分支能力清单](../../services/research-workbench/src/research_file_workbench/docx/markup-compatibility.json)。
+`mc:AlternateContent` 按原文顺序取首个 `Requires` 前缀均能在该 `Choice` 处解析为受支持命名空间的 `Choice`，没有这样的 `Choice` 才取 `Fallback`。
+两者都没有时报告该处缺口；原始 XML 保留两支和各自的地址。活动正文工具新增的引用与文本框投影也用这份清单；
+它不替换编辑器正文模型，也不代替 Word/WPS 的实际渲染。
 [`docx-format-reader.ts`](../../src/lib/docx-format-reader.ts) 为同一活动会话提供 overview、paragraphs、styles、objects、nodes
-目录及连续查询；同 revision 的导出与解析共用 Promise，段落与定位索引按需建立并复用，nodes／styles 不建立活动段落目录。
-修改后缓存失效，跨 revision 的未完成读取拒绝返回，不能替换新版本索引。
-分页 `nextQuery` 及文字、记录、节点续读参数携带 `expected_revision`；续读发现版本变化即拒绝旧偏移，
-须从当前文档重新读取，避免用户或 Agent 编辑后静默跳过、重复段落。
-正文、页眉页脚、脚注等文字均可读取；仅有活动 handle 的段落提供可写引用。modelText 直接来自 core 模型，
+目录及连续查询；同一活动包和 revision 的导出与解析共用 Promise，段落与定位索引按需建立并复用，nodes／styles 不建立活动段落目录。
+活动包或 revision 变化时，旧缓存失效，未完成的读取也会被拒绝。
+格式分页和续读用 `expected_revision` 拒绝不同 revision 的旧偏移；精确节点回查还核对 `node_address` 中的字节摘要。
+拒绝后从当前文档重新定位，不沿用旧偏移。
+正文、页眉页脚、脚注等文字均可读取。格式工具按部件和唯一 `paraId` 对应活动段落，不按段落顺序配对。
+受兼容分支选择影响的段落只交付导出文本和源码证据，不附可写引用，也不进入候选自动写入。modelText 直接来自 core 模型，
 字段为 U+FFFC，文字范围采用完整段落的 UTF-16 半开区间。长文字、对象及浅 XML 节点保留精确续读参数，
 按最终 JSON 字符数控制返回大小并留出工具打包余量；原始 XML 路径继续只作证据。
+遇到所选分支的 `altChunk` 或 OLE，格式概览列出类型与数量，对象页列出逐件未读原因、可用关系和 `readSource` 节点回查参数。
+留存稿件走 `journal_read` 的 `content`（`complex_object`），再以同一基线的 `format / nodes` 回查对象地址；未选中分支只作原包证据。
+两条入口均不展开 `altChunk`，不解释或执行 OLE 载荷。
 
 普通聊天与绑定任务的 `read_docx_document` 共用同一活动会话读取器，按需读取段落内容。
+研究会话的本地工具桥接最多同时执行八个调用；已受理的调用等空位，会话关闭时唤醒等待者并取消运行中的调用。
+HTTP 入口仍限制同时受理的请求数；依赖上一页续读参数的请求按成功结果逐页推进。
 `modelText` 保留原子的模型占位，`displayText` 展开域缓存结果；公式、图片继续保留占位并附对象信息。
 对象带稳定会话引用、完整段落的模型／显示范围、只读标记，以及语义投影是否完整的状态。
+[`docx-live-references.ts`](../../src/lib/docx-live-references.ts) 复用 EigenPal 的文本框、注释和批注结构，
+返回正文中组合图形的文本框文字、按类型解析的脚注／尾注正文，以及点式和范围批注。这些文字留在只读对象里，不拼入段落文字；
+批注不占正文字符。`reference.start.read` 和适用的 `reference.end.read` 可回到锚点段落及其完整段落模型偏移。
+回查和正文续读携带所选会话、revision 及活动包的 `read_version`。它不是已保存基线的哈希；即使 revision 没变，包变了也拒绝旧参数。
 显示串和对象显示范围由同一投影生成，零宽 VML 按 XML 顺序显示。特殊连字符保持单个 UTF-16 位置；
 `w:sym` 沿用 core 的 `(` 文本表示，尚未识别为实际字体字形，不能把该字符当作原稿中的普通左括号。
 [`docx-math.ts`](../../src/lib/docx-math.ts) 在原生 OMML 上生成有界结构投影，保留 `matrix` 的行／列、
@@ -282,7 +303,7 @@ Word 文档工具的公式面板和普通聊天、绑定任务共用这条写入
 编辑源码、宏或位置后，文档版本或所选段落变化保留草稿并要求显式刷新。源码预览使用局部宏作用域，
 保留本地 MathJax SVG 的字形引用并经过 SVG 清理；它不替代实际 Word 字体或版面验收。
 正文工具输出的 `next_query` 可直接作为下一次调用参数，先完成当前对象 payload 与对象目录，再推进文本窗口和段落。
-文字窗口、对象信息及 JSON payload 均可续读，携带源会话和 revision；格式目录继续使用自己的 `nextQuery`。
+文字窗口、对象信息及 JSON payload 均可用返回的参数续读；格式目录继续使用自己的 `nextQuery`。
 正文和格式生产端以共享工具预算约束完整回包，避免通用打包器裁掉续读信息。
 绑定任务把完整正文页留存在既有 DOCX operation 活动中，模型输出不重复附加活动全文；旧 Read 记录继续可读。
 
@@ -373,6 +394,9 @@ finding 内容保留在 Workbench，按回执分页读取，不把尚未读取�
 无须另建期刊请求；任务、应用项目、稿件与检查身份仍由原生层核对，其他期刊操作继续要求既有领域输入。
 `journal_read` 的模板检查对象保留检查元数据、逐规则结果和覆盖缺口，finding 正文沿同一检查的分页参数读取，
 避免首百条 finding 使整个对象超出工具输出限制；Workbench 留存对象与标注源不因此改写。
+普通聊天用 `read_docx_candidate_review` 按显式 Word 会话读待审排版清单；原生任务及 ACP 用
+`journal_read` 的 `candidate_review` 按绑定稿件读同一份数据。两路都不接受工具调用方指定项目，
+翻页使用同一个 `candidate_check_id`，JSON 续读还核对响应摘要。清单只描述待审候选，不触发重排或采用。
 大结果在既有 artifact 中只存一次，check 返回摘要和首屏；snapshot 对象与样式定义分别分页，finding 支持分页及筛选。
 留存对象或格式的单条对象、节点、部件仍过大时，应用投影返回完整响应 JSON 的片段及准确的 `continuation.arguments`；
 JSON 字符偏移与记录分页独立，续读核对完整响应的 hash，格式读取同时核对源 hash，拼接片段可恢复原始响应。

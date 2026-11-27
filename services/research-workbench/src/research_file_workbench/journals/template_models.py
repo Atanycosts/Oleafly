@@ -14,7 +14,13 @@ from research_file_workbench.common.json_io import (
 )
 from research_file_workbench.docx.format_snapshot import (
     FORMAT_SNAPSHOT_METHOD_VERSION,
+    HISTORICAL_ALL_DECLARED_STYLE_METHODS,
+    RECAPTUREABLE_SNAPSHOT_METHODS,
     format_snapshot_method,
+)
+from research_file_workbench.docx.package_query import (
+    XML_ELEMENT_PATH_VERSION,
+    validate_node_address,
 )
 from research_file_workbench.docx.parsing.package import package_part_names
 from research_file_workbench.journals.models import (
@@ -29,6 +35,44 @@ from research_file_workbench.journals.models import (
 TEMPLATE_ANALYZER_VERSION = "docx-template-analyzer-1.3.0"
 TEMPLATE_CHECKER_VERSION = "docx-template-checker-1.1.0"
 SNAPSHOT_METHOD = FORMAT_SNAPSHOT_METHOD_VERSION
+REFRESHABLE_TEMPLATE_ANALYZERS = {
+    "docx-template-analyzer-1.0.0",
+    "docx-template-analyzer-1.1.0",
+    "docx-template-analyzer-1.2.0",
+}
+
+
+def template_preparation(world: JsonObject) -> JsonObject:
+    """Classify retained template metadata without reading immutable source bytes."""
+    analyzer = world.get("analyzer_version")
+    analyzer_version = analyzer if isinstance(analyzer, str) else None
+    reader = world.get("reader_version")
+    snapshot_method = reader if isinstance(reader, str) else None
+    analyzer_supported = (
+        analyzer_version in REFRESHABLE_TEMPLATE_ANALYZERS
+        or analyzer_version == TEMPLATE_ANALYZER_VERSION
+    )
+    if "template" not in world:
+        state, reason, refreshable = "unsupported", "not_a_template_world", False
+    elif not analyzer_supported:
+        state, reason, refreshable = "unsupported", "analyzer_unsupported", False
+    elif snapshot_method in RECAPTUREABLE_SNAPSHOT_METHODS:
+        state, reason, refreshable = "pending_refresh", "snapshot_method_refreshable", True
+    elif snapshot_method != SNAPSHOT_METHOD:
+        state, reason, refreshable = "unsupported", "snapshot_method_outdated", False
+    elif analyzer_version in REFRESHABLE_TEMPLATE_ANALYZERS:
+        state, reason, refreshable = "pending_refresh", "analyzer_outdated", True
+    else:
+        state, reason, refreshable = "ready", None, False
+    return {
+        "state": state,
+        "reason": reason,
+        "analyzer_version": analyzer_version,
+        "current_analyzer_version": TEMPLATE_ANALYZER_VERSION,
+        "snapshot_method": snapshot_method,
+        "current_snapshot_method": SNAPSHOT_METHOD,
+        "refreshable": refreshable,
+    }
 
 
 def validate_snapshot(
@@ -51,11 +95,15 @@ def validate_snapshot(
     method = format_snapshot_method(snapshot)
     if require_current and method != SNAPSHOT_METHOD:
         raise WorldAnalysisError("DOCX format reader changed; recapture format facts")
-    if method == SNAPSHOT_METHOD and "style_definitions" not in snapshot:
-        raise WorldAnalysisError("Current format snapshots must include style definitions")
+    all_declared_styles = (
+        method == SNAPSHOT_METHOD or method in HISTORICAL_ALL_DECLARED_STYLE_METHODS
+    )
+    if all_declared_styles and "style_definitions" not in snapshot:
+        raise WorldAnalysisError("This format snapshot method requires style definitions")
     if type(snapshot["schema_version"]) is not int or snapshot["schema_version"] != 1:
         raise WorldAnalysisError("Unsupported core format snapshot schema")
-    if snapshot["source_sha256"] != sha256_bytes(content):
+    source_sha256 = sha256_bytes(content)
+    if snapshot["source_sha256"] != source_sha256:
         raise WorldAnalysisError("Format snapshot source hash differs from retained bytes")
     engine = require_object(snapshot["engine"], "snapshot engine")
     require_keys(engine, {"name", "version"})
@@ -77,6 +125,7 @@ def validate_snapshot(
             raise WorldAnalysisError("Snapshot part bytes differ from retained package")
     if seen != set(actual):
         raise WorldAnalysisError("Snapshot must account for every package entry")
+    address_parts = {name[1:] for name in seen}
     ids: set[str] = set()
     objects = require_objects(snapshot["objects"], "snapshot objects")
     for item in objects:
@@ -84,6 +133,7 @@ def validate_snapshot(
         if identity in ids or item.get("part") not in seen:
             raise WorldAnalysisError("Snapshot object identity or part is invalid")
         ids.add(identity)
+        _validate_snapshot_node_address(item, source_sha256, address_parts, "Snapshot object")
         expected_id = _canonical_locator(item)
         path = item["path"]
         evidence = require_object(item["evidence"], "evidence")
@@ -144,17 +194,18 @@ def validate_snapshot(
                 "role_basis",
                 "properties",
             },
-            {"declared", "effective_status"},
+            {"declared", "effective_status", "node_address"},
         )
         style_id = require_text(style["style_id"], "style ID")
         if style_id in style_ids or style["object_id"] in ids:
             raise WorldAnalysisError("Snapshot has duplicate style identities")
         style_ids.add(style_id)
         ids.add(require_text(style["object_id"], "style object ID"))
+        _validate_snapshot_node_address(style, source_sha256, address_parts, "Style definition")
         if style["part"] not in seen or style["object_id"] != _canonical_locator(style):
             raise WorldAnalysisError("Style definition differs from its canonical package locator")
         style_type = require_text(style["type"], "style type")
-        if method != SNAPSHOT_METHOD and style_type != "paragraph":
+        if not all_declared_styles and style_type != "paragraph":
             raise WorldAnalysisError("Effective style definitions must be paragraph styles")
         if "declared" in style:
             require_object(style["declared"], "declared style")
@@ -182,6 +233,27 @@ def _canonical_locator(item: JsonObject) -> str:
     if not isinstance(path, list) or any(type(value) is not int or value < 0 for value in path):
         raise WorldAnalysisError("Snapshot paths must contain nonnegative child indices")
     return str(item["part"]) + "#" + ".".join(str(index) for index in path)
+
+
+def _validate_snapshot_node_address(
+    item: JsonObject,
+    source_sha256: str,
+    address_parts: set[str],
+    label: str,
+) -> None:
+    if "node_address" not in item:
+        return
+    try:
+        address = validate_node_address(
+            item["node_address"],
+            source_sha256=source_sha256,
+            available_parts=address_parts,
+            allowed_versions={XML_ELEMENT_PATH_VERSION},
+        )
+    except ValueError as exc:
+        raise WorldAnalysisError(f"{label} has an invalid node address: {exc}") from exc
+    if address["part"] != item.get("part"):
+        raise WorldAnalysisError(f"{label} node address differs from its snapshot part")
 
 
 def _validate_table_context(item: JsonObject, tables: dict[str, JsonObject]) -> None:
@@ -417,15 +489,25 @@ def validate_template_world(world: JsonObject) -> None:
             raise WorldAnalysisError("Selected template rules must retain selection authority")
 
 
-def validate_template_sources(world: JsonObject, sources: dict[str, bytes]) -> None:
+def validate_template_snapshot_source(
+    world: JsonObject, sources: dict[str, bytes], snapshot: JsonObject
+) -> None:
+    """Validate the parsed snapshot against the exact normalized template bytes."""
     template = require_object(world["template"], "template")
-    snapshot = decode_json_object(sources[str(template["snapshot_source_id"])])
-    validate_snapshot(snapshot, sources[str(template["normalized_source_id"])])
-    legacy_font_requirements = world["analyzer_version"] in {
-        "docx-template-analyzer-1.0.0",
-        "docx-template-analyzer-1.1.0",
-        "docx-template-analyzer-1.2.0",
-    }
+    normalized = sources.get(str(template["normalized_source_id"]))
+    if normalized is None:
+        raise WorldAnalysisError("Template normalized source bytes are absent")
+    validate_snapshot(snapshot, normalized)
+    if format_snapshot_method(snapshot) != world["reader_version"]:
+        raise WorldAnalysisError("Template snapshot method differs from its world record")
+
+
+def validate_template_analysis(
+    world: JsonObject, sources: dict[str, bytes], snapshot: JsonObject
+) -> None:
+    """Validate retained rules, fonts, guide analysis and conversion provenance."""
+    template = require_object(world["template"], "template")
+    legacy_font_requirements = world["analyzer_version"] in REFRESHABLE_TEMPLATE_ANALYZERS
     if "font_requirements" in template and template[
         "font_requirements"
     ] != template_font_requirements(
@@ -459,6 +541,12 @@ def validate_template_sources(world: JsonObject, sources: dict[str, bytes]) -> N
             language=str(scope["language"]),
         )
         expected_rules = require_objects(guides["rules"], "guide rules")
+    from research_file_workbench.journals.revisions import apply_manual_decisions
+
+    apply_manual_decisions(
+        expected_rules,
+        require_objects(world.get("manual_decisions", []), "manual decisions"),
+    )
     if [
         rule
         for rule in require_objects(world["rules"], "rules")
@@ -475,3 +563,41 @@ def validate_template_sources(world: JsonObject, sources: dict[str, bytes]) -> N
             raise WorldAnalysisError("Conversion provenance identifies different normalized bytes")
     elif template["original_sha256"] != template["source_sha256"]:
         raise WorldAnalysisError("Changed template bytes require conversion provenance")
+
+
+def validate_template_sources(world: JsonObject, sources: dict[str, bytes]) -> None:
+    template = require_object(world["template"], "template")
+    snapshot = decode_json_object(sources[str(template["snapshot_source_id"])])
+    validate_template_snapshot_source(world, sources, snapshot)
+    validate_template_analysis(world, sources, snapshot)
+
+
+def template_reference_locations(snapshot: JsonObject, object_ids: set[str]) -> JsonObject:
+    """Return bounded display locations for requested objects in a retained snapshot."""
+    requested = set(object_ids)
+    locations: dict[str, str] = {}
+    items = require_objects(snapshot["objects"], "objects") + require_objects(
+        snapshot.get("style_definitions", []), "style definitions"
+    )
+    for item in items:
+        object_id = item.get("object_id")
+        if not isinstance(object_id, str) or object_id not in requested:
+            continue
+        if "name" in item:
+            raw_label = item.get("name")
+            label = raw_label if isinstance(raw_label, str) else ""
+        else:
+            raw_text = item.get("text")
+            label = raw_text.strip() if isinstance(raw_text, str) else ""
+        if label:
+            locations[object_id] = label[:100]
+            continue
+        context = item.get("table_context")
+        row = context.get("row_index") if isinstance(context, dict) else None
+        column = context.get("column_index") if isinstance(context, dict) else None
+        locations[object_id] = (
+            f"R{row + 1} · C{column + 1} · {object_id}"
+            if type(row) is int and type(column) is int
+            else object_id
+        )
+    return {object_id: locations.get(object_id, object_id) for object_id in sorted(requested)}

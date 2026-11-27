@@ -3,6 +3,7 @@ import {
   createDocxTools,
   type DocxFormatReadQuery,
   type DocxFormatReadResult,
+  type DocxOperationContext,
   type DocxToolsHost,
 } from "./tools";
 
@@ -951,14 +952,417 @@ describe("DOCX business tools", () => {
 
   it("returns unavailable capabilities instead of inventing a fallback", async () => {
     const tools = createDocxTools(host());
+    expect(await tools.list_docx_templates.execute()).toEqual({
+      error: "The Word template library is unavailable.",
+    });
     for (const [run, error] of [
+      [() => tools.get_docx_workspace_context.execute(), "DOCX workspace context is unavailable."],
       [() => tools.read_docx_format.execute({}), "Live DOCX format reading is unavailable."],
       [() => tools.apply_docx_format.execute({ paragraph_ref: "para-1",
         expected_revision: 2, font: { bold: true } }), "Live DOCX formatting is unavailable for the requested scope."],
+      [() => tools.import_docx_template_styles.execute({ template: "world-v7",
+        style_ids: ["Title"], expected_revision: 2 }), "DOCX template style import is unavailable."],
+      [() => tools.create_docx_format_candidate.execute({}), "The Word format candidate is unavailable."],
+      [() => tools.read_docx_template_check.execute({ session_id: "s1" }),
+        "The Word check read is unavailable."],
+      [() => tools.read_docx_saved_content.execute({ session_id: "s1", operation: "content" }),
+        "Saved Word content is unavailable."],
+      [() => tools.read_docx_template_styles.execute({ session_id: "s1" }),
+        "Bound Word template styles are unavailable."],
+      [() => tools.read_docx_candidate_review.execute({ session_id: "s1" }),
+        "The Word candidate review is unavailable."],
       [() => tools.save_docx_document.execute({ expected_revision: 2 }),
         "Live DOCX saving is unavailable."],
       [() => tools.check_docx_template.execute({ template: "world-v7" }),
         "Explicit DOCX template checking is unavailable."],
     ] as const) expect(await run()).toEqual({ unavailable: true, error });
+  });
+});
+
+describe("DOCX tool bridge contracts", () => {
+  it("forwards explicit write targets and runtime attribution through one operation context", async () => {
+    const imported = {
+      ok: true, changed: true,
+      template: "world-v2", templateSourceSha256: "d".repeat(64),
+      document: imageDocument(3),
+    };
+    const candidate = {
+      ok: true as const, status: "pending_review" as const,
+      candidateCheckId: "check-2", changes: 2, unconfirmedChanges: 1,
+      unresolvedGroups: 0, refreshed: false,
+      template: {
+        versionId: "world-v2", journal: "paper", version: 2,
+        status: "ready" as const, analyzerVersion: "1",
+      },
+    };
+    const saved = {
+      baselineId: "b2", revision: 3, sourceSha256: "e".repeat(64),
+      document: { ...imageDocument(3), baselineId: "b2", savedRevision: 3, dirty: false },
+    };
+    const replaced = {
+      ok: true, changed: true, revision: 3,
+      document: imageDocument(3),
+    };
+    const importTemplateStyles = vi.fn(async (
+      _sessionId: string | undefined,
+      _template: string,
+      _styleIds: string[],
+      _expectedRevision: number,
+      _context?: DocxOperationContext,
+    ) => imported);
+    const prepareFormatCandidate = vi.fn(async (
+      _sessionId: string | undefined,
+      _worldVersionId: string | undefined,
+      _context?: DocxOperationContext,
+    ) => candidate);
+    const saveDocument = vi.fn(async (
+      _sessionId: string | undefined,
+      _expectedRevision: number,
+      _context?: DocxOperationContext,
+    ) => saved);
+    const replaceTextRange = vi.fn(async (
+      _request: Parameters<NonNullable<DocxToolsHost["replaceTextRange"]>>[0],
+      _context?: DocxOperationContext,
+    ) => replaced);
+    const attribution = {
+      taskId: "task-1", workId: "work-1",
+      memberId: "member-1", executionId: "execution-1",
+    };
+    const onToken = vi.fn();
+    const tools = createDocxTools(host({
+      importTemplateStyles, prepareFormatCandidate, saveDocument, replaceTextRange,
+    }), { attribution, onToken });
+
+    expect(await tools.import_docx_template_styles.execute({
+      session_id: "s1", template: " world-v2 ", expected_revision: 2,
+      style_ids: ["Title", "Heading2"],
+    })).toBe(imported);
+    expect(importTemplateStyles).toHaveBeenCalledExactlyOnceWith(
+      "s1", "world-v2", ["Title", "Heading2"], 2, expect.anything(),
+    );
+    const operationContext = importTemplateStyles.mock.calls[0]?.[4];
+    expect(operationContext).toMatchObject({ attribution, onToken });
+    expect(Object.isFrozen(operationContext?.attribution)).toBe(true);
+
+    expect(await tools.create_docx_format_candidate.execute({
+      session_id: "s1", world_version_id: "world-v2",
+    })).toBe(candidate);
+    expect(prepareFormatCandidate).toHaveBeenCalledWith(
+      "s1", "world-v2", operationContext,
+    );
+
+    expect(await tools.save_docx_document.execute({
+      session_id: "s1", expected_revision: 2,
+    })).toBe(saved);
+    expect(saveDocument).toHaveBeenCalledWith("s1", 2, operationContext);
+
+    expect(await tools.replace_docx_text_range.execute({
+      session_id: "s1", paragraph_ref: "para-1", expected_revision: 2,
+      range: { start: 0, end: 4 }, expected_text: "Text", replacement: "Changed",
+    })).toBe(replaced);
+    expect(replaceTextRange).toHaveBeenCalledWith({
+      sessionId: "s1", paragraphRef: "para-1", expectedRevision: 2,
+      range: { start: 0, end: 4 }, expectedText: "Text", replacement: "Changed",
+    }, operationContext);
+  });
+
+  it("routes Workbench-backed reads with explicit session and selector fields", async () => {
+    const workspace = {
+      viewed: null, writable: [], selectionWriteTarget: null, targeting: "explicit",
+    };
+    const templates = [{
+      versionId: "world-v2", journal: "paper", version: 2,
+      status: "ready" as const, analyzerVersion: "1",
+    }];
+    const templateCheck = { check_id: "check-1", status: "complete" };
+    const savedContent = {
+      nextRead: { object_type: "text_block", object_id: "block-2" },
+    };
+    const templateStyles = {
+      bindingId: "binding-1", styles: [{ styleId: "Title" }],
+    };
+    const candidateReview = {
+      review_status: "pending_review", candidate_check_id: "check-1",
+    };
+    const workspaceContext = vi.fn(async () => workspace);
+    const listJournalTemplates = vi.fn(async () => templates);
+    const readTemplateCheck = vi.fn(async (
+      _sessionId: string, _query: Record<string, unknown>,
+    ) => templateCheck);
+    const readSavedContent = vi.fn(async (
+      _sessionId: string, _query: Record<string, unknown>,
+    ) => savedContent);
+    const readTemplateStyles = vi.fn(async (
+      _sessionId: string, _query: Record<string, unknown>,
+    ) => templateStyles);
+    const readCandidateReview = vi.fn(async (
+      _sessionId: string, _query: Record<string, unknown>,
+    ) => candidateReview);
+    const tools = createDocxTools(host({
+      workspaceContext, listJournalTemplates, readTemplateCheck,
+      readSavedContent, readTemplateStyles, readCandidateReview,
+    }));
+
+    expect(await tools.get_docx_workspace_context.execute()).toBe(workspace);
+    expect(await tools.list_docx_templates.execute()).toEqual({ templates });
+    expect(await tools.read_docx_template_check.execute({
+      session_id: "s1", operation: "findings", scope: "candidate",
+      check_id: "check-1", group_id: "group-1", location_id: "location-1",
+      verdict: "observed_match", offset: 1, limit: 2, json_offset: 4, json_limit: 500,
+    })).toBe(templateCheck);
+    expect(readTemplateCheck).toHaveBeenCalledExactlyOnceWith("s1", {
+      operation: "findings", scope: "candidate",
+      check_id: "check-1", group_id: "group-1", location_id: "location-1",
+      verdict: "observed_match", offset: 1, limit: 2, json_offset: 4, json_limit: 500,
+    });
+
+    expect(await tools.read_docx_saved_content.execute({
+      session_id: "s1", operation: "content", baseline_id: "b2",
+      expected_source_sha256: "d".repeat(64), render_bundle_id: "bundle-1",
+      query: {
+        region: "body", object_type: "text_block", object_id: "block-1",
+        page_number: 2, page_size: 5, cursor: "cursor-1",
+      },
+      json_offset: 6, json_limit: 600,
+    })).toBe(savedContent);
+    expect(readSavedContent).toHaveBeenCalledExactlyOnceWith("s1", {
+      operation: "content", baseline_id: "b2",
+      expected_source_sha256: "d".repeat(64), render_bundle_id: "bundle-1",
+      query: {
+        region: "body", object_type: "text_block", object_id: "block-1",
+        page_number: 2, page_size: 5, cursor: "cursor-1",
+      },
+      json_offset: 6, json_limit: 600,
+    });
+
+    expect(await tools.read_docx_template_styles.execute({
+      session_id: "s1", role: "body", heading_level: 1, style_id: "Title",
+      offset: 2, limit: 3, expected_binding_id: "binding-1",
+      json_offset: 5, json_limit: 700,
+    })).toBe(templateStyles);
+    expect(readTemplateStyles).toHaveBeenCalledExactlyOnceWith("s1", {
+      role: "body", heading_level: 1, style_id: "Title",
+      offset: 2, limit: 3, expected_binding_id: "binding-1",
+      json_offset: 5, json_limit: 700,
+    });
+
+    expect(await tools.read_docx_candidate_review.execute({
+      session_id: "s1", check_id: "check-1", collection: "unconfirmed",
+      offset: 1, limit: 2, json_offset: 0, json_limit: 400,
+    })).toBe(candidateReview);
+    expect(readCandidateReview).toHaveBeenCalledExactlyOnceWith("s1", {
+      check_id: "check-1", collection: "unconfirmed",
+      offset: 1, limit: 2, json_offset: 0, json_limit: 400,
+    });
+  });
+
+  it("requires an explicit session before reading saved Workbench evidence", async () => {
+    const readTemplateCheck = vi.fn();
+    const readSavedContent = vi.fn();
+    const readTemplateStyles = vi.fn();
+    const readCandidateReview = vi.fn();
+    const tools = createDocxTools(host({
+      readTemplateCheck, readSavedContent, readTemplateStyles, readCandidateReview,
+    }));
+    const error = { error: "Choose an explicit Word session ID." };
+
+    for (const session_id of [undefined, " \t "]) {
+      expect(await tools.read_docx_template_check.execute({ session_id })).toEqual(error);
+      expect(await tools.read_docx_saved_content.execute({ session_id })).toEqual(error);
+      expect(await tools.read_docx_template_styles.execute({ session_id })).toEqual(error);
+      expect(await tools.read_docx_candidate_review.execute({ session_id })).toEqual(error);
+    }
+    expect(readTemplateCheck).not.toHaveBeenCalled();
+    expect(readSavedContent).not.toHaveBeenCalled();
+    expect(readTemplateStyles).not.toHaveBeenCalled();
+    expect(readCandidateReview).not.toHaveBeenCalled();
+  });
+
+  it("does not prepare a format candidate after cancellation", async () => {
+    const prepareFormatCandidate = vi.fn();
+    const cancelled = {
+      error: "The external request was cancelled before mutation.",
+    };
+    expect(await createDocxTools(host({ prepareFormatCandidate }), {
+      mutationAllowed: () => false,
+    }).create_docx_format_candidate.execute({
+      session_id: "s1", world_version_id: "world-v2",
+    })).toEqual(cancelled);
+
+    const controller = new AbortController();
+    controller.abort();
+    expect(await createDocxTools(host({ prepareFormatCandidate }), {
+      signal: controller.signal,
+    }).create_docx_format_candidate.execute({
+      session_id: "s1", world_version_id: "world-v2",
+    })).toEqual(cancelled);
+    expect(prepareFormatCandidate).not.toHaveBeenCalled();
+  });
+
+  it("returns candidate refusals and host failures without a fallback", async () => {
+    const refusal = {
+      ok: false as const, status: "conflict" as const,
+      error: "The retained candidate no longer matches the current binding.",
+      code: "binding_changed", action: "prepare_again_from_current_binding",
+      retryable_with_same_params: false as const,
+    };
+    const prepareFormatCandidate = vi.fn()
+      .mockResolvedValueOnce(refusal)
+      .mockRejectedValueOnce(new Error("Candidate analysis unavailable."));
+    const importTemplateStyles = vi.fn(async () => {
+      throw new Error("Style import unavailable.");
+    });
+    const saveDocument = vi.fn(async () => {
+      throw new Error("Save write failed.");
+    });
+    const readTemplateStyles = vi.fn(async () => {
+      throw new Error("Bound template styles unavailable.");
+    });
+    const readCandidateReview = vi.fn(async () => {
+      throw new Error("Candidate review unavailable.");
+    });
+    const tools = createDocxTools(host({
+      prepareFormatCandidate, importTemplateStyles, saveDocument,
+      readTemplateStyles, readCandidateReview,
+    }));
+
+    expect(await tools.create_docx_format_candidate.execute({
+      session_id: "s1", world_version_id: "world-v2",
+    })).toBe(refusal);
+    expect(await tools.import_docx_template_styles.execute({
+      session_id: "s1", template: "world-v2", style_ids: ["Title"], expected_revision: 2,
+    })).toEqual({ unavailable: true, error: "Style import unavailable." });
+    expect(await tools.save_docx_document.execute({
+      session_id: "s1", expected_revision: 2,
+    })).toEqual({ error: "Error: Save write failed." });
+    expect(await tools.read_docx_template_styles.execute({
+      session_id: "s1", style_id: "Title",
+    })).toEqual({ unavailable: true, error: "Bound template styles unavailable." });
+    expect(await tools.read_docx_candidate_review.execute({
+      session_id: "s1", check_id: "check-1",
+    })).toEqual({ unavailable: true, error: "Candidate review unavailable." });
+    expect(await tools.create_docx_format_candidate.execute({
+      session_id: "s1", world_version_id: "world-v2",
+    })).toEqual({ unavailable: true, error: "Candidate analysis unavailable." });
+  });
+
+  it("requires explicit style-import inputs and rechecks cancellation", async () => {
+    const importTemplateStyles = vi.fn();
+    const api = host({ importTemplateStyles });
+    const cancelled = {
+      error: "The external request was cancelled before mutation.",
+    };
+    const request = {
+      session_id: "s1", template: "world-v2",
+      style_ids: ["Title"], expected_revision: 2,
+    };
+
+    expect(await createDocxTools(api, {
+      mutationAllowed: () => false,
+    }).import_docx_template_styles.execute(request)).toEqual(cancelled);
+    expect(await createDocxTools(api).import_docx_template_styles.execute({
+      ...request, expected_revision: -1,
+    })).toMatchObject({
+      error: expect.stringContaining("current non-negative expected_revision"),
+    });
+    expect(await createDocxTools(api).import_docx_template_styles.execute({
+      ...request, template: " \t ",
+    })).toMatchObject({
+      error: expect.stringContaining("explicit retained Word template world"),
+    });
+
+    const allowedBeforeApproval = vi.fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+    expect(await createDocxTools(api, {
+      confirm: async () => true,
+      mutationAllowed: allowedBeforeApproval,
+    }).import_docx_template_styles.execute(request)).toEqual(cancelled);
+    expect(importTemplateStyles).not.toHaveBeenCalled();
+  });
+
+  it("requires live formatting evidence and rechecks cancellation after approval", async () => {
+    const noReadHost = host({ formatParagraph: vi.fn() });
+    expect(await createDocxTools(noReadHost, {
+      confirm: async () => true,
+    }).apply_docx_format.execute({
+      paragraph_ref: "para-1", expected_revision: 2, font: { bold: true },
+    })).toEqual({
+      unavailable: true,
+      error: "Format approval requires live DOCX formatting reads.",
+    });
+    expect(noReadHost.formatParagraph).not.toHaveBeenCalled();
+
+    const readFormat = vi.fn(async () => ({
+      document: {
+        sessionId: "s1", baselineId: "b1", sessionRevision: 2,
+        savedRevision: 1, dirty: true, filename: "paper.docx",
+      },
+      sourceSha256: "c".repeat(64), revision: 2, nextOffset: null,
+    }));
+    const cancelled = {
+      error: "The external request was cancelled before mutation.",
+    };
+    const formatParagraph = vi.fn();
+    const allowedBeforeApproval = vi.fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+    expect(await createDocxTools(host({ readFormat, formatParagraph }), {
+      confirm: async () => true,
+      mutationAllowed: allowedBeforeApproval,
+    }).apply_docx_format.execute({
+      paragraph_ref: "para-1", expected_revision: 2, font: { bold: true },
+    })).toEqual(cancelled);
+    expect(formatParagraph).not.toHaveBeenCalled();
+
+    const controller = new AbortController();
+    const abortedFormat = vi.fn();
+    expect(await createDocxTools(host({
+      readFormat, formatParagraph: abortedFormat,
+    }), {
+      confirm: async () => {
+        controller.abort();
+        return true;
+      },
+      signal: controller.signal,
+    }).apply_docx_format.execute({
+      paragraph_ref: "para-1", expected_revision: 2, font: { bold: true },
+    })).toEqual(cancelled);
+    expect(abortedFormat).not.toHaveBeenCalled();
+  });
+
+  it("preserves text-range revision, no-op and cancellation guards", async () => {
+    const replaceTextRange = vi.fn();
+    const request = {
+      session_id: "s1", paragraph_ref: "para-1", expected_revision: 2,
+      range: { start: 0, end: 4 }, expected_text: "Text", replacement: "Changed",
+    };
+    const tools = createDocxTools(host({ replaceTextRange }));
+    expect(await tools.replace_docx_text_range.execute({
+      ...request, expected_revision: -1,
+    })).toMatchObject({
+      error: expect.stringContaining("non-negative session revision"),
+    });
+    expect(await tools.replace_docx_text_range.execute({
+      ...request, replacement: "Text",
+    })).toMatchObject({
+      error: expect.stringContaining("replacement is unchanged"),
+    });
+    expect(await createDocxTools(host({ replaceTextRange }), {
+      confirm: async () => false,
+    }).replace_docx_text_range.execute(request)).toMatchObject({
+      declined: true, tool: "replace_docx_text_range",
+    });
+
+    const allowedBeforeApproval = vi.fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+    expect(await createDocxTools(host({ replaceTextRange }), {
+      confirm: async () => true,
+      mutationAllowed: allowedBeforeApproval,
+    }).replace_docx_text_range.execute(request)).toEqual({
+      error: "The external request was cancelled before mutation.",
+    });
+    expect(replaceTextRange).not.toHaveBeenCalled();
   });
 });

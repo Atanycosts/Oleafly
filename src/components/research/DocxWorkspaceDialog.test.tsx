@@ -3,10 +3,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { strToU8, zipSync } from "fflate";
 import { StrictMode } from "react";
-import type { JournalCheck, JournalProject, JournalState, JournalWorld } from "@/lib/journal-workbench";
+import { JournalWorkbenchError, type JournalCheck, type JournalProject, type JournalState, type JournalWorld } from "@/lib/journal-workbench";
 import type { DocxParagraph, DocxSession, DocxTarget } from "@/lib/docx-session";
 import type { EditorSnapshot } from "@docx-editor.dev/core/contracts/editor";
 import type { DocxSave, DocxSource } from "@/lib/docx-workbench";
+import type { DocxCandidateReviewRecord, DocxCandidateReviewView } from "@/lib/docx-format-candidate-review";
 import type { DocxRecoverySaveOperation, DocxRecoverySnapshot } from "@/lib/docx-recovery";
 import type { DocxSaveResult } from "@oleafly/ai-tools";
 import en from "@/i18n/locales/en/researchTools.json" with { type: "json" };
@@ -23,6 +24,13 @@ import { i18n } from "@/i18n";
 
 const mocks = vi.hoisted(() => ({
   loadSource: vi.fn(),
+  readCandidateReview: vi.fn(),
+  loadCandidateReviewView: vi.fn(),
+  prepareFormatCandidate: vi.fn(),
+  saveCandidateReview: vi.fn(),
+  wordOriginalSha256: vi.fn(),
+  adoptFormatCandidate: vi.fn(),
+  validateFormatCandidate: vi.fn(),
   prepareSave: vi.fn(),
   saveBaseline: vi.fn(),
   commitRecovery: vi.fn(),
@@ -43,6 +51,7 @@ const mocks = vi.hoisted(() => ({
   fontShaping: undefined as { maxFontBytes: number } | undefined,
   runInlineCompletion: vi.fn(),
   createSession: vi.fn(),
+  getConfig: vi.fn(),
   journalRequest: vi.fn(),
   editorSave: vi.fn(),
   downloadCopy: vi.fn(),
@@ -61,6 +70,8 @@ const mocks = vi.hoisted(() => ({
   editor: {
     save: () => mocks.editorSave(),
     exec: vi.fn(),
+    getEditingMode: vi.fn(() => "editing"),
+    setEditingMode: vi.fn(() => ({ ok: true })),
     setFonts: vi.fn(),
     scrollToAnchor: vi.fn(),
     highlightAnchor: vi.fn(),
@@ -143,6 +154,18 @@ vi.mock("@/lib/docx-workbench", () => ({
   prepareDocxSave: mocks.prepareSave,
   saveDocxBaseline: mocks.saveBaseline,
 }));
+vi.mock("@/lib/docx-format-candidate-review", () => ({
+  readCandidateReview: mocks.readCandidateReview,
+  loadCandidateReviewView: mocks.loadCandidateReviewView,
+  saveCandidateReview: mocks.saveCandidateReview,
+  retainedReviewItems: (items: unknown[]) => items,
+}));
+vi.mock("@/lib/docx-format-candidate-flow", () => ({ prepareDocxFormatCandidate: mocks.prepareFormatCandidate }));
+vi.mock("@/lib/docx-format-candidate", () => ({
+  adoptDocxFormatCandidate: mocks.adoptFormatCandidate,
+  validateDocxFormatCandidateBytes: mocks.validateFormatCandidate,
+}));
+vi.mock("@/lib/docx-file", () => ({ wordOriginalSha256: mocks.wordOriginalSha256 }));
 vi.mock("@/lib/docx-recovery", () => ({
   saveDocxRecovery: mocks.saveRecovery,
   commitDocxRecovery: mocks.commitRecovery,
@@ -154,7 +177,14 @@ vi.mock("@/lib/docx-recovery", () => ({
   docxContentSha256: mocks.contentHash,
   listDocxRecovery: mocks.listRecovery,
 }));
-vi.mock("@/lib/journal-workbench", () => ({ journalRequest: mocks.journalRequest }));
+vi.mock("@/lib/journal-workbench", async (original) => ({
+  JournalWorkbenchError: (await original<typeof import("@/lib/journal-workbench")>()).JournalWorkbenchError,
+  journalRequest: mocks.journalRequest,
+}));
+vi.mock("@/lib/tauri", async (original) => ({
+  ...await original<typeof import("@/lib/tauri")>(),
+  getConfig: mocks.getConfig,
+}));
 vi.mock("@/lib/docx-render", () => ({ findDocxRenderer: mocks.findRenderer, ensureDocxRender: mocks.renderFonts, loadDocxPdf: mocks.loadPdf }));
 vi.mock("@/components/pdf/PdfViewer", async () => {
   const { forwardRef, useImperativeHandle } = await import("react");
@@ -310,7 +340,7 @@ function saveRequest(revision: number, expectedBaselineId = SOURCE.baseline_id):
   };
 }
 
-async function renderReady(harness: ReturnType<typeof sessionHarness>, onSaved = vi.fn(async () => {}), waitForSession = true, options: { recovery?: DocxRecoverySnapshot; project?: JournalProject; world?: JournalWorld | null } = {}) {
+async function renderReady(harness: ReturnType<typeof sessionHarness>, onSaved = vi.fn(async () => {}), waitForSession = true, options: { recovery?: DocxRecoverySnapshot; project?: JournalProject; world?: JournalWorld | null; sourcePath?: string } = {}) {
   mocks.createSession.mockReturnValue(harness.session);
   const onClose = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -321,6 +351,7 @@ async function renderReady(harness: ReturnType<typeof sessionHarness>, onSaved =
       project={options.project ?? PROJECT}
       recovery={options.recovery}
       world={options.world === undefined ? WORLD : options.world}
+      sourcePath={options.sourcePath}
       onClose={onClose}
       onSaved={onSaved}
     />
@@ -348,6 +379,10 @@ beforeEach(() => {
   mocks.bindTask.mockResolvedValue(undefined);
   mocks.retainFormat.mockResolvedValue(undefined);
   mocks.ensureFonts.mockResolvedValue(undefined);
+  mocks.validateFormatCandidate.mockResolvedValue({ status: "accepted", issues: [] });
+  mocks.getConfig.mockReset().mockResolvedValue({
+    ai_provider: "openai", ai_model: "gpt-4o", ai_keys: { openai: "test-key" },
+  });
   mocks.listRecovery.mockResolvedValue({ snapshots: [], failures: [] });
   mocks.editor.editorSnapshot = {
     isLoading: false,
@@ -358,6 +393,8 @@ beforeEach(() => {
     selectionCollapsed: true,
   };
   mocks.loadSource.mockResolvedValue(SOURCE);
+  mocks.readCandidateReview.mockResolvedValue({ review: null });
+  mocks.wordOriginalSha256.mockResolvedValue(null);
   mocks.editorSave.mockResolvedValue(Uint8Array.from([80, 75, 5, 6]).buffer);
   mocks.downloadCopy.mockResolvedValue({ status: "cancelled" });
   mocks.editor.scrollToAnchor.mockReturnValue(true);
@@ -387,6 +424,115 @@ beforeEach(() => {
   mocks.contentHash.mockResolvedValue("d".repeat(64));
   mocks.applySuggestion.mockReturnValue({ ok: true, revision: 1, changed: true });
 });
+
+function retainedCandidateFixture(overrides: Partial<DocxCandidateReviewRecord> = {}, status: "ready" | "conflict" = "ready") {
+  const item = { id: "change-first", para_id: "para-first", role: "body", property: "run.fontSizePt", group: { category: "body", action: "size" } } as const;
+  const record = {
+    candidate_project_id: "candidate", candidate_baseline_id: "candidate-final", candidate_source_sha256: "c".repeat(64),
+    candidate_binding_id: "candidate-binding", candidate_check_id: "candidate-check", world_version_id: "ijam-world",
+    input_baseline_id: "candidate-input", input_source_sha256: SOURCE.source_sha256,
+    snapshot_artifact_version_id: "artifact-version-review", snapshot_method_version: "docx-core-format-snapshot-1.3.0",
+    target_baseline_id: SOURCE.baseline_id, target_source_sha256: SOURCE.source_sha256, target_binding_id: "another-default-binding",
+    original_source_sha256: "e".repeat(64), confirmed_items: [item], unconfirmed_items: [], ...overrides,
+  } satisfies DocxCandidateReviewRecord;
+  const review = {
+    filename: SOURCE.filename, bytes: Uint8Array.from([8, 9]), world: { ...WORLD, version_id: "ijam-world", journal_name: "IJAM" },
+    changes: [{ id: item.id, paraId: item.para_id, role: item.role, property: item.property, group: item.group }],
+    unconfirmedChanges: [], refreshed: false, findingReview: { checkId: record.candidate_check_id, groups: [] },
+  } satisfies DocxCandidateReviewView;
+  mocks.readCandidateReview.mockResolvedValue({ status, review: record });
+  mocks.loadCandidateReviewView.mockResolvedValue(review);
+  mocks.wordOriginalSha256.mockResolvedValue(record.original_source_sha256);
+  return { record, review };
+}
+
+it("keeps an older candidate available for inspection but refuses to offer adoption if it fails today's byte check", async () => {
+  const { review } = retainedCandidateFixture();
+  mocks.validateFormatCandidate.mockResolvedValueOnce({
+    status: "rejected", issues: [{ detail: "Protected document structure changed beyond formatting." }],
+  });
+  await renderReady(sessionHarness([paragraph("first", "Original")]));
+  expect(await screen.findByText("Protected document structure changed beyond formatting.")).toBeVisible();
+  expect(mocks.validateFormatCandidate).toHaveBeenCalledExactlyOnceWith(SOURCE.bytes, review.bytes);
+  expect(screen.queryByTestId("docx-adopt-format-candidate")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByTestId("docx-format-candidate-change-location"));
+  expect(screen.getByTestId("docx-format-candidate-preview")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: text.formatCandidate.download }));
+  expect(mocks.downloadCopy).toHaveBeenCalledWith(review.bytes, SOURCE.filename);
+  expect(mocks.adoptFormatCandidate).not.toHaveBeenCalled();
+});
+
+it("restores the retained candidate independently of the default template, locates it, and adopts the exact review", async () => {
+  const { record, review } = retainedCandidateFixture();
+  const next = { ...SOURCE, baseline_id: SAVED_BASELINE, source_sha256: record.candidate_source_sha256, bytes: review.bytes };
+  mocks.adoptFormatCandidate.mockResolvedValue({ source: next });
+  const view = await renderReady(sessionHarness([paragraph("first", "Original")]), undefined, true, { sourcePath: "中文稿/批注.docx" });
+  const adopt = await screen.findByTestId("docx-adopt-format-candidate");
+  expect(await screen.findByText(/IJAM/)).toBeVisible();
+  expect(mocks.wordOriginalSha256).toHaveBeenCalledWith("app-project", SOURCE.project_id, "中文稿/批注.docx");
+  expect(mocks.loadCandidateReviewView).toHaveBeenCalledWith(record, SOURCE.filename);
+  fireEvent.click(screen.getByTestId("docx-format-candidate-change-location"));
+  await waitFor(() => expect(mocks.editor.scrollToAnchor).toHaveBeenCalledWith({ paraId: "para-first" }));
+  fireEvent.click(adopt);
+  await screen.findByTestId("docx-format-candidate-adopted");
+  expect(mocks.adoptFormatCandidate).toHaveBeenCalledExactlyOnceWith(SOURCE, record);
+  fireEvent.click(screen.getByRole("button", { name: text.formatCandidate.export }));
+  expect(mocks.downloadCopy).toHaveBeenCalledExactlyOnceWith(review.bytes, SOURCE.filename);
+  expect(mocks.editorSave).not.toHaveBeenCalled();
+  view.unmount();
+  mocks.readCandidateReview.mockResolvedValue({ review: null });
+  mocks.loadSource.mockResolvedValue(next);
+  await renderReady(sessionHarness([paragraph("first", "Original")]), undefined, true, { project: { ...PROJECT, baseline_id: SAVED_BASELINE } });
+  expect(screen.queryByTestId("docx-format-candidate")).not.toBeInTheDocument();
+});
+
+it.each(["external file", "saved baseline", "discarded edits", "template binding"])("restores a read-only, downloadable review when the %s changed", async (reason) => {
+  const { review } = retainedCandidateFixture(
+    reason === "saved baseline" ? { target_baseline_id: "baseline-older" }
+      : reason === "discarded edits" ? { input_source_sha256: "b".repeat(64) } : {},
+    reason === "template binding" ? "conflict" : "ready",
+  );
+  if (reason === "external file") mocks.wordOriginalSha256.mockResolvedValue("f".repeat(64));
+  await renderReady(sessionHarness([paragraph("first", "Original")]));
+  expect(await screen.findByTestId("docx-format-candidate")).toHaveAttribute("data-phase", "conflict");
+  expect(screen.queryByTestId("docx-adopt-format-candidate")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: text.formatCandidate.download }));
+  expect(mocks.downloadCopy).toHaveBeenCalledExactlyOnceWith(review.bytes, SOURCE.filename);
+  expect(mocks.adoptFormatCandidate).not.toHaveBeenCalled();
+});
+
+it("refuses adoption when the original changes after the review was restored", async () => {
+  retainedCandidateFixture();
+  await renderReady(sessionHarness([paragraph("first", "Original")]));
+  const adopt = await screen.findByTestId("docx-adopt-format-candidate");
+  mocks.wordOriginalSha256.mockResolvedValue("f".repeat(64));
+  fireEvent.click(adopt);
+  await waitFor(() => expect(screen.getByTestId("docx-format-candidate")).toHaveAttribute("data-phase", "conflict"));
+  expect(mocks.adoptFormatCandidate).not.toHaveBeenCalled();
+});
+
+it.each(["baseline_conflict", "binding_conflict", "candidate_review_conflict"])(
+  "keeps the retained review after %s and restores the original editing session",
+  async (code) => {
+    const { record, review } = retainedCandidateFixture();
+    const harness = sessionHarness([paragraph("first", "Original")]);
+    await renderReady(harness);
+    const adopt = await screen.findByTestId("docx-adopt-format-candidate");
+    const registration = mocks.registerAgentSession.mock.calls[0][0];
+    mocks.unregisterAgentSession.mockReturnValueOnce(registration);
+    mocks.adoptFormatCandidate.mockRejectedValueOnce(new JournalWorkbenchError({ code, error: "Retained review changed" }));
+
+    fireEvent.click(adopt);
+    await waitFor(() => expect(screen.getByTestId("docx-format-candidate")).toHaveAttribute("data-phase", "conflict"));
+    expect(mocks.adoptFormatCandidate).toHaveBeenCalledExactlyOnceWith(SOURCE, record);
+    expect(mocks.editor.setEditingMode.mock.calls).toEqual([["viewing"], ["editing"]]);
+    expect(mocks.registerAgentSession).toHaveBeenLastCalledWith(registration);
+    expect(screen.queryByTestId("docx-adopt-format-candidate")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: text.formatCandidate.download }));
+    expect(mocks.downloadCopy).toHaveBeenCalledExactlyOnceWith(review.bytes, SOURCE.filename);
+    expect(harness.text("first")).toBe("Original");
+  },
+);
 
 async function chooseMaterialView(label: string) {
   Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
@@ -1095,6 +1241,43 @@ describe("DocxWorkspaceDialog editing lifecycle", () => {
     expect(previousSaved).not.toHaveBeenCalled();
     expect(otherSaved).not.toHaveBeenCalled();
     expect(mocks.updateAgentSession).toHaveBeenCalledWith(sessionId, expect.objectContaining({ savedRevision: 1 }));
+  });
+
+  it("offers template formatting when a selected template arrives in an open working copy", async () => {
+    const harness = sessionHarness([paragraph("first", "Original text")]);
+    mocks.createSession.mockReturnValue(harness.session);
+    mocks.journalRequest.mockResolvedValue({ projects: [PROJECT], worlds: [] });
+    const onSaved = vi.fn(async () => {});
+    const request = { appProjectId: "app-project", project: PROJECT, world: null, onSaved };
+    useDocxWorkspaceStore.getState().open(request);
+    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost /></QueryClientProvider>);
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledOnce());
+    const editorNode = screen.getByTestId("mock-docx-editor");
+    expect(screen.queryByTestId("docx-start-format-candidate")).not.toBeInTheDocument();
+
+    const selectedWorld: JournalWorld = {
+      ...WORLD,
+      version_id: "world-imported-template",
+      journal_name: "Imported Journal",
+      version_ordinal: 2,
+      template: {
+        source_id: "template-original",
+        normalized_source_id: "template-normalized",
+        snapshot_source_id: "template-format",
+        original_sha256: "1".repeat(64),
+        source_sha256: "2".repeat(64),
+        provenance: null,
+      },
+    };
+    act(() => useDocxWorkspaceStore.getState().updateContext({ world: selectedWorld, onSaved }));
+
+    const start = await screen.findByTestId("docx-start-format-candidate");
+    await waitFor(() => expect(start).toBeEnabled());
+    expect(screen.getByTestId("mock-docx-editor")).toBe(editorNode);
+    expect(useDocxWorkspaceStore.getState().request).toBe(request);
+    expect(useDocxWorkspaceStore.getState().request?.project.binding).toBeNull();
+    expect(mocks.createSession).toHaveBeenCalledOnce();
+    expect(mocks.editorMounted).toHaveBeenCalledOnce();
   });
 
   it("uses the latest onSaved context when a save finishes after the world changes", async () => {
@@ -2663,6 +2846,135 @@ const TEMPLATE_WORLD: JournalWorld = { ...WORLD, template: {
   original_sha256: "1".repeat(64), source_sha256: "2".repeat(64), provenance: null,
 } };
 
+it("cancels a running candidate without saving a review or losing the edited Word copy", async () => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  mocks.journalRequest.mockResolvedValue({ projects: [PROJECT], worlds: [] });
+  const draftBytes = Uint8Array.from([80, 75, 5, 6]);
+  mocks.editorSave.mockResolvedValue(draftBytes.buffer);
+  mocks.prepareFormatCandidate.mockImplementationOnce(({ signal }: { signal: AbortSignal }) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  );
+  await renderReady(harness, undefined, true, { world: TEMPLATE_WORLD });
+  const begin = screen.getByTestId("docx-start-format-candidate");
+  await waitFor(() => expect(begin).toBeEnabled());
+  act(() => harness.edit("first", "Edited Word copy"));
+  fireEvent.click(begin);
+  await waitFor(() => expect(mocks.prepareFormatCandidate).toHaveBeenCalledOnce());
+  const request = mocks.prepareFormatCandidate.mock.calls[0][0];
+  expect(request).toMatchObject({
+    worldVersionId: WORLD_VERSION,
+    execution: expect.any(Object),
+    captured: { baseline_id: INITIAL_BASELINE, bytes: draftBytes },
+  });
+
+  const registration = mocks.registerAgentSession.mock.calls[0][0];
+  await expect(registration.prepareFormatCandidate({})).rejects.toThrow(text.formatCandidate.running);
+  fireEvent.click(screen.getByRole("button", { name: text.formatCandidate.stop }));
+  await waitFor(() => expect(screen.queryByTestId("docx-format-candidate")).not.toBeInTheDocument());
+
+  expect(request.signal.aborted).toBe(true);
+  expect(begin).toBeEnabled();
+  expect(screen.getByTestId("docx-save-state")).toHaveTextContent(text.unsaved);
+  expect(harness.text("first")).toBe("Edited Word copy");
+  expect(mocks.saveCandidateReview).not.toHaveBeenCalled();
+  expect(mocks.commitRecovery).not.toHaveBeenCalled();
+});
+
+describe("Word template refresh", () => {
+  const refreshedWorld = { ...TEMPLATE_WORLD, version_id: "world-refreshed", version_ordinal: 2 };
+  const refreshed = { world: refreshedWorld, binding: null, refreshed: true };
+  const readyCheck = { baseline_id: INITIAL_BASELINE, world_version_id: refreshedWorld.version_id, validity: "CURRENT" } satisfies Partial<JournalCheck>;
+
+  async function openWorkspace() {
+    const harness = sessionHarness([paragraph("first", "Original")]);
+    mocks.createSession.mockReturnValue(harness.session);
+    const onSaved = vi.fn(async () => {});
+    useDocxWorkspaceStore.getState().open({ appProjectId: "app-project", project: PROJECT, world: TEMPLATE_WORLD, onSaved });
+    render(<QueryClientProvider client={new QueryClient()}><DocxWorkspaceHost /></QueryClientProvider>);
+    await waitFor(() => expect(screen.getByTestId("docx-template-status")).toHaveAttribute("data-status", "pending_refresh"));
+    await waitFor(() => expect(screen.getByTestId("docx-start-format-candidate")).toBeEnabled());
+    return onSaved;
+  }
+
+  beforeEach(() => {
+    mocks.journalRequest.mockImplementation(async (path) => {
+      if (path === "/api/template-prepare") return refreshed;
+      if (path === "/api/state") return { projects: [PROJECT], worlds: [
+        { ...TEMPLATE_WORLD, template_preparation: { state: "pending_refresh" } },
+        { ...refreshedWorld, template_preparation: { state: "ready" } },
+      ] };
+      throw new Error(`Unexpected request ${path}`);
+    });
+    mocks.templateCheck.mockResolvedValue(readyCheck);
+  });
+
+  it("selects the prepared version of an unbound template and shows the resulting check as current", async () => {
+    const onSaved = await openWorkspace();
+    fireEvent.click(screen.getByRole("button", { name: text.check }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(mocks.templateCheck).toHaveBeenCalledWith(PROJECT, refreshedWorld.version_id);
+    expect(screen.getByTestId("docx-template-status")).toHaveTextContent("Example Journal · v2");
+    expect(screen.getByTestId("docx-check-validity")).toHaveTextContent(en.journal.current);
+  });
+
+  it("uses the newly selected version for a candidate after an explicit refresh", async () => {
+    await openWorkspace();
+    fireEvent.click(screen.getByRole("button", { name: text.formatCandidate.refreshTemplate }));
+    await waitFor(() => expect(screen.getByTestId("docx-template-status")).toHaveAttribute("data-status", "ready"));
+    mocks.prepareFormatCandidate.mockRejectedValueOnce(new Error("End at candidate launch"));
+    const registration = mocks.registerAgentSession.mock.calls[0][0];
+    await act(async () => { await expect(registration.prepareFormatCandidate({})).rejects.toThrow("End at candidate launch"); });
+    expect(mocks.prepareFormatCandidate).toHaveBeenCalledWith(expect.objectContaining({ worldVersionId: refreshedWorld.version_id }));
+    expect(mocks.templateCheck).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a newer selection when an earlier refresh completes", async () => {
+    const onSaved = await openWorkspace();
+    let completeRefresh!: (value: typeof refreshed) => void;
+    const pending = new Promise<typeof refreshed>((resolve) => { completeRefresh = resolve; });
+    mocks.journalRequest.mockImplementationOnce(() => pending);
+    fireEvent.click(screen.getByRole("button", { name: text.formatCandidate.refreshTemplate }));
+    act(() => useDocxWorkspaceStore.getState().updateContext({ world: { ...WORLD, version_id: "user-selection" }, onSaved }));
+    await act(async () => { completeRefresh(refreshed); });
+    expect(useDocxWorkspaceStore.getState().context?.world?.version_id).toBe("user-selection");
+  });
+});
+
+it.each(["pending_review", "unchanged", "conflict"])("returns the exact candidate receipt when the result is %s", async (status) => {
+  const harness = sessionHarness([paragraph("first", "Original")]);
+  const changes = status === "unchanged" ? [] : [{ id: "one-format-change", paraId: "para-first",
+    role: "body", property: "run.fontSizePt", group: { category: "body", action: "size" } }];
+  mocks.prepareFormatCandidate.mockResolvedValueOnce({
+    world: TEMPLATE_WORLD, binding: null, bytes: SOURCE.bytes, refreshed: false,
+    inputBaselineId: "candidate-input", inputSourceSha256: SOURCE.source_sha256,
+    candidateCheck: { check_id: "exact-candidate-check", project_id: "candidate-paper", baseline_id: "candidate-final",
+      source_sha256: "c".repeat(64), binding_id: "candidate-binding", world_version_id: WORLD_VERSION,
+      snapshot_artifact_version_id: "candidate-snapshot", reader_version: "test-reader" },
+    changes, unconfirmedChanges: [], unresolvedGroupCount: 2,
+    findingReview: { checkId: "exact-candidate-check", groups: [] },
+  });
+  mocks.saveCandidateReview.mockImplementationOnce(async () => {
+    if (status === "conflict") harness.edit("first", "Author edited while the review was being saved");
+    return { status: "ready" };
+  });
+  await renderReady(harness, undefined, true, { world: TEMPLATE_WORLD });
+  await waitFor(() => expect(screen.getByTestId("docx-start-format-candidate")).toBeEnabled());
+  const registration = mocks.registerAgentSession.mock.calls[0][0];
+  let receipt: unknown;
+  await act(async () => { receipt = await registration.prepareFormatCandidate({ worldVersionId: WORLD_VERSION }); });
+  expect(receipt).toMatchObject({ status, ok: status !== "conflict", candidateCheckId: "exact-candidate-check",
+    changes: changes.length, unconfirmedChanges: 0, unresolvedGroups: 2 });
+  expect(mocks.saveCandidateReview).toHaveBeenCalledExactlyOnceWith(PROJECT.project_id, null, expect.objectContaining({
+    candidate_check_id: "exact-candidate-check", target_baseline_id: INITIAL_BASELINE, world_version_id: WORLD_VERSION,
+  }));
+  expect(registration.getFormatCandidateBasis()).toEqual({ check_id: "exact-candidate-check", matches: status !== "conflict" });
+  expect(mocks.commitRecovery).not.toHaveBeenCalled();
+  expect(mocks.adoptFormatCandidate).not.toHaveBeenCalled();
+  expect(harness.session.revision()).toBe(status === "conflict" ? 1 : 0);
+});
+
 it.each([false, true])("reports format derivation after a committed template save, including derivation failure: %s", async (formatFails) => {
   const harness = sessionHarness([paragraph("first", "Original")]);
   mocks.saveBaseline.mockResolvedValue({ baselineId: SAVED_BASELINE, revision: 1 });
@@ -2705,7 +3017,9 @@ it("binds an unbound saved manuscript before a user check and opens the journal 
 
 it("uses the selected template for user checks and the requested template for Agent checks", async () => {
   const result = { baseline_id: INITIAL_BASELINE, world_version_id: WORLD_VERSION, validity: "CURRENT" } satisfies Partial<JournalCheck>;
-  mocks.journalRequest.mockResolvedValue({ projects: [PROJECT] });
+  mocks.journalRequest.mockImplementation(async (path) => path === "/api/template-prepare"
+    ? { world: TEMPLATE_WORLD, binding: PROJECT.binding, refreshed: false }
+    : { projects: [PROJECT], worlds: [] });
   mocks.templateCheck.mockResolvedValue(result);
   const view = await renderReady(sessionHarness([paragraph("first", "Original")]), undefined, true, { world: TEMPLATE_WORLD });
   fireEvent.click(screen.getByRole("button", { name: text.check }));
@@ -2718,7 +3032,9 @@ it("uses the selected template for user checks and the requested template for Ag
   expect(mocks.templateCheck).toHaveBeenCalledWith(PROJECT, "template-requested-by-agent", "agent");
   expect(agentResult).toEqual({ template: "template-requested-by-agent", check: result });
   expect(view.onSaved).toHaveBeenCalledTimes(2);
-  expect(mocks.journalRequest.mock.calls.every(([path]) => path === "/api/state")).toBe(true);
+  expect(mocks.journalRequest).toHaveBeenCalledWith("/api/template-prepare", {
+    project_id: PROJECT.project_id, expected_baseline_id: INITIAL_BASELINE, world_version_id: WORLD_VERSION, surface: "user",
+  });
   expect(mocks.editorSave).not.toHaveBeenCalled();
 });
 

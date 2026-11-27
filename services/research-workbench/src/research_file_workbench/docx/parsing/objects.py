@@ -21,10 +21,14 @@ from research_file_workbench.docx.xml_support import (
     iter_selected,
     paragraph_membership,
     region_for_part,
+    selected_children,
     string_attribute,
     tag_local_name,
     text_from_element,
 )
+
+_OFFICE_NAMESPACE = "urn:schemas-microsoft-com:office:office"
+_VML_NAMESPACE = "urn:schemas-microsoft-com:vml"
 
 
 def read_images(
@@ -52,7 +56,7 @@ def read_images(
             container_element = next(
                 (
                     element
-                    for element in drawing
+                    for element in selected_children(drawing)
                     if tag_local_name(element.tag) in {"inline", "anchor"}
                 ),
                 None,
@@ -83,7 +87,7 @@ def read_images(
             wrap_element = next(
                 (
                     element
-                    for element in (container_element if container_element is not None else ())
+                    for element in selected_children(container_element)
                     if tag_local_name(element.tag).startswith("wrap")
                 ),
                 None,
@@ -127,7 +131,7 @@ def read_math_objects(
         parent_paragraphs = paragraph_membership(root, part_path)
         display_ids = {
             id(child)
-            for parent in root.iter()
+            for parent in iter_selected(root)
             if tag_local_name(parent.tag) == "oMathPara"
             for child in iter_selected(parent)
             if tag_local_name(child.tag) == "oMath"
@@ -176,36 +180,72 @@ def read_complex_objects(
         if region_for_part(part_path) is None:
             continue
         parent_paragraphs = paragraph_membership(root, part_path)
-        parent_map = {id(child): parent for parent in root.iter() for child in parent}
+        parents = {
+            child: (parent, index) for parent in root.iter() for index, child in enumerate(parent)
+        }
+        selected = set(iter_selected(root))
         for object_index, element in enumerate(root.iter(), start=1):
             local_name = tag_local_name(element.tag)
-            kind: Literal["chart", "ole", "group_drawing", "unknown_extension"] | None = None
+            kind: (
+                Literal["chart", "ole", "group_drawing", "alt_chunk", "unknown_extension"] | None
+            ) = None
             if local_name == "chart":
                 kind = "chart"
-            elif local_name == "OLEObject":
+            elif element.tag in {
+                f"{{{_OFFICE_NAMESPACE}}}OLEObject",
+                f"{{{WORD_NAMESPACE}}}objectEmbed",
+                f"{{{WORD_NAMESPACE}}}objectLink",
+            }:
                 kind = "ole"
             elif local_name == "wgp":
                 kind = "group_drawing"
+            elif element.tag == f"{{{WORD_NAMESPACE}}}altChunk":
+                kind = "alt_chunk"
             elif local_name == "unknownObject":
                 kind = "unknown_extension"
             if kind is None:
                 continue
+            path: list[int] = []
+            ancestors: list[ElementTree.Element] = []
+            current = element
+            while current in parents:
+                current, index = parents[current]
+                path.append(index)
+                ancestors.append(current)
+            path.append(0)
+            in_selected_branch = element in selected
             source_paragraph_locator = parent_paragraphs.get(id(element))
-            ancestor = parent_map.get(id(element))
-            while source_paragraph_locator is None and ancestor is not None:
-                if ancestor.tag == f"{{{WORD_NAMESPACE}}}p":
-                    # Source ancestry remains observable for an unselected Choice object.
-                    # Do not cross an unselected inner paragraph to claim an outer anchor.
-                    source_paragraph_locator = parent_paragraphs.get(id(ancestor))
-                    break
-                ancestor = parent_map.get(id(ancestor))
+            if source_paragraph_locator is None:
+                paragraph = next(
+                    (
+                        ancestor
+                        for ancestor in ancestors
+                        if ancestor.tag == f"{{{WORD_NAMESPACE}}}p"
+                    ),
+                    None,
+                )
+                source_paragraph_locator = parent_paragraphs.get(id(paragraph))
             context_elements = [element]
-            parent = parent_map.get(id(element))
-            while parent is not None:
-                context_elements.append(parent)
-                if tag_local_name(parent.tag) in {"drawing", "object", "AlternateContent"}:
-                    break
-                parent = parent_map.get(id(parent))
+            if kind == "ole":
+                for ancestor in ancestors:
+                    if tag_local_name(ancestor.tag) == "AlternateContent":
+                        break
+                    if ancestor.tag == f"{{{WORD_NAMESPACE}}}object":
+                        context_elements.extend(
+                            child
+                            for child in iter_selected(ancestor)
+                            if child.tag
+                            in {
+                                f"{{{_VML_NAMESPACE}}}imagedata",
+                                f"{{{DRAWING_MAIN_NAMESPACE}}}blip",
+                            }
+                        )
+                        break
+            elif kind != "alt_chunk":
+                for ancestor in ancestors:
+                    context_elements.append(ancestor)
+                    if tag_local_name(ancestor.tag) in {"drawing", "object", "AlternateContent"}:
+                        break
             relationship_ids = tuple(
                 sorted(
                     {
@@ -238,8 +278,19 @@ def read_complex_objects(
                 )
             )
             parse_status: Literal["registered", "unsupported"] = "registered"
-            if kind in {"chart", "ole", "group_drawing"}:
+            if kind in {"chart", "ole", "group_drawing", "alt_chunk"}:
                 parse_status = "unsupported"
+            limitations: tuple[str, ...] = ()
+            if kind == "ole":
+                limitations = (
+                    "The embedded OLE payload is registered by relationship but is not opened, "
+                    "executed or semantically parsed.",
+                )
+            elif kind == "alt_chunk":
+                limitations = (
+                    "The alternate-format payload is registered by relationship but is not "
+                    "expanded, interpreted or executed.",
+                )
             objects.append(
                 DocxComplexObject(
                     part_path=part_path,
@@ -249,11 +300,14 @@ def read_complex_objects(
                     related_parts=related_parts,
                     available_preview=available_preview,
                     parse_status=parse_status,
+                    element_path=tuple(reversed(path)),
+                    in_selected_branch=in_selected_branch,
+                    limitations=limitations,
                     paragraph_locator=source_paragraph_locator,
                     metadata=tuple(sorted(metadata.items())),
                 )
             )
-            if kind in {"chart", "ole"} and not relationship_ids:
+            if kind in {"chart", "ole", "alt_chunk"} and not relationship_ids:
                 issues.append(f"complex-object-without-relationship:{part_path}#{object_index}")
     return tuple(objects), issues
 

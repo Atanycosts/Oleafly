@@ -1,4 +1,5 @@
 import type { AutomationHandle } from "@docx-editor.dev/core/automation";
+import { invoke } from "@tauri-apps/api/core";
 import {
   createDocxTools,
   docxReadForTool,
@@ -16,6 +17,9 @@ import {
   type DocxObjectFormatMutation,
   type DocxFormatReadQuery,
   type DocxFormatReadResult,
+  type DocxFormatCandidatePreparation,
+  type DocxFormatCandidateRefusal,
+  type DocxFormatCandidateTemplate,
   type DocxImageReadHostResult,
   type DocxImageReadRequest,
   type DocxEquationWriteRequest,
@@ -34,7 +38,8 @@ import {
 } from "@oleafly/ai-tools";
 import { runInlineCompletion } from "@/lib/ai-inline";
 import { docxContentSha256 } from "@/lib/docx-recovery";
-import { loadTemplateSource } from "@/lib/docx-template-client";
+import { journalTemplates, loadTemplateSource } from "@/lib/docx-template-client";
+import { journalRequest, JournalWorkbenchError, type JournalState, type JournalTemplateSummary } from "@/lib/journal-workbench";
 import type { CompiledDocxEquation } from "@/lib/docx-equation-conversion";
 import type { DocxApplyResult, DocxSession, DocxTarget } from "@/lib/docx-session";
 import type { DocxActivity, DocxDocumentIdentity } from "@/lib/docx-task-activity";
@@ -70,6 +75,12 @@ export interface DocxAgentRegistration {
     template: string;
     signal?: AbortSignal;
   }): Promise<DocxTemplateCheckResult>;
+  prepareFormatCandidate?(request: {
+    signal?: AbortSignal;
+    worldVersionId?: string;
+  }): Promise<DocxFormatCandidatePreparation>;
+  getFormatCandidateTemplates?(): { selected: DocxFormatCandidateTemplate | null; bound: DocxFormatCandidateTemplate | null };
+  getFormatCandidateBasis?(): { check_id: string; matches: boolean } | undefined;
   onTaskOperation?(receipt: {
     operationId: string;
     document: DocxDocumentIdentity;
@@ -251,7 +262,10 @@ export function getDocxWorkspaceContext(projectId = useFilesStore.getState().pro
     ...(item.save ? ["save_docx_document"] : []), ...(item.check ? ["check_docx_template"] : []),
     ...(item.prepareFonts ? ["prepare_docx_fonts"] : []), ...(item.exportDocument ? ["export_docx_document"] : []),
     ...(item.reveal ? ["reveal_docx_working_copy"] : []),
+    ...(item.prepareFormatCandidate ? ["create_docx_format_candidate"] : []),
   ] }));
+  const journalTemplates = available.flatMap((item) => item.getFormatCandidateTemplates
+    ? [{ sessionId: item.sessionId, ...item.getFormatCandidateTemplates() }] : []);
   const selected = viewed?.selection;
   const working = viewed?.role === "working" ? writable.find((item) => item.sessionId === viewed.sessionId) : undefined;
   const selectedParagraph = working && selected && selected.revision === String(working.sessionRevision) &&
@@ -260,8 +274,13 @@ export function getDocxWorkspaceContext(projectId = useFilesStore.getState().pro
       (!selected.paragraphRef || item.handle.ref === selected.paragraphRef) && (!selected.paraId || item.paraId === selected.paraId)) : undefined;
   const selectionWriteTarget = working && selectedParagraph
     ? { sessionId: working.sessionId, paragraphRef: selectedParagraph.handle.ref, revision: working.sessionRevision } : null;
-  return { viewed, writable, capabilities, selectionWriteTarget,
+  return { viewed, writable, capabilities, selectionWriteTarget, ...(journalTemplates.length ? { journalTemplates } : {}),
     targeting: "Viewed materials and writable Word sessions are separate. Original/history/evidence selections are reference data. Only selectionWriteTarget is a verified current live write address. Read the chosen live session and use its exact revision before editing. Saving and checking are separate operations." };
+}
+
+export function describeDocxFormatTemplate(summary: JournalTemplateSummary): DocxFormatCandidateTemplate {
+  return { versionId: summary.version_id, journal: summary.journal_name, version: summary.version_ordinal,
+    status: summary.template_preparation.state, analyzerVersion: summary.template_preparation.analyzer_version };
 }
 
 /** Called by the workspace host only after its follow/pause policy accepts navigation. */
@@ -300,10 +319,10 @@ async function reportDocxOperation<T>(
   useAgentWorkspaceStore.getState().report({ ...base, phase: "started", ...navigationTarget() });
   try {
     const result = await action();
-    const value = result as { ok?: boolean; message?: string; checkpoint?: { status: string; error?: string } };
+    const value = result as { ok?: boolean; message?: string; error?: string; checkpoint?: { status: string; error?: string } };
     const failed = value?.ok === false || value?.checkpoint?.status === "failed";
     useAgentWorkspaceStore.getState().report({ ...base, phase: failed ? "failed" : "succeeded", ...navigationTarget(), result,
-      ...(failed ? { error: value.message ?? value.checkpoint?.error ?? "The Word operation was refused." } : {}) });
+      ...(failed ? { error: value.error ?? value.message ?? value.checkpoint?.error ?? "The Word operation was refused." } : {}) });
     return result;
   } catch (cause) {
     useAgentWorkspaceStore.getState().report({ ...base, phase: "failed", ...navigationTarget(), error: String(cause) });
@@ -428,6 +447,8 @@ function pageNextQuery(
 ): DocxDocumentRead["nextQuery"] {
   const base = {
     ...(query.sessionId ? { sessionId: query.sessionId } : {}),
+    ...(query.paragraphRef ? { paragraphRef: query.paragraphRef } : {}),
+    ...(query.readVersion ? { readVersion: query.readVersion } : {}),
     offset: query.offset ?? 0,
     limit: query.limit ?? 20,
     expectedRevision: revision,
@@ -572,9 +593,6 @@ function readDocumentPage(
   registration: RegisteredDocxSession,
   query: DocxReadQuery = {},
 ): DocxDocumentRead {
-  const boundQuery: DocxReadQuery = query.sessionId === registration.sessionId
-    ? query
-    : { ...query, sessionId: registration.sessionId };
   const offset = query.offset ?? 0;
   const limit = query.limit ?? 20;
   if (!Number.isInteger(offset) || offset < 0)
@@ -602,31 +620,58 @@ function readDocumentPage(
   if (query.expectedRevision !== undefined &&
       (!Number.isInteger(query.expectedRevision) || query.expectedRevision < 0))
     throw new Error("DOCX expectedRevision must be a non-negative integer.");
+  if (query.readVersion && (!query.sessionId || query.expectedRevision === undefined))
+    throw new Error("read_version requires session_id and expected_revision.");
+  if (query.paragraphRef && (!query.readVersion || offset !== 0))
+    throw new Error("paragraph_ref requires the exact versioned read route, without a nonzero offset.");
+  const page = readBoundDocumentPage(registration, query, offset, limit, textOffset, textLimit);
+  if (page.document.sessionRevision !== registration.session.revision() ||
+      page.readVersion !== registration.session.readVersion?.())
+    throw new Error("The DOCX changed during this read. Read the current working copy again.");
+  return page;
+}
+
+function readBoundDocumentPage(
+  registration: RegisteredDocxSession,
+  query: DocxReadQuery,
+  offset: number,
+  limit: number,
+  textOffset?: number,
+  textLimit?: number,
+): DocxDocumentRead {
   const handles = registration.session.listParagraphHandles();
   const revision = registration.session.revision();
   if (query.expectedRevision !== undefined && query.expectedRevision !== revision)
     throw new Error(`The DOCX read continuation is stale: expected revision ${query.expectedRevision}, current ${revision}.`);
+  const readVersion = registration.session.readVersion?.();
+  if (query.readVersion && query.readVersion !== readVersion)
+    throw new Error("The live DOCX package has changed. Read the current working copy again.");
+  const boundQuery = { ...query, sessionId: registration.sessionId, readVersion };
+  const paragraphIndex = query.paragraphRef ? handles.findIndex((handle) => handle.ref === query.paragraphRef) : offset;
+  if (paragraphIndex < 0) throw new Error("The DOCX reference paragraph is not present in this session.");
   if (textOffset !== undefined && offset >= handles.length)
     throw new Error("The DOCX text window does not identify an existing paragraph.");
   const windowed = textOffset !== undefined && textLimit !== undefined;
-  const requestedEnd = Math.min(handles.length, offset + (windowed ? 1 : limit));
-  const paragraphNextOffset = requestedEnd < handles.length ? requestedEnd : null;
+  const requestedEnd = Math.min(handles.length, paragraphIndex + (windowed || query.paragraphRef ? 1 : limit));
+  const nextAfter = (index: number) => !query.paragraphRef && index < handles.length ? index : null;
+  const documentAtRead = document(registration);
   if (windowed) {
-    const semantics = registration.session.readParagraph(handles[offset]);
-    return readParagraphPage(registration, boundQuery, handles[offset].ref, semantics,
-      textOffset!, textLimit!, paragraphNextOffset, handles.length);
+    const semantics = registration.session.readParagraph(handles[paragraphIndex]);
+    return readParagraphPage(documentAtRead, boundQuery, paragraphIndex, semantics,
+      textOffset, textLimit, nextAfter(requestedEnd), handles.length);
   }
 
   const paragraphs: DocxParagraphView[] = [];
   let previous: DocxDocumentRead | null = null;
-  for (let index = offset; index < requestedEnd; index++) {
+  for (let index = paragraphIndex; index < requestedEnd; index++) {
     const semantics = registration.session.readParagraph(handles[index]);
     const view = paragraphView(handles[index].ref, semantics);
-    const nextOffset = index + 1 < handles.length ? index + 1 : null;
+    const nextOffset = nextAfter(index + 1);
     const result = {
-      document: document(registration),
+      document: documentAtRead,
+      ...(readVersion ? { readVersion } : {}),
       paragraphs: [...paragraphs, view],
-      offset,
+      offset: paragraphIndex,
       nextOffset,
       totalParagraphs: handles.length,
       nextQuery: pageNextQuery(boundQuery, revision, nextOffset),
@@ -637,12 +682,13 @@ function readDocumentPage(
       continue;
     }
     if (paragraphs.length) return previous!;
-    return readParagraphPage(registration, boundQuery, handles[index].ref, semantics,
-      0, 4000, index + 1 < handles.length ? index + 1 : null, handles.length);
+    return readParagraphPage(documentAtRead, boundQuery, index, semantics,
+      0, 4000, nextOffset, handles.length);
   }
   if (previous) return previous;
   return {
-    document: document(registration),
+    document: documentAtRead,
+    ...(readVersion ? { readVersion } : {}),
     paragraphs: [],
     offset,
     nextOffset: null,
@@ -652,15 +698,16 @@ function readDocumentPage(
 }
 
 function readParagraphPage(
-  registration: RegisteredDocxSession,
+  documentAtRead: DocxActivityDocument,
   query: DocxReadQuery,
-  paragraphRef: string,
+  paragraphIndex: number,
   semantics: ReturnType<DocxSession["readParagraph"]>,
   textOffset: number,
   textLimit: number,
   paragraphNextOffset: number | null,
   totalParagraphs: number,
 ): DocxDocumentRead {
+  const paragraphRef = semantics.paragraphRef;
   let modelWindow = sliceUtf16(semantics.modelText, textOffset, textLimit);
   const fixedWindow =
     query.atomOffset !== undefined || query.payloadOffset !== undefined;
@@ -754,9 +801,10 @@ function readParagraphPage(
       omitText,
     });
     return {
-      document: document(registration),
+      document: documentAtRead,
+      ...(query.readVersion ? { readVersion: query.readVersion } : {}),
       paragraphs: [view],
-      offset: query.offset ?? 0,
+      offset: paragraphIndex,
       nextOffset: paragraphNextOffset,
       totalParagraphs,
       nextQuery,
@@ -849,6 +897,16 @@ function compactTemplateCheck(result: DocxTemplateCheckResult): DocxTemplateChec
   check.detail = "compact";
   check.readBoundary = "The complete check, world, rule results, coverage gaps and findings remain retained. Read objectRead or page findingsRead before judging omitted content.";
   return { template: result.template, check };
+}
+
+function templateCheckRead(sessionId: string, checkId?: unknown) {
+  return { tool: "read_docx_template_check", arguments: { session_id: sessionId, operation: "status",
+    ...(typeof checkId === "string" ? { check_id: checkId } : {}) } };
+}
+
+function candidateReviewRead(sessionId: string, checkId?: string) {
+  return { tool: "read_docx_candidate_review", arguments: { session_id: sessionId,
+    ...(checkId === undefined ? {} : { check_id: checkId }) } };
 }
 
 async function performEquationWrite(
@@ -1389,6 +1447,7 @@ async function executeTaskDocxOperation(
     const context = getDocxWorkspaceContext(scope.projectId);
     context.writable = context.writable.filter((item) => item.sessionId === registration.sessionId);
     context.capabilities = context.capabilities?.filter((item) => item.sessionId === registration.sessionId);
+    context.journalTemplates = context.journalTemplates?.filter((item) => item.sessionId === registration.sessionId);
     if (context.selectionWriteTarget?.sessionId !== registration.sessionId) context.selectionWriteTarget = null;
     return { operation, ok: true, document: docxTaskDocument(scope, registration.sessionId), result: context };
   }
@@ -1403,24 +1462,13 @@ async function executeTaskDocxOperation(
   }
   if (operation === "read_format") {
     if (!registration.readFormat) throw new Error("Live DOCX formatting reads are unavailable for this working copy.");
+    const document = taskDocument(registration);
     const result = await registration.readFormat((args as DocxTaskReadFormatArgs).query);
-    if (taskRegistration(scope, registration.sessionId).session !== registration.session) {
+    if (taskRegistration(scope, registration.sessionId).session !== registration.session ||
+        registration.session.revision() !== document.sessionRevision) {
       throw new Error("The DOCX session closed or changed while its formatting was read.");
     }
-    return {
-      operation,
-      ok: true,
-      document: {
-        sessionId: result.document.sessionId,
-        appProjectId: registration.appProjectId,
-        workbenchProjectId: registration.workbenchProjectId,
-        baselineId: result.document.baselineId,
-        sourceSha256: result.sourceSha256,
-        sessionRevision: result.revision,
-        savedRevision: result.document.savedRevision,
-      },
-      result,
-    };
+    return { operation, ok: true, document, result };
   }
   if (operation === "replace_range") {
     const input = args as DocxTaskReplaceRangeArgs;
@@ -1650,7 +1698,7 @@ export function updateDocxAgentSession(
   notify();
 }
 
-export function unregisterDocxAgentSession(sessionId: string): void {
+export function unregisterDocxAgentSession(sessionId: string): RegisteredDocxSession | undefined {
   const registration = sessions.get(sessionId);
   if (!registration) return;
   generations.get(sessionId)?.abort();
@@ -1669,18 +1717,32 @@ export function unregisterDocxAgentSession(sessionId: string): void {
       .at(-1)?.sessionId ?? null;
   }
   notify();
+  return registration;
 }
 
 export function createDocxAgentTools(
   opts?: DocxToolsOptions,
 ) {
+  const candidateRefusals = new Map<string, DocxFormatCandidateRefusal>();
   const externalFlowId = crypto.randomUUID();
   const origin = () => {
     const value = ordinaryOrigin(opts);
     return value.kind === "external" ? { ...value, flowId: opts?.runId?.() ?? externalFlowId } : value;
   };
+  const assertChatRead = () => {
+    opts?.signal?.throwIfAborted();
+    if (origin().kind !== "chat") throw new Error("This chat no longer owns the Word session.");
+  };
   const perform = <T,>(sessionId: string | undefined, operation: string, action: () => Promise<T>, paragraphRef?: string) =>
     reportDocxOperation(registrationFor(sessionId), operation, origin(), action, paragraphRef);
+  const assertDirectFormattingAllowed = (registration: RegisteredDocxSession): void => {
+    const templates = registration.getFormatCandidateTemplates?.();
+    if (origin().kind === "chat" && (templates?.selected || templates?.bound)) {
+      throw new Error(
+        "This Word document has a selected journal template. Use create_docx_format_candidate so the formatting stays in an isolated candidate; direct live formatting is disabled in ordinary chat.",
+      );
+    }
+  };
   const host: DocxToolsHost = {
     ...DOCX_AGENT_HOST,
     revealWorkingCopy: (input) => perform(input.sessionId, "reveal", () => DOCX_AGENT_HOST.revealWorkingCopy!(input), input.paragraphRef),
@@ -1690,14 +1752,100 @@ export function createDocxAgentTools(
       const target = targetFor(input.targetId);
       return perform(target.registration.sessionId, "apply", () => DOCX_AGENT_HOST.applySuggestion(input, context), target.record.paragraph.ref);
     },
-    formatParagraph: (sessionId, paragraphRef, revision, format, context) => perform(sessionId, "format",
-      () => DOCX_AGENT_HOST.formatParagraph!(sessionId, paragraphRef, revision, format, context), paragraphRef),
-    formatObject: (sessionId, paragraphRef, revision, format, context) => perform(sessionId, "format",
-      () => DOCX_AGENT_HOST.formatObject!(sessionId, paragraphRef, revision, format, context), paragraphRef),
-    formatBatch: (sessionId, revision, operations, context) => perform(sessionId, "format_batch",
-      () => DOCX_AGENT_HOST.formatBatch!(sessionId, revision, operations, context), operations[0]?.paragraphRef),
-    importTemplateStyles: (sessionId, template, styleIds, revision, context) => perform(sessionId, "import_styles",
-      () => DOCX_AGENT_HOST.importTemplateStyles!(sessionId, template, styleIds, revision, context)),
+    formatParagraph: (sessionId, paragraphRef, revision, format, context) => perform(sessionId, "format", () => {
+      assertDirectFormattingAllowed(registrationFor(sessionId));
+      return DOCX_AGENT_HOST.formatParagraph!(sessionId, paragraphRef, revision, format, context);
+    }, paragraphRef),
+    formatObject: (sessionId, paragraphRef, revision, format, context) => perform(sessionId, "format", () => {
+      assertDirectFormattingAllowed(registrationFor(sessionId));
+      return DOCX_AGENT_HOST.formatObject!(sessionId, paragraphRef, revision, format, context);
+    }, paragraphRef),
+    formatBatch: (sessionId, revision, operations, context) => perform(sessionId, "format_batch", () => {
+      assertDirectFormattingAllowed(registrationFor(sessionId));
+      return DOCX_AGENT_HOST.formatBatch!(sessionId, revision, operations, context);
+    }, operations[0]?.paragraphRef),
+    importTemplateStyles: (sessionId, template, styleIds, revision, context) => perform(sessionId, "import_styles", () => {
+      assertDirectFormattingAllowed(registrationFor(sessionId));
+      return DOCX_AGENT_HOST.importTemplateStyles!(sessionId, template, styleIds, revision, context);
+    }),
+    listJournalTemplates: async () => journalTemplates(await journalRequest<JournalState>("/api/state")).map(describeDocxFormatTemplate),
+    readSavedContent: async (sessionId, query) => {
+      assertChatRead();
+      const registration = registrationFor(sessionId);
+      const result = await invoke("journal_docx_content_for_agent", {
+        projectId: registration.workbenchProjectId, sessionId,
+        baselineId: registration.baselineId, sourceSha256: registration.sourceSha256, query,
+      });
+      assertChatRead();
+      currentRegistration(registration);
+      return result;
+    },
+    readTemplateStyles: async (sessionId, query) => {
+      assertChatRead();
+      const registration = registrationFor(sessionId);
+      const result = await invoke("journal_docx_template_styles_for_agent", {
+        projectId: registration.workbenchProjectId, sessionId, query,
+      });
+      assertChatRead();
+      currentRegistration(registration);
+      return result;
+    },
+    readTemplateCheck: async (sessionId, query) => {
+      assertChatRead();
+      const registration = registrationFor(sessionId);
+      const result = await invoke<Record<string, unknown>>("journal_docx_check_for_agent", {
+        projectId: registration.workbenchProjectId, sessionId, query,
+      });
+      assertChatRead();
+      const current = currentRegistration(registration);
+      if (result.operation !== "status") return result;
+      return { ...result, document: document(current), selectedTemplate: current.getFormatCandidateTemplates?.().selected ?? null,
+        candidateReviewRead: candidateReviewRead(sessionId) };
+    },
+    readCandidateReview: async (sessionId, query) => {
+      assertChatRead();
+      const registration = registrationFor(sessionId);
+      const liveBasis = registration.getFormatCandidateBasis?.();
+      const result = await invoke("journal_candidate_review_for_agent", {
+        projectId: registration.workbenchProjectId, sessionId, query, ...(liveBasis ? { liveBasis } : {}),
+      });
+      assertChatRead();
+      const after = currentRegistration(registration).getFormatCandidateBasis?.();
+      if (liveBasis?.check_id !== after?.check_id || liveBasis?.matches !== after?.matches) {
+        throw new Error("The Word candidate or its working copy changed during the read. Read the review again.");
+      }
+      return result;
+    },
+    prepareFormatCandidate: async (sessionId, worldVersionId, context) => {
+      const registration = registrationFor(sessionId);
+      if (origin().kind !== "chat") {
+        throw new Error("The Word format candidate is available only in ordinary chat.");
+      }
+      if (!registration.prepareFormatCandidate) {
+        throw new Error("The Word format candidate is unavailable for this working copy.");
+      }
+      if (context?.signal?.aborted) {
+        throw new Error("The Word format candidate was cancelled before it started.");
+      }
+      const key = JSON.stringify([registration.sessionId, worldVersionId]);
+      const previous = candidateRefusals.get(key);
+      const workspaceRead = templateCheckRead(registration.sessionId);
+      if (previous) return { ...previous, workspaceRead };
+      return reportDocxOperation(registration, "format_candidate", origin(), async () => {
+        try {
+          const result = await registration.prepareFormatCandidate!({ worldVersionId, signal: context?.signal });
+          return { ...result, document: liveDocument(registration), workspaceRead,
+            reviewRead: candidateReviewRead(registration.sessionId, result.candidateCheckId) };
+        } catch (cause) {
+          if (!(cause instanceof JournalWorkbenchError)) throw cause;
+          const conflict = ["baseline_conflict", "binding_conflict", "candidate_review_conflict"].includes(cause.detail.code);
+          const refusal: DocxFormatCandidateRefusal = { ...cause.detail, ok: false,
+            ...(conflict ? { status: "conflict" } : {}), retryable_with_same_params: false };
+          candidateRefusals.set(key, refusal);
+          return { ...refusal, workspaceRead };
+        }
+      });
+    },
     replaceTextRange: (input, context) => perform(
       input.sessionId,
       "replace_range",
@@ -1708,10 +1856,28 @@ export function createDocxAgentTools(
       () => DOCX_AGENT_HOST.writeEquation!(input, context), input.paragraphRef),
     saveDocument: (sessionId, revision, context) => perform(sessionId, "save",
       () => DOCX_AGENT_HOST.saveDocument!(sessionId, revision, context)),
-    checkTemplate: (sessionId, template, context) => perform(sessionId, "check",
-      () => DOCX_AGENT_HOST.checkTemplate!(sessionId, template, context)),
+    checkTemplate: (sessionId, template, context) => perform(sessionId, "check", async () => {
+      const registration = registrationFor(sessionId);
+      const result = await DOCX_AGENT_HOST.checkTemplate!(registration.sessionId, template, context);
+      if (origin().kind !== "chat") return result;
+      const objectRead = templateCheckRead(registration.sessionId, result.check.check_id);
+      return { ...result, check: { ...result.check, objectRead,
+        ...(result.check.template_comparison ? { findingsRead: { tool: objectRead.tool,
+          arguments: { ...objectRead.arguments, operation: "finding_groups", offset: 0, limit: 20 } } } : {}),
+        readBoundary: "Use objectRead for retained status and evidence, or page findingsRead for template differences. Neither operation runs a new check.",
+      } };
+    }),
   };
-  return createDocxTools(host, opts);
+  const tools = createDocxTools(host, opts);
+  if (origin().kind !== "chat") {
+    const exposed = tools as Partial<typeof tools>;
+    delete exposed.create_docx_format_candidate;
+    delete exposed.read_docx_template_check;
+    delete exposed.read_docx_candidate_review;
+    delete exposed.read_docx_saved_content;
+    delete exposed.read_docx_template_styles;
+  }
+  return tools;
 }
 
 export function subscribeDocxAgentSessions(listener: () => void): () => void {

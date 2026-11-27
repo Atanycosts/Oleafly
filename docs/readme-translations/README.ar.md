@@ -12,12 +12,14 @@
 
 [![المشكلات المفتوحة](https://img.shields.io/github/issues/Oleafly/Oleafly?label=issues&color=22c55e)](https://github.com/Oleafly/Oleafly/issues) [![التنزيلات](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FOleafly%2FOleafly%2Fbadges%2F.github%2Fbadges%2Fdownloads.json)](https://github.com/Oleafly/Oleafly/releases) [![CI](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml/badge.svg)](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml) [![بوابة الجودة في SonarQube](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Oleafly_Oleafly) [![تغطية الشيفرة](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=coverage)](https://sonarcloud.io/component_measures?id=Oleafly_Oleafly&metric=coverage) [![حالة التطوير: فائق النشاط](https://img.shields.io/badge/status-ultra_active-22c55e)](https://github.com/Oleafly/Oleafly/pulse) [![تاريخ آخر commit](https://img.shields.io/github/last-commit/Oleafly/Oleafly?label=last%20commit&color=22c55e)](https://github.com/Oleafly/Oleafly/commits/main) [![الترخيص: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-22c55e.svg)](../../LICENSE) [![Discord](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2Fkt9bcCjgkP%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&suffix=%20members&label=&color=5865F2&logo=discord&logoColor=white&cacheSeconds=600)](https://oleafly.com/discord) [![النجوم](https://img.shields.io/github/stars/Oleafly/Oleafly?style=social)](https://github.com/Oleafly/Oleafly)
 
-**محرر تعاوني مباشر للبحث العلمي، يعمل باستخدام LaTeX وTypst وMarkdown.**
+**مساحة عمل بحثية مفتوحة المصدر للكتابة وقيادة فريق بحثي من وكلاء الذكاء الاصطناعي.**
 
-Oleafly محرر قوي لكتابة الأوراق البحثية والأطروحات باستخدام LaTeX وTypst وMarkdown. يجتمع مصدر المشروع وPDF والاستشهادات والأشكال والفحوصات وسجل Git في مكان واحد. اكتب مع مؤلفيك المشاركين في الوقت الفعلي، وأبقِ مشروعاتك متزامنة بين حواسيبك، وأدخل Claude Code أو Codex أو أي نموذج تفضّله إلى المشروع.
+يجمع Oleafly تحرير المخطوطات والمراجع وتجميع المستندات ومراجعة ملفات PDF في مساحة عمل واحدة. يواصل هذا الفرع تطوير محرر LaTeX وTypst وMarkdown: يمكنك أن تكتب بنفسك أو أن تكلف فريقًا من وكلاء الذكاء الاصطناعي بهدف بحثي. يوزع وكيل منسق المهام، ويمكنك مراجعة ما تغير ولماذا، وتغيير مسار الفريق أو تولي العمل بنفسك، وتحديد النتائج التي ستعتمدها.
+
+تشير روابط التنزيل في هذه الصفحة إلى إصدارات مشروع Oleafly الأصلي. راجع [فهرس الوثائق](../README.md) لمعرفة توجه هذا الفرع وإمكاناته الحالية وحالة التحقق منها.
 
 <p>
-  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>تنزيل مجاني</strong></a>
+  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>نزّل إصدار المشروع الأصلي</strong></a>
 · <a href="https://oleafly.com/docs/">اقرأ الأدلة</a> · <a href="https://github.com/Oleafly/oleafly-server">شغّل خادمًا</a> · <a href="../development.md">ابنِ من المصدر</a>
 </p>
 

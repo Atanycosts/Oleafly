@@ -1,4 +1,5 @@
 import type { AutomationHandle } from "@docx-editor.dev/core/automation";
+import { invoke } from "@tauri-apps/api/core";
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useFilesStore } from "@/store/files";
@@ -20,7 +21,14 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/ai-inline", () => ({
   runInlineCompletion: mocks.runInlineCompletion,
 }));
-vi.mock("@/lib/docx-template-client", () => ({ loadTemplateSource: mocks.templateSource }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tauri-apps/api/core")>();
+  return { ...actual, invoke: vi.fn(actual.invoke) };
+});
+vi.mock("@/lib/docx-template-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/docx-template-client")>();
+  return { ...actual, loadTemplateSource: mocks.templateSource };
+});
 vi.mock("@/lib/docx-equation-conversion", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./docx-equation-conversion")>();
   return { ...actual, compileDocxEquation: mocks.compileDocxEquation };
@@ -47,6 +55,7 @@ import { beginChatRun, endChatRun } from "@/components/ai/chat-run-registry";
 import { docxReadForTool, type DocxReadQuery } from "@oleafly/ai-tools";
 import { DocxEquationConversionError, type CompiledDocxEquation } from "./docx-equation-conversion";
 import type { DocxActivity } from "./docx-task-activity";
+import { JournalWorkbenchError } from "./journal-workbench";
 
 type DocxFormatReadQuery = Parameters<NonNullable<typeof DOCX_AGENT_HOST.readFormat>>[1];
 type Exec = (input?: unknown) => Promise<unknown>;
@@ -205,6 +214,7 @@ function tool(name: keyof ReturnType<typeof createDocxAgentTools>): Exec {
 
 beforeEach(() => {
   resetDocxAgentHostForTest();
+  vi.mocked(invoke).mockReset();
   useFilesStore.setState({ projectId: "app-project" });
   mocks.runInlineCompletion.mockReset();
   mocks.compileDocxEquation.mockReset();
@@ -273,6 +283,471 @@ describe("Word workspace context and execution feedback", () => {
     unsubscribe();
     local.edit("p1", "Later edit.");
     expect(listener).toHaveBeenCalledTimes(calls);
+  });
+
+  it("projects candidate capabilities and exact templates only for live workspace contexts", async () => {
+    const selected = {
+      versionId: "world-selected", journal: "IEEE", version: 7,
+      status: "ready" as const, analyzerVersion: "analyzer-1",
+    };
+    const bound = {
+      versionId: "world-bound", journal: "ACM", version: 3,
+      status: "pending_refresh" as const, analyzerVersion: "analyzer-old",
+    };
+    register(harness().session, {
+      prepareFormatCandidate: vi.fn(),
+      getFormatCandidateTemplates: () => ({ selected, bound }),
+    });
+    register(harness().session, {
+      sessionId: "session-2",
+      workbenchProjectId: "paper-2",
+      getFormatCandidateTemplates: () => ({ selected: null, bound: null }),
+    });
+    register(harness().session, {
+      sessionId: "foreign-session",
+      appProjectId: "foreign-project",
+      prepareFormatCandidate: vi.fn(),
+      getFormatCandidateTemplates: () => ({ selected, bound }),
+    });
+
+    const context = getDocxWorkspaceContext();
+    expect(context.capabilities?.find((item) => item.sessionId === "session-1")?.operations)
+      .toContain("create_docx_format_candidate");
+    expect(context.journalTemplates).toEqual([
+      { sessionId: "session-1", selected, bound },
+      { sessionId: "session-2", selected: null, bound: null },
+    ]);
+    expect(await tool("get_docx_workspace_context")({})).toMatchObject({
+      journalTemplates: context.journalTemplates,
+    });
+    expect(getDocxWorkspaceContext("foreign-project").journalTemplates)
+      .toEqual([{ sessionId: "foreign-session", selected, bound }]);
+
+    const taskContext = await runTaskDocxOperation({
+      projectId: "app-project", workbenchProjectId: "paper-project",
+    }, "session-1", "context", {});
+    expect(taskContext.result).toMatchObject({
+      writable: [{ sessionId: "session-1" }],
+      capabilities: [{ sessionId: "session-1" }],
+      journalTemplates: [{ sessionId: "session-1", selected, bound }],
+    });
+  });
+
+  it("lists only retained template worlds with their readiness projection", async () => {
+    const scope = { article_type: "journal", stage: "submission", language: "en" };
+    vi.mocked(invoke).mockResolvedValueOnce({
+      worlds: [
+        {
+          version_id: "world-template", journal_id: "ieee", journal_name: "IEEE",
+          version_ordinal: 7, created_at: "2026-11-24T00:00:00Z", scope,
+          template_preparation: {
+            state: "ready", reason: null, analyzer_version: "analyzer-7",
+            current_analyzer_version: "analyzer-7",
+          },
+        },
+        {
+          version_id: "world-rules", journal_id: "ieee", journal_name: "IEEE",
+          version_ordinal: 6, created_at: "2026-11-23T00:00:00Z", scope,
+        },
+      ],
+      projects: [],
+    });
+
+    await expect(tool("list_docx_templates")({})).resolves.toEqual({
+      templates: [{
+        versionId: "world-template",
+        journal: "IEEE",
+        version: 7,
+        status: "ready",
+        analyzerVersion: "analyzer-7",
+      }],
+    });
+    expect(vi.mocked(invoke)).toHaveBeenCalledExactlyOnceWith("journal_workbench_request", {
+      path: "/api/state",
+      payload: null,
+    });
+  });
+
+  it("registers check and candidate reads only for the matching ordinary-chat run", () => {
+    const invocation = vi.mocked(invoke);
+    expect(createDocxAgentTools()).not.toHaveProperty("read_docx_template_check");
+    expect(createDocxAgentTools()).not.toHaveProperty("read_docx_candidate_review");
+    expect(createDocxAgentTools()).not.toHaveProperty("read_docx_saved_content");
+    expect(createDocxAgentTools()).not.toHaveProperty("read_docx_template_styles");
+    const controller = new AbortController();
+    const run = beginChatRun(controller, "app-project");
+    try {
+      const wrongSignal = createDocxAgentTools({ signal: new AbortController().signal });
+      expect(wrongSignal).not.toHaveProperty("read_docx_template_check");
+      expect(wrongSignal).not.toHaveProperty("read_docx_candidate_review");
+      expect(wrongSignal).not.toHaveProperty("read_docx_saved_content");
+      expect(wrongSignal).not.toHaveProperty("read_docx_template_styles");
+      const tools = createDocxAgentTools({ signal: controller.signal });
+      expect(tools).toHaveProperty("read_docx_template_check");
+      expect(tools).toHaveProperty("read_docx_candidate_review");
+      expect(tools).toHaveProperty("read_docx_saved_content");
+      expect(tools).toHaveProperty("read_docx_template_styles");
+      expect(invocation).not.toHaveBeenCalled();
+    } finally {
+      endChatRun(run);
+    }
+    expect(createDocxAgentTools({ signal: controller.signal }))
+      .not.toHaveProperty("read_docx_template_check");
+    expect(createDocxAgentTools({ signal: controller.signal }))
+      .not.toHaveProperty("read_docx_saved_content");
+
+    const otherController = new AbortController();
+    const otherRun = beginChatRun(otherController, "other-project");
+    try {
+      const tools = createDocxAgentTools({ signal: otherController.signal });
+      expect(tools).not.toHaveProperty("read_docx_template_check");
+      expect(tools).not.toHaveProperty("read_docx_candidate_review");
+      expect(tools).not.toHaveProperty("read_docx_saved_content");
+      expect(tools).not.toHaveProperty("read_docx_template_styles");
+    } finally {
+      endChatRun(otherRun);
+    }
+  });
+
+  it("reads exact saved-check status through its Word session without checking or navigating", async () => {
+    register(harness().session, {
+      getFormatCandidateTemplates: () => ({
+        selected: {
+          versionId: "world-first", journal: "First", version: 1,
+          status: "ready", analyzerVersion: "analyzer-first",
+        },
+        bound: null,
+      }),
+    });
+    const local = harness();
+    const check = vi.fn();
+    const selectedTemplate = {
+      versionId: "world-selected", journal: "IEEE", version: 7,
+      status: "ready" as const, analyzerVersion: "analyzer-1",
+    };
+    local.edit("p1", "Live revision one.");
+    register(local.session, {
+      sessionId: "session-2",
+      workbenchProjectId: "paper-2",
+      baselineId: "baseline-2",
+      sourceSha256: "c".repeat(64),
+      check,
+      getFormatCandidateTemplates: () => ({ selected: selectedTemplate, bound: null }),
+    });
+    const response = {
+      operation: "status",
+      scope: "current",
+      project: { project_id: "paper-2" },
+      check: { check_id: "check-2" },
+    };
+    const invocation = vi.mocked(invoke).mockResolvedValueOnce(response);
+    const controller = new AbortController();
+    const run = beginChatRun(controller, "app-project");
+    try {
+      const { read_docx_template_check: read } = createDocxAgentTools({ signal: controller.signal });
+      await expect(read.execute({
+        session_id: "session-2", operation: "status", check_id: "check-2",
+      })).resolves.toMatchObject({
+        ...response,
+        document: {
+          sessionId: "session-2",
+          baselineId: "baseline-2",
+          sourceSha256: "c".repeat(64),
+          sessionRevision: 1,
+          savedRevision: 0,
+          dirty: true,
+        },
+        selectedTemplate,
+        candidateReviewRead: {
+          tool: "read_docx_candidate_review",
+          arguments: { session_id: "session-2" },
+        },
+      });
+      expect(invocation).toHaveBeenCalledExactlyOnceWith("journal_docx_check_for_agent", {
+        projectId: "paper-2",
+        sessionId: "session-2",
+        query: { operation: "status", check_id: "check-2" },
+      });
+      expect(check).not.toHaveBeenCalled();
+      expect(local.session.revision()).toBe(1);
+      expect(useAgentWorkspaceStore.getState().operations).toEqual([]);
+      expect(useAgentWorkspaceStore.getState().latestTarget).toBeNull();
+
+      unregisterDocxAgentSession("session-2");
+      await expect(read.execute({
+        session_id: "session-2", operation: "status", check_id: "check-2",
+      })).resolves.toHaveProperty("error");
+      expect(invocation).toHaveBeenCalledOnce();
+    } finally {
+      endChatRun(run);
+    }
+  });
+
+  it("reads the pending candidate only for the explicit Word session in ordinary chat", async () => {
+    register(harness().session);
+    register(harness().session, { sessionId: "session-2", workbenchProjectId: "other-paper" });
+    register(harness().session, { sessionId: "foreign-session", appProjectId: "foreign-project" });
+    expect(createDocxAgentTools()).not.toHaveProperty("read_docx_candidate_review");
+    const result = { schema_version: 1, summary: { candidate_check_id: "check-1" } };
+    const invocation = vi.mocked(invoke).mockResolvedValueOnce(result);
+    const controller = new AbortController();
+    const run = beginChatRun(controller, "app-project");
+    try {
+      const { read_docx_candidate_review: read } = createDocxAgentTools({ signal: controller.signal });
+      await expect(read.execute({})).resolves.toHaveProperty("error");
+      await expect(read.execute({ session_id: "foreign-session" })).resolves.toMatchObject({
+        error: expect.stringContaining("not bound"),
+      });
+      expect(invocation).not.toHaveBeenCalled();
+      const query = { check_id: "check-1", collection: "remaining", offset: 20, limit: 20 };
+      await expect(read.execute({ session_id: "session-1", ...query })).resolves.toEqual(result);
+      expect(invocation).toHaveBeenCalledExactlyOnceWith("journal_candidate_review_for_agent", {
+        projectId: "paper-project", sessionId: "session-1", query,
+      });
+      expect(useAgentWorkspaceStore.getState().operations).toEqual([]);
+      expect(useAgentWorkspaceStore.getState().latestTarget).toBeNull();
+      unregisterDocxAgentSession("session-1");
+      await expect(read.execute({ session_id: "session-1", ...query })).resolves.toHaveProperty("error");
+      expect(invocation).toHaveBeenCalledTimes(1);
+    } finally {
+      endChatRun(run);
+    }
+  });
+
+  it("passes the ordinary-chat candidate basis without checking or navigating", async () => {
+    const local = harness();
+    const basis = { check_id: "candidate-1", matches: true };
+    const check = vi.fn();
+    register(local.session, { check, getFormatCandidateBasis: () => basis });
+    const invocation = vi.mocked(invoke).mockResolvedValueOnce({ review_status: "pending_review" });
+    const controller = new AbortController();
+    const run = beginChatRun(controller, "app-project");
+    try {
+      const { read_docx_candidate_review: read } = createDocxAgentTools({ signal: controller.signal });
+      const query = { check_id: "candidate-1", collection: "remaining", offset: 20, limit: 20 };
+      await expect(read.execute({ session_id: "session-1", ...query }))
+        .resolves.toEqual({ review_status: "pending_review" });
+      expect(invocation).toHaveBeenCalledExactlyOnceWith("journal_candidate_review_for_agent", {
+        projectId: "paper-project", sessionId: "session-1", query, liveBasis: basis,
+      });
+      expect(check).not.toHaveBeenCalled();
+      expect(local.session.revision()).toBe(0);
+      expect(useAgentWorkspaceStore.getState().operations).toEqual([]);
+      expect(useAgentWorkspaceStore.getState().latestTarget).toBeNull();
+    } finally {
+      endChatRun(run);
+    }
+  });
+
+  it("refuses a chat-only check read after its run ends", async () => {
+    register(harness().session);
+    const controller = new AbortController();
+    const run = beginChatRun(controller, "app-project");
+    const { read_docx_template_check: read } = createDocxAgentTools({ signal: controller.signal });
+    endChatRun(run);
+
+    await expect(read.execute({ session_id: "session-1", operation: "status" }))
+      .resolves.toMatchObject({ error: expect.stringContaining("no longer owns") });
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["read_docx_saved_content", { operation: "content" }],
+    ["read_docx_template_styles", {}],
+  ] as const)("keeps %s bound to the owning chat and an open same-project session", async (name, query) => {
+    register(harness().session);
+    register(harness().session, { sessionId: "foreign-session", appProjectId: "foreign-project" });
+    const invocation = vi.mocked(invoke);
+    const readFor = (signal: AbortSignal) =>
+      (createDocxAgentTools({ signal }) as Record<string, { execute: Exec }>)[name];
+
+    let controller = new AbortController();
+    let run = beginChatRun(controller, "app-project");
+    try {
+      const read = readFor(controller.signal);
+      await expect(read.execute(query)).resolves.toHaveProperty("error");
+      await expect(read.execute({ session_id: "foreign-session", ...query })).resolves.toMatchObject({
+        error: expect.stringContaining("not bound"),
+      });
+      expect(invocation).not.toHaveBeenCalled();
+
+      endChatRun(run);
+      await expect(read.execute({ session_id: "session-1", ...query })).resolves.toMatchObject({
+        error: expect.stringContaining("no longer owns"),
+      });
+      expect(invocation).not.toHaveBeenCalled();
+
+      controller = new AbortController();
+      const duringRun = beginChatRun(controller, "app-project");
+      run = duringRun;
+      invocation.mockImplementationOnce(async () => {
+        endChatRun(duringRun);
+        return { stale: true };
+      });
+      await expect(readFor(controller.signal).execute({ session_id: "session-1", ...query }))
+        .resolves.toMatchObject({ error: expect.stringContaining("no longer owns") });
+      expect(invocation).toHaveBeenCalledOnce();
+
+      unregisterDocxAgentSession("session-1");
+      controller = new AbortController();
+      run = beginChatRun(controller, "app-project");
+      await expect(readFor(controller.signal).execute({ session_id: "session-1", ...query }))
+        .resolves.toMatchObject({ error: expect.stringContaining("not bound") });
+      expect(invocation).toHaveBeenCalledOnce();
+    } finally {
+      endChatRun(run);
+    }
+  });
+
+  it("pages a pinned saved baseline and replays its retained record without touching the live document", async () => {
+    const local = harness();
+    const reveal = vi.fn();
+    local.edit("p1", "Unsaved revision one.");
+    register(local.session, {
+      reveal,
+      workbenchProjectId: "paper-project",
+      baselineId: "baseline-1",
+      sourceSha256: "b".repeat(64),
+    });
+    const invocation = vi.mocked(invoke);
+    const controller = new AbortController();
+    const run = beginChatRun(controller, "app-project");
+    try {
+      const { read_docx_saved_content: read } = createDocxAgentTools({ signal: controller.signal });
+      const query = {
+        baseline_id: "baseline-history",
+        expected_source_sha256: "d".repeat(64),
+        query: { object_type: "reference", page_number: 2, page_size: 1, cursor: "cursor-2" },
+      };
+      const nextQuery = {
+        ...query,
+        query: { ...query.query, page_number: 3, cursor: "cursor-3" },
+      };
+      const fullQuery = {
+        operation: "saved_read",
+        read_record_id: "read-compact",
+        baseline_id: "baseline-history",
+        expected_source_sha256: "d".repeat(64),
+        detail: "full",
+      };
+      const compact = {
+        items: [{ object_type: "reference", object_id: "reference-2", text: "Smith, 2024." }],
+        delivery: { read_record_id: "read-compact" },
+        nextRead: {
+          tool: "read_docx_saved_content",
+          arguments: { session_id: "session-1", operation: "content", ...nextQuery },
+        },
+        fullRead: {
+          tool: "read_docx_saved_content",
+          arguments: { session_id: "session-1", ...fullQuery },
+        },
+      };
+      invocation.mockResolvedValueOnce(compact);
+      await expect(read.execute({ session_id: "session-1", operation: "content", ...query }))
+        .resolves.toEqual(compact);
+      expect(invocation).toHaveBeenNthCalledWith(1, "journal_docx_content_for_agent", {
+        projectId: "paper-project",
+        sessionId: "session-1",
+        baselineId: "baseline-1",
+        sourceSha256: "b".repeat(64),
+        query: { operation: "content", ...query },
+      });
+
+      const next = {
+        items: [{ object_type: "reference", object_id: "reference-3", text: "Jones, 2025." }],
+        delivery: { read_record_id: "read-next" },
+        nextRead: null,
+        fullRead: {
+          tool: "read_docx_saved_content",
+          arguments: { session_id: "session-1", ...fullQuery, read_record_id: "read-next" },
+        },
+      };
+      invocation.mockResolvedValueOnce(next);
+      await expect(read.execute(compact.nextRead.arguments)).resolves.toEqual(next);
+      expect(invocation).toHaveBeenNthCalledWith(2, "journal_docx_content_for_agent", {
+        projectId: "paper-project",
+        sessionId: "session-1",
+        baselineId: "baseline-1",
+        sourceSha256: "b".repeat(64),
+        query: { operation: "content", ...nextQuery },
+      });
+
+      const retained = {
+        items: [{ object_type: "reference", object_id: "reference-2", text: "Smith, 2024." }],
+        delivery: { read_record_id: "read-compact" },
+        nextRead: null,
+      };
+      invocation.mockResolvedValueOnce(retained);
+      await expect(read.execute(compact.fullRead.arguments)).resolves.toEqual(retained);
+      expect(invocation).toHaveBeenNthCalledWith(3, "journal_docx_content_for_agent", {
+        projectId: "paper-project",
+        sessionId: "session-1",
+        baselineId: "baseline-1",
+        sourceSha256: "b".repeat(64),
+        query: fullQuery,
+      });
+      expect(local.session.revision()).toBe(1);
+      expect(reveal).not.toHaveBeenCalled();
+      expect(useAgentWorkspaceStore.getState().operations).toEqual([]);
+      expect(useAgentWorkspaceStore.getState().latestTarget).toBeNull();
+    } finally {
+      endChatRun(run);
+    }
+  });
+
+  it("returns the bound template styles exactly instead of the application's selected template", async () => {
+    const local = harness();
+    const reveal = vi.fn();
+    const selectedTemplate = {
+      versionId: "world-app-picked", journal: "Application pick", version: 1,
+      status: "ready" as const, analyzerVersion: "analyzer-app",
+    };
+    const getFormatCandidateTemplates = vi.fn(() => ({ selected: selectedTemplate, bound: null }));
+    register(local.session, { reveal, getFormatCandidateTemplates });
+    const invocation = vi.mocked(invoke);
+    const controller = new AbortController();
+    const run = beginChatRun(controller, "app-project");
+    try {
+      const { read_docx_template_styles: read } = createDocxAgentTools({ signal: controller.signal });
+      const query = {
+        role: "heading", heading_level: 2, style_id: "Heading2",
+        offset: 20, limit: 20, expected_binding_id: "binding-backend",
+      };
+      const response = {
+        schema_version: 1,
+        operation: "template_styles",
+        project_id: "paper-project",
+        status: "available",
+        binding: {
+          binding_id: "binding-backend", baseline_id: "baseline-1", world_version_id: "world-bound",
+          previous_binding_id: null,
+        },
+        source_sha256: "e".repeat(64),
+        styles: [{ style_id: "Heading2", role: "heading", heading_level: 2 }],
+        total: 2,
+        has_more: true,
+        next_offset: 40,
+        nextRead: {
+          tool: "read_docx_template_styles",
+          arguments: {
+            session_id: "session-1",
+            role: "heading", heading_level: 2, style_id: "Heading2",
+            offset: 40, limit: 20, expected_binding_id: "binding-backend",
+          },
+        },
+      };
+      invocation.mockResolvedValueOnce(response);
+      await expect(read.execute({ session_id: "session-1", ...query })).resolves.toEqual(response);
+      expect(invocation).toHaveBeenCalledExactlyOnceWith("journal_docx_template_styles_for_agent", {
+        projectId: "paper-project", sessionId: "session-1", query,
+      });
+      expect(local.session.revision()).toBe(0);
+      expect(reveal).not.toHaveBeenCalled();
+      expect(useAgentWorkspaceStore.getState().operations).toEqual([]);
+      expect(useAgentWorkspaceStore.getState().latestTarget).toBeNull();
+    } finally {
+      endChatRun(run);
+    }
   });
 
   it("refuses a duplicate session ID without replacing the live registration", async () => {
@@ -531,6 +1006,158 @@ describe("active DOCX Agent host", () => {
         dirty: false,
       },
     });
+  });
+
+  it("reads one paragraph through its live package pin and continues the same text window", async () => {
+    const local = harness([
+      paragraph("p1", "First paragraph."),
+      paragraph("p2", "Second paragraph."),
+      paragraph("p3", "Final paragraph."),
+    ]);
+    register({ ...local.session, readVersion: () => "live-package-7" });
+
+    const first = await tool("read_docx_document")({
+      session_id: "session-1",
+      paragraph_ref: "p3",
+      read_version: "live-package-7",
+      expected_revision: 0,
+      text_offset: 0,
+      text_limit: 9,
+    }) as {
+      readVersion: string;
+      paragraphs: Array<{ paragraphRef: string; text: string }>;
+      offset: number;
+      nextOffset: number | null;
+      textWindow: { paragraphRef: string; offset: number; nextOffset: number | null };
+      next_query: DocxReadQuery;
+    };
+    expect(first).toMatchObject({
+      readVersion: "live-package-7",
+      paragraphs: [{ paragraphRef: "p3", text: "Final par" }],
+      offset: 2,
+      nextOffset: null,
+      textWindow: { paragraphRef: "p3", offset: 0, nextOffset: 9 },
+      next_query: {
+        session_id: "session-1",
+        paragraph_ref: "p3",
+        read_version: "live-package-7",
+        expected_revision: 0,
+        text_offset: 9,
+        text_limit: 9,
+      },
+    });
+
+    const second = await tool("read_docx_document")(first.next_query) as {
+      readVersion: string;
+      paragraphs: Array<{ text: string }>;
+      next_query: DocxReadQuery | null;
+    };
+    expect(second).toMatchObject({
+      readVersion: "live-package-7",
+      paragraphs: [{ text: "agraph." }],
+      next_query: null,
+    });
+    expect(first.paragraphs[0].text + second.paragraphs[0].text).toBe("Final paragraph.");
+  });
+
+  it("refuses incomplete, stale or missing live paragraph pins before reading content", async () => {
+    const local = harness([paragraph("p1", "Original paragraph.")]);
+    const readParagraph = vi.spyOn(local.session, "readParagraph");
+    register({ ...local.session, readVersion: () => "live-package-7" });
+
+    await expect(DOCX_AGENT_HOST.readDocument({ readVersion: "live-package-7", expectedRevision: 0 }))
+      .rejects.toThrow("requires session_id and expected_revision");
+    await expect(DOCX_AGENT_HOST.readDocument({ sessionId: "session-1", readVersion: "live-package-7" }))
+      .rejects.toThrow("requires session_id and expected_revision");
+    await expect(DOCX_AGENT_HOST.readDocument({ sessionId: "session-1", paragraphRef: "p1" }))
+      .rejects.toThrow("requires the exact versioned read route");
+    await expect(DOCX_AGENT_HOST.readDocument({
+      sessionId: "session-1", paragraphRef: "p1", readVersion: "live-package-7", expectedRevision: 0, offset: 1,
+    })).rejects.toThrow("requires the exact versioned read route");
+    expect(readParagraph).not.toHaveBeenCalled();
+
+    await expect(tool("read_docx_document")({
+      session_id: "session-1",
+      paragraph_ref: "p1",
+      read_version: "stale-package-6",
+      expected_revision: 0,
+    })).resolves.toMatchObject({ error: expect.stringContaining("live DOCX package has changed") });
+    await expect(tool("read_docx_document")({
+      session_id: "session-1",
+      paragraph_ref: "missing",
+      read_version: "live-package-7",
+      expected_revision: 0,
+    })).resolves.toMatchObject({ error: expect.stringContaining("reference paragraph is not present") });
+    expect(readParagraph).not.toHaveBeenCalled();
+  });
+
+  it.each(["revision", "package"] as const)(
+    "refuses a live read when the %s changes while its page is being assembled",
+    async (change) => {
+      const local = harness([paragraph("p1", "Original paragraph.")]);
+      let readVersion = "live-package-7";
+      const readParagraph = local.session.readParagraph.bind(local.session);
+      local.session.readParagraph = (handle) => {
+        const value = readParagraph(handle);
+        if (change === "revision") local.edit("p1", "Edited during the read.");
+        else readVersion = "live-package-8";
+        return value;
+      };
+      register({ ...local.session, readVersion: () => readVersion });
+
+      await expect(tool("read_docx_document")({
+        session_id: "session-1",
+        read_version: "live-package-7",
+        expected_revision: 0,
+      })).resolves.toMatchObject({ error: expect.stringContaining("changed during this read") });
+    },
+  );
+
+  it("bounds continuation atoms and pages that cannot shrink to the transport limit", async () => {
+    register(harness().session);
+    await expect(tool("read_docx_document")({
+      session_id: "session-1",
+      expected_revision: 0,
+      text_offset: 0,
+      text_limit: 20,
+      atom_offset: 1,
+    })).resolves.toMatchObject({ error: expect.stringContaining("atomOffset is beyond the atoms") });
+
+    const atom: DocxInlineAtom = {
+      objectRef: "x".repeat(11_000), kind: "drawing", modelRange: { start: 0, end: 1 },
+      displayRange: { start: 0, end: 1 }, displayText: "\uFFFC", readable: true,
+      complete: true, editable: false,
+    };
+    const oversized = harness([paragraph("p1", "\uFFFC")], (current, revision) =>
+      semantics(current, revision, { atoms: [atom], editableRanges: [] }));
+    register(oversized.session, { sessionId: "session-2", workbenchProjectId: "paper-2" });
+    await expect(tool("read_docx_document")({
+      session_id: "session-2",
+      expected_revision: 0,
+      text_offset: 0,
+      text_limit: 1,
+    })).resolves.toMatchObject({ error: expect.stringContaining("cannot fit in 10000 JSON characters") });
+  });
+
+  it("reports unavailable live-only operations without compiling or changing the working copy", async () => {
+    const local = harness();
+    register({ ...local.session, replaceParagraphRange: undefined } as unknown as DocxSession);
+    const tools = createDocxAgentTools();
+
+    await expect(tools.replace_docx_text_range.execute({
+      paragraph_ref: "p1", expected_revision: 0,
+      range: { start: 0, end: 8 }, expected_text: "Original", replacement: "Revised",
+    })).resolves.toMatchObject({ error: expect.stringContaining("text-range editing is unavailable") });
+    await expect(tools.read_docx_format.execute({
+      query: { paragraph_ref: "p1", kind: "paragraphs" },
+    })).resolves.toMatchObject({ error: expect.stringContaining("formatting reads are unavailable") });
+    await expect(tools.write_docx_equation.execute({
+      paragraph_ref: "p1", expected_revision: 0, latex: "x^2", offset: 0,
+    })).resolves.toMatchObject({ error: expect.stringContaining("equation writing is unavailable") });
+
+    expect(mocks.compileDocxEquation).not.toHaveBeenCalled();
+    expect(local.session.revision()).toBe(0);
+    expect(local.session.listParagraphs()[0].text).toBe("Original paragraph.");
   });
 
   it("captures, suggests and applies one current paragraph", async () => {
@@ -1664,7 +2291,7 @@ describe("live DOCX format, save and template tools", () => {
         appProjectId: "app-project",
         workbenchProjectId: "paper-project",
         baselineId: "baseline-1",
-        sourceSha256: "b".repeat(64),
+        sourceSha256: "a".repeat(64),
         sessionRevision: 1,
         savedRevision: 0,
       },
@@ -2010,6 +2637,31 @@ describe("live DOCX equation writes", () => {
     offset: 3,
     display: true,
   };
+
+  it("refuses cancellation and stale revisions before compiling an equation", async () => {
+    const local = harness();
+    const writeEquation = vi.fn();
+    local.session.writeEquation = writeEquation;
+    register(local.session);
+    const writeEquationFromHost = DOCX_AGENT_HOST.writeEquation;
+    if (!writeEquationFromHost) throw new Error("DOCX equation writes are unavailable.");
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(writeEquationFromHost(input, { signal: controller.signal }))
+      .rejects.toThrow("cancelled before conversion");
+
+    local.edit("p1", "Current revision.");
+    await expect(writeEquationFromHost(input)).resolves.toMatchObject({
+      ok: false,
+      code: "stale-target",
+      changed: false,
+      revision: 1,
+      document: { sessionRevision: 1 },
+    });
+    expect(mocks.compileDocxEquation).not.toHaveBeenCalled();
+    expect(writeEquation).not.toHaveBeenCalled();
+  });
 
   it("does not write when cancellation arrives while conversion is pending", async () => {
     const local = harness();
@@ -2896,22 +3548,55 @@ it.each(["ordinary", "task"] as const)("returns a bounded %s check receipt with 
     },
   } };
   register(local.session, { onTaskOperation, check: async () => retained });
-  const ordinaryCheck = DOCX_AGENT_HOST.checkTemplate;
-  if (!ordinaryCheck) throw new Error("The ordinary DOCX check tool is unavailable.");
-  const result = route === "ordinary"
-    ? await ordinaryCheck("session-1", "world-7")
-    : (await runTaskDocxOperation({ projectId: "app-project", workbenchProjectId: "paper-project", operationId: "check-intent" },
-      "session-1", "check", { template: "world-7" })).result;
+  let result: unknown;
+  if (route === "ordinary") {
+    const controller = new AbortController();
+    const run = beginChatRun(controller, "app-project");
+    try {
+      result = await createDocxAgentTools({ signal: controller.signal })
+        .check_docx_template.execute({ session_id: "session-1", template: "world-7" });
+    } finally {
+      endChatRun(run);
+    }
+  } else {
+    result = (await runTaskDocxOperation({
+      projectId: "app-project", workbenchProjectId: "paper-project", operationId: "check-intent",
+    }, "session-1", "check", { template: "world-7" })).result;
+  }
+  const retainedReads = route === "ordinary" ? {
+    objectRead: {
+      tool: "read_docx_template_check",
+      arguments: { session_id: "session-1", operation: "status", check_id: "checked" },
+    },
+    findingsRead: {
+      tool: "read_docx_template_check",
+      arguments: {
+        session_id: "session-1", operation: "finding_groups", check_id: "checked", offset: 0, limit: 20,
+      },
+    },
+  } : {
+    objectRead: {
+      tool: "journal_read",
+      arguments: { operation: "object", kind: "check", object_id: "checked", world_version_id: "world-7" },
+    },
+    findingsRead: {
+      tool: "journal_read",
+      arguments: { operation: "findings", check_id: "checked", offset: 0, limit: 20 },
+    },
+  };
   expect(result).toMatchObject({ template: "world-7", check: {
     check_id: "checked", baseline_id: "baseline-1", world_version_id: "world-7", validity: "CURRENT",
     summary: { observed_difference: 2 }, coverage_gap_count: 1, limitation_count: 1,
     template_comparison: { total: 500, findings_artifact_version_id: "findings-artifact", finding_summary: { observed_difference: 2 } },
-    objectRead: { tool: "journal_read", arguments: { operation: "object", kind: "check", object_id: "checked", world_version_id: "world-7" } },
-    findingsRead: { tool: "journal_read", arguments: { operation: "findings", check_id: "checked", offset: 0, limit: 20 } },
-    detail: "compact", readBoundary: expect.stringContaining("before judging omitted content"),
+    ...retainedReads,
+    detail: "compact",
+    readBoundary: route === "ordinary"
+      ? expect.stringContaining("Neither operation runs a new check")
+      : expect.stringContaining("before judging omitted content"),
   } });
-  expect(result.check).not.toHaveProperty("template_comparison.findings");
-  expect(result.check).not.toHaveProperty("world");
+  const compactCheck = (result as { check: Record<string, unknown> }).check;
+  expect(compactCheck).not.toHaveProperty("template_comparison.findings");
+  expect(compactCheck).not.toHaveProperty("world");
   expect(JSON.stringify(result).length).toBeLessThan(4000);
   expect(retained.check.template_comparison.findings).toHaveLength(100);
   expect(retained.check.world.rules).toHaveLength(100);
@@ -2923,6 +3608,296 @@ it.each(["ordinary", "task"] as const)("returns a bounded %s check receipt with 
         findingsRead: { tool: "journal_read", arguments: { operation: "findings", check_id: "checked", offset: 0, limit: 20 } } } },
     }) })]);
   } else expect(onTaskOperation).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["pending_review", true, 2, 1],
+  ["unchanged", true, 0, 0],
+  ["conflict", false, 0, 0],
+] as const)("returns a pinned %s candidate receipt and follows its exact review", async (
+  status, ok, changes, unconfirmedChanges,
+) => {
+  const local = harness();
+  const candidateCheckId = `candidate-${status}`;
+  const prepareFormatCandidate = vi.fn(async () => ({
+    ...(ok
+      ? { ok: true as const, status }
+      : { ok: false as const, status, message: "The candidate no longer matches the live Word session." }),
+    candidateCheckId,
+    changes,
+    unconfirmedChanges,
+    unresolvedGroups: status === "pending_review" ? 1 : 0,
+    template: {
+      versionId: "world-7", journal: "IEEE", version: 7,
+      status: "ready" as const, analyzerVersion: "analyzer-1",
+    },
+    refreshed: false,
+  }));
+  register(local.session, { prepareFormatCandidate });
+  const invocation = vi.mocked(invoke).mockResolvedValueOnce({ review_status: status });
+  const controller = new AbortController();
+  const run = beginChatRun(controller, "app-project");
+  try {
+    const tools = createDocxAgentTools({ signal: controller.signal });
+    const receipt: unknown = await tools.create_docx_format_candidate.execute({
+      session_id: "session-1",
+    });
+    expect(receipt).toMatchObject({
+      ok,
+      status,
+      candidateCheckId,
+      changes,
+      unconfirmedChanges,
+      document: {
+        sessionId: "session-1",
+        baselineId: "baseline-1",
+        sourceSha256: "a".repeat(64),
+        sessionRevision: 0,
+        savedRevision: 0,
+        dirty: false,
+      },
+      reviewRead: {
+        tool: "read_docx_candidate_review",
+        arguments: { session_id: "session-1", check_id: candidateCheckId },
+      },
+      workspaceRead: {
+        tool: "read_docx_template_check",
+        arguments: { session_id: "session-1", operation: "status" },
+      },
+      ...(status === "conflict"
+        ? { message: "The candidate no longer matches the live Word session." }
+        : {}),
+    });
+    const { reviewRead } = receipt as { reviewRead: { arguments: Record<string, unknown> } };
+    await expect(tools.read_docx_candidate_review.execute(reviewRead.arguments))
+      .resolves.toEqual({ review_status: status });
+    expect(invocation).toHaveBeenCalledExactlyOnceWith("journal_candidate_review_for_agent", {
+      projectId: "paper-project",
+      sessionId: "session-1",
+      query: { check_id: candidateCheckId },
+    });
+    expect(prepareFormatCandidate).toHaveBeenCalledOnce();
+  } finally {
+    endChatRun(run);
+  }
+});
+
+it("returns and reuses candidate refusals without caching unexpected transport failures", async () => {
+  const local = harness();
+  const prepareFormatCandidate = vi.fn(async ({ worldVersionId }: { worldVersionId?: string }) => {
+    if (worldVersionId === "world-conflict") {
+      throw new JournalWorkbenchError({
+        error: "The saved baseline moved.",
+        code: "baseline_conflict",
+        action: "refresh_candidate",
+      });
+    }
+    if (worldVersionId === "world-error") throw new Error("candidate transport failed");
+    throw new JournalWorkbenchError({
+      error: "That template cannot be prepared.",
+      code: "template_unavailable",
+    });
+  });
+  register(local.session, { prepareFormatCandidate });
+  const controller = new AbortController();
+  const run = beginChatRun(controller, "app-project");
+  try {
+    const { create_docx_format_candidate: createCandidate } =
+      createDocxAgentTools({ signal: controller.signal });
+    const conflict = await createCandidate.execute({
+      session_id: "session-1", world_version_id: "world-conflict",
+    }) as Record<string, unknown>;
+    expect(conflict).toMatchObject({
+      ok: false,
+      status: "conflict",
+      error: "The saved baseline moved.",
+      code: "baseline_conflict",
+      action: "refresh_candidate",
+      retryable_with_same_params: false,
+      workspaceRead: {
+        tool: "read_docx_template_check",
+        arguments: { session_id: "session-1", operation: "status" },
+      },
+    });
+    expect(conflict).not.toHaveProperty("reviewRead");
+    await expect(createCandidate.execute({
+      session_id: "session-1", world_version_id: "world-conflict",
+    })).resolves.toEqual(conflict);
+    expect(prepareFormatCandidate).toHaveBeenCalledOnce();
+
+    const unavailable = await createCandidate.execute({
+      session_id: "session-1", world_version_id: "world-unavailable",
+    }) as Record<string, unknown>;
+    expect(unavailable).toMatchObject({
+      ok: false,
+      error: "That template cannot be prepared.",
+      code: "template_unavailable",
+      retryable_with_same_params: false,
+      workspaceRead: {
+        tool: "read_docx_template_check",
+        arguments: { session_id: "session-1", operation: "status" },
+      },
+    });
+    expect(unavailable).not.toHaveProperty("status");
+    expect(unavailable).not.toHaveProperty("reviewRead");
+    expect(prepareFormatCandidate).toHaveBeenCalledTimes(2);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const failed = await createCandidate.execute({
+        session_id: "session-1", world_version_id: "world-error",
+      }) as Record<string, unknown>;
+      expect(failed).toMatchObject({ error: "Error: candidate transport failed" });
+      expect(failed).not.toHaveProperty("ok");
+      expect(failed).not.toHaveProperty("workspaceRead");
+    }
+    expect(prepareFormatCandidate).toHaveBeenCalledTimes(4);
+  } finally {
+    endChatRun(run);
+  }
+});
+
+it("refuses candidate work after its chat ends or without a live preparation adapter", async () => {
+  const prepared = harness();
+  const prepareFormatCandidate = vi.fn();
+  register(prepared.session, { prepareFormatCandidate });
+  const controller = new AbortController();
+  const run = beginChatRun(controller, "app-project");
+  const { create_docx_format_candidate: createCandidate } =
+    createDocxAgentTools({ signal: controller.signal });
+  endChatRun(run);
+
+  await expect(createCandidate.execute({ session_id: "session-1" })).resolves.toMatchObject({
+    error: expect.stringContaining("available only in ordinary chat"),
+  });
+  expect(prepareFormatCandidate).not.toHaveBeenCalled();
+
+  unregisterDocxAgentSession("session-1");
+  register(harness().session);
+  const unsupportedController = new AbortController();
+  const unsupportedRun = beginChatRun(unsupportedController, "app-project");
+  try {
+    await expect(createDocxAgentTools({ signal: unsupportedController.signal })
+      .create_docx_format_candidate.execute({ session_id: "session-1" })).resolves.toMatchObject({
+      error: expect.stringContaining("unavailable for this working copy"),
+    });
+  } finally {
+    endChatRun(unsupportedRun);
+  }
+});
+
+it.each([
+  ["selected", { versionId: "world-selected", journal: "IEEE", version: 7, status: "ready", analyzerVersion: "analyzer-1" }, null],
+  ["bound", null, { versionId: "world-bound", journal: "ACM", version: 3, status: "ready", analyzerVersion: "analyzer-1" }],
+] as const)("refuses direct chat formatting when a %s candidate template exists", async (_template, selected, bound) => {
+  const local = harness();
+  const formatParagraph = vi.fn((): DocxApplyResult => ({ ok: true, changed: true, revision: 1 }));
+  local.session.formatParagraph = formatParagraph;
+  register(local.session, {
+    getFormatCandidateTemplates: () => ({
+      selected: selected && {
+        versionId: selected.versionId, journal: selected.journal, version: selected.version,
+        status: selected.status, analyzerVersion: selected.analyzerVersion,
+      },
+      bound: bound && {
+        versionId: bound.versionId, journal: bound.journal, version: bound.version,
+        status: bound.status, analyzerVersion: bound.analyzerVersion,
+      },
+    }),
+  });
+  const controller = new AbortController();
+  const run = beginChatRun(controller, "app-project");
+  try {
+    await expect(createDocxAgentTools({ signal: controller.signal }).apply_docx_format.execute({
+      paragraph_ref: "p1", expected_revision: 0, font: { bold: true },
+    })).resolves.toMatchObject({
+      error: expect.stringContaining("Use create_docx_format_candidate"),
+    });
+    expect(formatParagraph).not.toHaveBeenCalled();
+    expect(local.session.revision()).toBe(0);
+  } finally {
+    endChatRun(run);
+  }
+});
+
+it("keeps non-status check evidence raw and projects status with an unselected template", async () => {
+  register(harness().session, {
+    getFormatCandidateTemplates: () => ({ selected: null, bound: null }),
+  });
+  const invocation = vi.mocked(invoke);
+  const controller = new AbortController();
+  const run = beginChatRun(controller, "app-project");
+  try {
+    const { read_docx_template_check: read } = createDocxAgentTools({ signal: controller.signal });
+    const evidence = {
+      operation: "finding_groups",
+      scope: "candidate",
+      check_id: "candidate-1",
+      items: [{ group_id: "group-1" }],
+    };
+    invocation.mockResolvedValueOnce(evidence);
+    await expect(read.execute({
+      session_id: "session-1", operation: "finding_groups", scope: "candidate", check_id: "candidate-1",
+    })).resolves.toEqual(evidence);
+
+    invocation.mockResolvedValueOnce({
+      operation: "status", scope: "current", project: { project_id: "paper-project" },
+      check: { check_id: "check-1" },
+    });
+    await expect(read.execute({ session_id: "session-1", operation: "status" })).resolves.toMatchObject({
+      operation: "status",
+      document: { sessionId: "session-1" },
+      selectedTemplate: null,
+      candidateReviewRead: {
+        tool: "read_docx_candidate_review",
+        arguments: { session_id: "session-1" },
+      },
+    });
+  } finally {
+    endChatRun(run);
+  }
+});
+
+it("refuses a candidate review whose live basis changes during the journal read", async () => {
+  let basis = { check_id: "candidate-1", matches: true };
+  register(harness().session, { getFormatCandidateBasis: () => basis });
+  vi.mocked(invoke).mockImplementationOnce(async () => {
+    basis = { check_id: "candidate-2", matches: false };
+    return { review_status: "pending_review" };
+  });
+  const controller = new AbortController();
+  const run = beginChatRun(controller, "app-project");
+  try {
+    await expect(createDocxAgentTools({ signal: controller.signal })
+      .read_docx_candidate_review.execute({ session_id: "session-1" })).resolves.toMatchObject({
+      error: expect.stringContaining("changed during the read"),
+    });
+  } finally {
+    endChatRun(run);
+  }
+});
+
+it("keeps ordinary-chat check evidence readable without inventing a findings route", async () => {
+  register(harness().session, {
+    check: async () => retainedTemplateCheck("world-7", { template_comparison: null }),
+  });
+  const controller = new AbortController();
+  const run = beginChatRun(controller, "app-project");
+  try {
+    const result = await createDocxAgentTools({ signal: controller.signal })
+      .check_docx_template.execute({ session_id: "session-1", template: "world-7" });
+    const check = (result as { check: Record<string, unknown> }).check;
+    expect(check).toMatchObject({
+      check_id: "check-7",
+      objectRead: {
+        tool: "read_docx_template_check",
+        arguments: { session_id: "session-1", operation: "status", check_id: "check-7" },
+      },
+      readBoundary: expect.stringContaining("Neither operation runs a new check"),
+    });
+    expect(check).not.toHaveProperty("findingsRead");
+  } finally {
+    endChatRun(run);
+  }
 });
 
 it("refuses to attribute a completed baseline check to a newer live edit", async () => {

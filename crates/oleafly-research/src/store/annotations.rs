@@ -7,7 +7,6 @@ use crate::annotations::{
     AnnotationStatusChange, AnnotationTarget, Distillation, DistillationDraft, DistillationOutcome,
     EnduringRequirement, RequirementDraft, RequirementKind, RequirementStatus,
 };
-use crate::model::{PendingStart, ResearchTask, ResumeReason};
 
 /// Added by the parent TaskStore migration. Annotation facts deliberately have
 /// no cascading task foreign key: deleting a task must not erase an old user
@@ -514,58 +513,6 @@ impl TaskStore {
             .map_err(store_error)
     }
 
-    /// Reconcile after save, run completion, or restart. Only undelivered
-    /// explicit requests with no attempted execution can start another one.
-    /// A startup failure must not repeatedly launch the same configuration.
-    pub fn queue_annotation_followups(&self) -> Result<Vec<ResearchTask>, String> {
-        let mut connection = self.open()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(store_error)?;
-        let ids = transaction
-            .prepare(
-                "SELECT DISTINCT t.id FROM research_task_annotation_work w
-                 JOIN research_task_annotations a ON a.id = w.annotation_id
-                 JOIN research_tasks t ON t.id = w.task_id
-                 WHERE w.prepared_generation IS NULL AND w.delivered_generation IS NULL
-                   AND a.status = 'open'
-                   AND t.status IN ('awaiting_review', 'completed', 'failed', 'cancelled')
-                   AND t.apply_state IS NULL AND t.stop_reason IS NULL
-                   AND NOT EXISTS (SELECT 1 FROM collaboration_groups g WHERE g.task_id = t.id)",
-            )
-            .and_then(|mut statement| {
-                statement
-                    .query_map([], |row| row.get::<_, String>(0))?
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(store_error)?;
-        let mut queued = Vec::new();
-        for id in ids {
-            let task = Self::require_on(&transaction, &id)?;
-            let Some(isolation) = task.isolation else {
-                continue;
-            };
-            let pending = PendingStart::Resume {
-                isolation: Box::new(isolation),
-                reason: ResumeReason::Collaboration,
-                previous_native_session_id: task.native_session_id,
-            };
-            transaction
-                .execute(
-                    "UPDATE research_tasks SET status = 'queued', start_requested = 1,
-                       pending_start_json = ?2, cancel_requested = 0,
-                       updated_at = ?3, finished_at = NULL
-                     WHERE id = ?1 AND status IN ('awaiting_review', 'completed', 'failed', 'cancelled')
-                       AND apply_state IS NULL AND stop_reason IS NULL",
-                    params![id, encode_json(&pending)?, now()],
-                )
-                .map_err(store_error)?;
-            queued.push(id);
-        }
-        transaction.commit().map_err(store_error)?;
-        queued.into_iter().map(|id| self.require(&id)).collect()
-    }
-
     pub fn add_annotation(&self, draft: &AnnotationDraft) -> Result<Annotation, String> {
         let mut connection = self.open()?;
         let transaction = connection
@@ -1037,7 +984,7 @@ impl TaskStore {
 mod tests {
     use super::*;
     use crate::annotations::{AnnotationAuthor, DistillationOutcome, RequirementScope};
-    use crate::model::ResearchTaskDraft;
+    use crate::model::{PendingStart, ResearchTask, ResearchTaskDraft, ResumeReason};
     use tempfile::TempDir;
 
     fn store() -> (TempDir, TaskStore) {
@@ -1652,7 +1599,7 @@ mod tests {
         );
     }
 
-    fn completed_single_task(store: &TaskStore) -> ResearchTask {
+    fn running_single_task(store: &TaskStore) -> ResearchTask {
         let task = store
             .create(ResearchTaskDraft {
                 project_id: "p".into(),
@@ -1685,6 +1632,11 @@ mod tests {
         store
             .set_active_ms(&task.id, task.execution_generation, 12345)
             .unwrap();
+        task
+    }
+
+    fn completed_single_task(store: &TaskStore) -> ResearchTask {
+        let task = running_single_task(store);
         store
             .finish_success(
                 &task.id,
@@ -1702,10 +1654,22 @@ mod tests {
         store.complete_without_apply(&task.id).unwrap()
     }
 
+    fn failed_single_task(store: &TaskStore) -> ResearchTask {
+        let task = running_single_task(store);
+        assert!(store
+            .finish_failure(
+                &task.id,
+                task.execution_generation,
+                "Initial attempt failed",
+            )
+            .unwrap());
+        store.require(&task.id).unwrap()
+    }
+
     #[test]
-    fn single_agent_request_survives_reopen_and_dispatches_once() {
+    fn single_agent_request_survives_reopen_and_retries_on_request() {
         let (directory, store) = store();
-        let task = completed_single_task(&store);
+        let task = failed_single_task(&store);
         let original = store
             .submit_task_annotation(
                 &AnnotationDraft::new(
@@ -1718,19 +1682,20 @@ mod tests {
             .unwrap();
         drop(store);
         let store = TaskStore::new(directory.path().to_owned()).unwrap();
-        let queued = store.queue_annotation_followups().unwrap();
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].id, task.id);
-        assert_eq!(queued[0].active_ms, 12345);
-        assert_eq!(queued[0].brief.budget, task.brief.budget);
+        store
+            .retry_with(&task.id, crate::model::RetryMode::Resume)
+            .unwrap();
+        let queued = store.request_start(&task.id).unwrap();
+        assert_eq!(queued.id, task.id);
+        assert_eq!(queued.active_ms, 12345);
+        assert_eq!(queued.brief.budget, task.brief.budget);
         assert!(matches!(
-            queued[0].pending_start,
+            queued.pending_start,
             Some(PendingStart::Resume {
-                reason: ResumeReason::Collaboration,
+                reason: ResumeReason::Retry,
                 ..
             })
         ));
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
         let next = store.claim_next().unwrap().unwrap();
         assert_eq!(next.execution_generation, task.execution_generation + 1);
         assert_eq!(
@@ -1758,7 +1723,6 @@ mod tests {
                 "Stopped after delivery",
             )
             .unwrap();
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
         store
             .retry_with(&task.id, crate::model::RetryMode::Resume)
             .unwrap();
@@ -1778,7 +1742,7 @@ mod tests {
     }
 
     #[test]
-    fn feedback_is_saved_without_automatic_followup() {
+    fn feedback_is_saved_without_joining_the_finished_generation() {
         let (_directory, store) = store();
         let task = completed_single_task(&store);
         let feedback = store
@@ -1806,103 +1770,10 @@ mod tests {
             store.annotation("p", &member_request.id).unwrap().body,
             member_request.body
         );
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
         assert!(store
             .pending_task_annotations(&task.id, task.execution_generation, false)
             .unwrap()
             .is_empty());
-    }
-
-    #[test]
-    fn late_single_agent_request_queues_after_execution_has_ended() {
-        let (_directory, store) = store();
-        let task = completed_single_task(&store);
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
-        let original = store
-            .submit_task_annotation(
-                &AnnotationDraft::new(
-                    target().task(&task.id),
-                    AnnotationAuthor::user("owner"),
-                    "Please check again.",
-                )
-                .request(),
-            )
-            .unwrap();
-        assert_eq!(store.queue_annotation_followups().unwrap().len(), 1);
-        let next = store.claim_next().unwrap().unwrap();
-        store
-            .pending_task_annotations(&task.id, next.execution_generation, true)
-            .unwrap();
-        store
-            .finish_failure(
-                &task.id,
-                next.execution_generation,
-                "Finished the follow-up",
-            )
-            .unwrap();
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
-        let late = store
-            .submit_task_annotation(
-                &AnnotationDraft::new(
-                    target().task(&task.id),
-                    AnnotationAuthor::user("owner"),
-                    "A new explicit request after your last empty check.",
-                )
-                .request(),
-            )
-            .unwrap();
-        assert_eq!(store.queue_annotation_followups().unwrap().len(), 1);
-        let newest = store.claim_next().unwrap().unwrap();
-        assert_eq!(
-            store
-                .pending_task_annotations(&task.id, newest.execution_generation, true)
-                .unwrap(),
-            vec![original, late]
-        );
-        assert_eq!(newest.active_ms, 12345);
-    }
-
-    #[test]
-    fn annotation_followup_waits_for_apply_and_budget_stop() {
-        let (_directory, store) = store();
-        let task = completed_single_task(&store);
-        store
-            .submit_task_annotation(
-                &AnnotationDraft::new(
-                    target().task(&task.id),
-                    AnnotationAuthor::user("owner"),
-                    "Recheck this.",
-                )
-                .request(),
-            )
-            .unwrap();
-        store
-            .open()
-            .unwrap()
-            .execute(
-                "UPDATE research_tasks SET stop_reason='budget_time' WHERE id=?1",
-                [&task.id],
-            )
-            .unwrap();
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
-        store
-            .open()
-            .unwrap()
-            .execute(
-                "UPDATE research_tasks SET stop_reason=NULL, apply_state='applying' WHERE id=?1",
-                [&task.id],
-            )
-            .unwrap();
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
-        store
-            .open()
-            .unwrap()
-            .execute(
-                "UPDATE research_tasks SET apply_state=NULL WHERE id=?1",
-                [&task.id],
-            )
-            .unwrap();
-        assert_eq!(store.queue_annotation_followups().unwrap().len(), 1);
     }
 
     #[test]
@@ -1965,81 +1836,9 @@ mod tests {
     }
 
     #[test]
-    fn prepared_request_survives_startup_failure_without_automatic_replay() {
-        let (directory, store) = store();
-        let task = completed_single_task(&store);
-        let annotation = store
-            .submit_task_annotation(
-                &AnnotationDraft::new(
-                    target().task(&task.id),
-                    AnnotationAuthor::user("owner"),
-                    "Recheck the original.",
-                )
-                .request(),
-            )
-            .unwrap();
-        assert_eq!(store.queue_annotation_followups().unwrap().len(), 1);
-        let next = store.claim_next().unwrap().unwrap();
-        assert_eq!(
-            store
-                .prepare_task_annotations(&task.id, next.execution_generation)
-                .unwrap(),
-            vec![annotation.clone()]
-        );
-        let receipt = store
-            .annotation_deliveries("p", &task.id)
-            .unwrap()
-            .remove(0);
-        assert_eq!(receipt.prepared_generation, Some(next.execution_generation));
-        assert!(receipt.prepared_at.is_some());
-        assert_eq!(receipt.delivered_generation, None);
-        assert_eq!(receipt.delivered_at, None);
-        store
-            .finish_failure(
-                &task.id,
-                next.execution_generation,
-                "Model is unavailable before session/prompt",
-            )
-            .unwrap();
-        drop(store);
-        let store = TaskStore::new(directory.path().into()).unwrap();
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
-        assert_eq!(
-            store.annotation("p", &annotation.id).unwrap().status,
-            AnnotationStatus::Open
-        );
-        store
-            .retry_with(&task.id, crate::model::RetryMode::Resume)
-            .unwrap();
-        store.request_start(&task.id).unwrap();
-        let retry = store.claim_next().unwrap().unwrap();
-        assert_eq!(
-            store
-                .prepare_task_annotations(&task.id, retry.execution_generation)
-                .unwrap(),
-            vec![annotation.clone()]
-        );
-        store
-            .mark_task_annotations_delivered(&task.id, retry.execution_generation, &[annotation.id])
-            .unwrap();
-        let receipt = store
-            .annotation_deliveries("p", &task.id)
-            .unwrap()
-            .remove(0);
-        assert_eq!(
-            receipt.prepared_generation,
-            Some(retry.execution_generation)
-        );
-        assert_eq!(
-            receipt.delivered_generation,
-            Some(retry.execution_generation)
-        );
-    }
-
-    #[test]
     fn sent_receipt_covers_only_prepared_ids_and_survives_cancellation() {
         let (_directory, store) = store();
-        let task = completed_single_task(&store);
+        let task = failed_single_task(&store);
         let request = |text| {
             AnnotationDraft::new(
                 target().task(&task.id),
@@ -2051,7 +1850,10 @@ mod tests {
         let sent = store
             .submit_task_annotation(&request("Send this request."))
             .unwrap();
-        store.queue_annotation_followups().unwrap();
+        store
+            .retry_with(&task.id, crate::model::RetryMode::Resume)
+            .unwrap();
+        store.request_start(&task.id).unwrap();
         let running = store.claim_next().unwrap().unwrap();
         store
             .prepare_task_annotations(&task.id, running.execution_generation)
@@ -2092,8 +1894,6 @@ mod tests {
         );
         assert_eq!(receipts[1].prepared_generation, None);
         assert_eq!(receipts[1].delivered_generation, None);
-        // A genuinely new request still gets the existing automatic follow-up.
-        assert_eq!(store.queue_annotation_followups().unwrap().len(), 1);
     }
 
     #[test]
@@ -2136,6 +1936,5 @@ mod tests {
             receipt.delivered_generation,
             Some(task.execution_generation)
         );
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
     }
 }

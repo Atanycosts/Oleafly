@@ -67,22 +67,21 @@ export function DocxRecoveryHost() {
       journalRequest<JournalState>("/api/state"),
     ]);
     if (workspace.journalProjectId !== candidate.workbenchProjectId) throw new Error(text.linkChanged);
-    let state = initialState;
+    let project = initialState.projects.find((item) => item.project_id === candidate.workbenchProjectId);
+    if (!project) throw new Error(text.projectMissing);
     let recovery: DocxRecoverySnapshot | undefined = snapshot;
     if (snapshot.taskState?.pendingSave) {
       const result = await commitDocxRecovery(snapshot);
       setConfirmedRequests((confirmed) => new Map(confirmed).set(`${snapshot.recoveryKey}:${snapshot.contentSha256}`, "refusal" in result ? result.refusal : null));
       if ("refusal" in result) return;
-      state = await journalRequest<JournalState>("/api/state");
-      const current = state.projects.find((item) => item.project_id === candidate.workbenchProjectId);
-      if (!current) throw new Error(text.projectMissing);
-      if (current.baseline_id !== result.baselineId) throw new Error(text.savedHistorical);
+      const state = await journalRequest<JournalState>("/api/state");
+      project = state.projects.find((item) => item.project_id === candidate.workbenchProjectId);
+      if (!project) throw new Error(text.projectMissing);
+      if (project.baseline_id !== result.baselineId) throw new Error(text.savedHistorical);
       // Commit has settled task receipts. Open the actual retained version;
       // never mark a recovered editor's revision as an old session's revision.
       recovery = undefined;
     }
-    const project = state.projects.find((item) => item.project_id === candidate.workbenchProjectId);
-    if (!project) throw new Error(text.projectMissing);
     const world = project.binding
       ? await journalRequest<JournalWorld>(journalQuery("/api/world", { version_id: project.binding.world_version_id }))
       : null;

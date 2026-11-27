@@ -15,7 +15,7 @@ import type {
   AutomationUnsubscribe,
   AutomationValue,
 } from "@docx-editor.dev/core/automation";
-import type { DocxObjectFormatMutation } from "@oleafly/ai-tools";
+import type { DocxInlineAtomKind, DocxLiveReference, DocxObjectFormatMutation } from "@oleafly/ai-tools";
 import {
   DocxImageReadError,
   imageAtomPayload,
@@ -29,6 +29,7 @@ import {
   type PaginatedSurface,
   type TreeDocxSessionView,
 } from "@docx-editor.dev/core/editor";
+import { openTreeSession } from "@docx-editor.dev/core/binding";
 import {
   buildStyleCascadeTable,
   cascadeParagraphFormatting,
@@ -53,11 +54,14 @@ import {
   segmentsOf,
   type OoxmlElement,
   type OoxmlNode,
+  type OoxmlPackage,
   type OoxmlParagraphNode,
   type OoxmlProperty,
   type TreeDocOp,
 } from "@docx-editor.dev/core/store";
 import { planDocxObjectFormat } from "./docx-object-format";
+import { createDocxReferenceReader } from "./docx-live-references";
+import { isDocxAlternateContent } from "./docx-markup-compatibility";
 import { readDocxMathPayload } from "./docx-math";
 import { readDocxEquationSource, equationOfAtom, writeDocxEquation, type DocxEquationWriteRequest } from "./docx-equations";
 import type { CompiledDocxEquation } from "./docx-equation-conversion";
@@ -84,7 +88,6 @@ export interface DocxTarget {
 export interface DocxParagraphLocator {
   readonly part: string;
   readonly path: number[];
-  readonly paragraphIndex?: number;
 }
 
 export interface DocxModelRange {
@@ -92,14 +95,6 @@ export interface DocxModelRange {
   readonly start: number;
   readonly end: number;
 }
-
-export type DocxInlineAtomKind =
-  | "field"
-  | "math"
-  | "drawing"
-  | "note"
-  | "tab"
-  | "break";
 
 export interface DocxInlineAtom {
   readonly objectRef: string;
@@ -114,6 +109,7 @@ export interface DocxInlineAtom {
   /** Whether the payload is a complete semantic projection. */
   readonly complete: boolean;
   readonly editable: false;
+  readonly reference?: DocxLiveReference;
   readonly payload?: unknown;
 }
 
@@ -163,6 +159,7 @@ export type DocxApplyResult =
 
 export interface DocxSession {
   revision(): number;
+  readVersion?(): string;
   /** Body paragraph handles in reading order, without reading paragraph content. */
   listParagraphHandles(): readonly AutomationHandle<"paragraph">[];
   /** Resolve a selection identity without reading every paragraph's content or format. */
@@ -370,6 +367,13 @@ interface ParagraphDetails {
   readonly supported: boolean;
 }
 
+function paragraphModelReads(paragraph: AutomationHandle<"paragraph">) {
+  return [
+    { op: "getParagraphId", paragraph },
+    { op: "getText", target: paragraph, projection: "model" },
+  ] as const;
+}
+
 interface CanonicalParagraph {
   readonly structure: string;
   readonly supported: boolean;
@@ -478,21 +482,7 @@ function paragraphLocator(
   if (!nodeId) return null;
   const part = tree.part();
   const path = findNodePath(part.root, nodeId, [0]);
-  const paragraphs: string[] = [];
-  const collect = (node: OoxmlNode) => {
-    if (node.kind === "paragraph") paragraphs.push(node.id);
-    if (node.kind !== "textValue") node.children.forEach(collect);
-  };
-  collect(part.root);
-  return path === null
-    ? null
-    : {
-        part: part.name,
-        path,
-        ...(paragraphs.indexOf(nodeId) < 0
-          ? {}
-          : { paragraphIndex: paragraphs.indexOf(nodeId) }),
-      };
+  return path === null ? null : { part: part.name, path };
 }
 
 function safeForWholeParagraphReplacement(node: OoxmlParagraphNode): boolean {
@@ -525,41 +515,6 @@ function safeForWholeParagraphReplacement(node: OoxmlParagraphNode): boolean {
   });
 }
 
-function readParagraphs(
-  host: AutomationHost,
-  paragraphs: readonly AutomationHandle<"paragraph">[],
-): readonly ParagraphDetails[] {
-  if (paragraphs.length === 0) return [];
-  const response = execute(host, {
-    operations: paragraphs.flatMap((paragraph) => [
-      { op: "getParagraphId" as const, paragraph },
-      {
-        op: "getText" as const,
-        target: paragraph,
-        projection: "model" as const,
-      },
-      { op: "getFields" as const, span: { paragraph } },
-      { op: "getInlinePictures" as const, span: { paragraph } },
-      { op: "getShapes" as const, span: { paragraph } },
-    ]),
-  });
-  return paragraphs.map((paragraph, index) => {
-    const paraId = textAt(response, index * 5);
-    const text = textAt(response, index * 5 + 1);
-    return {
-      paragraph,
-      ...(paraId === "" ? {} : { paraId }),
-      text,
-      revision: response.revision,
-      supported:
-        !text.includes("\uFFFC") &&
-        handlesAt(response, index * 5 + 2).length === 0 &&
-        handlesAt(response, index * 5 + 3).length === 0 &&
-        handlesAt(response, index * 5 + 4).length === 0,
-    };
-  });
-}
-
 function hasTrackedChange(
   host: AutomationHost,
   paragraph: AutomationHandle<"paragraph">,
@@ -579,7 +534,27 @@ function readParagraph(
   paragraph: AutomationHandle<"paragraph">,
 ): ParagraphDetails | null {
   try {
-    return readParagraphs(host, [paragraph])[0] ?? null;
+    const response = execute(host, {
+      operations: [
+        ...paragraphModelReads(paragraph),
+        { op: "getFields", span: { paragraph } },
+        { op: "getInlinePictures", span: { paragraph } },
+        { op: "getShapes", span: { paragraph } },
+      ],
+    });
+    const paraId = textAt(response, 0);
+    const text = textAt(response, 1);
+    return {
+      paragraph,
+      ...(paraId === "" ? {} : { paraId }),
+      text,
+      revision: response.revision,
+      supported:
+        !text.includes("\uFFFC") &&
+        handlesAt(response, 2).length === 0 &&
+        handlesAt(response, 3).length === 0 &&
+        handlesAt(response, 4).length === 0,
+    };
   } catch (error) {
     if (
       error instanceof DocxSessionError &&
@@ -904,6 +879,8 @@ function liveSemantics(
   node: OoxmlParagraphNode,
   fields: readonly FieldRead[],
   tree: TreeDocxSessionView,
+  referenceReader?: ReturnType<typeof createDocxReferenceReader>,
+  paragraphRefForNode?: (nodeId: string) => string | undefined,
 ): DocxParagraphSemantics {
   const segments = segmentsOf(node);
   const source = tree.currentPackage();
@@ -929,7 +906,9 @@ function liveSemantics(
   const atoms: DocxInlineAtom[] = [];
   const atomNodeIds = new Map<DocxInlineAtom, string>();
   for (const segment of segments) {
-    const kind = atomKind(segment.node);
+    const textboxes = referenceReader?.textboxesOf(segment.node.id);
+    const alternate = segment.node.kind !== "textValue" && isDocxAlternateContent(segment.node);
+    const kind = atomKind(segment.node) ?? (textboxes?.length ? "drawing" : null);
     if (kind === null) {
       continue;
     }
@@ -964,10 +943,11 @@ function liveSemantics(
             revision: read.revision,
           })
         : undefined;
-    const math =
+    const note = kind === "note" ? referenceReader?.noteOf(segment.node) : undefined;
+    const projection = note ?? (
       kind === "math"
         ? readDocxMathPayload(segment.node)
-        : kind === "drawing"
+        : kind === "drawing" && !alternate
           ? imageAtomPayload({
               nodes: [segment.node],
               source,
@@ -980,25 +960,30 @@ function liveSemantics(
             readable: kind !== "field" || fieldReadsAligned,
             complete: kind !== "field" || fieldReadsAligned,
             payload: undefined,
-          };
+          });
     const fieldPayload =
       field === undefined
         ? undefined
         : { code: field.code, ...fieldImage?.payload };
     const equation = kind === "math" ? equationOfAtom(segment.node) : null;
     const payload = equation && source
-      ? { ...math.payload, equationFingerprint: canonicalOoxmlFingerprint(equation),
+      ? { ...projection.payload, equationFingerprint: canonicalOoxmlFingerprint(equation),
           source: readDocxEquationSource(source, node, segment.node, segment.start, segment.end) }
-      : math.payload ?? fieldPayload;
+      : textboxes?.length
+        ? { ...(alternate ? {} : projection.payload), textboxes }
+        : projection.payload ?? fieldPayload;
     const atom: DocxInlineAtom = {
       objectRef,
       kind,
       modelRange: range(segment.start, segment.end),
       displayRange: range(0, 0),
       displayText,
-      readable: field === undefined ? math.readable : true,
-      complete: fieldImage === undefined ? math.complete : false,
+      readable: textboxes?.length ? true : field === undefined ? projection.readable : true,
+      complete: textboxes?.length || fieldImage !== undefined ? false : projection.complete,
       editable: false,
+      ...(referenceReader && (note || textboxes?.length) ? { reference: referenceReader.reference(
+        "inline", { paragraphRef: paragraph.ref, offset: segment.start },
+      ) } : {}),
       ...(payload === undefined ? {} : { payload }),
     };
     atoms.push(atom);
@@ -1052,6 +1037,26 @@ function liveSemantics(
     child.children.forEach(visit);
   };
   node.children.forEach(visit);
+  for (const comment of referenceReader?.comments.get(node.id) ?? []) {
+    const start = comment.start.offset;
+    const endRef = comment.end && (comment.end.paragraphId === node.id ? paragraph.ref : paragraphRefForNode?.(comment.end.paragraphId));
+    const end = comment.end && endRef ? { paragraphRef: endRef, offset: comment.end.offset } : undefined;
+    const kind = comment.kind === "range" && !end ? "incomplete_range" : comment.kind;
+    const atom: DocxInlineAtom = {
+      objectRef: `${paragraph.ref}:${comment.nodeId}`,
+      kind: "comment",
+      modelRange: range(start, start),
+      displayRange: range(0, 0),
+      displayText: "",
+      readable: comment.readable,
+      complete: comment.readable && kind !== "incomplete_range",
+      editable: false,
+      payload: comment.payload,
+      reference: referenceReader!.reference(kind, { paragraphRef: paragraph.ref, offset: start }, end),
+    };
+    structuralAtoms.push(atom);
+    structuralNodeIds.set(atom, comment.nodeId);
+  }
   const atomByNodeId = new Map<string, DocxInlineAtom>();
   for (const atom of atoms) {
     const nodeId = atomNodeIds.get(atom);
@@ -1265,6 +1270,8 @@ function readParagraphSemantics(
   host: AutomationHost,
   paragraph: AutomationHandle<"paragraph">,
   tree?: TreeDocxSessionView,
+  referenceReader?: () => ReturnType<typeof createDocxReferenceReader>,
+  paragraphRefForNode?: (nodeId: string) => string | undefined,
 ): DocxParagraphSemantics {
   const read = paragraphSemanticsRead(host, paragraph);
   const fields = readFields(host, read.fields);
@@ -1273,7 +1280,7 @@ function readParagraphSemantics(
   if (!nodeId) return hostOnlySemantics(paragraph, read, fields);
   const node = findParagraph(tree.part().root, nodeId);
   if (!node) return hostOnlySemantics(paragraph, read, fields);
-  return liveSemantics(read, paragraph, node, fields, tree);
+  return liveSemantics(read, paragraph, node, fields, tree, referenceReader?.(), paragraphRefForNode);
 }
 
 function paragraphHandleByRef(
@@ -1651,13 +1658,13 @@ function unsupportedParagraphFlags(revision: number): DocxApplyResult {
 export function listDocxParagraphs(
   host: AutomationHost,
 ): readonly DocxParagraph[] {
-  return readParagraphs(host, paragraphHandles(host, bodyOf(host))).map(
-    (details) => ({
-      handle: details.paragraph,
-      text: details.text,
-      ...(details.paraId === undefined ? {} : { paraId: details.paraId }),
-    }),
-  );
+  const handles = paragraphHandles(host, bodyOf(host));
+  if (handles.length === 0) return [];
+  const response = execute(host, { operations: handles.flatMap(paragraphModelReads) });
+  return handles.map((handle, index) => {
+    const paraId = textAt(response, index * 2);
+    return { handle, text: textAt(response, index * 2 + 1), ...(paraId === "" ? {} : { paraId }) };
+  });
 }
 
 export function captureDocxTarget(
@@ -2009,10 +2016,17 @@ function patchTreeWriteOps(
   return patched;
 }
 
-function withTreeWriteAutomation(
-  editor: DocxEditorInstance,
+type DocxFormatSurface = Pick<PaginatedSurface, "session" | "editingMode" | "revisionDisplayMode" | "applyAutomationOps">;
+type DocxFormatEditor = Pick<DocxEditorInstance, "on"> & {
+  readonly surface: (DocxFormatSurface & Pick<PaginatedSurface,
+    "flushPendingInput" | "collaborationSession" | "replacementLanding" | "save"
+  >) | null;
+};
+
+function withTreeWriteAutomation<Editor extends DocxFormatEditor>(
+  editor: Editor,
   pending: () => PendingBatchWrite | null,
-): DocxEditorInstance {
+): Editor {
   return new Proxy(editor, {
     get(target, property, receiver) {
       if (property === "surface") {
@@ -2212,19 +2226,29 @@ function createDocxSessionFromHost(
 ): DocxSession {
   let identityRevision = -1;
   let identityHandles = new Map<string, AutomationHandle<"paragraph">>();
+  const paragraphHandleForId = (paraId: string) => {
+    if (identityRevision !== host.revision()) {
+      const handles = paragraphHandles(host, bodyOf(host));
+      const values = execute(host, { operations: handles.map((paragraph) => ({ op: "getParagraphId" as const, paragraph })) });
+      identityHandles = new Map(handles.map((handle, index) => [textAt(values, index), handle]));
+      identityRevision = values.revision;
+    }
+    return identityHandles.get(paraId);
+  };
+  const liveRead = tree && (() => {
+    let current: { pkg: OoxmlPackage; version: string; references?: ReturnType<typeof createDocxReferenceReader> } | undefined;
+    return () => {
+      const pkg = tree.currentPackage();
+      if (current?.pkg !== pkg) current = { pkg, version: crypto.randomUUID() };
+      return current;
+    };
+  })();
   return {
     revision: () => host.revision(),
     listParagraphHandles: () =>
       paragraphHandles(host, bodyOf(host)),
-    paragraphHandleForId: (paraId) => {
-      if (identityRevision !== host.revision()) {
-        const handles = paragraphHandles(host, bodyOf(host));
-        const values = execute(host, { operations: handles.map((paragraph) => ({ op: "getParagraphId" as const, paragraph })) });
-        identityHandles = new Map(handles.map((handle, index) => [textAt(values, index), handle]));
-        identityRevision = values.revision;
-      }
-      return identityHandles.get(paraId);
-    },
+    paragraphHandleForId,
+    ...(liveRead ? { readVersion: () => liveRead().version } : {}),
     listParagraphs: () => listDocxParagraphs(host),
     captureTarget: (paragraph) => captureDocxTarget(host, paragraph, inspect),
     applySuggestion: (target, text) =>
@@ -2243,8 +2267,14 @@ function createDocxSessionFromHost(
         }),
         0,
       ),
-    readParagraph: (paragraph) =>
-      readParagraphSemantics(host, paragraph, tree),
+    readParagraph: liveRead && tree ? (paragraph) =>
+      readParagraphSemantics(host, paragraph, tree, () => {
+        const current = liveRead();
+        return current.references ??= createDocxReferenceReader(current.pkg, tree.part());
+      }, (nodeId) => {
+        const paraId = tree.paraIdOf(nodeId);
+        return paraId ? paragraphHandleForId(paraId)?.ref : undefined;
+      }) : (paragraph) => readParagraphSemantics(host, paragraph),
     ...(tree
       ? { readImage: (input: DocxImageReadRequest) => readTreeImage(host, tree, input) }
       : {}),
@@ -2274,7 +2304,7 @@ function createDocxSessionFromHost(
 
 function formatDocxBatch(
   host: AutomationHost,
-  surface: PaginatedSurface | null,
+  surface: DocxFormatSurface | null,
   items: readonly DocxFormatBatchOperation[],
   expectedRevision: number,
   run?: (
@@ -2288,11 +2318,21 @@ function formatDocxBatch(
   const targets: PendingTreeWrite[] = [];
   const objects: TreeDocOp[] = [];
   const fontRanges = new Map<string, { start: number; end: number }[]>();
+  const paragraphs = new Map<string, { paraId: string; text: string }>();
   for (const item of items) {
     const flagError = invalidParagraphFlag(item.paragraph);
     if (flagError) return invalidFormatMessage(host.revision(), flagError);
-    const text = readParagraph(host, item.target);
-    if (!text) return staleTarget(host.revision());
+    let model = paragraphs.get(item.target.ref);
+    if (!model) {
+      const read = host.execute({ expectedRevision, operations: paragraphModelReads(item.target) });
+      if (!read.ok) {
+        const error = errorAt(read);
+        if (error.code === "stale-revision" || error.code === "invalid-handle") return staleTarget(read.revision);
+        return { ok: false, code: error.code, message: error.message, revision: read.revision, changed: false };
+      }
+      model = { paraId: textAt(read, 0), text: textAt(read, 1) };
+      paragraphs.set(item.target.ref, model);
+    }
     const { range } = item;
     if (
       range &&
@@ -2300,7 +2340,7 @@ function formatDocxBatch(
         !Number.isInteger(range.end) ||
         range.start < 0 ||
         range.end <= range.start ||
-        range.end > text.text.length ||
+      range.end > model.text.length ||
         item.paragraph !== undefined ||
         item.objectFormat !== undefined ||
         !item.font)
@@ -2315,9 +2355,9 @@ function formatDocxBatch(
       [range.start, range.end].some(
         (offset) =>
           offset > 0 &&
-          offset < text.text.length &&
-          /[\uD800-\uDBFF]/.test(text.text[offset - 1]) &&
-          /[\uDC00-\uDFFF]/.test(text.text[offset]),
+          offset < model.text.length &&
+          /[\uD800-\uDBFF]/.test(model.text[offset - 1]) &&
+          /[\uDC00-\uDFFF]/.test(model.text[offset]),
       )
     ) {
       return invalidFormatMessage(
@@ -2329,7 +2369,7 @@ function formatDocxBatch(
       item.font &&
       Object.values(item.font).some((value) => value !== undefined)
     ) {
-      const selection = range ?? { start: 0, end: text.text.length };
+      const selection = range ?? { start: 0, end: model.text.length };
       const previous = fontRanges.get(item.target.ref) ?? [];
       if (
         previous.some(
@@ -2396,8 +2436,8 @@ function formatDocxBatch(
         return flags.length
           ? unsupportedParagraphFlags(host.revision())
           : unsupportedEastAsiaFont(host.revision());
-      const paragraphId = text.paraId
-        ? surface.session.nodeIdOf(text.paraId)
+      const paragraphId = model.paraId
+        ? surface.session.nodeIdOf(model.paraId)
         : null;
       if (!paragraphId) return staleTarget(host.revision());
       targets.push({
@@ -2440,10 +2480,10 @@ function formatDocxBatch(
       };
 }
 
-export function createDocxSession(editor: DocxEditorInstance): DocxSession {
+function bindDocxFormatSession(editor: DocxFormatEditor) {
   let pendingTreeWrite: PendingBatchWrite | null = null;
   const host = createBrowserAutomationHost(
-    withTreeWriteAutomation(editor, () => pendingTreeWrite),
+    withTreeWriteAutomation(editor, () => pendingTreeWrite) as DocxEditorInstance,
   );
   const formatBatch = (
     items: readonly DocxFormatBatchOperation[],
@@ -2522,6 +2562,36 @@ export function createDocxSession(editor: DocxEditorInstance): DocxSession {
     formatBatch,
     editor.surface?.session,
   );
+  return { host, session };
+}
+
+export function openDocxFormatSession(bytes: Uint8Array) {
+  const opened = openTreeSession(bytes);
+  if (!opened.ok) throw new Error(opened.reason);
+  const tree = opened.session;
+  const { session } = bindDocxFormatSession({
+    on: () => () => {},
+    surface: {
+      session: tree,
+      editingMode: () => "edit",
+      revisionDisplayMode: () => "all-markup",
+      flushPendingInput: () => {},
+      collaborationSession: () => null,
+      replacementLanding: () => null,
+      applyAutomationOps(staged, scope, packageEdits) {
+        const ops = staged((url) => tree.ensureHyperlinkRelationship(url, scope));
+        return ops === null ? { committed: false, rejected: true, opCount: 0 }
+          : tree.applyTreeOps(ops, undefined, undefined, scope, { packageEdits, recordsHistory: false });
+      },
+      save: () => tree.save(),
+    },
+  });
+  const formatSession: Pick<DocxSession, "revision" | "listParagraphs" | "formatBatch" | "dispose"> = session;
+  return { tree, session: formatSession };
+}
+
+export function createDocxSession(editor: DocxEditorInstance): DocxSession {
+  const { host, session } = bindDocxFormatSession(editor);
   return {
     ...session,
     writeEquation(input, compiled) {

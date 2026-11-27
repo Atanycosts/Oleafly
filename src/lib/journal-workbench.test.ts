@@ -26,6 +26,7 @@ import {
   journalMessage,
   journalQuery,
   journalRequest,
+  JournalWorkbenchError,
   journalResearchPrompt,
   journalTargetReference,
   journalUnitScale,
@@ -76,6 +77,15 @@ beforeEach(() => {
   collaboration.loadObjectAnnotations.mockReset();
 });
 
+it("preserves an actionable template refusal received over IPC", async () => {
+  const refusal = { error: "Recapture the retained template.", code: "template_source_unavailable",
+    action: "recapture_template", retryable_with_same_params: false };
+  native.invoke.mockRejectedValueOnce(refusal);
+  const failure = await journalRequest("/api/template-prepare", {}).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(JournalWorkbenchError);
+  expect(failure).toMatchObject({ message: refusal.error, detail: refusal });
+});
+
 it("passes Journal identities and nullable request fields through the native boundary", async () => {
   const retained = { reference };
   native.invoke
@@ -100,7 +110,7 @@ it("passes Journal identities and nullable request fields through the native bou
     null,
     ["member-1", "member-2"],
   );
-  await connectJournalWorkbench("/selected/python");
+  await connectJournalWorkbench();
   await journalRequest("/api/worlds", { journal_id: "journal-3" });
 
   expect(native.invoke).toHaveBeenNthCalledWith(1, "journal_annotation_object", {
@@ -115,7 +125,7 @@ it("passes Journal identities and nullable request fields through the native bou
     parentId: "annotation-parent",
     mentions: [],
   });
-  expect(native.invoke).toHaveBeenNthCalledWith(3, "journal_workbench_connect", { python: null });
+  expect(native.invoke).toHaveBeenNthCalledWith(3, "journal_workbench_connect");
   expect(native.invoke).toHaveBeenNthCalledWith(4, "journal_workbench_request", {
     path: "/api/state",
     payload: null,
@@ -131,9 +141,7 @@ it("passes Journal identities and nullable request fields through the native bou
     parentId: null,
     mentions: ["member-1", "member-2"],
   });
-  expect(native.invoke).toHaveBeenNthCalledWith(7, "journal_workbench_connect", {
-    python: "/selected/python",
-  });
+  expect(native.invoke).toHaveBeenNthCalledWith(7, "journal_workbench_connect");
   expect(native.invoke).toHaveBeenNthCalledWith(8, "journal_workbench_request", {
     path: "/api/worlds",
     payload: { journal_id: "journal-3" },

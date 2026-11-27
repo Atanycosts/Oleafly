@@ -7,6 +7,7 @@ from zipfile import ZipFile
 import pytest
 
 from research_file_workbench.docx.models import DocxReadError, DocxReadResult
+from research_file_workbench.docx.query import ReadQuery, query_docx
 from research_file_workbench.docx.reader import read_docx_bytes
 from research_file_workbench.docx.report import READER_VERSION, docx_read_result_to_report
 
@@ -18,9 +19,12 @@ WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 DRAWING = "http://schemas.openxmlformats.org/drawingml/2006/main"
 CHART = "http://schemas.openxmlformats.org/drawingml/2006/chart"
 VML = "urn:schemas-microsoft-com:vml"
+OFFICE = "urn:schemas-microsoft-com:office:office"
 
 
-def _read(body: str = "<w:p><w:r><w:t>Body</w:t></w:r></w:p>", **parts: str) -> DocxReadResult:
+def _read(
+    body: str = "<w:p><w:r><w:t>Body</w:t></w:r></w:p>", **parts: str | bytes
+) -> DocxReadResult:
     stream = BytesIO()
     with ZipFile(stream, "w") as archive:
         archive.writestr(
@@ -32,7 +36,7 @@ def _read(body: str = "<w:p><w:r><w:t>Body</w:t></w:r></w:p>", **parts: str) -> 
             "word/document.xml",
             f'<w:document xmlns:w="{WORD}" xmlns:m="{MATH}" xmlns:mc="{MC}" '
             f'xmlns:r="{REL}" xmlns:wp="{WP}" xmlns:a="{DRAWING}" xmlns:c="{CHART}" '
-            f'xmlns:v="{VML}">'
+            f'xmlns:v="{VML}" xmlns:o="{OFFICE}">'
             f"<w:body>{body}</w:body></w:document>",
         )
         for name, content in parts.items():
@@ -61,6 +65,132 @@ def _picture(identifier: str = "image") -> str:
 
 def _vml_picture(identifier: str = "vmlImage") -> str:
     return f'<w:pict><v:shape><v:imagedata r:id="{identifier}"/></v:shape></w:pict>'
+
+
+def _nested_docx(marker: str) -> bytes:
+    stream = BytesIO()
+    with ZipFile(stream, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="xml" ContentType="application/xml"/></Types>',
+        )
+        archive.writestr(
+            "word/document.xml",
+            f'<w:document xmlns:w="{WORD}"><w:body><w:p><w:r><w:t>{marker}</w:t>'
+            "</w:r></w:p></w:body></w:document>",
+        )
+    return stream.getvalue()
+
+
+def test_selected_point_and_range_comments_do_not_duplicate_anchors() -> None:
+    result = _read(
+        "<w:p><w:r><w:t>Before</w:t></w:r>"
+        '<mc:AlternateContent><mc:Choice Requires="w">'
+        '<w:commentRangeStart w:id="1"/><w:r><w:t>Range</w:t></w:r>'
+        '<w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r>'
+        '<w:r><w:commentReference w:id="2"/></w:r>'
+        "</mc:Choice><mc:Fallback>"
+        '<w:commentRangeStart w:id="3"/><w:r><w:commentReference w:id="3"/></w:r>'
+        "</mc:Fallback></mc:AlternateContent></w:p>",
+        **{
+            "word/_rels/document.xml.rels": _relationships(
+                ("comments", "comments", "comments.xml")
+            ),
+            "word/comments.xml": f'<w:comments xmlns:w="{WORD}"/>',
+        },
+    )
+
+    anchors = [item for item in result.references if item.kind == "comment_anchor"]
+    assert [item.reference_id for item in anchors] == ["1", "2"]
+    assert all(item.target_part == "word/comments.xml" for item in anchors)
+    assert all(item.paragraph_locator == "word/document.xml#paragraph[1]" for item in anchors)
+    assert anchors[0].node_locator != anchors[1].node_locator
+    assert anchors[1].limitations == (
+        "Point comment has no selected commentRangeStart.",
+        "Reference target content is not semantically interpreted.",
+    )
+
+    response = query_docx(
+        result,
+        ReadQuery(object_type="reference", page_size=20),
+        task_id="comment-regression",
+        actor_id="test",
+        client_id="test",
+    )
+    returned = [item["content"] for item in response["items"]]
+    assert [item["reference_id"] for item in returned] == ["1", "2"]
+    assert all(item["comment"] is None and item["parse_status"] == "partial" for item in returned)
+    assert all(
+        any("unique related Word comment" in text for text in item["limitations"])
+        for item in returned
+    )
+
+
+def test_alt_chunk_and_ole_payloads_report_locations_without_expanding_them() -> None:
+    alt_chunk_marker = "ALTCHUNK-INTERNAL-ONLY"
+    ole_marker = b"OLE-INTERNAL-ONLY"
+    result = _read(
+        "<w:p><w:r><w:t>Before</w:t></w:r></w:p>"
+        '<w:altChunk r:id="alt"/>'
+        "<w:p><w:r><w:object>"
+        '<v:shape><v:imagedata r:id="preview"/></v:shape>'
+        '<o:OLEObject r:id="ole" ProgID="Package"/>'
+        "</w:object></w:r></w:p>",
+        **{
+            "word/_rels/document.xml.rels": _relationships(
+                ("alt", "aFChunk", "afchunk.docx"),
+                ("preview", "image", "media/ole-preview.emf"),
+                ("ole", "oleObject", "embeddings/oleObject1.bin"),
+            ),
+            "word/afchunk.docx": _nested_docx(alt_chunk_marker),
+            "word/embeddings/oleObject1.bin": ole_marker,
+            "word/media/ole-preview.emf": b"preview-bytes",
+        },
+    )
+
+    objects = {item.kind: item for item in result.complex_objects}
+    alt_chunk = objects["alt_chunk"]
+    ole = objects["ole"]
+    assert alt_chunk.node_locator.startswith("word/document.xml#complex[")
+    assert alt_chunk.relationship_ids == ("alt",)
+    assert alt_chunk.related_parts == ("word/afchunk.docx",)
+    assert alt_chunk.parse_status == "unsupported"
+    assert alt_chunk.limitations == (
+        "The alternate-format payload is registered by relationship but is not expanded, "
+        "interpreted or executed.",
+    )
+    assert ole.relationship_ids == ("ole", "preview")
+    assert set(ole.related_parts) == {
+        "word/embeddings/oleObject1.bin",
+        "word/media/ole-preview.emf",
+    }
+    assert ole.available_preview == ("word/media/ole-preview.emf",)
+    assert ole.parse_status == "unsupported"
+    assert ole.limitations == (
+        "The embedded OLE payload is registered by relationship but is not opened, "
+        "executed or semantically parsed.",
+    )
+    assert alt_chunk_marker not in " ".join(item.text for item in result.text_blocks)
+    assert ole_marker.decode() not in " ".join(item.text for item in result.text_blocks)
+
+    report = docx_read_result_to_report(result)
+    report_objects = {item["kind"]: item for item in report["complex_objects"]}
+    assert report_objects["alt_chunk"]["related_parts"] == ["word/afchunk.docx"]
+    assert "not expanded" in " ".join(report_objects["alt_chunk"]["limitations"])
+    assert "not opened" in " ".join(report_objects["ole"]["limitations"])
+
+    response = query_docx(
+        result,
+        ReadQuery(object_type="complex_object", page_size=20),
+        task_id="complex-regression",
+        actor_id="test",
+        client_id="test",
+    )
+    returned = {item["content"]["kind"]: item["content"] for item in response["items"]}
+    assert returned["alt_chunk"]["related_parts"] == ["word/afchunk.docx"]
+    assert "not expanded" in " ".join(returned["alt_chunk"]["limitations"])
+    assert "not opened" in " ".join(returned["ole"]["limitations"])
 
 
 def test_zero_abstract_numbering_id_retains_its_declared_level() -> None:
@@ -154,7 +284,7 @@ def test_vml_picture_is_unsupported_without_changing_drawing_image_count() -> No
         ),
     ]
     report = docx_read_result_to_report(result)
-    assert report["reader_version"] == READER_VERSION == "s1-readonly-reader-1.5.0"
+    assert report["reader_version"] == READER_VERSION == "s1-readonly-reader-1.7.0"
     assert len(report["images"]) == 1
     assert report["unsupported_records"][0]["kind"] == "vml_picture"
 

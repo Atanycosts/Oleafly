@@ -1559,7 +1559,7 @@ fn apply_changes(
 
 fn write_file(project_id: &str, target: &Path, relative: &str, bytes: &[u8]) -> Result<(), String> {
     let _writable = WritableWhileSaving::new(target);
-    crate::project::write_project_bytes(project_id, target, relative, bytes).map(|_| ())
+    crate::project::restore_project_bytes(project_id, target, relative, bytes).map(|_| ())
 }
 
 /// Windows refuses to replace a read-only file; clear the flag while the

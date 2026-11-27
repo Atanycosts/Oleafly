@@ -54,10 +54,18 @@ pnpm tauri dev
 ```
 
 The setup command creates this service's `.venv` and installs the package with its developer
-extras. `pnpm tauri dev` supplies that interpreter when no explicit
-`OLEAFLY_WORKBENCH_PYTHON` is set. Packaged apps retain the existing runtime selector; choose
-this environment's Python executable once. Existing journal libraries remain in their selected
-application-data directory. A source merge does not relocate data or rewrite saved paths.
+and bundle extras. `pnpm tauri dev` supplies that interpreter through
+`OLEAFLY_WORKBENCH_PYTHON`. Debug and test builds may use this explicit development setup.
+
+Local and internal arm64 macOS builds start only the self-contained engine inside the application
+bundle. `pnpm workbench:bundle` creates it under
+`src-tauri/resources/research-workbench/`; the normal Tauri build hook also runs the packaged
+readiness and two-process isolation check. The staging step seals the bundled Python framework
+with `APPLE_SIGNING_IDENTITY` when available, or ad-hoc for local builds, before Tauri signs the
+application. Packaged builds ignore saved Python settings and environment overrides. The current
+public release omits the engine while PyMuPDF/MuPDF redistribution is unresolved, and reports
+Journal checks as unavailable. Existing journal libraries remain in their application-data
+directory; a source merge does not relocate data or rewrite saved paths.
 
 The previous standalone Workbench desktop shell is frozen local history. Packaging support code
 remains for its existing boundary tests; Oleafly is the active application and Agent shell.

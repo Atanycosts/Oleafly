@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 from research_file_workbench.common.json_io import load_json_object
+from research_file_workbench.docx.normalization import STRICT_NORMALIZATION_VERSION
 from research_file_workbench.docx.query import (
     CONTINUATION_AVAILABLE,
     CONTINUATION_EXHAUSTED,
@@ -15,6 +16,7 @@ from research_file_workbench.docx.query import (
 )
 from research_file_workbench.docx.report import COVERAGE_STATUS
 from research_file_workbench.journals import models
+from research_file_workbench.journals.template_models import SNAPSHOT_METHOD
 from research_file_workbench.projects.render_validation import BUNDLE_VERSION
 from research_file_workbench.workbench import mcp, server
 
@@ -122,7 +124,9 @@ def test_active_contract_methods_match_domain_and_http_implementations() -> None
         "analyzer": models.ANALYZER_VERSION,
         "checker": models.CHECKER_VERSION,
         "http": server.HTTP_CONTRACT_VERSION,
+        "strict_docx_normalization": STRICT_NORMALIZATION_VERSION,
     }
+    assert world["template_comparison"]["snapshot_method"] == SNAPSHOT_METHOD
     assert (
         load_json_object(ROOT / "contracts/s1/read-query.json")["contract_version"] == QUERY_VERSION
     )

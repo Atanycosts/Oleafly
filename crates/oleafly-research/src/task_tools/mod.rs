@@ -7,6 +7,7 @@ use std::time::Duration;
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_std::fs::{Dir, OpenOptions};
 use oleafly_agent::ToolSchema;
+use oleafly_core::word_source;
 use serde_json::{json, Value};
 
 pub mod collaboration;
@@ -238,10 +239,23 @@ impl TaskFiles {
     }
 
     pub fn write(&self, value: &str, content: &str) -> Result<Value, String> {
+        let path = self.text_write_path(value)?;
+        self.write_checked_text(value, &path, content)
+    }
+
+    fn text_write_path(&self, value: &str) -> Result<PathBuf, String> {
+        let path = self.checked(value)?;
+        if word_source::is_docx_target(&self.root.join(&path)) {
+            return Err(word_source::WRITE_REFUSED.into());
+        }
+        Ok(path)
+    }
+
+    fn write_checked_text(&self, value: &str, path: &Path, content: &str) -> Result<Value, String> {
         if content.len() > MAX_FILE_BYTES {
             return Err("Write no more than 1 MiB in one file operation.".into());
         }
-        self.write_bytes(value, content.as_bytes(), MAX_FILE_BYTES)
+        self.write_checked_bytes(value, path, content.as_bytes())
     }
 
     /// The task tool write boundary is shared by persistent members. Compare
@@ -252,6 +266,7 @@ impl TaskFiles {
         content: &str,
         expected: Option<&str>,
     ) -> Result<Value, String> {
+        let path = self.text_write_path(value)?;
         let directory = self.root.join(".oleafly");
         std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         let file = std::fs::OpenOptions::new()
@@ -272,7 +287,7 @@ impl TaskFiles {
             if current.as_deref() != expected {
                 return Err(format!("The file changed since it was read. Read {value} again and reconcile the proposed change; no content was overwritten."));
             }
-            self.write(value, content)
+            self.write_checked_text(value, &path, content)
         })();
         let _ = fs4::FileExt::unlock(&file);
         result
@@ -288,7 +303,16 @@ impl TaskFiles {
             return Err("The file is too large to save in the task workspace.".into());
         }
         let path = self.checked(value)?;
-        let (directory, name) = self.parent(&path, true)?;
+        self.write_checked_bytes(value, &path, content)
+    }
+
+    fn write_checked_bytes(
+        &self,
+        value: &str,
+        path: &Path,
+        content: &[u8],
+    ) -> Result<Value, String> {
+        let (directory, name) = self.parent(path, true)?;
         match directory.symlink_metadata(&name) {
             Ok(metadata) if !metadata.is_file() || metadata.is_symlink() => {
                 return Err("The destination must be a regular file, not a link.".into());

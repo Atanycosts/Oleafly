@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   writeProjectBytes: vi.fn(),
   refreshTree: vi.fn(),
   notifyProjectFilesChanged: vi.fn(),
+  storeProjectId: "paper",
 }));
 
 vi.mock("@/lib/tauri", () => ({
@@ -18,7 +19,9 @@ vi.mock("@/lib/cross-window", () => ({
   notifyProjectFilesChanged: mocks.notifyProjectFilesChanged,
 }));
 vi.mock("@/store/files", () => ({
-  useFilesStore: { getState: () => ({ projectId: "paper", refreshTree: mocks.refreshTree }) },
+  useFilesStore: {
+    getState: () => ({ projectId: mocks.storeProjectId, refreshTree: mocks.refreshTree }),
+  },
 }));
 vi.mock("xlsx", async (importOriginal) => {
   const actual = await importOriginal<typeof import("xlsx")>();
@@ -48,6 +51,7 @@ function csvBase64(text: string): string {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.storeProjectId = "paper";
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -102,8 +106,20 @@ describe("readTableRows", () => {
     await expect(readTableRows("/tmp/empty.xlsx")).resolves.toEqual([]);
   });
 
+  it("preserves commas, whitespace, and blank rows in a single-column worksheet", async () => {
+    const sheet = XLSX.utils.aoa_to_sheet([["Smith, Jane"], [], ["  Doe, Alex  "]]);
+    mocks.readPickedFileBase64.mockResolvedValue(workbookBase64(sheet));
+    await expect(readTableRows("/tmp/names.xlsx")).resolves.toEqual([["Smith, Jane"], [""], ["  Doe, Alex  "]]);
+  });
+
+  it("reads a single-column TSV without guessing from commas", async () => {
+    mocks.readPickedFileBase64.mockResolvedValue(csvBase64("Name\nSmith, Jane\n"));
+    await expect(readTableRows("/tmp/names.tsv")).resolves.toEqual([["Name"], ["Smith, Jane"]]);
+  });
+
   it.each([
     ["rows", MAX_TABLE_ROWS, 0],
+    ["sparse rows", MAX_TABLE_ROWS + 1_000, 0],
     ["columns", 0, MAX_TABLE_COLUMNS],
   ] as const)("rejects an XLSX sheet with too many %s before expanding its sparse range", async (_dimension, row, column) => {
     const lastCell = XLSX.utils.encode_cell({ r: row, c: column });
@@ -113,7 +129,7 @@ describe("readTableRows", () => {
       "!ref": `A1:${lastCell}`,
     };
     mocks.readPickedFileBase64.mockResolvedValue(workbookBase64(sheet));
-    const expand = vi.spyOn(XLSX.utils, "sheet_to_csv");
+    const expand = vi.spyOn(XLSX.utils, "format_cell");
     await expect(readTableRows("/tmp/oversized.xlsx")).rejects.toThrow(/Import a smaller range/);
     expect(expand).not.toHaveBeenCalled();
   });
@@ -280,6 +296,19 @@ describe("planLinkedTable", () => {
       source: { format: "json", path: "data/grid.json", shape: "rows" },
     });
   });
+
+  it("defaults a JSON table without an explicit shape to the records reader", () => {
+    const json: TableFile = {
+      rows: [["a"], ["1"]],
+      format: "json",
+      text: '[{"a":"1"}]',
+    };
+    expect(planLinkedTable(json, "records.json", [], "main.typ")).toEqual({
+      dataPath: "data/records.json",
+      content: '[{"a":"1"}]',
+      source: { format: "json", path: "data/records.json", shape: "records" },
+    });
+  });
 });
 
 describe("linked tables", () => {
@@ -299,5 +328,34 @@ describe("linked tables", () => {
     expect(mocks.writeProjectBytes).toHaveBeenCalledWith("paper", "data/é.csv", btoa("\u00c3\u00a9\n"));
     expect(mocks.refreshTree).toHaveBeenCalled();
     expect(mocks.notifyProjectFilesChanged).toHaveBeenCalledWith("paper", ["data/é.csv"]);
+  });
+
+  it("does not refresh another project's file tree after a background write", async () => {
+    mocks.storeProjectId = "other";
+
+    await writeLinkedTableData("paper", {
+      dataPath: "data/x.csv",
+      content: "x\n",
+      source: { format: "csv", path: "data/x.csv" },
+    });
+
+    expect(mocks.writeProjectBytes).toHaveBeenCalledWith("paper", "data/x.csv", btoa("x\n"));
+    expect(mocks.refreshTree).not.toHaveBeenCalled();
+    expect(mocks.notifyProjectFilesChanged).not.toHaveBeenCalled();
+  });
+
+  it("still announces the write when the tree refresh fails", async () => {
+    mocks.refreshTree.mockRejectedValueOnce(new Error("tree busy"));
+
+    await expect(
+      writeLinkedTableData("paper", {
+        dataPath: "data/x.csv",
+        content: "x\n",
+        source: { format: "csv", path: "data/x.csv" },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(mocks.refreshTree).toHaveBeenCalled();
+    expect(mocks.notifyProjectFilesChanged).toHaveBeenCalledWith("paper", ["data/x.csv"]);
   });
 });

@@ -73,6 +73,7 @@ async fn source_original_sha256(project_id: &str, path: &str) -> Result<String, 
 }
 
 async fn normalized_source(
+    session: &Session,
     project_id: &str,
     path: &str,
 ) -> Result<normalization::NormalizedTemplate, String> {
@@ -80,8 +81,14 @@ async fn normalized_source(
     let bytes = source_bytes(project_id, path).await?;
     let renderer = render::find_renderer();
     let temporary_root = crate::paths::oleafly_root()?.join("tmp/word-imports");
-    normalization::normalize_template_bytes(&filename, bytes, renderer.as_deref(), &temporary_root)
-        .await
+    normalization::normalize_template_bytes(
+        session,
+        &filename,
+        bytes,
+        renderer.as_deref(),
+        &temporary_root,
+    )
+    .await
 }
 
 async fn opened(session: &Session, project: Value) -> Result<(Value, Option<Value>), String> {
@@ -284,22 +291,84 @@ async fn import_source(
         Some(json!({
             "name": name,
             "filename": docx_name,
-            "content_base64": STANDARD.encode(&normalized.docx_bytes),
+            "content_base64": STANDARD.encode(normalized.project_upload_bytes()),
         })),
     )
     .await?;
-    let workbench_project_id = project["project_id"]
-        .as_str()
-        .ok_or("Workbench did not return the Word working copy.")?
-        .to_owned();
+    let receipt = validate_import_receipt(&project, &normalized)?;
+    let (original_sha256, normalized_sha256) = word_link_hashes(&normalized, &receipt);
     crate::research_workspace::roots::set_word_document(
         &workspace.primary_project_id,
         path.to_string(),
-        workbench_project_id,
-        normalized.original_sha256,
-        normalized.docx_sha256,
+        receipt.workbench_project_id,
+        original_sha256,
+        normalized_sha256,
     )?;
     Ok(project)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ImportReceipt {
+    workbench_project_id: String,
+    original_sha256: String,
+    source_sha256: String,
+}
+
+fn validate_import_receipt(
+    project: &Value,
+    normalized: &normalization::NormalizedTemplate,
+) -> Result<ImportReceipt, String> {
+    let digest = |field: &str| {
+        project[field]
+            .as_str()
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| {
+                format!(
+                    "Workbench did not return the committed {field} for the new Word working copy."
+                )
+            })
+    };
+    let workbench_project_id = project["project_id"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("Workbench did not return the committed Word project identity.")?
+        .to_owned();
+    let committed_original = digest("original_sha256")?.to_owned();
+    let committed_source = digest("source_sha256")?.to_owned();
+    let expected_original = if normalized.converted_from_legacy {
+        normalized.docx_sha256.as_str()
+    } else {
+        normalized.original_sha256.as_str()
+    };
+    if committed_original != expected_original {
+        return Err(
+            "Workbench committed a different original DOCX than the selected source; the file tree link was not created."
+                .into(),
+        );
+    }
+    if committed_source != normalized.docx_sha256 {
+        return Err(
+            "Workbench committed a different normalized DOCX than the selected source; the file tree link was not created."
+                .into(),
+        );
+    }
+    Ok(ImportReceipt {
+        workbench_project_id,
+        original_sha256: committed_original,
+        source_sha256: committed_source,
+    })
+}
+
+fn word_link_hashes(
+    normalized: &normalization::NormalizedTemplate,
+    receipt: &ImportReceipt,
+) -> (String, String) {
+    let original = if normalized.converted_from_legacy {
+        normalized.original_sha256.clone()
+    } else {
+        receipt.original_sha256.clone()
+    };
+    (original, receipt.source_sha256.clone())
 }
 
 async fn open_mapped(
@@ -311,7 +380,7 @@ async fn open_mapped(
     choice: WordOpenChoice,
 ) -> Result<OpenedWordDocument, String> {
     if choice.new_copy {
-        let normalized = normalized_source(&workspace.primary_project_id, &path).await?;
+        let normalized = normalized_source(session, &workspace.primary_project_id, &path).await?;
         let project = import_source(session, &workspace, &path, normalized).await?;
         return opened_response(session, project, false, Vec::new()).await;
     }
@@ -327,7 +396,7 @@ async fn open_mapped(
     }
 
     if let Some(selected_id) = choice.workbench_project_id {
-        let normalized = normalized_source(&workspace.primary_project_id, &path).await?;
+        let normalized = normalized_source(session, &workspace.primary_project_id, &path).await?;
         let project = select_exact_match(
             session,
             &workspace,
@@ -340,21 +409,25 @@ async fn open_mapped(
         return opened_response(session, project, false, Vec::new()).await;
     }
 
+    let retained = discovered_project(projects, &link.workbench_project_id);
     if current_sha256
         .as_ref()
         .is_ok_and(|current| link.original_sha256.as_deref() == Some(current.as_str()))
     {
-        let project = retained_project(projects, &link.workbench_project_id)?;
-        crate::research_workspace::roots::set_journal_project(
-            &workspace.primary_project_id,
-            link.workbench_project_id,
-        )?;
-        return opened_response(session, project, false, Vec::new()).await;
+        if let Some(project) = retained.as_ref() {
+            crate::research_workspace::roots::set_journal_project(
+                &workspace.primary_project_id,
+                link.workbench_project_id,
+            )?;
+            return opened_response(session, project.clone(), false, Vec::new()).await;
+        }
     }
 
     let mut exact_matches = Vec::new();
     if current_sha256.is_ok() {
-        if let Ok(normalized) = normalized_source(&workspace.primary_project_id, &path).await {
+        if let Ok(normalized) =
+            normalized_source(session, &workspace.primary_project_id, &path).await
+        {
             exact_matches =
                 exact_source_matches(session, &workspace, projects, &normalized.docx_sha256)
                     .await?;
@@ -377,7 +450,6 @@ async fn open_mapped(
         }
     }
 
-    let retained = discovered_project(projects, &link.workbench_project_id);
     let (project, choices) = changed_source_selection(retained, exact_matches);
     if let Some(project) = project {
         return opened_response(session, project, true, choices).await;
@@ -397,7 +469,7 @@ async fn open_unmapped(
     path: String,
     choice: WordOpenChoice,
 ) -> Result<OpenedWordDocument, String> {
-    let normalized = normalized_source(&workspace.primary_project_id, &path).await?;
+    let normalized = normalized_source(session, &workspace.primary_project_id, &path).await?;
     if let Some(selected_id) = choice.workbench_project_id {
         let project = select_exact_match(
             session,
@@ -459,6 +531,27 @@ pub async fn journal_word_open(
         return open_mapped(session, workspace, &projects, link, path, choice).await;
     }
     open_unmapped(session, workspace, &projects, path, choice).await
+}
+
+#[tauri::command]
+pub async fn journal_word_original_sha256(
+    project_id: String,
+    workbench_project_id: String,
+    source_path: Option<String>,
+) -> Result<Option<String>, String> {
+    let source_path = source_path.as_deref().map(document_path).transpose()?;
+    let workspace = crate::research_workspace::roots::get_workspace(&project_id)?;
+    let link = workspace.word_documents.iter().find(|link| {
+        link.workbench_project_id == workbench_project_id
+            && source_path.as_ref().is_none_or(|path| *path == link.path)
+    });
+    match link {
+        Some(link) => source_original_sha256(&project_id, &link.path)
+            .await
+            .map(Some),
+        None if source_path.is_none() => Ok(None),
+        None => Err("The Word source is no longer linked to this working copy.".into()),
+    }
 }
 
 #[cfg(test)]
@@ -606,5 +699,111 @@ mod tests {
                 "choices": [project]
             })
         );
+    }
+
+    fn template_fixture(
+        original: &str,
+        docx: &str,
+        converted_from_legacy: bool,
+    ) -> normalization::NormalizedTemplate {
+        normalization::NormalizedTemplate {
+            original_name: "paper.docx".into(),
+            original_sha256: original.into(),
+            original_bytes: Vec::new(),
+            docx_bytes: Vec::new(),
+            docx_sha256: docx.into(),
+            conversion: None,
+            converted_from_legacy,
+        }
+    }
+
+    #[test]
+    fn import_receipt_must_match_the_uploaded_and_normalized_hashes() {
+        let original = "a".repeat(64);
+        let source = "b".repeat(64);
+        let normalized = template_fixture(&original, &source, false);
+        let receipt = validate_import_receipt(
+            &json!({
+                "project_id": "project-strict",
+                "original_sha256": original,
+                "source_sha256": source,
+            }),
+            &normalized,
+        )
+        .unwrap();
+        assert_eq!(receipt.workbench_project_id, "project-strict");
+        assert_eq!(
+            word_link_hashes(&normalized, &receipt),
+            (original.clone(), source.clone())
+        );
+        assert!(validate_import_receipt(
+            &json!({
+                "project_id": "project-strict",
+                "original_sha256": source,
+                "source_sha256": source,
+            }),
+            &normalized,
+        )
+        .unwrap_err()
+        .contains("different original DOCX"));
+        assert!(validate_import_receipt(
+            &json!({
+                "project_id": "project-strict",
+                "original_sha256": original,
+                "source_sha256": original,
+            }),
+            &normalized,
+        )
+        .unwrap_err()
+        .contains("different normalized DOCX"));
+        assert!(validate_import_receipt(
+            &json!({
+                "project_id": "project-strict",
+                "original_sha256": original,
+            }),
+            &normalized,
+        )
+        .unwrap_err()
+        .contains("committed source_sha256"));
+        assert!(validate_import_receipt(
+            &json!({
+                "project_id": " ",
+                "original_sha256": original,
+                "source_sha256": source,
+            }),
+            &normalized,
+        )
+        .unwrap_err()
+        .contains("committed Word project identity"));
+    }
+
+    #[test]
+    fn legacy_receipt_identifies_the_converted_upload_for_both_hashes() {
+        let original = "a".repeat(64);
+        let converted = "b".repeat(64);
+        let normalized = template_fixture(&original, &converted, true);
+        let receipt = validate_import_receipt(
+            &json!({
+                "project_id": "project-legacy",
+                "original_sha256": converted,
+                "source_sha256": converted,
+            }),
+            &normalized,
+        )
+        .unwrap();
+        assert_eq!(
+            word_link_hashes(&normalized, &receipt),
+            (original.clone(), converted.clone())
+        );
+        assert!(validate_import_receipt(
+            &json!({
+                "project_id": "project-legacy",
+                "original_sha256": original,
+                "source_sha256": converted,
+            }),
+            &normalized,
+        )
+        .unwrap_err()
+        .contains("different original DOCX"));
     }
 }

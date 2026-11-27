@@ -16,6 +16,8 @@ dist-ssr
 /tmp/
 *.local
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
 
 # Editor
 .vscode/*
@@ -32,6 +34,8 @@ tools/collab-bakeoff/target/
 src-tauri/resources/*.ttb
 src-tauri/resources/language-servers/*
 !src-tauri/resources/language-servers/.gitkeep
+src-tauri/resources/research-workbench/*
+!src-tauri/resources/research-workbench/.gitkeep
 src-tauri/binaries/*
 src-tauri/resources/licenses/pandoc-3.9.0.2-COPYING.md
 !src-tauri/binaries/.gitkeep

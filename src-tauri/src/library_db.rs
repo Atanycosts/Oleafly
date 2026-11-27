@@ -875,7 +875,15 @@ pub async fn usage_summary(project_id: String) -> Result<UsageTotals, String> {
 }
 
 #[tauri::command]
-pub async fn budget_get_cmd(project_id: String) -> Result<Option<f64>, String> {
+pub async fn budget_get_cmd(
+    project_id: String,
+    for_enforcement: Option<bool>,
+) -> Result<Option<f64>, String> {
+    if for_enforcement == Some(true)
+        && !oleafly_research::budget::BudgetStopPolicy::from_environment().enforced()
+    {
+        return Ok(None);
+    }
     tauri::async_runtime::spawn_blocking(move || {
         budget_get(&crate::paths::oleafly_root()?, &project_id)
     })

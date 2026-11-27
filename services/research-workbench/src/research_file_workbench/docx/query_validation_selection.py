@@ -35,7 +35,7 @@ def build_delivery_selection(
     """Recreate source observations and the selected object subset."""
     from research_file_workbench.docx.query import ReadQuery, ReadQueryError
 
-    report = docx_read_result_to_report(result)
+    report = docx_read_result_to_report(result, for_query=True)
     observations = index_observations(result, report)
     if response.get("indexed_object_count") != len(observations):
         raise ReadQueryError("Delivered object count differs from the source index")

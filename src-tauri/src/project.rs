@@ -1,3 +1,4 @@
+use oleafly_core::word_source;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -499,6 +500,12 @@ pub enum FileConflictStrategy {
     Error,
     KeepBoth,
     Replace,
+}
+
+#[derive(Clone, Copy)]
+struct RenamePolicy {
+    conflict_strategy: FileConflictStrategy,
+    protect_word_sources: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -2291,8 +2298,12 @@ async fn write_project_file(
     tauri::async_runtime::spawn_blocking(move || -> Result<FileMutationResult, String> {
         let (_, generation) = admission.run_with_change_status(|| {
             let p = resolve(&project_id, &path)?;
+            if word_source::is_docx_target(&p) {
+                return Err(word_source::WRITE_REFUSED.into());
+            }
             ensure_disk_unchanged(&p, expected_hash.as_deref(), &path)?;
-            let written = write_project_bytes(&project_id, &p, &path, content.as_bytes())?;
+            let written =
+                write_resolved_project_bytes(&project_id, &p, &path, content.as_bytes(), false)?;
             Ok(((), written))
         })?;
         Ok(FileMutationResult { generation })
@@ -2301,16 +2312,43 @@ async fn write_project_file(
     .map_err(|e| format!("file write task failed: {e}"))?
 }
 
+pub(crate) fn restore_project_bytes(
+    project_id: &str,
+    target: &Path,
+    path: &str,
+    bytes: &[u8],
+) -> Result<bool, String> {
+    write_resolved_project_bytes(project_id, target, path, bytes, false)
+}
+
 pub(crate) fn write_project_bytes(
     project_id: &str,
     target: &Path,
     path: &str,
     bytes: &[u8],
 ) -> Result<bool, String> {
+    let create_docx = word_source::is_docx_target(target);
+    write_resolved_project_bytes(project_id, target, path, bytes, create_docx)
+}
+
+pub(crate) fn require_new_docx_destination(target: &Path) -> Result<(), String> {
+    if std::fs::symlink_metadata(target).is_ok() || portable_collision(target)?.is_some() {
+        return Err(word_source::WRITE_REFUSED.into());
+    }
+    Ok(())
+}
+
+fn write_resolved_project_bytes(
+    project_id: &str,
+    target: &Path,
+    path: &str,
+    bytes: &[u8],
+    create_docx: bool,
+) -> Result<bool, String> {
     let failed = |error: String| format!("failed to write {path}: {error}");
     let location =
         crate::project_location::locate(project_id).map_err(|error| failed(error.into()))?;
-    if disk_bytes_match(target, bytes) {
+    if !create_docx && disk_bytes_match(target, bytes) {
         return Ok(false);
     }
     let folder = crate::folder_write::Folder::of(&location);
@@ -2318,22 +2356,25 @@ pub(crate) fn write_project_bytes(
         std::fs::create_dir_all(parent)
             .map_err(|error| folder.describe(target, path, error, String::from))?;
     }
-    if location.kind == ProjectKind::Library {
+    if create_docx {
+        crate::sandbox::atomic_create_docx(target, bytes)
+            .map_err(|failure| folder.describe(target, path, failure, String::from))?;
+    } else if location.kind == ProjectKind::Library {
         atomic_write(target, bytes).map_err(failed)?;
-        crate::folder_watch::note_own_write(target);
-        crate::agent_turns::note_app_write(project_id, path);
-        if crate::collab::registry::is_shared(project_id) {
-            crate::collab::live::app_wrote(project_id, path);
-        }
-        return Ok(true);
+    } else {
+        let backups = location.private_state_dir().join("save-backups");
+        crate::sandbox::atomic_write_preserving(target, bytes, &|| {
+            location.ensure_linked_state(&backups)
+        })
+        .map_err(|failure| {
+            folder.describe(target, path, failure, |failure| failed(failure.into()))
+        })?;
     }
-    let backups = location.private_state_dir().join("save-backups");
-    crate::sandbox::atomic_write_preserving(target, bytes, &|| {
-        location.ensure_linked_state(&backups)
-    })
-    .map_err(|failure| folder.describe(target, path, failure, |failure| failed(failure.into())))?;
     crate::folder_watch::note_own_write(target);
     crate::agent_turns::note_app_write(project_id, path);
+    if location.kind == ProjectKind::Library && crate::collab::registry::is_shared(project_id) {
+        crate::collab::live::app_wrote(project_id, path);
+    }
     Ok(true)
 }
 
@@ -2440,6 +2481,26 @@ pub fn delete_file(
     expected_generation: Option<u64>,
     permanent: Option<bool>,
 ) -> Result<FileMutationResult, String> {
+    delete_file_with_policy(project_id, path, expected_generation, permanent, false)
+}
+
+#[tauri::command(async)]
+pub fn agent_delete_file(
+    project_id: String,
+    path: String,
+    expected_generation: Option<u64>,
+    permanent: Option<bool>,
+) -> Result<FileMutationResult, String> {
+    delete_file_with_policy(project_id, path, expected_generation, permanent, true)
+}
+
+fn delete_file_with_policy(
+    project_id: String,
+    path: String,
+    expected_generation: Option<u64>,
+    permanent: Option<bool>,
+    protect_word_sources: bool,
+) -> Result<FileMutationResult, String> {
     crate::collab::suggesting::tree_change_refused(&project_id, &[&path])?;
     let deleted_rel = mutation_relative_path(&project_id, &path, true)?;
     if deleted_rel.is_empty() {
@@ -2453,6 +2514,9 @@ pub fn delete_file(
     let (_, generation) = admission.run(|| {
         with_project_metadata_lock_held(&project_id, || {
             let p = resolve(&project_id, &path)?;
+            if protect_word_sources {
+                refuse_word_sources_in(&p, 0)?;
+            }
             let meta = read_meta(&project_id)?;
             if deletion_removes_main_document(&meta.main_doc, &deleted_rel) {
                 return Err(
@@ -2531,14 +2595,63 @@ pub async fn rename_file(
     expected_generation: Option<u64>,
     state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<RenameFileResult, String> {
+    rename_file_command(
+        app,
+        project_id,
+        from,
+        to,
+        expected_generation,
+        state,
+        RenamePolicy {
+            conflict_strategy: conflict_strategy.unwrap_or_default(),
+            protect_word_sources: false,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_rename_file(
+    app: tauri::AppHandle,
+    project_id: String,
+    from: String,
+    to: String,
+    conflict_strategy: Option<FileConflictStrategy>,
+    expected_generation: Option<u64>,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<RenameFileResult, String> {
+    rename_file_command(
+        app,
+        project_id,
+        from,
+        to,
+        expected_generation,
+        state,
+        RenamePolicy {
+            conflict_strategy: conflict_strategy.unwrap_or_default(),
+            protect_word_sources: true,
+        },
+    )
+    .await
+}
+
+async fn rename_file_command(
+    app: tauri::AppHandle,
+    project_id: String,
+    from: String,
+    to: String,
+    expected_generation: Option<u64>,
+    state: tauri::State<'_, crate::state::AppState>,
+    policy: RenamePolicy,
+) -> Result<RenameFileResult, String> {
     crate::collab::suggesting::tree_change_refused(&project_id, &[&from, &to])?;
     let result = rename_file_synchronized(
         &state,
         project_id.clone(),
         from,
         to,
-        conflict_strategy,
         expected_generation,
+        policy,
     )
     .await?;
     if matches!(result, RenameFileResult::Renamed { .. }) {
@@ -2562,23 +2675,63 @@ async fn rename_file_synchronized(
     project_id: String,
     from: String,
     to: String,
-    conflict_strategy: Option<FileConflictStrategy>,
     expected_generation: Option<u64>,
+    policy: RenamePolicy,
 ) -> Result<RenameFileResult, String> {
     let _compile = state.compile_lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        rename_file_blocking(project_id, from, to, conflict_strategy, expected_generation)
+        rename_file_blocking_with_policy(project_id, from, to, expected_generation, policy)
     })
     .await
     .map_err(|error| format!("file rename task failed: {error}"))?
 }
 
+#[cfg(test)]
 pub(crate) fn rename_file_blocking(
     project_id: String,
     from: String,
     to: String,
     conflict_strategy: Option<FileConflictStrategy>,
     expected_generation: Option<u64>,
+) -> Result<RenameFileResult, String> {
+    rename_file_blocking_with_policy(
+        project_id,
+        from,
+        to,
+        expected_generation,
+        RenamePolicy {
+            conflict_strategy: conflict_strategy.unwrap_or_default(),
+            protect_word_sources: false,
+        },
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn agent_rename_file_blocking(
+    project_id: String,
+    from: String,
+    to: String,
+    conflict_strategy: Option<FileConflictStrategy>,
+    expected_generation: Option<u64>,
+) -> Result<RenameFileResult, String> {
+    rename_file_blocking_with_policy(
+        project_id,
+        from,
+        to,
+        expected_generation,
+        RenamePolicy {
+            conflict_strategy: conflict_strategy.unwrap_or_default(),
+            protect_word_sources: true,
+        },
+    )
+}
+
+fn rename_file_blocking_with_policy(
+    project_id: String,
+    from: String,
+    to: String,
+    expected_generation: Option<u64>,
+    policy: RenamePolicy,
 ) -> Result<RenameFileResult, String> {
     let source_rel = mutation_relative_path(&project_id, &from, false)?;
     let destination_rel = mutation_relative_path(&project_id, &to, false)?;
@@ -2591,13 +2744,15 @@ pub(crate) fn rename_file_blocking(
         ],
         expected_generation,
     )?;
-    let strategy = conflict_strategy.unwrap_or_default();
     let (result, generation) = admission.run_with_change_status(|| {
         with_project_metadata_lock_held(&project_id, || {
             let location = crate::project_location::locate(&project_id)?;
             let meta = read_meta(&project_id)?;
             let src = resolve(&project_id, &from)?;
             let dst = resolve(&project_id, &to)?;
+            if policy.protect_word_sources && word_source::move_crosses_docx_boundary(&src, &dst) {
+                return Err(word_source::WRITE_REFUSED.into());
+            }
             let result = crate::collab::live::renaming(
                 &project_id,
                 &source_rel,
@@ -2608,8 +2763,8 @@ pub(crate) fn rename_file_blocking(
                         &src,
                         &dst,
                         &destination_rel,
-                        strategy,
                         meta,
+                        policy,
                     )
                 },
                 |result| match result {
@@ -2723,12 +2878,19 @@ fn rename_path_and_update_meta(
     src: &Path,
     requested_dst: &Path,
     requested_rel: &str,
-    strategy: FileConflictStrategy,
     mut meta: ProjectMeta,
+    policy: RenamePolicy,
 ) -> Result<RenameFileResult, String> {
     let root = location.root.as_path();
     let source_rel = rel_slash(root, src);
-    let transaction = stage_rename_path(location, src, requested_dst, requested_rel, strategy)?;
+    let transaction = stage_rename_path(
+        location,
+        src,
+        requested_dst,
+        requested_rel,
+        policy.conflict_strategy,
+        policy.protect_word_sources,
+    )?;
     let actual_destination = match &transaction.result {
         RenameFileResult::Renamed { path, .. } => path.clone(),
         RenameFileResult::Conflict { .. } => return Ok(transaction.commit()),
@@ -2811,7 +2973,7 @@ fn rename_path_in_project(
     requested_rel: &str,
     strategy: FileConflictStrategy,
 ) -> Result<RenameFileResult, String> {
-    Ok(stage_rename_path(location, src, requested_dst, requested_rel, strategy)?.commit())
+    Ok(stage_rename_path(location, src, requested_dst, requested_rel, strategy, false)?.commit())
 }
 
 fn stage_rename_path(
@@ -2820,6 +2982,7 @@ fn stage_rename_path(
     requested_dst: &Path,
     requested_rel: &str,
     strategy: FileConflictStrategy,
+    protect_word_sources: bool,
 ) -> Result<MoveTransaction, String> {
     let root = location.root.as_path();
     if src == root || requested_dst == root {
@@ -2900,6 +3063,9 @@ fn stage_rename_path(
             unique_destination(requested_dst, source_meta.is_dir())?
         }
         (Some(existing), FileConflictStrategy::Replace) => {
+            if protect_word_sources {
+                refuse_word_sources_in(&existing, 0)?;
+            }
             let rollback =
                 stage_replace_path(location, src, &existing, requested_dst).map_err(refused)?;
             return Ok(MoveTransaction {
@@ -2962,6 +3128,22 @@ fn stage_rename_path(
             error,
         ))),
     }
+}
+
+fn refuse_word_sources_in(path: &Path, depth: usize) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.is_dir() && !oleafly_core::linked_capture::is_reparse_point(&metadata) {
+        if depth >= MAX_WALK_DEPTH {
+            return Err("The folder is too deeply nested to check for DOCX sources.".into());
+        }
+        for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            refuse_word_sources_in(&entry.path(), depth + 1)?;
+        }
+    } else if word_source::is_docx_target(path) {
+        return Err(word_source::WRITE_REFUSED.into());
+    }
+    Ok(())
 }
 
 /// Find an existing sibling using case-insensitive comparison. This makes a
@@ -3233,7 +3415,7 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -3251,7 +3433,7 @@ fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -3277,7 +3459,7 @@ fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
-fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
@@ -3298,7 +3480,7 @@ fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
     target_os = "android",
     windows
 )))]
-fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
     if dst.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
@@ -3403,23 +3585,13 @@ pub async fn save_file_base64(
     expected_generation: Option<u64>,
 ) -> Result<FileMutationResult, String> {
     refuse_new_shared_file(&project_id, &path)?;
-    let relative = mutation_relative_path(&project_id, &path, false)?;
-    let admission = admit_mutation(
-        &project_id,
-        vec![MutationScope::file(relative)],
-        expected_generation,
-    )?;
+    let write = admit_project_file_write(project_id, path, expected_generation)?;
     tauri::async_runtime::spawn_blocking(move || -> Result<FileMutationResult, String> {
         use base64::{engine::general_purpose::STANDARD, Engine};
         let bytes = STANDARD
             .decode(data.trim())
             .map_err(|e| format!("invalid base64: {e}"))?;
-        let (_, generation) = admission.run_with_change_status(|| {
-            let p = resolve(&project_id, &path)?;
-            let written = write_project_bytes(&project_id, &p, &path, &bytes)?;
-            Ok(((), written))
-        })?;
-        Ok(FileMutationResult { generation })
+        write.write(&bytes)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6713,6 +6885,21 @@ pub(crate) fn require_export_destination_outside_project(
     Ok(())
 }
 
+pub(crate) fn is_project_export_directory(parent: &Path) -> Result<bool, String> {
+    let library = paths::oleafly_root()?.join("projects");
+    if library
+        .canonicalize()
+        .is_ok_and(|root| parent.starts_with(root))
+    {
+        return Ok(true);
+    }
+    use crate::linked_registry::LinkEntry;
+    Ok(crate::linked_registry::list()?.iter().any(|entry| {
+        matches!(entry, LinkEntry::Record(record)
+            if record.is_active() && parent.starts_with(Path::new(&record.canonical_path)))
+    }))
+}
+
 fn validate_conversion_export(
     meta: &ProjectMeta,
     format: &str,
@@ -8469,8 +8656,11 @@ mod tests {
             &location.root.join("draft.tex"),
             &location.root.join("final.tex"),
             "final.tex",
-            FileConflictStrategy::Error,
             meta,
+            super::RenamePolicy {
+                conflict_strategy: FileConflictStrategy::Error,
+                protect_word_sources: false,
+            },
         )
         .unwrap();
         assert!(
@@ -9227,8 +9417,11 @@ mod tests {
             &folder.join("main.tex"),
             &folder.join("thesis.tex"),
             "thesis.tex",
-            FileConflictStrategy::Error,
             meta,
+            super::RenamePolicy {
+                conflict_strategy: FileConflictStrategy::Error,
+                protect_word_sources: false,
+            },
         )
         .unwrap();
         assert_eq!(
@@ -10600,6 +10793,7 @@ mod tests {
             &location.root.join("paper.tex"),
             "paper.tex",
             FileConflictStrategy::Replace,
+            false,
         )
         .unwrap();
         let backups: Vec<_> = std::fs::read_dir(location.move_backups_dir())
@@ -13227,8 +13421,11 @@ mod tests {
             &src,
             &dst,
             "final.tex",
-            FileConflictStrategy::Error,
             meta,
+            super::RenamePolicy {
+                conflict_strategy: FileConflictStrategy::Error,
+                protect_word_sources: false,
+            },
         )
         .unwrap();
 
@@ -13266,8 +13463,11 @@ mod tests {
             &src,
             &requested,
             "renamed",
-            FileConflictStrategy::KeepBoth,
             meta,
+            super::RenamePolicy {
+                conflict_strategy: FileConflictStrategy::KeepBoth,
+                protect_word_sources: false,
+            },
         )
         .unwrap();
 
@@ -13302,8 +13502,11 @@ mod tests {
             &src,
             &dst,
             "paper.tex",
-            FileConflictStrategy::Error,
             meta,
+            super::RenamePolicy {
+                conflict_strategy: FileConflictStrategy::Error,
+                protect_word_sources: false,
+            },
         )
         .unwrap();
 
@@ -13334,8 +13537,11 @@ mod tests {
             &src,
             &dst,
             "final.tex",
-            FileConflictStrategy::Error,
             meta,
+            super::RenamePolicy {
+                conflict_strategy: FileConflictStrategy::Error,
+                protect_word_sources: false,
+            },
         )
         .unwrap_err();
 
@@ -13843,7 +14049,10 @@ mod tests {
                 "chapters".into(),
                 "moved".into(),
                 None,
-                None,
+                super::RenamePolicy {
+                    conflict_strategy: FileConflictStrategy::Error,
+                    protect_word_sources: false,
+                },
             )
             .await
         });
@@ -15976,6 +16185,181 @@ mod tests {
 
         std::env::remove_var("OLEAFLY_DATA_DIR");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn project_docx_generic_writes_preserve_original_bytes_and_generation() {
+        let _library = crate::collab::testing::TempLibrary::new();
+        let id = super::create_blank_project("Word source guard".into()).unwrap();
+        let root = crate::paths::project_dir(&id).unwrap();
+        let source = root.join("papers/Source.DoCx");
+        let original = b"PK\x03\x04\xff original bytes";
+        std::fs::create_dir(root.join("papers")).unwrap();
+        std::fs::create_dir(root.join("incoming")).unwrap();
+        std::fs::write(&source, original).unwrap();
+        std::fs::write(root.join("draft.tex"), "draft").unwrap();
+        let path = "papers/Source.DoCx";
+        let generation = super::project_mutation_generation(id.clone()).unwrap();
+
+        let text = super::write_project_file(
+            id.clone(),
+            format!("./{path}"),
+            "corrupt".into(),
+            Some(generation),
+            None,
+        )
+        .await
+        .unwrap_err();
+        let binary = crate::commands::write_project_bytes(
+            id.clone(),
+            "papers/source.docx".into(),
+            "Y29ycnVwdA==".into(),
+            Some(generation),
+        )
+        .await
+        .unwrap_err();
+        let base64 = super::save_file_base64(
+            id.clone(),
+            path.into(),
+            "Y29ycnVwdA==".into(),
+            Some(generation),
+        )
+        .await
+        .unwrap_err();
+        for error in [text, binary, base64] {
+            assert_eq!(error, oleafly_core::word_source::WRITE_REFUSED);
+        }
+
+        for (from, to) in [("draft.tex", "papers/source.docx"), ("incoming", "papers")] {
+            let error = super::agent_rename_file_blocking(
+                id.clone(),
+                from.into(),
+                to.into(),
+                Some(FileConflictStrategy::Replace),
+                Some(generation),
+            )
+            .unwrap_err();
+            assert_eq!(error, oleafly_core::word_source::WRITE_REFUSED);
+            assert!(root.join(from).exists());
+        }
+        assert_eq!(
+            super::project_mutation_generation(id.clone()).unwrap(),
+            generation
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+
+        let copy = crate::commands::write_project_bytes(
+            id.clone(),
+            "papers/copy.docx".into(),
+            "Y29weQ==".into(),
+            Some(generation),
+        )
+        .await
+        .unwrap();
+        assert!(copy.generation > generation);
+        assert_eq!(
+            std::fs::read(root.join("papers/copy.docx")).unwrap(),
+            b"copy"
+        );
+        super::write_project_file(id, "draft.tex".into(), "revised".into(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(root.join("draft.tex")).unwrap(), b"revised");
+        assert_eq!(std::fs::read(source).unwrap(), original);
+    }
+
+    #[test]
+    fn agent_file_operations_refuse_docx_removal_and_relabeling() {
+        let _library = crate::collab::testing::TempLibrary::new();
+        let id = super::create_blank_project("Agent Word source guard".into()).unwrap();
+        let root = crate::paths::project_dir(&id).unwrap();
+        let source = root.join("papers/Source.DoCx");
+        let folder_file = root.join("papers/nested/Inner.DOCX");
+        let original = b"PK\x03\x04\xff original bytes";
+        std::fs::create_dir_all(folder_file.parent().unwrap()).unwrap();
+        std::fs::write(&source, original).unwrap();
+        std::fs::write(&folder_file, b"nested package").unwrap();
+        std::fs::write(root.join("draft.tex"), "draft").unwrap();
+        let generation = super::project_mutation_generation(id.clone()).unwrap();
+
+        for path in ["papers/Source.DoCx", "papers"] {
+            assert_eq!(
+                super::agent_delete_file(id.clone(), path.into(), Some(generation), None)
+                    .unwrap_err(),
+                oleafly_core::word_source::WRITE_REFUSED
+            );
+        }
+        for (from, to) in [
+            ("papers/Source.DoCx", "papers/Source.tex"),
+            ("draft.tex", "papers/New.docx"),
+        ] {
+            assert_eq!(
+                super::agent_rename_file_blocking(
+                    id.clone(),
+                    from.into(),
+                    to.into(),
+                    None,
+                    Some(generation),
+                )
+                .unwrap_err(),
+                oleafly_core::word_source::WRITE_REFUSED
+            );
+        }
+        assert_eq!(
+            super::project_mutation_generation(id.clone()).unwrap(),
+            generation
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        assert_eq!(std::fs::read(&folder_file).unwrap(), b"nested package");
+
+        assert!(matches!(
+            super::agent_rename_file_blocking(
+                id,
+                "papers/Source.DoCx".into(),
+                "archive/Source.docx".into(),
+                None,
+                Some(generation),
+            )
+            .unwrap(),
+            RenameFileResult::Renamed { ref path, .. } if path == "archive/Source.docx"
+        ));
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(root.join("archive/Source.docx")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn manual_file_tree_operations_can_explicitly_replace_or_delete_docx_sources() {
+        let _library = crate::collab::testing::TempLibrary::new();
+        let id = super::create_blank_project("Manual Word source operations".into()).unwrap();
+        let root = crate::paths::project_dir(&id).unwrap();
+        std::fs::write(root.join("draft.tex"), "new draft").unwrap();
+        std::fs::write(root.join("published.docx"), "published package").unwrap();
+        let generation = super::project_mutation_generation(id.clone()).unwrap();
+
+        assert!(matches!(
+            super::rename_file_blocking(
+                id.clone(),
+                "draft.tex".into(),
+                "published.docx".into(),
+                Some(FileConflictStrategy::Replace),
+                Some(generation),
+            )
+            .unwrap(),
+            RenameFileResult::Renamed { ref path, .. } if path == "published.docx"
+        ));
+        assert_eq!(
+            std::fs::read(root.join("published.docx")).unwrap(),
+            b"new draft"
+        );
+        assert!(!root.join("draft.tex").exists());
+
+        let generation = super::project_mutation_generation(id.clone()).unwrap();
+        super::delete_file(id, "published.docx".into(), Some(generation), Some(true)).unwrap();
+        assert!(!root.join("published.docx").exists());
     }
 
     #[allow(clippy::await_holding_lock)]

@@ -12,12 +12,14 @@
 
 [![Incidencias abiertas](https://img.shields.io/github/issues/Oleafly/Oleafly?label=issues&color=22c55e)](https://github.com/Oleafly/Oleafly/issues) [![Descargas](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FOleafly%2FOleafly%2Fbadges%2F.github%2Fbadges%2Fdownloads.json)](https://github.com/Oleafly/Oleafly/releases) [![CI](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml/badge.svg)](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml) [![Quality Gate de SonarQube](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Oleafly_Oleafly) [![Cobertura de código](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=coverage)](https://sonarcloud.io/component_measures?id=Oleafly_Oleafly&metric=coverage) [![Estado del desarrollo: extremadamente activo](https://img.shields.io/badge/status-ultra_active-22c55e)](https://github.com/Oleafly/Oleafly/pulse) [![Último commit](https://img.shields.io/github/last-commit/Oleafly/Oleafly?label=last%20commit&color=22c55e)](https://github.com/Oleafly/Oleafly/commits/main) [![Licencia: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-22c55e.svg)](../../LICENSE) [![Discord](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2Fkt9bcCjgkP%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&suffix=%20members&label=&color=5865F2&logo=discord&logoColor=white&cacheSeconds=600)](https://oleafly.com/discord) [![Estrellas](https://img.shields.io/github/stars/Oleafly/Oleafly?style=social)](https://github.com/Oleafly/Oleafly)
 
-**Un editor colaborativo en directo de LaTeX, Typst y Markdown para la investigación.**
+**Un espacio de trabajo de código abierto para escribir y dirigir un equipo de investigación con IA.**
 
-Oleafly es un editor potente para escribir artículos de investigación y tesis en LaTeX, Typst y Markdown. El código fuente, el PDF, las citas, las figuras, las comprobaciones y el historial de Git de un proyecto están en un mismo lugar. Escribe con tus coautores en tiempo real, mantén tus proyectos sincronizados entre ordenadores e incorpora al proyecto Claude Code, Codex o el modelo que prefieras.
+Oleafly reúne la edición de manuscritos, las referencias, la compilación y la revisión de PDF en un mismo lugar. Esta rama amplía el editor de LaTeX, Typst y Markdown: puedes escribir por tu cuenta o asignar un objetivo de investigación a un equipo de IA. Un agente coordinador delega las tareas. Tú puedes revisar qué ha cambiado y por qué, reorientar al equipo o hacerte cargo del trabajo y decidir qué resultados incorporar.
+
+Las descargas de esta página enlazan a las versiones publicadas por el proyecto original de Oleafly. Consulta el [índice de documentación](../README.md) para conocer la dirección de esta rama, sus funciones actuales y el estado de su verificación.
 
 <p>
-  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>Descarga gratis</strong></a>
+  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>Descarga la versión del proyecto original</strong></a>
 · <a href="https://oleafly.com/docs/">Consulta las guías</a> · <a href="https://github.com/Oleafly/oleafly-server">Aloja un servidor</a> · <a href="../development.md">Compila desde el código fuente</a>
 </p>
 

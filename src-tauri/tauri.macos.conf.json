@@ -1,5 +1,10 @@
 {
   "bundle": {
+    "macOS": {
+      "files": {
+        "Resources/resources/research-workbench": "resources/research-workbench"
+      }
+    },
     "fileAssociations": [
       {
         "ext": [],

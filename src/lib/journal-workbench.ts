@@ -90,6 +90,15 @@ export interface JournalWorldSummary {
   scope: JournalScope;
 }
 
+export interface JournalTemplateSummary extends JournalWorldSummary {
+  template_preparation: {
+    state: "ready" | "pending_refresh" | "unsupported";
+    reason: string | null;
+    analyzer_version: string | null;
+    current_analyzer_version: string;
+  };
+}
+
 export interface JournalBinding {
   binding_id: string;
   baseline_id: string;
@@ -142,6 +151,7 @@ export interface JournalDiff {
 }
 
 export interface JournalWorld extends JournalWorldSummary {
+  analyzer_version?: string;
   sources: { source_id: string; name: string; kind: string }[];
   rules: JournalRule[];
   coverage_gaps: JournalGap[];
@@ -206,10 +216,11 @@ export interface JournalProject {
   baseline_id: string;
   binding: JournalBinding | null;
   latest_check: JournalCheck | null;
+  role?: "manuscript" | "format_candidate";
 }
 
 export interface JournalState {
-  worlds: JournalWorldSummary[];
+  worlds: (JournalWorldSummary | JournalTemplateSummary)[];
   projects: JournalProject[];
 }
 
@@ -256,13 +267,31 @@ export interface ManuscriptRead {
   pagination: { has_more: boolean; next_cursor: string | null };
 }
 
-export const connectJournalWorkbench = (python?: string) =>
-  invoke<JournalConnection>("journal_workbench_connect", {
-    python: python ?? null,
-  });
+export const connectJournalWorkbench = () =>
+  invoke<JournalConnection>("journal_workbench_connect");
 
-export const journalRequest = <T>(path: string, payload?: unknown) =>
-  invoke<T>("journal_workbench_request", { path, payload: payload ?? null });
+export class JournalWorkbenchError extends Error {
+  constructor(readonly detail: { error: string; code: string; action?: string; retryable_with_same_params?: boolean; world_version_id?: string }) {
+    super(detail.error);
+  }
+}
+
+export async function journalRequest<T>(path: string, payload?: unknown): Promise<T> {
+  try {
+    return await invoke<T>("journal_workbench_request", { path, payload: payload ?? null });
+  } catch (failure) {
+    if (failure && typeof failure === "object" && "code" in failure && typeof failure.code === "string"
+      && "error" in failure && typeof failure.error === "string") {
+      throw new JournalWorkbenchError({
+        error: failure.error, code: failure.code,
+        action: "action" in failure && typeof failure.action === "string" ? failure.action : undefined,
+        retryable_with_same_params: "retryable_with_same_params" in failure && failure.retryable_with_same_params === false ? false : undefined,
+        ...("world_version_id" in failure && typeof failure.world_version_id === "string" ? { world_version_id: failure.world_version_id } : {}),
+      });
+    }
+    throw failure;
+  }
+}
 
 export const linkJournalProject = (projectId: string, workbenchProjectId: string) =>
   invoke<ResearchWorkspace>("journal_workbench_link", {

@@ -402,18 +402,30 @@ describe("load_image in any project", () => {
 });
 
 describe("DOCX host contracts", () => {
+  it.each([
+    [{ part: "/word/document.xml" }, "node_address cannot be combined with part"],
+    [{ path: [0, 2, 1] }, "A legacy path cannot locate a DOCX node"],
+  ])("rejects mixed exact and legacy selectors before a read: %j", async (selector, error) => {
+    const readFormat = vi.fn(async () => readableFormat());
+    const tools = createDocxTools(makeDocxHost({ readFormat }));
+    const node_address = { version: "xml-element-path-1", source_sha256: "a".repeat(64), part: "/word/document.xml", path: [0, 2, 1] };
+
+    expect(await tools.read_docx_format.execute({ query: { kind: "nodes", node_address, ...selector } }))
+      .toMatchObject({ error: expect.stringContaining(error) });
+    expect(readFormat).not.toHaveBeenCalled();
+  });
+
   it("forwards the complete XML node and attribute route for format reads", async () => {
     const readFormat = vi.fn(async () => readableFormat());
     const tools = createDocxTools(makeDocxHost({ readFormat }));
+    const node_address = { version: "xml-element-path-1", source_sha256: "a".repeat(64), part: "/word/document.xml", path: [0, 2, 1] };
 
     await tools.read_docx_format.execute({
       session_id: "s1",
       query: {
         kind: "nodes",
         expected_revision: 2,
-        paragraph_ref: "p1",
-        part: "word/document.xml",
-        path: [0, 2, 1],
+        node_address,
         namespace_uri: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
         local_name: "pPr",
         attribute: {
@@ -427,9 +439,7 @@ describe("DOCX host contracts", () => {
     expect(readFormat).toHaveBeenCalledExactlyOnceWith("s1", {
       kind: "nodes",
       expectedRevision: 2,
-      paragraphRef: "p1",
-      part: "word/document.xml",
-      path: [0, 2, 1],
+      nodeAddress: node_address,
       namespaceUri: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
       localName: "pPr",
       attribute: {

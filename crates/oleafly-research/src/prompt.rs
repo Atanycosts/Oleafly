@@ -57,6 +57,7 @@ pub fn task_prompt(context: &TaskRunContext, skills: &str) -> String {
         ));
     }
     prompt.push_str("\n\nWhen editable Word equations are requested, prefer available LaTeX source and explicit math macro context. Use write_docx_equation for one equation body. Read the current paragraph revision and math object fingerprint before replacing an equation, and use an exact modelText offset when inserting. Whole algorithms are structured document content, not one equation. Respect conversion diagnostics and source adoption conflicts; save the working copy separately after verified edits.");
+    prompt.push_str("\n\nWhen drafting or revising a bound Word manuscript and template style matters, use read_docx_template_styles. If it is not in the current tool list and discover_tools is available, look it up by name. Query the relevant role, heading level or style ID. Use the manuscript's actual binding and distinguish style definitions and sample formatting from formal journal requirements. If the binding or a unique value is unavailable, do not invent one; a prose edit need not change formatting.");
     prompt.push_str(&format!("\n\nTask: {}\n{}", context.title, context.prompt));
     if let Some(turn) = &context.collaboration {
         prompt.push_str(&format!(

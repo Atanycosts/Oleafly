@@ -7,7 +7,7 @@ export type BudgetGate = "ok" | "warned" | "blocked";
 
 export async function checkProjectBudget(projectId: string): Promise<BudgetGate> {
   try {
-    const budget = await budgetGet(projectId);
+    const budget = await budgetGet(projectId, true);
     if (!budget || budget <= 0) return "ok";
     const totals = await usageSummary(projectId);
     if (totals.cost_usd >= budget) {

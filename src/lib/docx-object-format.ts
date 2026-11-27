@@ -423,7 +423,7 @@ function treeOps(
 
 export function planDocxObjectFormat(
   host: AutomationHost,
-  surface: PaginatedSurface | null,
+  surface: Pick<PaginatedSurface, "session" | "editingMode"> | null,
   paragraph: AutomationHandle<"paragraph">,
   expectedRevision: number,
   input: unknown,

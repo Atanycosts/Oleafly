@@ -528,7 +528,7 @@ async fn acp_scheduler_delivers_pending_annotations_to_fresh_and_restored_sessio
     use oleafly_research::annotations::{
         AnnotationAuthor, AnnotationDraft, AnnotationSourceDraft, AnnotationTarget,
     };
-    use oleafly_research::model::{ResearchTaskDraft, ResearchTaskStatus};
+    use oleafly_research::model::{ResearchTaskDraft, ResearchTaskStatus, RetryMode};
     use oleafly_research::test_support::{FakeEnv, FakeHost};
 
     for start in ["fresh", "resume", "adopt"] {
@@ -632,8 +632,26 @@ async fn acp_scheduler_delivers_pending_annotations_to_fresh_and_restored_sessio
                 .request()
             })
             .unwrap();
-        if !restore {
-            state.request_start(&task.id).unwrap();
+        match start {
+            "fresh" => state.request_start(&task.id).unwrap(),
+            "resume" => {
+                state.launch_ready().await.unwrap();
+                let retained = store.require(&task.id).unwrap();
+                assert_eq!(retained.status, ResearchTaskStatus::AwaitingReview);
+                assert_eq!(retained.execution_generation, 1);
+                assert!(!retained.start_requested);
+                assert_eq!(state.active_count(), 0);
+                assert_eq!(
+                    state.cancel(task.id.clone()).await.unwrap().status,
+                    ResearchTaskStatus::Cancelled
+                );
+                assert_eq!(
+                    state.retry(&task.id, RetryMode::Resume).unwrap().status,
+                    ResearchTaskStatus::Queued
+                );
+                state.request_start(&task.id).unwrap();
+            }
+            _ => {}
         }
         state.release_launches();
         state.launch_ready().await.unwrap();
@@ -785,7 +803,6 @@ async fn acp_annotation_receipts_distinguish_startup_failure_from_sent_failure_a
         if scenario == "unsupported-model" {
             assert!(saved.error.unwrap().contains("does not offer"));
         }
-        assert!(store.queue_annotation_followups().unwrap().is_empty());
         state.launch_ready().await.unwrap();
         assert_eq!(
             store.require(&task.id).unwrap().execution_generation,

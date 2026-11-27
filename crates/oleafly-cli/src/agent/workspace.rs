@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
 use oleafly_agent::CancellationToken;
+use oleafly_core::word_source;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -991,15 +992,32 @@ impl AgentWorkspace {
         journal.insert(value.to_owned(), before);
     }
 
-    pub fn write_text(&self, path: &str, content: &str) -> Result<Value, ToolError> {
+    fn text_write_path(&self, path: &str) -> Result<PathBuf, ToolError> {
         self.writable()?;
+        let checked = self.checked(path)?;
+        if word_source::is_docx_target(&self.work_root.join(&checked)) {
+            return Err(ToolError::Path(word_source::WRITE_REFUSED.into()));
+        }
+        Ok(checked)
+    }
+
+    pub fn write_text(&self, path: &str, content: &str) -> Result<Value, ToolError> {
+        let checked = self.text_write_path(path)?;
+        self.write_checked_text(path, &checked, content)
+    }
+
+    fn write_checked_text(
+        &self,
+        path: &str,
+        checked: &Path,
+        content: &str,
+    ) -> Result<Value, ToolError> {
         if content.len() as u64 > MAX_TEXT_BYTES {
             return Err(ToolError::TooLarge(
                 "Write at most 4 MiB in one file.".into(),
             ));
         }
-        let checked = self.checked(path)?;
-        let (directory, name) = self.parent(&checked, true)?;
+        let (directory, name) = self.parent(checked, true)?;
         let (existed, permissions) = match directory.symlink_metadata(&name) {
             Ok(metadata) if metadata.is_symlink() || !metadata.is_file() => {
                 return Err(ToolError::Path(format!(
@@ -1010,7 +1028,7 @@ impl AgentWorkspace {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (false, None),
             Err(error) => return Err(ToolError::Io(error.to_string())),
         };
-        self.journal(path, &checked);
+        self.journal(path, checked);
         let staging = format!(".agent-write-{:032x}", rand::random::<u128>());
         let mut options = OpenOptions::new();
         options
@@ -1046,7 +1064,7 @@ impl AgentWorkspace {
         new: &str,
         replace_all: bool,
     ) -> Result<Value, ToolError> {
-        self.writable()?;
+        let checked = self.text_write_path(path)?;
         if old.is_empty() {
             return Err(ToolError::Path("Give the text to replace.".into()));
         }
@@ -1067,13 +1085,16 @@ impl AgentWorkspace {
         } else {
             content.replacen(old, new, 1)
         };
-        self.write_text(path, &updated)?;
+        self.write_checked_text(path, &checked, &updated)?;
         Ok(json!({"path": path, "replacements": if replace_all { count } else { 1 }}))
     }
 
     pub fn delete(&self, path: &str) -> Result<Value, ToolError> {
         self.writable()?;
         let checked = self.checked(path)?;
+        if word_source::is_docx_target(&self.work_root.join(&checked)) {
+            return Err(ToolError::Path(word_source::WRITE_REFUSED.into()));
+        }
         let (directory, name) = self.parent(&checked, false)?;
         match directory.symlink_metadata(&name) {
             Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => {}
@@ -1322,6 +1343,16 @@ pub fn apply_review(
     let project = real_folder(project)?;
     check_review_manifest(&manifest, &project)?;
     let pending = pending_changes(&manifest, &project)?;
+    if let Some(change) = pending
+        .iter()
+        .find(|change| word_source::is_docx_target(&project.join(&change.path)))
+    {
+        return Err(CliError::new(
+            ErrorKind::UnsafePath,
+            "agent.docx_source_read_only",
+            format!("{}: {}", change.path, word_source::WRITE_REFUSED),
+        ));
+    }
     verify_saved_copies(review_dir, &pending)?;
     if dry_run {
         return Ok(manifest.changes);
@@ -1640,6 +1671,48 @@ mod tests {
         assert!(!project_path.join("GIT~1").exists());
     }
 
+    #[test]
+    fn docx_is_refused_by_generic_cli_writes_replacements_and_deletes() {
+        let path = "papers/Author.DoCx";
+        let legacy = "papers/Author.doc";
+        let project = project_with(&[
+            ("main.tex", "original"),
+            (path, "original package"),
+            (legacy, "legacy package"),
+        ]);
+        let workspace = AgentWorkspace::open(
+            project.path(),
+            &policy_for(WriteMode::Apply),
+            &STAGE_LIMITS,
+            &token(),
+        )
+        .unwrap();
+        for error in [
+            workspace
+                .write_text(path, "whole-file overwrite")
+                .unwrap_err(),
+            workspace
+                .edit_text(path, "original", "revised", false)
+                .unwrap_err(),
+            workspace.delete(path).unwrap_err(),
+        ] {
+            assert_eq!(error.to_string(), word_source::WRITE_REFUSED);
+        }
+        assert_eq!(
+            std::fs::read(project.path().join(path)).unwrap(),
+            b"original package"
+        );
+        workspace
+            .edit_text("main.tex", "original", "revised", false)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(project.path().join("main.tex")).unwrap(),
+            b"revised"
+        );
+        workspace.delete(legacy).unwrap();
+        assert!(!project.path().join(legacy).exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_symlink_out_of_the_project_is_neither_read_nor_written() {
@@ -1884,6 +1957,52 @@ mod tests {
         ws.delete("old.tex").unwrap();
         let dir = ws.finish(false).unwrap().review_dir.unwrap();
         (project, reviews, dir)
+    }
+
+    #[test]
+    fn docx_result_cannot_replace_a_project_source_through_review_apply() {
+        let name = "Author.DoCx";
+        let (project, _reviews, workspace) = review_workspace_with(&[(name, "original package")]);
+        std::fs::write(workspace.work_root().join(name), b"updated package").unwrap();
+        let review = workspace.finish(false).unwrap().review_dir.unwrap();
+
+        let error = apply_review(&review, project.path(), false).unwrap_err();
+        assert_eq!(error.code, "agent.docx_source_read_only");
+        assert_eq!(
+            std::fs::read(project.path().join(name)).unwrap(),
+            b"original package"
+        );
+    }
+
+    #[test]
+    fn docx_result_with_a_new_name_stays_in_the_saved_cli_review() {
+        let name = "Candidate.docx";
+        let (project, _reviews, workspace) = review_workspace_with(&[("main.tex", "draft")]);
+        std::fs::write(workspace.work_root().join(name), b"candidate package").unwrap();
+        let review = workspace.finish(false).unwrap().review_dir.unwrap();
+
+        let error = apply_review(&review, project.path(), false).unwrap_err();
+        assert_eq!(error.code, "agent.docx_source_read_only");
+        assert!(!project.path().join(name).exists());
+        assert_eq!(
+            std::fs::read(review.join("changes").join(name)).unwrap(),
+            b"candidate package"
+        );
+    }
+
+    #[test]
+    fn docx_deletion_stays_in_the_saved_cli_review() {
+        let name = "Author.docx";
+        let (project, _reviews, workspace) = review_workspace_with(&[(name, "original package")]);
+        std::fs::remove_file(workspace.work_root().join(name)).unwrap();
+        let review = workspace.finish(false).unwrap().review_dir.unwrap();
+
+        let error = apply_review(&review, project.path(), false).unwrap_err();
+        assert_eq!(error.code, "agent.docx_source_read_only");
+        assert_eq!(
+            std::fs::read(project.path().join(name)).unwrap(),
+            b"original package"
+        );
     }
 
     #[test]

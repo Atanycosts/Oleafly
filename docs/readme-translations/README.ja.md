@@ -12,12 +12,14 @@
 
 [![未解決のIssue](https://img.shields.io/github/issues/Oleafly/Oleafly?label=issues&color=22c55e)](https://github.com/Oleafly/Oleafly/issues) [![ダウンロード数](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FOleafly%2FOleafly%2Fbadges%2F.github%2Fbadges%2Fdownloads.json)](https://github.com/Oleafly/Oleafly/releases) [![CI](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml/badge.svg)](https://github.com/Oleafly/Oleafly/actions/workflows/ci.yml) [![SonarQube品質ゲート](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Oleafly_Oleafly) [![コードカバレッジ](https://sonarcloud.io/api/project_badges/measure?project=Oleafly_Oleafly&metric=coverage)](https://sonarcloud.io/component_measures?id=Oleafly_Oleafly&metric=coverage) [![開発状況: 超活発](https://img.shields.io/badge/status-ultra_active-22c55e)](https://github.com/Oleafly/Oleafly/pulse) [![最終コミット日](https://img.shields.io/github/last-commit/Oleafly/Oleafly?label=last%20commit&color=22c55e)](https://github.com/Oleafly/Oleafly/commits/main) [![ライセンス: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-22c55e.svg)](../../LICENSE) [![Discord](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2Fkt9bcCjgkP%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&suffix=%20members&label=&color=5865F2&logo=discord&logoColor=white&cacheSeconds=600)](https://oleafly.com/discord) [![スター](https://img.shields.io/github/stars/Oleafly/Oleafly?style=social)](https://github.com/Oleafly/Oleafly)
 
-**リアルタイムで共同編集できる、研究のためのLaTeX、Typst、Markdownエディタ。**
+**自分で執筆し、AIの研究チームも率いることができるオープンソースの研究ワークスペース。**
 
-Oleaflyは、LaTeX、Typst、Markdownで研究論文や学位論文を書くための高機能なエディタです。プロジェクトのソース、PDF、引用、図、チェック、Git履歴がすべて1か所にまとまります。共著者とリアルタイムで執筆し、複数のコンピューター間でプロジェクトを同期し、Claude Code、Codex、または好きなモデルをプロジェクトで使えます。
+Oleaflyは、原稿の編集、文献管理、コンパイル、PDFの確認を一つの作業環境にまとめます。このブランチではLaTeX、Typst、Markdownエディタを土台に、自分で執筆するだけでなく、AIチームに研究目標を任せる仕組みを開発しています。調整役のエージェントが作業を割り振り、変更内容とその根拠を確認できます。途中で方針を変えたり、自分で引き継いだりしながら、どの成果を採用するかを決められます。
+
+このページのダウンロード先は、上流のOleaflyプロジェクトのリリースです。このブランチの方針、現時点の機能、検証状況は[ドキュメント一覧](../README.md)を参照してください。
 
 <p>
-  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>無料でダウンロード</strong></a>
+  <a href="https://github.com/Oleafly/Oleafly/releases/latest"><strong>上流プロジェクトのリリースをダウンロード</strong></a>
 · <a href="https://oleafly.com/docs/">ガイドを読む</a> · <a href="https://github.com/Oleafly/oleafly-server">サーバーを立てる</a> · <a href="../development.md">ソースからビルドする</a>
 </p>
 

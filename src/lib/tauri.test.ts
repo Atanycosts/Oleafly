@@ -8,8 +8,10 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 import {
   agentListModels,
+  agentDeleteFile,
   agentModelMetadataStatus,
   agentProbeModel,
+  agentRenameFile,
   agentWebSearchReady,
   agentRefreshModelMetadata,
   copyFile,
@@ -152,7 +154,9 @@ describe("project write failures", () => {
     ["writeFileContent", () => writeFileContent("linked-a", "main.tex", "x")],
     ["createFile", () => createFile("linked-a", "notes.tex", false)],
     ["deleteFile", () => deleteFile("linked-a", "notes.tex")],
+    ["agentDeleteFile", () => agentDeleteFile("linked-a", "Author.docx")],
     ["renameFile", () => renameFile("linked-a", "notes.tex", "draft.tex")],
+    ["agentRenameFile", () => agentRenameFile("linked-a", "Author.docx", "draft.docx")],
     ["copyFile", () => copyFile("linked-a", "notes.tex", "copy.tex")],
     ["importPathsIntoProject", () => importPathsIntoProject("linked-a", "figures", ["/tmp/a.png"])],
     ["saveFileBase64", () => saveFileBase64("linked-a", "out.pdf", "AA==")],
@@ -166,6 +170,31 @@ describe("project write failures", () => {
     } finally {
       stop();
     }
+  });
+
+  it("routes Agent file operations through their guarded native commands", async () => {
+    mocks.invoke
+      .mockResolvedValueOnce({ generation: 2 })
+      .mockResolvedValueOnce({ status: "renamed", path: "archive/Author.docx", generation: 3 });
+
+    await expect(agentDeleteFile("p", "obsolete.docx", 1)).resolves.toEqual({ generation: 2 });
+    await expect(
+      agentRenameFile("p", "Author.docx", "archive/Author.docx", "error", 1),
+    ).resolves.toBe("archive/Author.docx");
+
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["agent_delete_file", { projectId: "p", path: "obsolete.docx", expectedGeneration: 1 }],
+      [
+        "agent_rename_file",
+        {
+          projectId: "p",
+          from: "Author.docx",
+          to: "archive/Author.docx",
+          conflictStrategy: "error",
+          expectedGeneration: 1,
+        },
+      ],
+    ]);
   });
 
   it("stays quiet for successful writes, reads and removed listeners", async () => {

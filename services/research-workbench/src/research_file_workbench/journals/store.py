@@ -29,10 +29,19 @@ from research_file_workbench.journals.store_checks import (
     get_check as get_check_record,
 )
 from research_file_workbench.journals.store_checks import (
+    get_check_metadata as get_check_metadata_record,
+)
+from research_file_workbench.journals.store_checks import (
+    list_check_metadata as list_check_metadata_records,
+)
+from research_file_workbench.journals.store_checks import (
     list_checks as list_check_records,
 )
 from research_file_workbench.journals.store_checks import (
     list_dispositions as list_disposition_records,
+)
+from research_file_workbench.journals.store_checks import (
+    list_dispositions_metadata as list_disposition_metadata_records,
 )
 from research_file_workbench.journals.store_checks import (
     record_disposition as record_disposition_record,
@@ -49,6 +58,9 @@ from research_file_workbench.journals.store_worlds import (
     get_world as get_world_record,
 )
 from research_file_workbench.journals.store_worlds import (
+    get_world_metadata as get_world_metadata_record,
+)
+from research_file_workbench.journals.store_worlds import (
     list_worlds as list_world_records,
 )
 from research_file_workbench.journals.store_worlds import (
@@ -62,6 +74,13 @@ DATABASE_NAME = "worlds.sqlite3"
 __all__ = ["BindingConflictError", "DATABASE_NAME", "WorldStore", "WorldStoreError"]
 _SCHEMA_VERSION = 1
 _BUSY_TIMEOUT_SECONDS = 5
+_TEMPLATE_REFRESH_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS template_refresh ("
+    "previous_version_id TEXT NOT NULL REFERENCES world(version_id), "
+    "analyzer_version TEXT NOT NULL, reader_version TEXT NOT NULL, "
+    "version_id TEXT NOT NULL REFERENCES world(version_id), "
+    "PRIMARY KEY(previous_version_id,analyzer_version,reader_version))"
+)
 _SCHEMA = (
     "CREATE TABLE library (singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
     "payload TEXT NOT NULL)",
@@ -72,6 +91,7 @@ _SCHEMA = (
     "payload TEXT NOT NULL, UNIQUE(journal_id,version_ordinal))",
     "CREATE TABLE world_source (version_id TEXT NOT NULL REFERENCES world(version_id), "
     "source_id TEXT NOT NULL REFERENCES source(source_id), PRIMARY KEY(version_id,source_id))",
+    _TEMPLATE_REFRESH_SCHEMA,
     "CREATE TABLE binding (binding_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
     "world_version_id TEXT NOT NULL REFERENCES world(version_id), "
     "previous_binding_id TEXT REFERENCES binding(binding_id), content_sha256 TEXT NOT NULL, "
@@ -103,6 +123,14 @@ class WorldStore:
         """Validate retained library paths, boundaries and schema."""
         with self._connection():
             pass
+
+    def attach_to(self, connection: sqlite3.Connection) -> None:
+        """Attach this validated library before its first read in a project-owned transaction."""
+        self._check_database_paths()
+        check_root(self.root, self._protected_roots())
+        connection.execute("ATTACH DATABASE ? AS journal", (str(self.database_path),))
+        if connection.execute("PRAGMA journal.user_version").fetchone()[0] != _SCHEMA_VERSION:
+            raise WorldStoreError("Unsupported journal library schema version")
 
     @classmethod
     def create(cls, root: Path, protected_roots: tuple[Path, ...] = ()) -> WorldStore:
@@ -187,16 +215,66 @@ class WorldStore:
             if connection is not None:
                 connection.close()
 
-    def save_world(self, world: JsonObject, sources: dict[str, bytes]) -> JsonObject:
+    def save_world(
+        self, world: JsonObject, sources: dict[str, bytes], *, refresh_of: str | None = None
+    ) -> JsonObject:
         """Atomically retain source bytes and an immutable world."""
         with self._connection() as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            return save_world_record(connection, world, sources)
+            if refresh_of is None:
+                return save_world_record(connection, world, sources)
+            method = (refresh_of, str(world["analyzer_version"]), str(world["reader_version"]))
+            connection.execute(_TEMPLATE_REFRESH_SCHEMA)
+            existing = self._template_refresh(connection, method)
+            if existing is not None:
+                return existing
+            saved = save_world_record(connection, world, sources)
+            connection.execute(
+                "INSERT INTO template_refresh VALUES (?,?,?,?)", (*method, saved["version_id"])
+            )
+            return saved
+
+    def get_template_refresh(
+        self, previous_version_id: str, analyzer_version: str, reader_version: str
+    ) -> JsonObject | None:
+        """Find the analysis produced from this exact template, never by journal name."""
+        with self._connection() as connection:
+            if (
+                connection.execute(
+                    "SELECT name FROM sqlite_schema WHERE type='table' AND name='template_refresh'"
+                ).fetchone()
+                is None
+            ):
+                return None
+            return self._template_refresh(
+                connection, (previous_version_id, analyzer_version, reader_version)
+            )
+
+    @staticmethod
+    def _template_refresh(
+        connection: sqlite3.Connection, method: tuple[str, str, str]
+    ) -> JsonObject | None:
+        row = connection.execute(
+            "SELECT version_id FROM template_refresh "
+            "WHERE previous_version_id=? AND analyzer_version=? AND reader_version=?",
+            method,
+        ).fetchone()
+        if row is None:
+            return None
+        world = get_world_metadata_record(connection, row["version_id"])
+        if (world["analyzer_version"], world["reader_version"]) != method[1:]:
+            raise WorldStoreError("Refreshed template method differs from its retained version")
+        return world
 
     def get_world(self, version_id: str) -> JsonObject:
         """Recover one exact world version and its assigned metadata."""
         with self._connection() as connection:
             return get_world_record(connection, version_id)
+
+    def get_world_metadata(self, version_id: str) -> JsonObject:
+        """Recover one exact world without requiring readable source bytes."""
+        with self._connection() as connection:
+            return get_world_metadata_record(connection, version_id)
 
     def list_worlds(self) -> list[JsonObject]:
         """List immutable versions without selecting a project binding."""
@@ -254,12 +332,24 @@ class WorldStore:
         with self._connection() as connection:
             return get_check_record(connection, check_id)
 
+    def get_check_metadata(self, check_id: str) -> JsonObject:
+        """Return a retained check without requiring its world source bytes."""
+        with self._connection() as connection:
+            return get_check_metadata_record(connection, check_id)
+
     def list_checks(
         self, project_id: str | None = None, *, binding_id: str | None = None
     ) -> list[JsonObject]:
         """List retained checks filtered by project and exact binding."""
         with self._connection() as connection:
             return list_check_records(connection, project_id, binding_id=binding_id)
+
+    def list_check_metadata(
+        self, project_id: str | None = None, *, binding_id: str | None = None
+    ) -> list[JsonObject]:
+        """List retained checks without requiring world source bytes."""
+        with self._connection() as connection:
+            return list_check_metadata_records(connection, project_id, binding_id=binding_id)
 
     def record_disposition(
         self, check_id: str, rule_id: str, action: str, note: str, actor_id: str, *, surface: str
@@ -275,3 +365,8 @@ class WorldStore:
         """List chronological operator dispositions for one retained check."""
         with self._connection() as connection:
             return list_disposition_records(connection, check_id)
+
+    def list_dispositions_metadata(self, check_id: str) -> list[JsonObject]:
+        """List dispositions without requiring readable retained world source bytes."""
+        with self._connection() as connection:
+            return list_disposition_metadata_records(connection, check_id)

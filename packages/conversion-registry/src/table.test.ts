@@ -7,6 +7,7 @@ import {
   escapeLatexCell,
   escapeTypstCell,
   inferAlignment,
+  isValidLatexLabel,
   parseDelimited,
   parseJsonTable,
   serializeCsv,
@@ -145,6 +146,26 @@ describe("inferAlignment", () => {
     const rows = [["value"], [`1${",".repeat(20_000)}1`]];
     expect(inferAlignment(rows, true)).toBe("l");
   });
+
+  it("rejects lone signs, lone percents, and malformed grouping as text", () => {
+    expect(
+      inferAlignment(
+        [["%", "+", "-", ".5", "1.2.3", "1,23", "1,23,456", "1,23.4"]],
+        false,
+      ),
+    ).toBe("llllllll");
+    expect(inferAlignment([["1,234.5"], ["45%"], ["-7"], ["+8"]], false)).toBe("r");
+  });
+
+  it("returns one left-aligned column for a table with no rows", () => {
+    expect(inferAlignment([], true)).toBe("l");
+  });
+});
+
+describe("isValidLatexLabel", () => {
+  it("rejects an empty label", () => {
+    expect(isValidLatexLabel("")).toBe(false);
+  });
 });
 
 describe("emitLatexTable", () => {
@@ -194,6 +215,10 @@ describe("emitLatexTable", () => {
   it("pads ragged rows", () => {
     const latex = emitLatexTable([["a", "b", "c"], ["only-one"]], { header: true });
     expect(latex).toContain("only-one &  &  \\\\");
+  });
+
+  it("returns nothing for an empty table", () => {
+    expect(emitLatexTable([], { header: true })).toBe("");
   });
 });
 
@@ -301,6 +326,10 @@ describe("emitTypstTable", () => {
     const typst = emitTypstTable([["a"]], { header: false, caption: "A [#]" });
     expect(typst).toContain("caption: [A \\[\\#\\]],");
   });
+
+  it("returns nothing for an empty table", () => {
+    expect(emitTypstTable([], { header: true })).toBe("");
+  });
 });
 
 describe("serializeCsv", () => {
@@ -313,6 +342,10 @@ describe("serializeCsv", () => {
   it("round-trips through parseDelimited", () => {
     const rows = [["a,b", 'q"q'], ["1", "2"]];
     expect(parseDelimited(serializeCsv(rows))).toEqual(rows);
+  });
+
+  it("serializes an empty table as an empty string", () => {
+    expect(serializeCsv([])).toBe("");
   });
 });
 
@@ -354,6 +387,7 @@ describe("typstDataName", () => {
     expect(typstDataName("2024.csv")).toBe("data-2024");
     expect(typstDataName("données.json")).toBe("donn-es");
     expect(typstDataName("___.csv")).toBe("data");
+    expect(typstDataName("data/results")).toBe("results");
   });
 });
 
@@ -448,6 +482,33 @@ describe("emitTypstLinkedTable", () => {
     expect(typst).toContain("columns: grid-data.first().len(),");
     expect(typst).toContain("table.header(..grid-data.first().map(grid-cell).map(strong)),");
     expect(typst).toContain("..grid-data.slice(1).flatten().map(grid-cell),");
+  });
+
+  it("flattens JSON rows without a header when the table has no header", () => {
+    const typst = emitTypstLinkedTable([["a", "b"], ["1", "2"]], {
+      header: false,
+      source: { format: "json", path: "data/grid.json", shape: "rows" },
+    });
+    expect(typst).not.toContain("table.header");
+    expect(typst).toContain("..grid-data.flatten().map(grid-cell),");
+  });
+
+  it("wraps a caption without inventing a label", () => {
+    const typst = emitTypstLinkedTable(RESULTS, {
+      header: true,
+      caption: "Results",
+      source: csv,
+    });
+    expect(typst.endsWith("  caption: [Results],\n)")).toBe(true);
+    expect(typst).not.toContain("<");
+  });
+
+  it("escapes a backslash in the linked data path", () => {
+    const typst = emitTypstLinkedTable(RESULTS, {
+      header: true,
+      source: { format: "csv", path: "data/a\\b.csv" },
+    });
+    expect(typst).toContain('#let a-b-data = csv("data/a\\\\b.csv")');
   });
 
   it("returns nothing for an empty table", () => {

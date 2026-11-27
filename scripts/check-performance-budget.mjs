@@ -210,15 +210,8 @@ const limits = {
   largestLocaleChunk: 950_000,
   largestCss: 400_000,
   harperWasm: 19_000_000,
-  // The real worker and the independently loaded recovery module are each
-  // emitted once. The recovery module is lazy and never affects startup.
-  // (The startup-experience lazy split made rollup share the pdf.js MAIN
-  // library between async consumers; that chunk briefly adopted the
-  // pdf.worker URL-facade's name and false-positived here. It is pinned to
-  // the "pdfjs-lib" manual chunk in vite.config.ts, so this gate stays
-  // strict: exactly one real worker.)
+  // One worker module is shared by the background and main-thread paths.
   pdfWorkers: 1,
-  pdfFallbacks: 1,
 };
 
 const allJavascript = assets.filter((asset) => /\.(?:js|mjs)$/.test(asset.name));
@@ -227,7 +220,7 @@ const localeChunks = allJavascript.filter(isLocaleChunk);
 const javascript = allJavascript.filter((asset) => !isLocaleChunk(asset));
 const css = assets.filter((asset) => asset.name.endsWith(".css"));
 const workers = assets.filter((asset) => /^pdf\.worker-[^.]+\.js$/.test(asset.name));
-const fallbacks = assets.filter((asset) => /^pdf\.worker\.min-[^.]+\.js$/.test(asset.name));
+const duplicatePdfWorkers = assets.filter((asset) => /^pdf\.worker\.min-[^.]+\.js$/.test(asset.name));
 const harper = assets.find((asset) => asset.name.startsWith("harper_wasm_bg-"));
 const failures = [];
 const largestJavaScript = Math.max(0, ...javascript.map((asset) => asset.bytes));
@@ -320,13 +313,8 @@ if (workers.length !== limits.pdfWorkers) {
     failures.push("PDF worker does not export WorkerMessageHandler");
   }
 }
-if (fallbacks.length !== limits.pdfFallbacks) {
-  failures.push(`PDF fallback count is ${fallbacks.length}`);
-} else {
-  const fallbackSource = await readFile(new URL(fallbacks[0].name, root), "utf8");
-  if (!/export\{[^}]*WorkerMessageHandler/.test(fallbackSource)) {
-    failures.push("PDF fallback does not export WorkerMessageHandler");
-  }
+if (duplicatePdfWorkers.length) {
+  failures.push(`PDF worker implementation is duplicated: ${duplicatePdfWorkers.map(({ name }) => name).join(", ")}`);
 }
 if (assets.some((asset) => asset.name.startsWith("binaryInlined-"))) {
   failures.push("Harper is embedded in JavaScript");
@@ -354,7 +342,6 @@ console.log(
     largestCss,
     harperWasm: harper.bytes,
     pdfWorkers: workers.length,
-    pdfFallbacks: fallbacks.length,
     katexFonts: katexFontReferences.size,
     pdfjs: pdfjsAssetSummary(pdfjs),
     devHookTokens: 0,

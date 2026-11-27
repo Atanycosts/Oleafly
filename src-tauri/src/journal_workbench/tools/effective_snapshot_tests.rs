@@ -535,14 +535,18 @@ fn effective_snapshot_keeps_declaration_only_styles_explicit_and_full_compatible
         if let Some(detail) = detail {
             args["detail"] = json!(detail);
         }
-        let ReadQuery::Format { detail, .. } = serde_json::from_value::<ReadQuery>(args).unwrap()
-        else {
+        let ReadQuery::Format(query) = serde_json::from_value::<ReadQuery>(args).unwrap() else {
             panic!("Expected format read");
         };
-        assert_eq!(detail, FormatDetail::Full);
+        assert_eq!(query.detail, FormatDetail::Full);
         assert_eq!(
-            format_snapshot_page(source.clone(), 0, detail, &arguments("style_definitions"))
-                .unwrap(),
+            format_snapshot_page(
+                source.clone(),
+                0,
+                query.detail,
+                &arguments("style_definitions")
+            )
+            .unwrap(),
             bounded_snapshot_page(source.clone(), 0).unwrap()
         );
     }

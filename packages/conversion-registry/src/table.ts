@@ -18,36 +18,6 @@ export interface TableOptions {
   boldHeader?: boolean;
 }
 
-function splitRecord(line: string, delimiter: string): string[] {
-  const cells: string[] = [];
-  let current = "";
-  let quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (quoted) {
-      if (ch === '"') {
-        if (line[i + 1] === '"') {
-          current += '"';
-          i++;
-        } else {
-          quoted = false;
-        }
-      } else {
-        current += ch;
-      }
-    } else if (ch === '"' && current === "") {
-      quoted = true;
-    } else if (ch === delimiter) {
-      cells.push(current);
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-  cells.push(current);
-  return cells;
-}
-
 export function delimiterOf(text: string): string {
   return detectDelimiter(text.replace(/\r\n?/g, "\n"));
 }
@@ -71,32 +41,58 @@ function detectDelimiter(text: string): string {
   return tabs > 0 ? "\t" : ",";
 }
 
-export function parseDelimited(text: string): string[][] {
+export interface ParseDelimitedOptions {
+  delimiter?: string;
+  trim?: boolean;
+  preserveEmptyRecords?: boolean;
+}
+
+export function parseDelimited(text: string, options: ParseDelimitedOptions = {}): string[][] {
   const normalized = text.replace(/\r\n?/g, "\n");
-  const delimiter = detectDelimiter(normalized);
-  const physical = normalized.split("\n");
-
-  const records: string[] = [];
-  let open = false;
-  let carry = "";
-  for (const line of physical) {
-    carry = open ? `${carry}\n${line}` : line;
-    const quotes = (line.match(/"/g) ?? []).length;
-    if (quotes % 2 === 1) {
-      open = !open;
-    }
-    if (!open) {
-      records.push(carry);
-      carry = "";
+  const { delimiter = detectDelimiter(normalized), trim = true, preserveEmptyRecords = false } = options;
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let start = 0;
+  let quoted = false;
+  const appendField = (end: number) => {
+    field += normalized.slice(start, end);
+    row.push(trim ? field.trim() : field);
+    field = "";
+    start = end + 1;
+  };
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index];
+    if (quoted) {
+      if (character === '"') {
+        field += normalized.slice(start, index);
+        if (normalized[index + 1] === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          quoted = false;
+        }
+        start = index + 1;
+      }
+    } else if (character === '"' && field === "" && index === start) {
+      quoted = true;
+      start = index + 1;
+    } else if (character === delimiter) {
+      appendField(index);
+    } else if (character === "\n") {
+      if (preserveEmptyRecords || row.length > 0 || field !== "" || index > start || normalized[index - 1] === '"') {
+        appendField(index);
+        rows.push(row);
+        row = [];
+      }
+      start = index + 1;
     }
   }
-  if (carry !== "" || open) {
-    records.push(carry);
+  if (normalized !== "" && (row.length > 0 || normalized.at(-1) !== "\n" || quoted)) {
+    appendField(normalized.length);
+    rows.push(row);
   }
-
-  const rows = records
-    .filter((record) => record !== "")
-    .map((record) => splitRecord(record, delimiter).map((cell) => cell.trim()));
+  if (preserveEmptyRecords) return rows;
   while (rows.length > 0 && rows[rows.length - 1].every((cell) => cell === "")) {
     rows.pop();
   }

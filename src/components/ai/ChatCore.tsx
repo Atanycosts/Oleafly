@@ -2563,6 +2563,21 @@ USER_CUSTOM_INSTRUCTIONS`
       enabledToolsForRun,
       Object.keys(tools),
     );
+    const formatCandidateRule = Object.keys(tools).includes("create_docx_format_candidate")
+      ? `
+Word format candidates:
+- For "this template", use the selected template or the project's existing binding through create_docx_format_candidate. It prepares an isolated candidate and refreshes a supported older analysis of the same template when necessary. Do not scan the entire document first.
+- If the user names another template, use list_docx_templates, match the name to a single exact version, and pass its world_version_id. Ask when the choice is ambiguous; never substitute a template without permission.
+- A refusal with retryable_with_same_params=false is not a candidate. Explain the reason, do not retry, and offer the available choices without selecting one. Do not write, rebind, or adopt the live manuscript for a template formatting request.`
+      : "";
+    const wordReadRules = [
+      ...(Object.hasOwn(tools, "read_docx_saved_content") ? [
+        "For a Word version's saved comments or revision projections, use read_docx_saved_content with a session from get_docx_workspace_context. For what's currently in the editor, use the live Word reader instead.",
+      ] : []),
+      ...(Object.hasOwn(tools, "read_docx_template_styles") ? [
+        "When drafting or revising Word paragraphs and template style matters, use read_docx_template_styles for the relevant role, heading level or style ID. Use the actual binding; do not guess missing or competing values, and do not change formatting just to revise prose.",
+      ] : []),
+    ].join("\n");
     const figureBlock = figureGuidance(
       Object.keys(tools),
       documentEngine.capabilities.formatting_profile,
@@ -2600,6 +2615,8 @@ Project tools:
 - run_command runs in the project directory. spawn_agent can handle independent work; collect its result with wait_agent and release it with close_agent.
 - update_todos replaces the current checklist. remember_note stores durable project conventions across chats; forget_note removes them.
 ${workflowRules}
+${formatCandidateRule}
+${wordReadRules}
 ${researchRulesBlock}${figureBlock}
 ${workspaceCtx}
 ${sandboxedCustom}`;
@@ -2985,6 +3002,8 @@ ${sandboxedCustom}`;
             await baseline;
           },
           onToolResult: ({ id, output }) => {
+            const failed = output !== null && typeof output === "object" &&
+              (("error" in output && typeof output.error === "string") || ("ok" in output && output.ok === false));
             const outStr = formatToolOutput(output).slice(0, 40_000);
             mirrorToolOutput(outputToolCalls.get(id), output);
             outputToolCalls.delete(id);
@@ -2992,7 +3011,7 @@ ${sandboxedCustom}`;
               const calls = [...(m.toolCalls || [])];
               for (let i = calls.length - 1; i >= 0; i--) {
                 if (calls[i].id === id && calls[i].status === "running") {
-                  calls[i] = { ...calls[i], status: "done", output: outStr };
+                  calls[i] = { ...calls[i], status: failed ? "error" : "done", output: outStr };
                   break;
                 }
               }

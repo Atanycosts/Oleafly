@@ -16,14 +16,14 @@ from zipfile import ZipFile
 import pymupdf
 import pytest
 
-from research_file_workbench.common.hashing import sha256_file, sha256_text
+from research_file_workbench.common.hashing import sha256_bytes, sha256_file, sha256_text
 from research_file_workbench.journals.store import WorldStoreError
 from research_file_workbench.projects.models import BaselineConflictError
 from research_file_workbench.projects.render_service import register_render_bytes
 from research_file_workbench.projects.service import open_project
 from research_file_workbench.workbench.server import WorkbenchHttpServer
 from research_file_workbench.workbench.service import WorkbenchService
-from tests.journals.test_analysis import template_bytes
+from tests.journals.test_analysis import docx_bytes, template_bytes
 from tests.journals.test_components import component
 
 
@@ -265,7 +265,7 @@ def test_source_page_preview_serves_pdf_and_refuses_invalid_targets(running_serv
 def test_http_user_flow_uses_display_name_and_actual_filename(running_server):
     _, session = _request(running_server, "GET", "/api/session")
     token = session["token"]
-    assert session["contract_version"] == "journal-http-1.13.0"
+    assert session["contract_version"] == "journal-http-1.20.0"
     assert len(session["asset_version"]) == 64
     status, world = _request(running_server, "POST", "/api/worlds", _world_payload(), token)
     assert status == 200
@@ -310,6 +310,125 @@ def test_http_user_flow_uses_display_name_and_actual_filename(running_server):
     assert state["worlds"][0]["journal_name"] == "Test Journal"
     assert "name" not in state["worlds"][0]
     assert state["projects"][0]["latest_check"]["check_id"] == check["check_id"]
+
+
+def test_complex_object_addresses_round_trip_only_on_the_retained_baseline(running_server):
+    body = (
+        "<w:p><w:r><w:t>Before</w:t></w:r></w:p>"
+        '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
+        " "
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'xml:space="preserve"> '
+        '<mc:Choice Requires="w"><w:altChunk r:id="selected"/></mc:Choice> '
+        '<mc:Fallback><w:altChunk r:id="fallback"/></mc:Fallback>'
+        "</mc:AlternateContent>"
+        '<w:p><w:r><w:object><o:OLEObject xmlns:o="urn:schemas-microsoft-com:office:office" '
+        'ProgID="Package"/></w:object></w:r></w:p>'
+    )
+    captured = docx_bytes(body)
+    _, session = _request(running_server, "GET", "/api/session")
+    token = session["token"]
+    status, project = _request(
+        running_server,
+        "POST",
+        "/api/projects",
+        {
+            "name": "Embedded objects",
+            "filename": "objects.docx",
+            "content_base64": base64.b64encode(captured).decode(),
+        },
+        token,
+    )
+    assert status == 200, project
+    original = {key: project[key] for key in ("project_id", "baseline_id")}
+    status, read = _request(
+        running_server,
+        "POST",
+        "/api/read",
+        {
+            **original,
+            "render_bundle_id": None,
+            "query": {
+                "region": None,
+                "object_type": "complex_object",
+                "object_id": None,
+                "page_number": None,
+                "page_size": 20,
+                "cursor": None,
+            },
+        },
+        token,
+    )
+    assert status == 200, read
+    assert read["project"]["baseline_id"] == original["baseline_id"]
+    observations = [item["content"] for item in read["items"]]
+    assert len(observations) == 3
+
+    def query(target, address):
+        return _request(
+            running_server,
+            "POST",
+            "/api/docx-query",
+            {"target": target, "operation": "nodes", "node_address": address},
+            token,
+        )
+
+    for observation, (kind, branch, path, local_name, label) in zip(
+        observations,
+        (
+            ("alt_chunk", True, [0, 0, 1, 0, 0], "altChunk", "selected"),
+            ("alt_chunk", False, [0, 0, 1, 1, 0], "altChunk", "fallback"),
+            ("ole", True, [0, 0, 2, 0, 0, 0], "OLEObject", "Package"),
+        ),
+        strict=True,
+    ):
+        assert observation["kind"] == kind
+        assert observation["in_selected_branch"] is branch
+        assert observation["parse_status"] == "unsupported"
+        assert observation["node_locator"].startswith("word/document.xml#complex[")
+        address = observation["node_address"]
+        assert address == {
+            "version": "xml-element-path-1",
+            "source_sha256": sha256_bytes(captured),
+            "part": "/word/document.xml",
+            "path": path,
+        }
+        status, nodes = query(original, address)
+        assert status == 200, nodes
+        (node,) = nodes["nodes"]
+        assert node["node_address"] == address
+        assert node["local_name"] == local_name
+        assert [attribute["value"] for attribute in node["attributes"]] == [label]
+
+    updated_bytes = docx_bytes(body.replace('r:id="selected"', 'r:id="replacement"'))
+    status, saved = _request(
+        running_server,
+        "POST",
+        "/api/baseline",
+        {
+            "project_id": original["project_id"],
+            "expected_baseline_id": original["baseline_id"],
+            "filename": "objects.docx",
+            "content_base64": base64.b64encode(updated_bytes).decode(),
+            "reason": "Replace the import reference at the same element path",
+            "request_id": "change-embedded-reference",
+        },
+        token,
+    )
+    assert status == 200 and saved["status"] == "APPLIED", saved
+    address = observations[0]["node_address"]
+    status, rejected = query({**original, "baseline_id": saved["result_baseline_id"]}, address)
+    assert status == 400 and "different DOCX bytes" in rejected["error"], rejected
+    status, historical = query(original, address)
+    assert status == 200 and historical["nodes"][0]["attributes"][0]["value"] == "selected"
+
+    record = read["delivery"]["read_record_id"]
+    status, recovered = _request(
+        running_server,
+        "GET",
+        f"/api/read?project_id={original['project_id']}&read_record_id={record}",
+    )
+    assert status == 200 and recovered == read
 
 
 def test_project_upload_requires_the_declared_fields_without_creating_a_project(running_server):

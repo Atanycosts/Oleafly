@@ -1,6 +1,6 @@
 # S1 implementation and acceptance status
 
-Status date: 2026-11-14
+Status date: 2026-11-22
 
 This document records the Workbench-domain slice only. Current cross-system entry points are
 the [Oleafly integration guide](../../../docs/research-workbench-integration.md),
@@ -14,6 +14,47 @@ history and private evidence are retained locally. Oleafly is the active applica
 shell. The old root retains only existing `var/` data and a migration pointer; data
 paths and manuscript records were not rewritten. Use `pnpm workbench:setup` from
 the Oleafly root and this service's `.venv` for development.
+
+On 2026-11-22 the Apple Silicon desktop boundary gained a self-contained engine. The normal Tauri
+release build stages a PyInstaller onedir executable below the application resources; packaged
+builds start only that executable and ignore environment, saved Python settings, system Python and
+known-port services. `pnpm workbench:bundle` also runs two simultaneous packaged services and
+checks their distinct loopback ports and session tokens, library initialization, HTTP contract and
+owner-pipe shutdown. The bundle records bundled dependency licences, including PyMuPDF's AGPL
+terms. Intel macOS, Windows and Linux package an explicit unavailable state until a matching engine
+is built; they do not fall back to an interpreter. This shipping and lifecycle change adds no
+HTTP fields or method versions; the packaged executable reports the current contract from the
+application resources.
+
+The Workbench structure reader and the application format snapshot now choose a single
+`mc:AlternateContent` branch under the same [reader rule](s1-readonly-reader-slice.md).
+Missing branches are reported at their original XML location. Exact source queries retain both
+branches and use the [node address contract](../contracts/journals/world-contract.json) to match
+the original part and bytes. An address with no established origin is refused; a fresh scan does
+not establish that a new address identifies an old object. Earlier snapshots and checks remain
+readable. New checks need fresh format facts for a template or baseline captured with an older
+method; the retained bytes and historical records are not rewritten.
+
+The Workbench reader preserves point-only comment anchors without duplicating range anchors.
+Complex-object content reads return the exact XML address, present relationships, related parts,
+and whether the object is in the selected compatibility branch. `altChunk` and OLE report
+object-specific reasons why their payloads were not read. Historical reports and read receipts
+keep their recorded method. The [reader and query guides](s1-readonly-reader-slice.md) describe
+the boundary.
+
+The 2026-11-22 address and branch work verified selected text and table content,
+the original byte ranges, and exact HTTP source reads. The old-template HTTP regression verified
+that the retained snapshot and DOCX bytes are still readable and that refusal creates no new
+binding or check. Ruff format and lint, mypy, and the full Python suite passed (1,199 passed,
+33 environment skips, five existing PyMuPDF/SWIG warnings). An isolated Apple Silicon Workbench
+bundle also selected the expected branch over HTTP and accepted a template under the current
+method. The desktop installer and Word/WPS rendering were not tested for this change.
+
+The subsequent object-reading work verified that the HTTP content receipt's address recovers the
+exact element on its original baseline, refuses a later baseline (HTTP 400), and leaves the saved
+receipt readable without rewriting it. The full Workbench suite passed (1,202 passed, 33 skips,
+five PyMuPDF/SWIG warnings); Ruff, mypy and the final focused reader/HTTP regressions passed.
+This verifies the source checkout, not a newly packaged executable or Word/WPS rendering.
 
 On 2026-11-12 the local `.venv` was rebuilt from Homebrew Python 3.12. The normal
 `pnpm workbench:setup` entry and `uv pip check` passed; 167 focused reader, render,
@@ -139,7 +180,7 @@ staging, PDF font-name persistence, PDF registration, listing, capability failur
 output and HTTP routing. The derived bundle contract is
 [`s1-render-bundle-1.2.0`](../contracts/s1/render-bundle.json); only the pre-existing page-bundle
 `1.1.0` remains readable as historical evidence. The cache identity is a response fact and adds no
-HTTP request path fields; the current HTTP contract is `journal-http-1.10.0`.
+HTTP request path fields; the HTTP contract at that time was `journal-http-1.10.0`.
 
 The earlier Chinese macOS native run `run-XJihrW` passed extraction of four exact families
 from two official Microsoft packages, same-session font use, unchanged-DOCX saving and PDF
@@ -510,10 +551,9 @@ implementation below `workbench/web/`.
 - `rfw-s1-query` provides object discovery, region/type/ID selection, reviewed physical-page
   selection, source-bound pagination, and exact response receipts. Catalog access does not count
   as content read. Inputs and outputs stay within the recorded application and author boundaries.
-- Repeated fields within one paragraph have distinct source occurrence numbers. Current reader method
-  `s1-readonly-reader-1.5.0` locates each paragraph in its part's source bytes and invalidates
-  earlier object IDs and query cursors; page queries refuse
-  mappings whose originating structure report uses another reader version.
+- Repeated fields within one paragraph have distinct source occurrence numbers. Paragraph byte
+  ranges refer to the original part. Object IDs, query cursors and page mappings bind the
+  [reader method](../contracts/s1/mcp-surface.json) and cannot be reused under a different method.
 - The single-DOCX project slice retains immutable source bytes, baselines, source-observation
   EvidenceItems, local operator decisions, management results, tasks and exact read responses.
   It supports idempotent import, concurrent expected-baseline checks, history and dependency-based
@@ -546,11 +586,19 @@ implementation below `workbench/web/`.
   Known violations remain visible alongside missing section observations. Historical checks retain
   their original basis/verdict and become stale after relevant method, source or binding changes.
 - Baseline reads cross-check SQL identity, payload, artifact hash and retained bytes. Dependent
-  journal commits hold the source baseline stable. Query method `s1-read-query-1.7.0` rejects duplicate
-  cursor keys and separates the coverage axis (`status`: `partial` on a content response while the
+  journal commits hold the source baseline stable. The [query method](../contracts/s1/read-query.json)
+  rejects duplicate cursor keys and separates the coverage axis (`status`: `partial` on a content response while the
   reader declares limits, `catalog_only` on a catalog response) from the continuation axis
   (`selection_delivery`, which its exit codes follow and which reports only whether another page
   exists). Saved historical responses remain unchanged.
+- Retained content queries return comment text, declared author and date at existing range or
+  point anchors, and distinguish accepted-revisions text from source text in paragraphs, table
+  cells, and comment bodies. Ambiguous structural revisions report an unavailable projection.
+  This is a query-method change, not an edit or a change to structural evidence, page mappings,
+  journal comparisons, or historical responses. The portable Workbench suite passed 1,316 tests
+  (33 skipped). An isolated bundled engine also returned the expected projections and comment
+  details over HTTP, recovered the exact saved response, and returned unchanged DOCX bytes.
+  This does not verify desktop, model, or Office rendering behavior.
 
 The supported structures and deliberate limits are described in `s1-readonly-reader-slice.md`.
 Passing focused reader tests does not establish the full S1 capability contract.
@@ -718,6 +766,29 @@ DOCX and conversion provenance in the existing source/world library. Explicit se
 template immediately usable as the comparison basis. It does not require confirming each font or
 size and does not turn a template difference into a publisher-authenticated violation.
 
+Strict OOXML `.docx` intake uses the OPC main-document relationship, part content type and
+Word root vocabulary. The shared working-copy normalizer maps Strict namespaces, known
+relationship types and typed layout values for the existing editor and Workbench readers.
+It retains original and working byte identities; snapshots and check evidence bind to the
+retained working bytes. Transitional uploads pass unchanged. This is an import path, not a
+Strict-format exporter or a renderer. Intake names the unsupported feature when it recognizes a
+word-processing package but cannot prepare it, for example a signed Strict package whose signature
+would be invalidated or a main part outside the editor's `word/document.xml` layout. Existing
+reader coverage limits still apply to the resulting working copy.
+
+[ISO/IEC 29500-1](https://www.iso.org/standard/71691.html) and the published
+[ECMA-376 text and schemas](https://ecma-international.org/publications-and-standards/standards/ecma-376/)
+define the Strict main-part type and vocabulary (Part 1 §11.3.10), OPC relationships (Part 2),
+compatibility branches (Part 3), and Transitional differences (Part 4). The
+[Open XML SDK resolver](https://github.com/dotnet/Open-XML-SDK/blob/main/src/DocumentFormat.OpenXml.Framework/Features/OpenXmlNamespaceResolver.cs)
+provides explicit namespace and relationship pairs. LibreOffice's
+[measurement reader](https://github.com/LibreOffice/core/blob/master/sw/source/writerfilter/ooxml/OOXMLPropertySet.cxx)
+and [line-spacing handling](https://github.com/LibreOffice/core/blob/master/sw/source/writerfilter/dmapper/DomainMapper_Impl.cxx)
+are reference implementations for typed values. For example, `6pt` with `lineRule="auto"` in the
+IEEE template becomes `120` with `auto`, meaning half a line, not a fixed six-point line height.
+See [the desktop IEEE run](../../../docs/agent/status.md#docx-模板排版候选2026-11-21) for the
+original-file acceptance and its scope.
+
 The application captures source-bound effective facts with its pinned DOCX core, including all declared
 styles and table-internal condition/position contexts. Paragraph and character definitions carry their
 supported effective formats; table/numbering/other styles remain explicitly declaration-only. Recognized paragraph definitions
@@ -725,6 +796,11 @@ supply expectations when the template has no corresponding paragraph/run role an
 instance outside tables. Exact-font preparation includes active script lanes from these same fallback
 run profiles; unknown roles, non-paragraph definitions and superseded styles add no fonts. Historical
 worlds retain their original font lists and remain readable; new checks require the current analyzer.
+For a supported prior snapshot method, Oleafly captures current format facts from the exact retained
+DOCX. Workbench verifies the source and package parts and retains a new analysis without modifying
+the previous world or its checks. Later candidate requests for the same old version reuse that analysis
+without changing the manuscript's binding. Unsupported methods and missing or damaged sources
+require recapturing the template.
 Manuscript style definitions do not generate document findings. Workbench verifies
 package part hashes and retains the baseline snapshot through existing artifact/evidence storage.
 Object comparison uses semantic kind/role, heading level and caption context, excluding identity,
@@ -732,10 +808,47 @@ example text, raw formatting declarations and unused script font slots. Variable
 remain uncertain. Results retain exact source/method versions and object evidence; request replay
 is idempotent and a changed binding is a conflict. Full package parts, XML nodes and relationships
 are available through bounded read-only queries. Snapshot objects, style definitions and saved findings support
-pagination; finding filters apply before pagination. Findings are stored once as a content-addressed
-artifact, with summary/selectors and an initial page in the check. Core observations carry their
-own method versions so subsequent manuscript saves preserve historical evidence and mark its
-source applicability accurately. Wire fields and current methods are maintained in
+pagination; finding filters apply before pagination. Raw findings remain a content-addressed
+artifact. Author review derives groups, locations and detail pages from that artifact and the
+snapshot checked at the time. Paragraph and run records share their owning paragraph within a
+format action; headings separate by level, tables by table and area, and equations and drawings
+by outer object. Formula, table and section evidence stays available for inspection. Review uses
+the exact snapshot artifact recorded by the check when available, or the recorded reader method
+for older checks.
+
+Candidate checks use a compact receipt with counts and exact version identities. The application
+requests only writable differences and brief template excerpts for planning, then the post-save
+evidence needed to confirm attempted writes. It requests author-facing groups for the final check
+only, including when no difference can be written. Full detail remains available on demand.
+Workbench derives template excerpts by object ID from the validated retained snapshot, without
+transferring the template DOCX to the review client. An identical-byte candidate can reference an
+already registered manuscript snapshot; a new baseline without a matching registration still
+uploads its own facts and is checked after any write. This does not change the comparison
+verdicts or add language checks. The
+[Agent status](../../../docs/agent/status.md#docx-模板排版候选2026-11-21) records the same-manuscript
+timing and application acceptance boundary.
+
+Reviewed candidate metadata is retained once per target project and restored through
+`GET /api/template-candidate-review`. The stored record keeps the exact candidate, target, check,
+world and snapshot identities plus the reviewed display items; it does not duplicate DOCX bytes or
+model output. `POST /api/template-candidate-review` uses `candidate_check_id` as its compare-and-swap
+identity. A changed target baseline or binding returns a conflict without deleting the candidate;
+it remains downloadable. Adoption checks the original target recorded in the pending review, not
+just the versions supplied in the request. It consumes the review only in the same successful
+transaction that saves the working draft and binds the candidate's template. There is no public
+clear route: closing a review surface does not delete it.
+The same save retains a structured checklist for `GET /api/template-candidate-summary`.
+It separates confirmed writes, unconfirmed writes, and unresolved groups of the final check,
+with the exact checked template, coverage gaps and representative locations. Reads of a new
+checklist do not reopen snapshots or raw findings. Older pending reviews can be projected
+from their retained evidence without a rewrite. Scope, pagination and the response version are
+defined by the [journal contract](../contracts/journals/world-contract.json).
+Damaged retained template source bytes fail the existing world-source verification with an
+internal data-integrity error and leave the pending review and target unchanged.
+
+Core observations carry their own method versions so subsequent manuscript saves preserve
+historical evidence and mark its source applicability accurately. Wire fields and current methods
+are maintained in
 [the journal contract](../contracts/journals/world-contract.json), under `template_comparison`.
 
 This extends the journal business model; the historical geometry analyzer remains readable and

@@ -16,8 +16,11 @@ from research_file_workbench.journals.store_records import (
     required_row,
     source_content,
     source_references,
+    verified_payload,
+    world_metadata_record,
     world_record,
 )
+from research_file_workbench.journals.template_models import template_preparation
 
 
 def save_world(
@@ -76,17 +79,31 @@ def get_world(connection: sqlite3.Connection, version_id: str) -> JsonObject:
     return world_record(connection, required_row(connection, "world", "version_id", version_id))
 
 
+def get_world_metadata(connection: sqlite3.Connection, version_id: str) -> JsonObject:
+    """Recover one exact world without reading or verifying retained source bytes."""
+    return world_metadata_record(
+        connection, required_row(connection, "world", "version_id", version_id)
+    )
+
+
 def list_worlds(connection: sqlite3.Connection) -> list[JsonObject]:
     """List world metadata without selecting a project binding implicitly."""
-    worlds = [
-        world_record(connection, row)
-        for row in connection.execute("SELECT * FROM world ORDER BY rowid")
-    ]
-    return [
-        {key: world[key] for key in ("version_id", "journal_id", "version_ordinal", "created_at")}
-        | {key: world[key] for key in ("journal_name", "scope")}
-        for world in worlds
-    ]
+    summaries: list[JsonObject] = []
+    for row in connection.execute("SELECT * FROM world ORDER BY rowid"):
+        world = verified_payload(row)
+        validate_world_identity(world)
+        summary = {
+            "version_id": world["version_id"],
+            "journal_id": world["journal_id"],
+            "version_ordinal": row["version_ordinal"],
+            "created_at": row["created_at"],
+            "journal_name": world["journal_name"],
+            "scope": world["scope"],
+        }
+        if "template" in world:
+            summary["template_preparation"] = template_preparation(world)
+        summaries.append(summary)
+    return summaries
 
 
 def read_source(connection: sqlite3.Connection, source_id: str) -> bytes:

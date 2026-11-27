@@ -1,6 +1,6 @@
 import { strToU8, zipSync } from "fflate";
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { GroupSnapshot } from "../../src/lib/task-collaboration";
 import type {
   JournalAnnotationRequest,
@@ -179,7 +179,7 @@ test("external journal revision wakes only the subscribed idle member and dedupl
       "from research_file_workbench.workbench.service import WorkbenchService",
       "s=WorkbenchService(Path(sys.argv[1]))",
       "print(json.dumps(s.revise(sys.argv[2],sys.argv[3],12240,'External subscription poll acceptance')))" ,
-    ].join("\n"), realpathSync(fixture.reference.libraryRoot), fixture.reference.worldVersionId, fixture.reference.objectId],{encoding:"utf8",timeout:30_000}));
+    ].join("\n"), fixture.reference.libraryRoot, fixture.reference.worldVersionId, fixture.reference.objectId],{encoding:"utf8",timeout:30_000}));
     expect(revised.version_id).not.toBe(fixture.reference.worldVersionId);
     // Snapshot reads do not call journal_context or kick/reconcile Workbench.
     let delivered=idle;

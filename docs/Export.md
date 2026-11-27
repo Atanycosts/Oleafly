@@ -27,6 +27,23 @@ the persisted engine descriptor and writes only to a user-approved destination.
 - Optional vision assistance can refine an imported project after the user
   connects a provider.
 
+### Read-only spreadsheet API
+
+Use [`openSpreadsheet`](../src/lib/spreadsheet-reader.ts) with the filename and
+captured bytes for XLSX, XLS, CSV, or TSV. Open once, then call `listSheets()`,
+`readHeader()`, or `readRange()` on the same reader. Coordinates are one-based
+and inclusive: Excel keeps worksheet coordinates, and CSV/TSV count logical
+records including blank records. The header defaults to the first row of the
+used range; callers can choose another row. The reader does not infer headers.
+It formats stored Excel values without recalculating formulas.
+
+Delimited text uses UTF-8 unless a byte-order mark specifies UTF-16. The reader
+labels lossy decoding. CSV uses commas and TSV uses tabs. Range results distinguish
+the requested, available, and returned rectangles, so an out-of-bounds request
+is not confused with truncation. Truncation reasons report the applied limit;
+`returned` gives the last row and column actually covered. The size limits are
+defined in the reader. It parses in memory and never writes back to the source.
+
 ## Integrity and safety
 
 - Export destinations must be absolute, existing, and non-directory paths.

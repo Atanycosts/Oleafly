@@ -254,20 +254,21 @@ describe("task DOCX renderer bridge", () => {
   });
   it("forwards live formatter, save and check operations with the bound scope", async () => {
     const scope = { projectId: "app", workbenchProjectId: "paper" };
+    const node_address = { version: "xml-element-path-1", source_sha256: "a".repeat(64), part: "/word/document.xml", path: [0, 1, 2] };
     await handleDocxRendererRequest({ ...request, operation: "read_format", arguments: {
       session_id: "session", query: {
-        kind: "nodes", paragraph_ref: "p1", part: "word/document.xml", path: [1, 2],
+        kind: "nodes", node_address,
         namespace_uri: "urn:document", local_name: "p",
         attribute: { namespace_uri: "urn:attribute", local_name: "id", value: "target" },
-        offset: 2, limit: 10,
+        offset: 0, limit: 1,
       },
     } });
     expect(mocks.taskOperation).toHaveBeenLastCalledWith(scope, "session", "read_format", {
       query: {
-        kind: "nodes", paragraphRef: "p1", part: "word/document.xml", path: [1, 2],
+        kind: "nodes", nodeAddress: node_address,
         namespaceUri: "urn:document", localName: "p",
         attribute: { namespaceUri: "urn:attribute", localName: "id", value: "target" },
-        offset: 2, limit: 10,
+        offset: 0, limit: 1,
       },
     });
 
@@ -532,12 +533,12 @@ describe("task DOCX renderer bridge", () => {
       arguments: {
         session_id: "session",
         query: {
-          kind: "nodes",
+          kind: "objects",
           object_kind: "run",
           style_id: "Strong",
           object_id: "run-1",
           text: "needle",
-          path: [1, "stale", 2.5, 3],
+          path: [1, 3],
           attribute: { namespace_uri: "urn:attribute", local_name: "id" },
         },
       },
@@ -548,7 +549,7 @@ describe("task DOCX renderer bridge", () => {
       "read_format",
       {
         query: {
-          kind: "nodes",
+          kind: "objects",
           objectKind: "run",
           styleId: "Strong",
           objectId: "run-1",
@@ -558,5 +559,8 @@ describe("task DOCX renderer bridge", () => {
         },
       },
     );
+    expect(() => handleDocxRendererRequest({ ...request, operation: "read_format", arguments: {
+      query: { kind: "nodes", path: [1, "stale", 2.5, 3] },
+    } })).toThrow("non-negative integer child indices");
   });
 });

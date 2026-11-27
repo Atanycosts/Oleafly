@@ -14,7 +14,7 @@ from research_file_workbench.projects.models import (
     require_record_text,
 )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 4
 _BUSY_TIMEOUT_MS = 5000
 # The version-1 statements stay frozen: a database created by an earlier build is upgraded in
 # place, never rebuilt, so the rows it already holds keep their original bytes.
@@ -70,6 +70,14 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "project_id TEXT NOT NULL REFERENCES project(project_id), baseline_id TEXT REFERENCES "
         "baseline(baseline_id), supersedes TEXT, payload TEXT NOT NULL)",
         "CREATE INDEX author_decision_key ON author_decision(project_id, decision_key)",
+    ),
+    3: (
+        "CREATE TABLE template_candidate_adoption (request_id TEXT PRIMARY KEY, request_digest "
+        "TEXT NOT NULL, request_json TEXT NOT NULL, result_json TEXT NOT NULL)",
+    ),
+    4: (
+        "CREATE TABLE template_candidate_review (project_id TEXT PRIMARY KEY REFERENCES "
+        "project(project_id), record_json TEXT NOT NULL)",
     ),
 }
 

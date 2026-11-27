@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { strToU8, zipSync } from "fflate";
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 import { openDocxFormatFacts, type DocxFormatObject, type DocxFormatProperties } from "./docx-format";
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
@@ -34,12 +35,33 @@ function runs(objects: DocxFormatObject[]): DocxFormatObject[] {
 }
 
 describe("DOCX content-bound format facts", () => {
+  it("passes selected paragraph, style and table children to the effective-format resolver", async () => {
+    const branch = (choice: string, fallback: string) => `<mc:AlternateContent xmlns:mc="${MC}">` +
+      `<mc:Choice Requires="w">${choice}</mc:Choice><mc:Fallback>${fallback}</mc:Fallback></mc:AlternateContent>`;
+    const style = (size: number) => `<w:style w:type="paragraph" w:styleId="Selected"><w:rPr><w:sz w:val="${size}"/></w:rPr></w:style>`;
+    const facts = await openDocxFormatFacts(docx(
+      `<w:tbl><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid>${branch(
+        `<w:tr><w:tc>${p("Cell", "Selected", "", branch("<w:keepNext/>", '<w:keepNext w:val="0"/>'))}</w:tc></w:tr>`,
+        `<w:tr><w:tc>${p("Hidden cell")}</w:tc></w:tr>`,
+      )}</w:tbl>`,
+      branch(style(24), style(32)),
+    ));
+    const text = facts.snapshot.objects.filter((object) => object.kind === "paragraph" || object.kind === "run");
+    expect(text).toMatchObject([
+      { kind: "paragraph", text: "Cell", properties: { paragraph: { keepNext: true } }, table_context: { row_index: 0, row_count: 1 } },
+      { kind: "run", text: "Cell", properties: { run: { fontSizePt: 12 } } },
+    ]);
+    expect(facts.snapshot.style_definitions).toMatchObject([
+      { style_id: "Selected", node_address: { path: [0, 0, 0, 0] }, properties: { run: { fontSizePt: 12 } } },
+    ]);
+  });
+
   it("publishes effective unused paragraph styles with canonical styles-part locators", async () => {
     const facts = await openDocxFormatFacts(docx(
       p("Body text", "Body"),
       '<w:style w:type="paragraph" w:styleId="Body"><w:name w:val="Body Text"/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:sz w:val="24"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Body"/><w:pPr><w:keepNext w:val="0"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="RunOnly"><w:name w:val="Run Only"/><w:rPr><w:i/></w:rPr></w:style>',
     ));
-    expect(facts.snapshot.method_version).toBe("docx-core-format-snapshot-1.2.0");
+    expect(facts.snapshot.method_version).toBe("docx-core-format-snapshot-1.3.0");
     expect(facts.snapshot.schema_version).toBe(1);
     const heading = facts.snapshot.style_definitions?.find((style) => style.style_id === "Heading3");
     if (!heading) throw new Error("Expected unused Heading3 style");
@@ -58,7 +80,8 @@ describe("DOCX content-bound format facts", () => {
     });
     expect(heading.path.length).toBeGreaterThan(1);
     expect(heading.role_basis).toContainEqual({ source: "outline_level", value: "2", certainty: "explicit" });
-    const source = facts.query({ kind: "nodes", part: heading.part, path: heading.path });
+    assert(heading.node_address);
+    const source = facts.query({ kind: "nodes", node_address: heading.node_address });
     if (source.kind !== "nodes") throw new Error("Expected style source nodes");
     expect(source.nodes[0]?.node).toMatchObject({ localName: "style", attributes: expect.arrayContaining([expect.objectContaining({ localName: "styleId", value: "Heading3" })]) });
     expect(facts.snapshot.style_definitions).toContainEqual(expect.objectContaining({
@@ -473,7 +496,8 @@ describe("DOCX content-bound format facts", () => {
     if (queried.kind === "nodes") {
       expect(queried.total).toBe(1);
       expect(queried.nodes[0].node).toMatchObject({ namespaceBindings: [], attributes: expect.arrayContaining([expect.objectContaining({ localName: "odd", value: "kept" })]) });
-      expect(facts.query({ kind: "nodes", part: queried.nodes[0].part, path: queried.nodes[0].path })).toMatchObject({ total: 1 });
+      expect(queried.nodes[0].node_address).toBeDefined();
+      expect(facts.query({ kind: "nodes", node_address: queried.nodes[0].node_address })).toMatchObject({ total: 1 });
     }
     expect(facts.query({ kind: "nodes", namespace_uri: "urn:else", local_name: "root" })).toMatchObject({ total: 1 });
     expect(facts.query({ kind: "relationships", part: "/word/document.xml" })).toMatchObject({ relationships: expect.arrayContaining([expect.objectContaining({ id: "theme", rawTarget: "theme/theme1.xml" })]) });

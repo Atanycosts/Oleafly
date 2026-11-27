@@ -3,14 +3,15 @@
 import xml.etree.ElementTree as ET
 
 from research_file_workbench.docx.parsing.layout import read_layout
+from research_file_workbench.docx.parsing.markup_compatibility import parse_docx_xml
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
 def document(body: str) -> dict[str, ET.Element]:
     return {
-        "word/document.xml": ET.fromstring(
-            f'<w:document xmlns:w="{W}"><w:body>{body}</w:body></w:document>'
+        "word/document.xml": parse_docx_xml(
+            f'<w:document xmlns:w="{W}"><w:body>{body}</w:body></w:document>'.encode()
         )
     }
 

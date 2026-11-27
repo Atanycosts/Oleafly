@@ -7,9 +7,16 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from research_file_workbench.common.hashing import sha256_bytes
-from research_file_workbench.docx.package_query import PackageQueryError, query_package
+from research_file_workbench.docx.package_query import (
+    WORKBENCH_XML_CHILD_PATH_VERSION,
+    XML_ELEMENT_PATH_VERSION,
+    PackageQueryError,
+    query_package,
+    validate_node_address,
+)
 
 WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 RELATIONSHIP = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PACKAGE_RELATIONSHIP = "http://schemas.openxmlformats.org/package/2006/relationships"
 DOCUMENT_CONTENT_TYPE = (
@@ -65,6 +72,34 @@ def relationships(*items: tuple[str, str, str, str | None]) -> str:
             f'<Relationship Id="{identifier}" Type="{relationship_type}" Target="{target}"{mode}/>'
         )
     return f'<Relationships xmlns="{PACKAGE_RELATIONSHIP}">' + "".join(entries) + "</Relationships>"
+
+
+def node_address(
+    payload: bytes,
+    part: str,
+    path: list[int],
+    *,
+    version: str = XML_ELEMENT_PATH_VERSION,
+) -> dict[str, object]:
+    return {
+        "version": version,
+        "source_sha256": sha256_bytes(payload),
+        "part": part,
+        "path": path,
+    }
+
+
+def node_query(
+    payload: bytes,
+    part: str,
+    path: list[int],
+    *,
+    version: str = XML_ELEMENT_PATH_VERSION,
+) -> dict[str, object]:
+    return {
+        "operation": "nodes",
+        "node_address": node_address(payload, part, path, version=version),
+    }
 
 
 def test_part_returns_exact_bytes_hash_length_and_content_type() -> None:
@@ -131,6 +166,7 @@ def test_unknown_namespace_element_and_attribute_remain_queryable() -> None:
 
     assert result["total"] == 1
     node = result["nodes"][0]
+    assert node["node_address"] == node_address(payload, "/customXml/item1.xml", [0])
     assert node["path"] == [0]
     assert node["namespace_uri"] == "urn:vendor"
     assert node["local_name"] == "record"
@@ -160,11 +196,17 @@ def test_nodes_use_canonical_paths_and_count_mixed_content_slots() -> None:
 
     result = query_package(
         payload,
-        {"operation": "nodes", "part": "/word/document.xml", "path": [0, 0, 0]},
+        node_query(
+            payload,
+            "/word/document.xml",
+            [0, 0, 0],
+            version=WORKBENCH_XML_CHILD_PATH_VERSION,
+        ),
     )
 
     assert result["total"] == 1
     paragraph = result["nodes"][0]
+    assert paragraph["node_address"] == node_address(payload, "/word/document.xml", [0, 0, 0])
     assert paragraph["path"] == [0, 0, 0]
     assert paragraph["local_name"] == "p"
     assert [
@@ -178,21 +220,43 @@ def test_nodes_use_canonical_paths_and_count_mixed_content_slots() -> None:
         ("text_value", 4, [0, 0, 0, 4], "after"),
     ]
 
-    first_run = query_package(
+    old_first_run = query_package(
         payload,
-        {"operation": "nodes", "part": "/word/document.xml", "path": [0, 0, 0, 1]},
+        node_query(
+            payload,
+            "/word/document.xml",
+            [0, 0, 0, 1],
+            version=WORKBENCH_XML_CHILD_PATH_VERSION,
+        ),
     )
-    assert first_run["nodes"][0]["local_name"] == "r"
+    new_first_run = query_package(
+        payload,
+        node_query(payload, "/word/document.xml", [0, 0, 0, 0]),
+    )
+    assert old_first_run["nodes"][0]["local_name"] == "r"
+    assert old_first_run["nodes"][0]["path"] == [0, 0, 0, 1]
+    assert new_first_run["nodes"][0]["local_name"] == "r"
+    assert new_first_run["nodes"][0]["path"] == [0, 0, 0, 1]
 
-    text_slot = query_package(
-        payload,
-        {"operation": "nodes", "part": "/word/document.xml", "path": [0, 0, 0, 0]},
-    )
-    assert text_slot["total"] == 0
+    with pytest.raises(PackageQueryError, match="points to text, not an XML element"):
+        query_package(
+            payload,
+            node_query(
+                payload,
+                "/word/document.xml",
+                [0, 0, 0, 0],
+                version=WORKBENCH_XML_CHILD_PATH_VERSION,
+            ),
+        )
 
     second_paragraph = query_package(
         payload,
-        {"operation": "nodes", "part": "/word/document.xml", "path": [0, 0, 1]},
+        node_query(
+            payload,
+            "/word/document.xml",
+            [0, 0, 1],
+            version=WORKBENCH_XML_CHILD_PATH_VERSION,
+        ),
     )
     assert [
         (child["kind"], child["index"]) for child in second_paragraph["nodes"][0]["children"]
@@ -249,7 +313,12 @@ def test_nodes_honor_inherited_and_default_reset_xml_space() -> None:
 
     root = query_package(
         payload,
-        {"operation": "nodes", "part": "/customXml/item1.xml", "path": [0]},
+        node_query(
+            payload,
+            "/customXml/item1.xml",
+            [0],
+            version=WORKBENCH_XML_CHILD_PATH_VERSION,
+        ),
     )
     assert [
         (child["kind"], child["index"], child.get("value"))
@@ -260,6 +329,36 @@ def test_nodes_honor_inherited_and_default_reset_xml_space() -> None:
         ("text_value", 2, " "),
         ("element", 3, None),
     ]
+
+
+def test_physical_element_addresses_ignore_compatibility_and_layout_projections() -> None:
+    document = (
+        f'<w:document xmlns:w="{WORD}" xmlns:mc="{MC}"><w:body xml:space="preserve">\n  '
+        "<w:p><w:r><w:t>First</w:t></w:r></w:p>\n  "
+        "<w:p><w:r><w:t>Second</w:t></w:r></w:p>\n  "
+        "<w:p><mc:AlternateContent>"
+        '<mc:Choice Requires="wps"><w:r><w:t>ChoiceMarker</w:t></w:r></mc:Choice>'
+        "<mc:Fallback><w:r><w:t>FallbackMarker</w:t></w:r></mc:Fallback>"
+        "</mc:AlternateContent></w:p>\n  "
+        "<w:sectPr/>"
+        "</w:body></w:document>"
+    )
+    payload = package(document=document)
+
+    cases = (
+        ([0, 0, 0], "p", [0, 0, 1]),
+        ([0, 0, 1], "p", [0, 0, 3]),
+        ([0, 0, 2, 0, 0], "Choice", [0, 0, 5, 0, 0]),
+        ([0, 0, 2, 0, 1], "Fallback", [0, 0, 5, 0, 1]),
+        ([0, 0, 3], "sectPr", [0, 0, 7]),
+    )
+    for path, local_name, mixed_path in cases:
+        result = query_package(payload, node_query(payload, "/word/document.xml", path))
+        assert result["total"] == 1
+        node = result["nodes"][0]
+        assert node["local_name"] == local_name
+        assert node["path"] == mixed_path
+        assert node["node_address"] == node_address(payload, "/word/document.xml", path)
 
 
 def test_node_filters_and_pagination_are_deterministic() -> None:
@@ -404,12 +503,8 @@ def test_root_relationships_have_a_package_root_owner() -> None:
             "Invalid DOCX part path",
         ),
         (
-            {"operation": "nodes", "part": "/word/document.xml", "path": [0, True]},
-            "path entries must be non-negative integers",
-        ),
-        (
-            {"operation": "nodes", "part": "/word/document.xml", "path": [0, 99]},
-            "Node path is outside",
+            {"operation": "nodes", "part": "/word/document.xml", "path": [0]},
+            "Top-level path has no declared address source",
         ),
         (
             {"operation": "nodes", "part": "/word/document.xml", "limit": 0},
@@ -432,6 +527,62 @@ def test_root_relationships_have_a_package_root_owner() -> None:
 def test_malformed_queries_fail_loudly(query, message: str) -> None:
     with pytest.raises(PackageQueryError, match=message):
         query_package(package(), query)
+
+
+def test_node_addresses_reject_invalid_shape_source_and_part() -> None:
+    payload = package()
+    valid = node_address(payload, "/word/document.xml", [0, 0, 0])
+    cases = (
+        ({**valid, "path": [0, True]}, "path entries must be non-negative integers"),
+        ({**valid, "path": [1, 0]}, "must start at root index 0"),
+        ({**valid, "path": []}, "must be a non-empty integer array"),
+        ({**valid, "version": "xml-element-path-2"}, "Unsupported node_address version"),
+        ({**valid, "source_sha256": "f" * 64}, "different DOCX bytes"),
+        ({**valid, "part": "/word/missing.xml"}, "Unknown DOCX part"),
+        ({**valid, "extra": True}, "must contain only version, source_sha256, part and path"),
+    )
+    for address, message in cases:
+        with pytest.raises(PackageQueryError, match=message):
+            query_package(payload, {"operation": "nodes", "node_address": address})
+
+    with pytest.raises(PackageQueryError, match="cannot be combined with top-level part or path"):
+        query_package(
+            payload,
+            {
+                "operation": "nodes",
+                "node_address": valid,
+                "part": "/word/document.xml",
+            },
+        )
+
+
+def test_validate_node_address_is_the_shared_retained_address_validator() -> None:
+    payload = package()
+    address = node_address(payload, "/word/document.xml", [0, 0, 0])
+
+    assert (
+        validate_node_address(
+            address,
+            source_sha256=sha256_bytes(payload),
+            available_parts={"word/document.xml"},
+            allowed_versions={XML_ELEMENT_PATH_VERSION},
+        )
+        == address
+    )
+
+    with pytest.raises(PackageQueryError, match="Unsupported node_address version"):
+        validate_node_address(
+            {**address, "version": WORKBENCH_XML_CHILD_PATH_VERSION},
+            source_sha256=sha256_bytes(payload),
+            available_parts={"word/document.xml"},
+            allowed_versions={XML_ELEMENT_PATH_VERSION},
+        )
+    with pytest.raises(PackageQueryError, match="absent from the package"):
+        validate_node_address(
+            address,
+            source_sha256=sha256_bytes(payload),
+            available_parts={"word/styles.xml"},
+        )
 
 
 def test_nodes_refuse_a_binary_part_instead_of_inventing_xml() -> None:

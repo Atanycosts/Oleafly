@@ -14,6 +14,7 @@ from research_file_workbench.common.filesystem import (
 from research_file_workbench.common.hashing import sha256_bytes, sha256_file, sha256_text
 from research_file_workbench.common.json_io import JsonObject, encode_json_object
 from research_file_workbench.docx.models import DocxReadError, DocxReadResult
+from research_file_workbench.docx.normalization import DocxNormalizationError, normalize_docx
 from research_file_workbench.docx.query import (
     ReadQuery,
     catalog_docx,
@@ -128,7 +129,7 @@ def import_document(
         if sha256_bytes(payload) != source_sha256:
             raise ProjectStoreError("Author source changed while capturing the confirmed version")
         result = read_docx_bytes(payload, source_label=source.resolve().as_posix())
-        evidence = _source_evidence(result)
+        evidence = source_evidence(result)
         if sha256_file(source) != source_sha256:
             raise ProjectStoreError(
                 "Author source changed before baseline submission; inspect again"
@@ -171,6 +172,7 @@ def import_captured_document(
     request_id: str,
     expected_baseline_id: str | None,
     confirmation_reason: str,
+    source_upload: bool = False,
 ) -> JsonObject:
     """Apply a user-selected byte snapshot without reopening or writing an author path.
 
@@ -195,14 +197,34 @@ def import_captured_document(
         expected_baseline_id=expected_baseline_id,
         source_sha256=sha256_bytes(content),
     )
-    previous = store.lookup_request(request.actor_id, request_id, request.request_digest)
-    if previous is not None:
-        return previous
+    if not source_upload:
+        previous = store.lookup_request(request.actor_id, request_id, request.request_digest)
+        if previous is not None:
+            return previous
     try:
-        result = read_docx_bytes(content, source_label=filename)
+        normalized = normalize_docx(content) if source_upload else None
+        source_bytes = normalized.content if normalized is not None else content
+        provenance = None
+        if normalized is not None and normalized.source_sha256 != normalized.original_sha256:
+            request = BaselineRequest(
+                project_id=request.project_id,
+                actor_id=request.actor_id,
+                request_id=request_id,
+                expected_baseline_id=expected_baseline_id,
+                source_sha256=normalized.source_sha256,
+                original_sha256=normalized.original_sha256,
+            )
+            provenance = normalized.provenance
+        if source_upload:
+            previous = store.lookup_request(request.actor_id, request_id, request.request_digest)
+            if previous is not None:
+                return previous
+        result = read_docx_bytes(source_bytes, source_label=filename)
         if any(part.status == "failed" for part in result.parts):
             raise DocxReadError("论文包含无法解析的内容，请检查源文件。")
-        evidence = _source_evidence(result)
+        evidence = source_evidence(result)
+    except DocxNormalizationError:
+        raise
     except DocxReadError as exc:
         return store.record_rejection(
             request,
@@ -212,11 +234,13 @@ def import_captured_document(
         )
     return store.apply_baseline(
         request,
-        source_bytes=content,
+        source_bytes=source_bytes,
         source_path=filename,
         confirmation_reason=confirmation_reason,
         evidence=evidence,
         reader_version=READER_VERSION,
+        original_bytes=content if request.original_sha256 is not None else None,
+        provenance=provenance,
     )
 
 
@@ -294,7 +318,8 @@ def read_project(
     return response
 
 
-def _source_evidence(result: DocxReadResult) -> list[JsonObject]:
+def source_evidence(result: DocxReadResult) -> list[JsonObject]:
+    """Build the existing source-observation records for one retained DOCX read."""
     version_id = f"artifact-version-{result.source_sha256}"
     evidence: list[JsonObject] = []
     for item in object_observations(result):

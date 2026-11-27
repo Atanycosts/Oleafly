@@ -34,6 +34,68 @@ def import_project(server, content=None):
     return project
 
 
+def test_candidate_role_hides_discovery_but_keeps_direct_detail(running_server):
+    content = template_bytes()
+    manuscript = import_project(running_server, content)
+    status, candidate = _request(
+        running_server,
+        "POST",
+        "/api/projects",
+        {
+            "name": "Format candidate",
+            "filename": "manuscript.docx",
+            "role": "format_candidate",
+            **upload(content),
+        },
+        running_server.session_token,
+    )
+    assert status == 200, candidate
+
+    _, state = _request(running_server, "GET", "/api/state")
+    assert [project["project_id"] for project in state["projects"]] == [manuscript["project_id"]]
+    status, detail = _request(
+        running_server,
+        "GET",
+        "/api/project?" + urlencode({"project_id": candidate["project_id"]}),
+    )
+    assert status == 200, detail
+    assert detail["role"] == "format_candidate"
+    status, manuscript_detail = _request(
+        running_server,
+        "GET",
+        "/api/manuscript?"
+        + urlencode(
+            {
+                "project_id": candidate["project_id"],
+                "baseline_id": candidate["baseline_id"],
+            }
+        ),
+    )
+    assert status == 200, manuscript_detail
+    assert manuscript_detail["project"]["role"] == "format_candidate"
+    assert manuscript_detail["baseline"]["baseline_id"] == candidate["baseline_id"]
+    status, source = _request(
+        running_server,
+        "GET",
+        "/api/manuscript-source?"
+        + urlencode(
+            {
+                "project_id": candidate["project_id"],
+                "baseline_id": candidate["baseline_id"],
+            }
+        ),
+    )
+    assert status == 200, source
+    assert base64.b64decode(source["content_base64"]) == content
+    status, history = _request(
+        running_server,
+        "GET",
+        "/api/history?" + urlencode({"project_id": candidate["project_id"]}),
+    )
+    assert status == 200, history
+    assert history["project_id"] == candidate["project_id"]
+
+
 def selection(project, **changes):
     query = {
         "region": None,

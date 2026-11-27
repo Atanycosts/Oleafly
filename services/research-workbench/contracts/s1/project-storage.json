@@ -1,5 +1,5 @@
 {
-  "contract_version": "s1-project-storage-1.4.0",
+  "contract_version": "s1-project-storage-1.5.0",
   "scope": "local_single_docx_project",
   "storage": {
     "engine": "sqlite3_standard_library",
@@ -18,6 +18,12 @@
     "required_decision_metadata": ["actor_id", "confirmation_reason", "created_at"],
     "outcomes": ["APPLIED", "BASELINE_CONFLICT", "IDEMPOTENCY_CONFLICT", "REJECTED"],
     "publication": "artifact_bytes_evidence_baseline_pointer_request_and_result_in_one_transaction"
+  },
+  "strict_ooxml_source_upload": {
+    "normalization": "../journals/world-contract.json#/method_versions/strict_docx_normalization",
+    "baseline_source": "The baseline identifies only the exact retained working DOCX. When it differs from the upload, the baseline also records original_sha256, original_artifact_version_id and provenance.",
+    "request_digest": "Known changed-source requests use artifact_version_ids ordered as working DOCX, then original. Unchanged uploads and ordinary editor saves retain their single-artifact digest.",
+    "publication": "The original and working DOCX are committed together after the baseline comparison. Conflicting and rejected requests do not publish a new original or working artifact."
   },
   "query_rules": [
     "Project selection resolves a stored baseline, never an arbitrary source path.",

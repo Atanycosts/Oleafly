@@ -101,6 +101,21 @@ const pendingSnapshot = { ...snapshot, taskState: {
     filename: "paper.docx", reason: "Save", requestId: "fixed-save", revision: 8 },
 } };
 
+it("does not replay a pending save for a former manuscript link excluded from discovery", async () => {
+  mocks.read.mockResolvedValue(pendingSnapshot);
+  mocks.list.mockResolvedValue({ snapshots: [pendingSnapshot], failures: [] });
+  mocks.journal.mockResolvedValue({ projects: [], worlds: [] });
+  const dialog = await showCandidates();
+
+  fireEvent.click(within(dialog).getByTestId("docx-recovery-restore"));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(text.projectMissing));
+  expect(mocks.commit).not.toHaveBeenCalled();
+  expect(mocks.open).not.toHaveBeenCalled();
+  expect(mocks.discard).not.toHaveBeenCalled();
+  expect(within(dialog).getByTestId("docx-recovery-download")).toBeEnabled();
+});
+
 it("confirms the fixed save then opens the actual saved baseline without a recovered session", async () => {
   mocks.read.mockResolvedValue(pendingSnapshot);
   mocks.commit.mockResolvedValue({ baselineId: project.baseline_id, sourceSha256: candidate.contentSha256, revision: 8 });

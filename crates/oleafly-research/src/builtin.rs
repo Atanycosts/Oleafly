@@ -978,6 +978,7 @@ impl BuiltinTaskAdapter {
         self.services
             .clocks
             .get(task_id)
+            .filter(|clock| clock.enforces_stop())
             .map(|clock| clock.remaining() + Duration::from_secs(60))
             .unwrap_or(DEFAULT_TURN_LIMIT)
     }
@@ -1865,6 +1866,7 @@ impl TurnLoop<'_> {
                     max_steps: TASK_MAX_STEPS,
                     allow_long_runs: true,
                     max_duration_ms: Some(adapter.turn_limit(&context.task_id).as_millis() as u64),
+                    disable_run_limits: !adapter.services.runs.budget_stop().enforced(),
                     ..RunConfig::default()
                 },
                 self.registry,

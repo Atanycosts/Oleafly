@@ -95,6 +95,14 @@ function workflowJobBlock(source, jobId) {
   return job.source;
 }
 
+function workflowStepBlock(job, name) {
+  const marker = `- name: ${name}`;
+  const start = job.indexOf(marker);
+  assert.notEqual(start, -1, `workflow step is missing: ${name}`);
+  const next = job.indexOf("\n      - name:", start + marker.length);
+  return job.slice(start, next === -1 ? undefined : next);
+}
+
 function assertTinymistFetchBeforeBuild(
   workflow,
   jobId,
@@ -830,7 +838,10 @@ test("Tauri resources and package scripts mirror the manifest without a Tinymist
     packageManifest.scripts["language-servers:smoke"],
     "node scripts/smoke-language-servers.mjs",
   );
-  assert.equal(packageManifest.scripts.build, "tsc -b && vite build");
+  assert.equal(
+    packageManifest.scripts.build,
+    "tsc -b && node scripts/build-frontend.mjs",
+  );
 });
 
 test("every clean CI and release Tauri build fetches only pinned Tinymist", async () => {
@@ -938,11 +949,38 @@ test("every clean CI and release Tauri build fetches only pinned Tinymist", asyn
     /src-tauri\/binaries\/tinymist/,
   );
   const releaseJob = workflowJobBlock(releaseWorkflow, "build");
-  assert.match(releaseJob, /test ! -e "\$RUNTIME_DIR\/tinymist"/);
-  assert.match(releaseJob, /test ! -e "\$RUNTIME_DIR\/tinymist\.exe"/);
-  assert.match(
+  const capabilitiesStep = workflowStepBlock(
     releaseJob,
-    /fetch-language-servers\.mjs --check --server tinymist[^\n]*--install-mode resource/,
+    "Detect checked-out release capabilities",
+  );
+  assert.match(capabilitiesStep, /stage_tinymist=false/);
+  assert.match(
+    capabilitiesStep,
+    /if \[ -f scripts\/fetch-language-servers\.mjs \][\s\S]*?grep -q -- '--install-mode' scripts\/fetch-language-servers\.mjs[\s\S]*?grep -q 'tinymist' scripts\/fetch-language-servers\.mjs; then\s+stage_tinymist=true/,
+  );
+  const stageStep = workflowStepBlock(
+    releaseJob,
+    "Stage checksum-pinned Tinymist resource archive",
+  );
+  assert.match(
+    stageStep,
+    /if: steps\.capabilities\.outputs\.stage_tinymist == 'true'/,
+  );
+  assert.match(
+    stageStep,
+    /fetch-language-servers\.mjs --server tinymist[^\n]*--install-mode resource/,
+  );
+  const verificationStep = workflowStepBlock(
+    releaseJob,
+    "Verify staged compiler sidecars and Tinymist resource policy",
+  );
+  assert.match(
+    verificationStep,
+    /if \[ "\$\{\{ steps\.capabilities\.outputs\.stage_tinymist \}\}" = true \]; then\s+node scripts\/fetch-language-servers\.mjs --check --server tinymist[^\n]*--install-mode resource\s+fi/,
+  );
+  assert.match(
+    verificationStep,
+    /if \[ "\$\{\{ steps\.capabilities\.outputs\.stage_tinymist \}\}" = true \]; then\s+test ! -e "\$RUNTIME_DIR\/tinymist\$SUFFIX"\s+fi/,
   );
   const diagnosticsJob = workflowJobBlock(ciWorkflow, "tinymist-diagnostics");
   const stageIndex = diagnosticsJob.indexOf(

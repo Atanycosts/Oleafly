@@ -33,6 +33,8 @@ pub struct RunConfig {
     pub max_duration_ms: Option<u64>,
     #[serde(default)]
     pub allow_long_runs: bool,
+    #[serde(skip)]
+    pub disable_run_limits: bool,
 }
 
 fn default_auto_compact() -> bool {
@@ -48,6 +50,7 @@ impl Default for RunConfig {
             auto_compact: true,
             max_duration_ms: None,
             allow_long_runs: false,
+            disable_run_limits: false,
         }
     }
 }
@@ -333,21 +336,23 @@ where
         .map(Duration::from_millis)
         .unwrap_or(MAX_AGENT_RUN_DURATION);
     let mut on_event = on_event;
-    let result = tokio::time::timeout(
-        limit,
-        crate::session::turn::run_turn(
-            client,
-            resolved,
-            request,
-            config,
-            &pipeline,
-            steer_rx,
-            run_tool,
-            &mut on_event,
-        ),
-    )
-    .await
-    .unwrap_or(Err(AgentError::Timeout));
+    let run = crate::session::turn::run_turn(
+        client,
+        resolved,
+        request,
+        config,
+        &pipeline,
+        steer_rx,
+        run_tool,
+        &mut on_event,
+    );
+    let result = if config.disable_run_limits {
+        run.await
+    } else {
+        tokio::time::timeout(limit, run)
+            .await
+            .unwrap_or(Err(AgentError::Timeout))
+    };
     if let Err(error) = &result {
         on_event(AgentEvent::Error {
             message: error.to_string(),
@@ -1132,6 +1137,32 @@ mod tests {
             serde_json::from_str(r#"{"max_steps":50,"max_retries":4,"retry_base_ms":800}"#)
                 .unwrap();
         assert!(!old.allow_long_runs);
+    }
+
+    #[tokio::test]
+    async fn disabled_run_limits_ignore_turn_duration_and_steps() {
+        let (addr, _receiver) = serve_replies(vec![
+            tool_call_reply(1),
+            sse(&[r#"{"choices":[{"delta":{"content":"done"}}]}"#, "[DONE]"]),
+        ]);
+        let outcome = run_agent(
+            &crate::build_client().unwrap(),
+            &local_resolved(addr),
+            CompletionRequest::prompt("system", "prompt"),
+            &RunConfig {
+                max_steps: 1,
+                max_duration_ms: Some(0),
+                disable_run_limits: true,
+                ..RunConfig::default()
+            },
+            ok_tools(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.steps, 2);
+        assert!(!outcome.stopped_at_cap);
+        assert_eq!(outcome.text, "done");
     }
 
     #[tokio::test]

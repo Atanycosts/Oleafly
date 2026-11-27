@@ -9,6 +9,7 @@ use super::{
     RestrictedConfirm, RunConfig, ToolOutput, MAX_CONCURRENT_AGENT_REQUESTS,
     MAX_EARLY_CANCELLATIONS, MAX_RETRY_BASE_MS, MAX_RUN_RETRIES, MAX_RUN_STEPS, MIN_RETRY_BASE_MS,
 };
+use oleafly_research::budget::BudgetStopPolicy;
 
 fn config_with(provider: &str, keys: &[(&str, &str)]) -> AppConfig {
     AppConfig {
@@ -139,13 +140,16 @@ fn a_configured_key_resolves_end_to_end_from_app_config() {
 
 #[test]
 fn renderer_run_budgets_are_clamped_to_backend_limits() {
-    let config = sanitized_run_config(Some(RunConfig {
-        max_steps: u32::MAX,
-        max_retries: u32::MAX,
-        retry_base_ms: u64::MAX,
-        auto_compact: true,
-        ..Default::default()
-    }));
+    let config = sanitized_run_config(
+        Some(RunConfig {
+            max_steps: u32::MAX,
+            max_retries: u32::MAX,
+            retry_base_ms: u64::MAX,
+            auto_compact: true,
+            ..Default::default()
+        }),
+        BudgetStopPolicy::Enforced,
+    );
 
     assert_eq!(config.max_steps, MAX_RUN_STEPS);
     assert_eq!(config.max_retries, MAX_RUN_RETRIES);
@@ -155,25 +159,40 @@ fn renderer_run_budgets_are_clamped_to_backend_limits() {
 
 #[test]
 fn renderer_runs_cannot_ask_for_long_runs() {
-    let config = sanitized_run_config(Some(RunConfig {
-        max_duration_ms: Some(u64::MAX),
-        allow_long_runs: true,
-        ..Default::default()
-    }));
+    let config = sanitized_run_config(
+        Some(RunConfig {
+            max_duration_ms: Some(u64::MAX),
+            allow_long_runs: true,
+            disable_run_limits: true,
+            ..Default::default()
+        }),
+        BudgetStopPolicy::Enforced,
+    );
 
     assert!(!config.allow_long_runs);
     assert_eq!(config.max_duration_ms, None);
+    assert!(!config.disable_run_limits);
+}
+
+#[test]
+fn acceptance_policy_disables_chat_run_limits_without_altering_retry_limits() {
+    let config = sanitized_run_config(None, BudgetStopPolicy::Disabled);
+    assert!(config.disable_run_limits);
+    assert_eq!(config.max_retries, MAX_RUN_RETRIES);
 }
 
 #[test]
 fn renderer_run_budgets_have_safe_minimums() {
-    let config = sanitized_run_config(Some(RunConfig {
-        max_steps: 0,
-        max_retries: 0,
-        retry_base_ms: 0,
-        auto_compact: false,
-        ..Default::default()
-    }));
+    let config = sanitized_run_config(
+        Some(RunConfig {
+            max_steps: 0,
+            max_retries: 0,
+            retry_base_ms: 0,
+            auto_compact: false,
+            ..Default::default()
+        }),
+        BudgetStopPolicy::Enforced,
+    );
 
     assert_eq!(config.max_steps, 1);
     assert_eq!(config.max_retries, 0);
@@ -558,6 +577,11 @@ fn tool_risk_mirrors_the_shell_approval_table() {
         "spawn_agent",
         "wait_agent",
         "close_agent",
+        "list_docx_templates",
+        "read_docx_template_check",
+        "read_docx_candidate_review",
+        "read_docx_saved_content",
+        "read_docx_template_styles",
     ] {
         assert_eq!(tool_risk(tool), oleafly_agent::ToolRisk::Read, "{tool}");
     }

@@ -12,8 +12,8 @@ const mocks = vi.hoisted(() => ({
     readFileContent: vi.fn(),
     writeFileContent: vi.fn(),
     createFile: vi.fn(),
-    deleteFile: vi.fn(),
-    renameFile: vi.fn(),
+    agentDeleteFile: vi.fn(),
+    agentRenameFile: vi.fn(),
     listFiles: vi.fn(),
     searchProject: vi.fn(),
     compileIsolated: vi.fn(),
@@ -178,10 +178,10 @@ describe("editing the open document without a mounted editor", () => {
 
 describe("file operations", () => {
   it("renames through the backend and records the fresh generation when available", async () => {
-    mocks.api.renameFile.mockResolvedValue("b.tex");
+    mocks.api.agentRenameFile.mockResolvedValue("b.tex");
     mocks.api.projectMutationGeneration.mockResolvedValue(12);
     await expect(host().renameFile("proj", "a.tex", "b.tex", 4)).resolves.toEqual({ path: "b.tex", generation: 12 });
-    expect(mocks.api.renameFile).toHaveBeenCalledWith("proj", "a.tex", "b.tex", "error", 4);
+    expect(mocks.api.agentRenameFile).toHaveBeenCalledWith("proj", "a.tex", "b.tex", "error", 4);
     expect(mocks.files.recordMutationGeneration).toHaveBeenCalledWith("proj", 12);
 
     mocks.api.projectMutationGeneration.mockRejectedValue(new Error("busy"));

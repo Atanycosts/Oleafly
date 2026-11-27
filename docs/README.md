@@ -7,6 +7,34 @@ including architecture, supported engines, integrations, and release
 operations. Where a screen is part of the explanation, the pages reuse the
 curated screenshots from the root README.
 
+## Research workspace
+
+Oleafly is being developed around a research team you can direct from the same
+workspace where you write. The team's work can span papers, references,
+experiment code and runs, data, figures, and equations. You can work by hand or
+give a coordinating agent a goal and permission to delegate. When a change
+affects related work, the team should be able to find affected passages and
+assets, check for inconsistencies in terms, references, and claims, and hand
+the review to the responsible member without waiting for you to direct every
+step.
+
+You should be able to trace actual actions and handoffs to the affected objects,
+versions, and evidence without reading the whole conversation. You can select
+and annotate a passage, result, or page region for the team while it works,
+redirect it, take over, and decide what to adopt. Agents should reuse the
+application's tools within the granted scope, including through MCP and CLI
+where those interfaces expose them.
+
+The [DOCX formatting acceptance](agent/status.md#docx-模板排版候选2026-11-21)
+covers preparing, reviewing, adopting, and exporting a separate journal-format
+candidate entirely in Oleafly. The figure replacement trial is recorded
+separately. See [Agent status](agent/status.md) for what has been checked,
+[Word documents](Editor.md#word-documents) for editing behavior, and the
+[integration overview](research-workbench-integration.md) for how Agent
+execution uses Workbench's document and journal services.
+
+## Reference by area
+
 | Area | References |
 | --- | --- |
 | Product surface | [Features](features.md), [General](General.md), [Project library](ProjectLibrary.md), [Editor](Editor.md), [PDF preview](PDFPreview.md), [Source control](SourceControl.md), [Checkpoints](Checkpoints.md), [Computer Use](desktop-apps.md) |
@@ -14,7 +42,7 @@ curated screenshots from the root README.
 | Document quality | [Preflight](Preflight.md), [Export](Export.md), [Conversion matrix](conversion-matrix.md), [Conversion roadmap](conversion-roadmap.md), [Compilation engines](CompilationEngines.md) |
 | Integrations | [Integrations](Integrations.md), [MCP integration](mcp.md), [Document engines](document-engines.md), [Typst toolchain catalog](typst-toolchain.md), [AI model catalog](ai-model-catalog.md) |
 | Local Agent and Workbench | [Current status](agent/status.md), [Architecture](agent/architecture.md), [Component reuse](agent/reuse.md), [Integration overview](research-workbench-integration.md) |
-| System design | [Product architecture](architecture.md), [Word workspace design proposal](word-workspace-design.md), [Design system](design-system.md), [Development](development.md), [Opening folders from the OS](os-integration.md), [Language-server toolchain](language-server-toolchain.md), [Deferred app zoom experiment](app-zoom-experiment.md) |
+| System design | [Product architecture](architecture.md), [Design system](design-system.md), [Development](development.md), [Opening folders from the OS](os-integration.md), [Language-server toolchain](language-server-toolchain.md), [Deferred app zoom experiment](app-zoom-experiment.md) |
 | Collaboration | [Oleafly Server](collaboration-server.md) |
 | Release operations | [Releasing](releasing.md), [Code signing](signing.md), [Auto-updates](updates.md) |
 
@@ -35,5 +63,9 @@ remains accurate so future upstream merges are easy to review, and make fork-spe
 changes in the page that owns the affected fact. Current facts belong in the current
 page; dated plans and verification records are history.
 
-End-user task guides are maintained separately from this public engineering
-reference.
+The [Word workspace proposal (2026-11-16)](word-workspace-design.md) is a
+DOCX-specific design record; use [Word documents](Editor.md#word-documents)
+and [Agent status](agent/status.md) for current behavior and progress. The
+[fused research-agent design (2026-11-05)](../services/research-workbench/docs/fused-research-agent-architecture.md)
+is a frozen design input; use the [integration overview](research-workbench-integration.md)
+for current responsibilities.

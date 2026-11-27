@@ -11,6 +11,9 @@ class ProjectStoreError(ValueError):
     """Raised when persistent project data cannot satisfy its declared contract."""
 
 
+PROJECT_ROLES = frozenset({"manuscript", "format_candidate"})
+
+
 class BaselineConflictError(ProjectStoreError):
     """Raised when a read attempts to commit against a displaced current baseline."""
 
@@ -26,6 +29,13 @@ def require_record_text(value: object, label: str) -> str:
     return value
 
 
+def require_project_role(value: object) -> str:
+    """Validate the project's ordinary-manuscript or retained-candidate role."""
+    if not isinstance(value, str) or value not in PROJECT_ROLES:
+        raise ProjectStoreError("Project role must be manuscript or format_candidate")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class BaselineRequest:
     """One confirmed source binding with stable idempotency and concurrency inputs."""
@@ -35,6 +45,7 @@ class BaselineRequest:
     request_id: str
     expected_baseline_id: str | None
     source_sha256: str
+    original_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if self.project_id is None:
@@ -60,6 +71,15 @@ class BaselineRequest:
             raise ProjectStoreError(
                 "source_sha256 must contain 64 lowercase hexadecimal characters"
             )
+        if self.original_sha256 is not None and (
+            not isinstance(self.original_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.original_sha256) is None
+        ):
+            raise ProjectStoreError(
+                "original_sha256 must contain 64 lowercase hexadecimal characters"
+            )
+        if self.original_sha256 is not None and self.original_sha256 == self.source_sha256:
+            raise ProjectStoreError("original_sha256 must identify the changed source")
 
     @property
     def artifact_version_id(self) -> str:
@@ -67,15 +87,19 @@ class BaselineRequest:
         return f"artifact-version-{self.source_sha256}"
 
     def payload(self) -> JsonObject:
-        """Return exactly the six semantic fields of the frozen digest contract."""
-        return {
+        """Return the frozen fields, binding a changed source's original as a second artifact."""
+        artifact_version_ids = [self.artifact_version_id]
+        if self.original_sha256 is not None:
+            artifact_version_ids.append(f"artifact-version-{self.original_sha256}")
+        payload: JsonObject = {
             "project_id": self.project_id,
             "actor_id": self.actor_id,
             "expected_baseline_id": self.expected_baseline_id,
-            "artifact_version_ids": [self.artifact_version_id],
+            "artifact_version_ids": artifact_version_ids,
             "author_decision_version_ids": [],
             "rule_bindings": [],
         }
+        return payload
 
     @property
     def request_digest(self) -> str:
